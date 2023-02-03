@@ -1,0 +1,127 @@
+ 
+!*** MODULE $VSVDSVDC ***
+! --
+! 
+!  Data structure constants
+! 
+literal vs$k_int_type = 80;
+! --
+! 
+!  Define the structure for the Internal IO Request Packet (INT)
+! 
+literal int$m_done_io_request = 1;
+literal int$m_done_io_mexclf = 2;
+literal int$k_header_len = 32;
+FIELD int$int_db_FIELDSET =
+  SET
+  int$a_flink = [0,0,32,0],
+  int$a_blink = [4,0,32,0],
+  int$w_size = [8,0,16,1],
+  int$b_type = [10,0,8,1],
+  int$b_int_spare_1 = [11,0,8,1],
+!  Flags longword
+      int$v_done_io_request = [12,0,1,0],
+      int$v_done_io_mexclf = [12,1,1,0],
+      int$v_flag_spares = [12,2,30,0],
+    int$r_vdc_int_flags = [12,0,32,0],
+  int$r_vdc_int = [12,0,32,0],
+!  End of Flags	longword	
+  int$l_iip_count = [16,0,32,1],
+  int$l_iost1 = [20,0,32,1],
+  int$l_iost2 = [24,0,32,1],
+  int$a_routine = [28,0,32,0],
+  int$l_arglist = [32,0,32,1],
+  int$l_p1 = [36,0,32,1],
+  int$l_p2 = [40,0,32,1],
+  int$l_p3 = [44,0,32,1],
+  int$l_p4 = [48,0,32,1],
+  int$l_p5 = [52,0,32,1],
+  int$l_p6 = [56,0,32,1],
+  int$l_p7 = [60,0,32,1],
+  int$l_p8 = [64,0,32,1],
+  int$l_p9 = [68,0,32,1],
+  int$l_p10 = [72,0,32,1],
+  int$l_p11 = [76,0,32,1],
+  int$l_p12 = [80,0,32,1]
+  TES;
+literal int$s_int_db = 84;
+MACRO int_db = BLOCK [int$s_int_db,byte] FIELD (int$int_db_FIELDSET) %;
+! .
+! 	IRP redefinitions
+! .
+literal irp$m_done_io_mexclf = 16;
+literal irp$m_done_io_request = 256;
+literal irp$s_vdc_irp_sys_defined = 42;
+literal irp$s_vdc_irp_sys_defined2 = 28;
+FIELD irp$vdc_irp_block_FIELDSET =
+  SET
+  irp$b_vdc_irp_sys_defined = [0,0,0,0], !  IRP$W_STS = 2A
+      irp$v_vcd_irp_spare1 = [42,0,4,0],
+      irp$v_done_io_mexclf = [42,4,1,0], !  IRP$V_VIRTUAL
+      irp$v_vcd_irp_spare2 = [42,5,3,0],
+      irp$v_done_io_request = [42,8,1,0], !   IRP$V_PHYSIO
+      irp$v_vcd_irp_spare3 = [42,9,7,0],
+    irp$r_vdc_irp_sts_flags = [42,0,16,0],
+  irp$r_vdc_irp_sts = [42,0,16,0],
+  irp$b_vdc_irp_sys_defined2 = [44,0,0,0], !  IRP$L_SEGVBN = 48
+  irp$l_iip_count = [72,0,32,1]
+  TES;
+literal irp$s_vdc_irp_block = 76;
+MACRO vdc_irp_block = BLOCK [irp$s_vdc_irp_block,byte] FIELD (irp$vdc_irp_block_FIELDSET) %;
+literal vdc$s_dst_off = 6;
+literal vdc$s_cmd_blk = 28;
+FIELD vdc$vdc_blk_FIELDSET =
+  SET
+  vdc$a_flink = [0,0,32,0],
+  vdc$a_blink = [4,0,32,0],
+  vdc$l_type = [8,0,32,1],
+  vdc$l_refcnt = [12,0,32,1],
+  vdc$l_sts = [16,0,32,1],
+  vdc$a_rca = [20,0,32,0],
+  vdc$w_rcc = [24,0,16,1],
+  vdc$l_efn = [26,0,32,1],
+  vdc$a_astadr = [30,0,32,0],
+  vdc$l_astprm = [34,0,32,1],
+  vdc$w_src_type = [38,0,16,1],
+  vdc$a_src = [40,0,32,0],
+      vdc$w_sox = [44,0,16,1],
+      vdc$w_soy = [46,0,16,1],
+    vdc$r_norm_blk = [44,0,32,0],
+      vdc$w_width = [44,0,16,1],
+      vdc$w_height = [46,0,16,1],
+    vdc$r_back_blk = [44,0,32,0],
+  vdc$r_so_blk = [44,0,32,0],
+  vdc$w_msk_type = [48,0,16,1],
+  vdc$a_msk = [50,0,32,0],
+  vdc$w_map_type = [54,0,16,1],
+  vdc$a_map = [56,0,32,0],
+      vdc$w_dox = [60,0,16,1],
+      vdc$w_doy = [62,0,16,1],
+    vdc$r_dst_off_xy = [60,0,32,0],
+      vdc$w_doa = [60,0,16,1],
+      vdc$a_dof = [62,0,32,0],
+    vdc$r_dst_off_a = [60,0,0,0],
+  vdc$r_dst_off = [60,0,0,0],
+      vdc$w_path_count = [66,0,16,1],
+      vdc$a_path = [68,0,32,0],
+      vdc$w_pattern_mode = [72,0,16,1],
+      vdc$w_pattern_action = [74,0,16,1],
+      vdc$a_pattern_block = [76,0,32,0],
+      vdc$a_pattern_state = [80,0,32,0],
+      vdc$w_sec_type = [84,0,16,1],
+      vdc$a_sec = [86,0,32,0],
+      vdc$w_ssx = [90,0,16,1],
+      vdc$w_ssy = [92,0,16,1],
+    vdc$r_drw_blk = [66,0,0,0],
+      vdc$w_txt_type = [66,0,16,1],
+      vdc$w_txtnum = [68,0,16,1],
+      vdc$a_txtadr = [70,0,32,0],
+      vdc$w_control_count = [74,0,16,1],
+      vdc$a_control_addr = [76,0,32,0],
+      vdc$w_char_pad = [80,0,16,1],
+      vdc$w_space_pad = [82,0,16,1],
+    vdc$r_prn_blk = [66,0,0,0],
+  vdc$r_cmd_blk = [66,0,0,0]
+  TES;
+literal vdc$s_vdc_blk = 94;
+MACRO vdc_blk = BLOCK [vdc$s_vdc_blk,byte] FIELD (vdc$vdc_blk_FIELDSET) %;

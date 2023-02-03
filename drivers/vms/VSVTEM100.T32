@@ -1,0 +1,299 @@
+ 
+!*** MODULE VS$VTEM_100_SDL IDENT VT100 EMULATOR ***
+! ++
+!  FACILITY: VAXstation software (VS)
+! 
+!  Virtual Terminal Emulator (VTEM) for VT100
+! 
+!  ABSTRACT:
+! 
+!  This module defines the data structures relevant to emulating 
+!  the operation of a VT100 terminal in the context of a VAX workstation running
+!  the associated workstation display software; specifically, an implementation of
+!  the System Display Architecture.
+! 
+!  Data tables are maintained on a per-terminal basis. That is, each emulated VT100
+!  has a region of storage devoted to it which contains all permanent and temorary
+!  states, modes, settings, and buffers. No data, except for local counters
+!  (which use registers) and literals, is kept in the body of the code.
+!  Therefore the code itself is re-entrant, and could reside in shared memory. Only
+!  individual VT100's are not re-enterable.
+! 
+! 
+!  ENVIRONMENT:
+! 
+!  VAX workstation: 11/750 or 11/730 running VMS with at least one
+!  ONYX graphics subsystem.
+! 
+! --
+!  EQUATED SYMBOLS:
+! 
+!  Limits on emulated terminals:
+! 
+literal vt$k_maximum_rows = 66;         ! Most rows an emulated VT100 can have
+literal vt$k_maximum_columns = 200;     ! Most columns an emulated VT100 can have
+! 	CONSTANT maximum_vt100s EQUALS 10 PREFIX vt$;	/*Most VT100's that can exist at one time
+!  Definition of size, which depends on character font:
+literal vt$k_character_width = 8;       ! Eight bits wide
+literal vt$k_character_height = 15;     ! Thirteen bits high
+!  Various other defaults:
+literal vt$k_background = 0;            ! Initially, black bg
+literal vt$k_foreground = 1;            ! Initially, white fg
+literal vt$k_text_mode = 1;             ! Indicate VT100
+literal vt$k_nographics = 2;            ! Indicate text only
+!  Definitions of states:
+!  These define the values and meanings
+!  of the data structure field "vt$w_state".
+!  "vt$w_state" determines whether we are just processing text, evaluating an
+!  escape sequence, a control sequence (which began with escape/leftbracket),
+!  or a "dec private" sequence (which began with escape/leftbracket/questionmark).
+literal vt$k_first_state = 0;
+literal vt$k_straight_text = 0;
+literal vt$k_last_character_was_escape = 1;
+literal vt$k_escape_sequence = 2;
+literal vt$k_last_was_esc_leftbracket = 3;
+literal vt$k_control_sequence = 4;
+literal vt$k_dec_private = 5;
+literal vt$k_last_state = 5;
+! 
+!  Define constants for items being set.
+! 
+literal s100$k_dark_background = 0;     !  make background dark
+literal s100$k_light_background = 1;    !  make it light
+literal s100$k_ansi = 2;
+literal s100$k_vt52 = 3;                !  set to ansi or vt52 mode
+literal s100$k_wrap = 4;
+literal s100$k_nowrap = 5;              !  wrap long lines or not
+literal s100$k_newline = 6;
+literal s100$k_oldline = 7;             !  go to new line or not on carigreturn
+literal s100$k_answer = 8;              !  set new answerback message
+literal s100$k_settab = 9;
+literal s100$k_cleartab = 10;           !  set or clear a tab stop
+literal s100$k_level_1 = 11;
+literal s100$k_level_2 = 12;            !  whether umlauts work or not
+literal s100$k_bit7_nrc = 13;           !  7-bit NRC set 
+literal s100$k_legend_tw = 14;
+literal s100$k_legend_dp = 15;          !  typewriter/dataprocess legends 
+literal s100$k_first_non_setting = 16;  !  skin
+! 
+!  Definitions of line states (single width, double, etc):
+! 
+literal vt$k_single = 0;                ! single width single height
+literal vt$k_dwidth = 1;                ! double width
+literal vt$k_dhtop = 2;                 ! double height top half
+literal vt$k_dhbot = 3;                 ! double height bottom half
+literal vt$k_no_typeface = 4;           ! no typeface set
+!  Definitions of control characters:
+literal enq = 5;                        ! enquire (answerback)
+literal bel = 7;                        ! ring bell
+literal bs = 8;                         ! backspace
+literal ht = 9;                         ! horizontal tab
+literal lf = 10;                        ! line feed
+literal vt = 11;                        ! vertical tab (means same as lf to a VT100)
+literal ff = 12;                        ! form feed (means same as lf to a VT100)
+literal cr = 13;                        ! return (to column 1)
+literal so = 14;                        ! shift out (make g1 default character set)
+literal si = 15;                        ! shift in (make g0 default)
+literal xon = 17;                       ! permit transmission of characters from terminal
+literal xoff = 19;                      ! block transmission of characters from terminal
+literal can = 24;                       ! cancel (escape sequence)
+literal sub = 26;                       ! means same as cancel
+literal esc = 27;                       ! escape character (introduces escape and control sequences)
+! Definitions of SDA-related items:
+literal vt$k_footer_bg = 1;             ! footer background light gray
+literal vt$k_footer_fg = 0;             ! footer foreground black
+literal vt$k_pasteboard_color = 0;      ! pasteboard normally white
+literal vt$k_pasteboard_reverse = 0;    ! pb black when screen reversed
+literal vt$k_uic = 0;
+! 
+! 
+!  MACROS AND
+!  DATA STRUCTURES:
+! +
+! This defines the internal structure of the data table for
+! each emulated VT100. The structure is referenced by routines which access
+! the table, but the actual storage is allocated by the routine "vs$$vtem_100_create",
+! at the time a VT100 is created.
+! The pointer to the table is passed as an argument to internal routines.
+! -
+! 
+literal vt$k_level_1 = 1;
+literal vt$k_level_2 = 2;
+literal vt$k_legend_tw = 0;             !  foreign kbd support 
+literal vt$k_legend_dp = 1;             !  foreign kbd support 
+literal vt$k_g0_set = 0;
+literal vt$k_g1_set = 1;
+literal vt$k_g2_set = 2;
+literal vt$k_g3_set = 3;
+literal vt$k_ssn = 0;
+literal vt$k_ss2 = 1;
+literal vt$k_ss3 = 2;
+literal vt$k_c1_7bit = 0;
+literal vt$k_c1_8bit = 1;
+literal vt$k_bit7_nrc = 2;              !  foreign kbd support
+literal vt$k_generation_max_index = 30;
+!  Note: Keep "length" field to a longword for the profile
+literal vt$k_max_num_intermediates = 3;
+literal vt$k_maximum_parameter = 15;
+literal vt$s_backlog = 200;
+literal vt$s_trans_table = 256;
+literal vt$s_saved_character_sets = 12;
+literal vt$s_generation_buffer = 30;
+literal vt$s_answerback_message = 30;
+literal vt$s_line_state = 66;
+literal vt$s_parameters = 30;
+literal vt$s_row_table = 66;
+FIELD vt$device_data_table_FIELDSET =
+  SET
+! 
+!   DEFINE STANDARD VMS AND VSTA BLOCK INFORMATION
+! 
+  vt$a_forward_link = [0,0,32,0],       ! address of next queue entry
+  vt$a_backward_link = [4,0,32,0],      ! address of prior queue entry
+  vt$l_vms_blk_info = [8,0,32,0],
+    vt$l_vsta_blk_info = [12,0,32,0],
+      vt$v_cntr_o_flag = [12,0,1,0],
+      vt$v_send_lf = [12,1,1,0],
+      vt$v_vsta_reserved = [12,2,30,0],
+    vt$r_vsta_blk_bits = [12,0,32,0],
+  vt$r_vsta_field = [12,0,32,0],
+! 
+!   DEFINE DEVICE DEPENDENT INFORMATION STARTING HERE
+! 
+  vt$l_virtual_display_id = [16,0,32,0], ! Handle on the Virtual Display from VDS
+  vt$l_pasteboard_id = [20,0,32,0],     ! Handle on the pasteboard from VDS
+  vt$l_window_id = [24,0,32,0],         ! Handle on the window from VDS
+  vt$l_footer_id = [28,0,32,0],         ! Handle on the footer
+  vt$l_bezel_vd_id = [32,0,32,0],       ! Handle on the border
+  vt$l_body_width = [36,0,32,0],        ! Calculated width of VT100 body
+  vt$l_body_height = [40,0,32,0],       ! Calculated height of VT100 body
+  vt$l_footer_width = [44,0,32,0],      ! Calculated width of footer
+  vt$l_bezel_width = [48,0,32,0],       ! Calculated width of header
+  vt$l_bezel_height = [52,0,32,0],      ! Calculated height of header
+  vt$l_black_line_height = [56,0,32,0], ! Calculated height of body footer separator
+  vt$l_pb_width = [60,0,32,0],          ! Cal. width of pb
+  vt$l_pb_height = [64,0,32,0],         ! Cal. height of pb
+  vt$w_state = [68,0,16,0],             ! Indicates processing text, escape sequence, control sequence, etc.
+  vt$w_crm_state = [70,0,16,0],
+  vt$w_conformance_level = [72,0,16,0],
+  vt$l_legend = [74,0,32,0],            !  foreign kbd  
+  vt$b_char = [78,0,8,0],               ! During a write, current character being processed
+  vt$l_backlog_count = [79,0,32,0],     ! During a write, indicates how many straight-text characters to be output
+  vt$a_backlog = [83,0,32,0],           ! Address of backlog buffer *** count and address must be adjacent ***
+  vt$b_backlog = [87,0,0,0],            ! Contains accumulated printable characters to go
+  vt$b_trans_table = [287,0,0,0],
+! 
+!   define the characteristics status word fields
+! 
+    vt$w_char_status_word = [543,0,16,0],
+      vt$v_scroll = [543,0,1,0],        ! true means "smooth"
+      vt$v_screen_background = [543,1,1,0], ! true means "light background"
+      vt$v_cursor_type = [543,2,1,0],   ! true means "block cursor"
+      vt$v_ansi_vt52 = [543,3,1,0],     ! true means "ANSI"
+      vt$v_bell = [543,4,1,0],          ! true means "ring bell at margin"
+      vt$v_us_uk = [543,5,1,0],         ! true means "US char set 
+      vt$v_auto_wrap = [543,6,1,0],     ! true means "wrap at end of line"
+      vt$v_linefeed_newline = [543,7,1,0], ! true means "return key sends cr/lf"
+      vt$v_wide = [543,8,1,0],          ! true means "wide" (132 cols normally)
+      vt$v_keyboard_blocked = [543,9,1,0], ! true means "keyboard blocked"
+      vt$v_cursor_keys = [543,10,1,0],  ! true means "application mode"
+      vt$v_keypad = [543,11,1,0],       ! true means "application mode"
+      vt$v_text_cursor_enabled = [543,12,1,0], ! true means "text cursor is turned on"
+      vt$v_crm = [543,13,1,0],          ! true means "control representation"
+    vt$r_char = [543,0,16,0],
+  vt$r_char_status_field = [543,0,16,0],
+! 
+  vt$v_margin_origin = [544,8,1,0],     ! true means "origin within margins"
+  vt$v_invalid_sequence = [544,9,1,0],  ! true means too many intermediate characters in an escape or control sequence
+  vt$v_settings_exist = [544,10,1,0],   ! true if settings form up for trmnl
+  vt$v_last_col_flag = [544,11,1,0],    ! true if cursor is in last column
+! 
+!  Put in character table definitions--This has been moved to VSVTEM100.B32
+! 
+! 	CONSTANT	(
+! 			 ascii_g
+! 			,line_drawing
+! 			,supplemental_g
+! 			,ascii_c	
+! 			,supplemental_c
+! 			,uk_ascii_g
+! 			)		EQUALS 0 INCREMENT 1;
+  vt$w_g0_set = [546,0,16,0],
+  vt$w_g1_set = [548,0,16,0],
+  vt$w_g2_set = [550,0,16,0],
+  vt$w_g3_set = [552,0,16,0],
+  vt$w_gl_active_set = [554,0,16,0],
+  vt$w_gr_active_set = [556,0,16,0],
+  vt$w_single_shift = [558,0,16,0],
+  vt$w_saved_character_sets = [560,0,0,0], ! Place to save current character set for g0 and g1
+! 
+! 
+  vt$l_cursor_column = [572,0,32,0],    ! Current column position of cursor
+  vt$l_cursor_row = [576,0,32,0],       ! Current row position of cursor
+  vt$l_saved_cursor_column = [580,0,32,0], ! Place to save column on <esc> 7
+  vt$l_saved_cursor_row = [584,0,32,0], ! Place to save row
+  vt$v_saved_last_col_flag = [588,0,1,0], !  Place to save the last column flag
+  vt$v_saved_origin_mode = [588,1,1,0], !  Place to save the origin mode flag
+! 
+! 
+!   blinking cursor bitfields
+! 
+  vt$v_alpha_cursor_on = [588,2,1,0],
+! 
+!   vt52 compatibilty mode state field
+! 
+  vt$l_vt52_random_move_state = [589,0,32,1], !  state of the <esc>Y cursor
+  vt$b_vt52_char_set = [593,0,8,0],     ! Indicates the current vt52 character set
+! 
+!   vt102 compatibility modes
+! 
+  vt$v_vt102_insert_mode = [592,16,1,0],
+! 						/* movement sequence
+! 
+    vt$b_attributes = [595,0,8,0],      ! Current attributes (bold, underscore, blink, reverse video)
+      vt$v_bold = [595,0,1,0],
+      vt$v_underscore = [595,1,1,0],
+      vt$v_blink = [595,2,1,0],
+      vt$v_reverse = [595,3,1,0],
+    vt$r_att = [595,0,8,0],
+  vt$r_graphics_rendition = [595,0,8,0],
+  vt$b_saved_attributes = [596,0,8,0],  ! Place to save current graphics attributes
+! 
+! 
+  vt$l_top_margin = [597,0,32,0],       ! Current top row of scrolling region
+  vt$l_bottom_margin = [601,0,32,0],    ! Current bottom row of scrolling region
+  vt$l_extreme_right = [605,0,32,0],    ! Column at right edge of screen, or current number of columns
+  vt$l_wide_right = [609,0,32,0],       ! Number of columns in "wide" mode (normally 132)
+  vt$l_normal_right = [613,0,32,0],     ! Number of columns in normal mode (normally 80)
+  vt$l_screen_absolute_bottom = [617,0,32,0], ! Number of rows
+! 
+  vt$w_c1_transmission = [621,0,16,0],
+  vt$b_generation_buffer = [623,0,0,0],
+  vt$l_generation_buffer_index = [653,0,32,0],
+  vt$l_generation_buffer_ptr = [657,0,32,0],
+  vt$l_answerback_message_length = [661,0,32,0], !  Number of bytes
+  vt$a_answerback_message_adr = [665,0,32,0], !  Address of string
+!  End of non-standard VMS string descriptor
+  vt$b_answerback_message = [669,0,0,0], ! Text of answerback message 
+  vt$v_tabs = [696,24,1,0],
+  vt$b_line_state = [724,0,0,0],
+! 
+  vt$b_intermediate_character = [790,0,24,0],
+  vt$w_intermediate_count = [793,0,16,0],
+  vt$w_private_parameter = [795,0,16,0],
+  vt$w_parameters = [797,0,0,0],
+  vt$b_current_parameter = [827,0,8,0],
+! 
+! 
+!   Define a typeface cashing variable
+! 
+  vt$l_current_typeface = [828,0,32,0],
+! 
+!   Define text table pointer and attribute table pointer
+! 
+  vt$a_text_table = [832,0,32,0],
+  vt$a_rend_table = [836,0,32,0],
+  vt$b_row_table = [840,0,0,0]
+  TES;
+literal vt$s_device_data_table = 906;
+MACRO device_data_table = BLOCK [vt$s_device_data_table,byte] FIELD (vt$device_data_table_FIELDSET) %;

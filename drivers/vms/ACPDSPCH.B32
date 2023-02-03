@@ -1,0 +1,3586 @@
+%title 'VS$ACP_DSPCH  --  VAX Station ACP Dispatch routines'
+MODULE VS$ACP_DSPCH	( 			! 
+		ADDRESSING_MODE (EXTERNAL=GENERAL,NONEXTERNAL=GENERAL)
+		 ) =
+BEGIN
+
+!++
+! FACILITY:
+!	VAXstation ACP Dispatch routines
+!
+! ABSTRACT:
+!	Gets IRP, distributes request to appropriate module.
+!
+! ENVIRONMENT:
+!	VAXstation ACP routines
+!	AST re-entrant
+!	IPL = 0
+!
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+LIBRARY	'SYS$LIBRARY:LIB';		! System constants and routines
+LIBRARY 'vsta$library:LIBMACROS';	! Symbols like "irp_block"
+LIBRARY 'vsta$library:LINKAGE';		! Linkages to VMS routines
+LIBRARY 'vsta$library:VSACPDEF';	! VAX Station data structures, etc.
+LIBRARY 'vsta$library:VSVDSVD';		! VD module definitions
+LIBRARY 'vsta$library:VSVDSVDC';	! VDC module definitions
+LIBRARY 'vsta$library:TTYDEFS';		! Terminal definitions not in LIB.L32
+LIBRARY 'vsta$library:VSVKB';		! Virtual Keyboard definitions
+LIBRARY 'vsta$library:VSERRORS';	! Error-reporting symbols
+
+!
+! PSECTS
+!
+$vsta_psect;
+
+
+!
+! EXTERNAL REFERENCES:
+!
+external routine 
+
+	SYS$BRDCST,				! VMS Broadcast system service
+
+	VS$$ACP_DONE_BROADCAST,
+
+	VSTA$$KERNEL_CALL,
+	VSTA$$MOVE_KERNEL_BYTES,
+	VS$$ACP_SESSION_CLEANUP,
+	VS$$ACP_PRESET_IOST,
+	VS$$ACP_CANCEL_VD_IO,
+	VS$$ACP_FINAL_ASYNCH,
+	VS$$ACP_DONE_IO,
+	VS$$ACP_DONE_IO_NO_IOSB,
+	VS$$ACP_DELETE_IRP,
+	VS$$ACP_CREATE_LBUF,
+	VS$$ACP_GET_VM,
+	VS$$ACP_FREE_VM,
+	VS$$ACP_MOVE_VTEMDATA,
+	VS$$ACP_FIX_VTEM,
+
+	VSTA$$PID_CHECK_ACCESS,		!Check user's access to create things
+
+	VS$$VDS_CHECK_PB_ACCESS,	!Check user's access to a PB
+	VSTA$$ERROR,
+	VSTA$$ERROR_LOGGER,
+	VSTA$$ANNOUNCE,
+
+	VS$$VTEM_VT100_CREATE,
+	VS$$VTEM_VT100_WRITE,
+	VS$$VTEM_VT100_DELETE,
+
+	VS$$VTEM_GENERIC_CREATE,
+	VS$$VTEM_GENERIC_WRITE,
+	VS$$VTEM_GENERIC_DELETE,
+
+	VSTA$$TEK_CREATE,
+	VSTA$$TEK_WRITE,
+	VSTA$$TEK_DELETE,
+	VSTA$$TEK_GET_CHARS,
+	VSTA$$TEK_SET_CHARS,
+	TK$$GIN_MODE,
+
+	VS$$READ_VKB,
+	VS$$ACTIVATE_VKB,
+	VS$$DEACTIVATE_VKB,
+	VS$$VKB_CANCEL_READ,
+	VS$$VKB_DO_CONTROL_R,
+	VS$$ACP_FLUSH_READS,
+	VS$$GET_EMULATOR_VKB,
+	VS$$SET_VKB_CHAR,
+	VS$$SET_VKB_TRANS_TABLE,
+	VS$$SET_VKB_DEVDEPEND,
+	VS$$GET_VKB_CHAR,
+
+	VS$$CREATE_VTB,
+	VS$$DELETE_VTB,
+	VS$$ACTIVATE_VTB,
+	VS$$DEACTIVATE_VTB,
+	VS$$GET_VTB_INFO,
+	VS$$SET_VTB_PTR_MOVE_AST,
+	VS$$SET_VTB_BUTTON_AST,
+	VS$$VTB_CANCEL_ASTS,
+
+	VSTA$$GET_ERROR_BLOCK,
+	VSTA$$DELETE_ERROR_BLOCK,
+
+	vsta$$read_kernel_word,
+	vsta$$read_kernel_long,		! routines for accessing kernel data
+	vsta$$write_kernel_word,
+	vsta$$write_kernel_long,
+
+	VSTA$$GID_REPORT,
+
+	VS$$VDS_GET_DISPLAY_CHAR,
+	VS$$VDS_GET_VD_CHAR,
+	VS$$VDS_SET_VD_CHAR,
+	VS$$VDS_CHK_VD_WRITE_ACCESS,
+	VS$$VDS_CHK_VD_READ_ACCESS,
+	VS$$VDS_VD_VKB_STATE,
+	VS$$VDS_DELETE_VD,
+	VS$$VDS_WRITE_VD,
+	VS$$VDS_VD_GET_BLOCK,
+	VS$$VDS_VD_SET_BLOCKS,
+	VS$$VDS_VD_MULTI_DELETE,
+
+	VS$$VDS_SYNCHRONIZE_VD,
+	VS$$VDS_QUEUE_INT,
+	VS$$VDS_FINAL_DECISIONS,
+	VS$$VDS_VD_ESET_XON_XOFF,
+
+	VS$$VDS_CREATE_PB,
+	VS$$VDS_GET_PB_CHAR,
+	VS$$VDS_SET_PB_CHAR,
+	VS$$VDS_SET_PB_COLOR_TABLE,
+	VS$$VDS_PASTE_PB_TO_PB,
+	VS$$VDS_UNPASTE_PB_FROM_PB,
+	VS$$VDS_PASTE_VD_TO_PB,
+	VS$$VDS_UNPASTE_VD_FROM_PB,
+	VS$$VDS_MOVE_VD_IN_PB,
+	VS$$VDS_MOVE_VD_TO_TOP_OF_PB,
+	VS$$VDS_DELETE_PB,
+	VS$$VDS_PB_MULTI_DELETE,
+
+
+	VS$$VDS_CREATE_WINDOW,
+	VS$$VDS_CREATE_NATIVE_WINDOW,
+	VS$$VDS_GET_WINDOW_CHAR,
+	VS$$VDS_SET_WINDOW_CHAR,
+	VS$$VDS_DELETE_WINDOW,
+	VS$$VDS_MOVE_WINDOW_IN_PB,
+
+	VSTA$$NAT_WRITE,
+
+	VS$$VSS_CREATE_VP,
+	VS$$VSS_GET_VP_CHAR,
+	VS$$VSS_SET_VP_CHAR,
+	VS$$VSS_DELETE_VP,
+	VS$$VSS_POP_VP_TO_TOP_OF_VS,
+	VS$$VSS_MOVE_VP_IN_VS,
+
+	VS$$VSS_CREATE_VS,
+	VS$$VSS_GET_VS_CHAR,
+	VS$$VSS_SET_VS_CHAR,
+	VS$$VSS_DELETE_VS,
+
+	VS$$VSS_CREATE_PS,
+	VS$$VSS_GET_PS_CHAR,
+	VS$$VSS_DELETE_PS,
+	VS$$VSS_MOVE_PS_IN_VS,
+
+	VSTA$$DRIVE_RESET,		! Reset the device
+	VSTA$$DRIVE_REPORT_TO_VB,	! Obtain hardware info from device
+	VSTA$$DRIVE_GET_VB_STATUS,
+	VSTA$$DRIVE_POWERUP,		! Powerup the device
+	VS$$CTRL_EXIT_IDLE_ACTIONS,	! Start up the UETP's session
+	VS$$CTRL_LOAD_MIC,		! Loads the microcode 
+
+	VSTA$$FIND_JRB_FOR_PID,		! Discover JRB address for a process
+	VSTA$$HI_NEW_SYMBOLS,		! Display new symbol key mappings
+	VSTA$$HELP_BUTTON_PRESSED,	! Display HELP as if button pressed
+	VSTA$$POPUP_MAIN_MENU,		! Display main MENU
+	VSTA$$SRV_DELETE_ALL_JRB,	! Delete the objects owned by a process
+	VSTA$$SRV_TABLET_INDICATOR,
+	VSTA$$SRV_END_SESSION,		! End a workstation session.
+	VSTA$$LIB_CREATE_MENU,		! Create a menu.
+	VSTA$$MOUSE_CANCEL_REQUESTS,	! Cancel mouse requests.
+	VSTA$$MOUSE_GET_INFO,		! Get position and buttons
+	VSTA$$mouse_lib_MOVE_AST,	! Set AST for pointer movement within pb
+	VSTA$$mouse_lib_BOUNDARY_AST,	! Set AST for pointer crossing pb boundary
+	VSTA$$mouse_lib_BUTTON_AST,	! Set AST for pointer button activity
+	vsta$$rgn_cancel_1_vds_requests,! Cancel all region requests for one vd
+	VSTA$$RGN_CANCEL_REQUESTS;	! Cancel region requests.
+
+
+forward routine				! Routines defined in this module
+!
+! PRIVATE ROUTINES:
+!
+	VS$$ACP_DISPATCH,		! Selects an action routine
+	VS$$ACP_DIRECT_IO,		! Sets-up window to user buffer
+	VS$$ACP_DIRECT_IO_K,		! Sets-up window to user buffer (K mode)
+	VS$$ACP_MAP_REGION_K,		! Sets-up window to user buffer extended
+	VS$$ACP_WRITE,			! Action Routine
+	VS$$ACP_WRITE_GRAPHICS,		! Action Routine for Direct IO writes
+	VS$$ACP_READ,			! Action Routine
+	VS$$ACP_SENSE_CHAR,		! Action Routine
+	VS$$ACP_SET_CHAR,		! Action Routine
+	VS$$ACP_CREATE,			! Action Routine
+	VS$$ACP_DELETE,			! Action Routine
+	VS$$ACP_ACCESS,			! Action Routine
+	VS$$ACP_MODIFY,			! Action Routine
+	VS$$ACP_ACPCONTROL,		! Action Routine
+	VS$$ACP_ACTIVATE,		! Action Routine
+	VS$$ACP_DEACTIVATE,		! Action Routine
+	VS$$ACP_BROADCAST,		! Action Routine
+	VS$$ACP_TERM_BROADCAST,		! Sees if terminal is in BROADCAST mode
+	VS$$ACP_VSTAPTR,		! Action Routine
+	VS$$ACP_VTEMDATA,		! Action Routine
+	VS$$ACP_VSTAHI,			! Action Routine
+	VS$$ACP_UETP,			! UETP Functions
+	VS$$ACP_STOP,			! Action Routine
+	VS$$ACP_MOUNT;			! Action Routine
+
+
+!
+! $BROAD calls the system service in lieu of a BLISS macro that understands
+!	flag and carcon.
+!
+keywordmacro
+	$BROAD (msgbuf, devnam, flag=0, carcon=32) =
+		SYS$BRDCST ( msgbuf, devnam, flag, carcon )%;
+!
+! Define the error recording macros that externalize the VSTA$_... values
+!
+macro
+	$done_io_with_error(STATUS,STATUS2,IRP) = (
+		external literal STATUS;
+		VS$$ACP_DONE_IO (STATUS,STATUS2,IRP);
+		return (STATUS);
+				)%;
+
+!
+! OWN STORAGE:
+!
+Own
+	USER_BUFFER:vector [2,long],	! Array of addresses for $CRMPSC
+	IOSB:vector [4,word],		! IO status block
+	W_DESC:vector [2,long];		! Descriptor for window name
+
+external
+
+	SRV_VS_ID,			! Current virtual screen id
+	VS$GL_PID,			! Current PID
+	VS$GL_ACP_PID,			! ACP's PID
+	VS$GL_UIC,			! Current UIC
+	VS$GL_ACP_UIC,			! ACP's UIC
+	VS$GW_VBCHAN:word,		! Channel to device
+	VS$GL_EXIT_REASON,		! Dismount routine sets nonzero for $EXIT
+	VS$GL_ACP_BROADCAST,		! Boolean, to broascast ACP trace messages
+	VS$GL_DONE_IO_ABLE,		! Boolean, to tell ast routine to do done io or not
+	VS$GL_OBJ_ID,			! ID of the Object of interest
+	VS$GL_FULL_FUNCTION,		! Function code of request, including mods
+	VS$GL_MAIN_FUNCTION,		! Main function code (no modifiers)
+	VS$GL_OEM_FLAGS,		! OEM-mode flags
+	VS$A_LIRP:ref irp_block,	! Address of LOCAL copy of IRP
+	VS$A_LBUF:ref block[,byte] field (
+	    tty$ttyrb_fieldset,
+	    tty$ttywb_fieldset
+	    ),				! Address of LOCAL copy of user buffer
+	VS$AB_LBUFDAT:ref vector[0,byte], ! Address of LOCAL copy of user data
+	VS$A_IRP:ref block[,byte] field (
+	    irp$vdc_irp_block_fieldset,
+	    int$int_db_fieldset
+	    ),				! Address of IO Request Packet
+	VS$A_UCB:ref block [0,byte],	! Address of current Unit Control Block
+	VS$A_VSX:vsxblock,		! VaxStation Transport Block
+
+	VS$GL_TEMPLATE_UCB:ref block[0,byte],	! Address of template UCB
+	VS$AL_VD_UCB:vector[VS$K_VD_MAX,long],
+	VS$GW_CHANNEL;			! Channel to the (only) device there is
+
+
+%sbttl 'VS$$ACP_DISPATCH  --  Action selector'
+global routine VS$$ACP_DISPATCH: =
+
+!++
+! Functional Description:
+!	Examines function code and modifiers, and transfers control to 
+!	whatever SDA routine(s) are appropriate.
+!
+!--
+
+BEGIN
+
+BUILTIN
+    CALLG;
+
+LOCAL
+    long_size,			! Longword to hold size for LIB$FREE_VM
+    stat;
+
+IF (.vs$a_irp LSS 0)
+  THEN				! IRP, not an INT
+    BEGIN			! IRP
+   !
+   ! Offset the IIP_COUNT field in the IRP to synchronize the request's
+   ! completion.
+   !
+    IF NOT vsta$$write_kernel_long (
+		vs$a_irp [irp$l_iip_count],
+		1
+		)
+      THEN
+	BEGIN
+	$log_error (VSTA$_NO_IIP_COUNT);
+	RETURN $error ( VSTA$_ACCERR );
+	END;
+
+   !
+   ! Dispatch the request, as per the function code
+   !
+
+    IF .vs$gl_full_function NEQ IO$_ACCESS
+      THEN vsta$$delete_error_block (.vs$a_lirp [irp$l_pid]);
+
+    CASE .vs$gl_main_function FROM 0 TO
+		IO$M_FCODE	! expression for highest possible function code
+		OF
+	SET
+	[IO$_CREATE_MENU] : STAT = VSTA$$LIB_CREATE_MENU();
+	[IO$_MOUNT] : STAT = $CMKRNL(routin=VS$$ACP_MOUNT);
+
+	[IO$_WRITEVBLK] : STAT = VS$$ACP_WRITE();
+	[IO$_WRITELBLK] : STAT = VS$$ACP_WRITE();
+	[IO$_WRITEPBLK] : STAT = VS$$ACP_WRITE();
+
+	[IO$_WRITE_VD] : STAT = VS$$ACP_WRITE();
+	[IO$_WRITE_GRAPHICS] : STAT = VS$$ACP_WRITE_GRAPHICS();
+
+	[IO$_READVBLK] : STAT = VS$$ACP_READ();
+	[IO$_READLBLK] : STAT = VS$$ACP_READ();
+	[IO$_READPBLK] : STAT = VS$$ACP_READ();
+	[IO$_READPROMPT] : STAT = VS$$ACP_READ();
+	[IO$_TTYREADALL] : STAT = VS$$ACP_READ();
+	[IO$_TTYREADPALL] : STAT = VS$$ACP_READ();
+	[IO$_READ_VKB] : STAT = VS$$ACP_READ();
+
+	[IO$_SENSECHAR] : STAT = VS$$ACP_SENSE_CHAR();
+	[IO$_SENSEMODE] : STAT = VS$$ACP_SENSE_CHAR();
+	[IO$_SETCHAR] : STAT = VS$$ACP_SET_CHAR();
+	[IO$_SETMODE] : STAT = VS$$ACP_SET_CHAR();
+
+	[IO$_CREATE] :	STAT = VS$$ACP_CREATE();
+	[IO$_DELETE] :  STAT = VS$$ACP_DELETE();
+
+	[IO$_ACCESS] :  STAT = VS$$ACP_ACCESS();
+	[IO$_MODIFY] :  STAT = VS$$ACP_MODIFY();
+
+	[IO$_BROADCAST] :  STAT = VS$$ACP_BROADCAST();
+	[IO$_ACPCONTROL] : STAT = VS$$ACP_ACPCONTROL();
+
+	[IO$_ACTIVATE] : STAT = VS$$ACP_ACTIVATE();
+	[IO$_DEACTIVATE] : STAT = VS$$ACP_DEACTIVATE();
+
+	[IO$_DIAGNOSE] : STAT = VS$$ACP_UETP();
+
+	[IO$_STOP] : STAT = VS$$ACP_STOP();
+
+	[IO$_VSTAPTR] : STAT = VS$$ACP_VSTAPTR();
+
+	[IO$_VTEMDATA] : STAT = VS$$ACP_VTEMDATA();
+
+	[IO$_VSTAHI] : STAT = VS$$ACP_VSTAHI();
+
+	[inRange, outRange] :  
+	BEGIN
+	STAT = SS$_ILLIOFUNC;
+	$toperr (SS$_ILLIOFUNC);
+	VS$$ACP_DONE_IO (SS$_ILLIOFUNC, 0, .vs$a_irp);
+	END;
+
+	TES;
+!
+! If LBUF exists, get rid of it
+!
+    IF	(.vs$a_lbuf NEQ 0 )
+      THEN
+	BEGIN
+	long_size = .vs$a_lbuf [tty$w_wb_size];
+	vs$$acp_free_vm ( long_size, vs$a_lbuf, 0 );
+	vs$a_lbuf = 0;				! Indicate that the buffer is gone
+	END;
+
+    END		! IRP
+
+
+  ELSE
+    BEGIN	! INT not IRP
+   !
+   !  Dispatch the INT request
+   !
+    stat = CALLG	(vs$a_irp [int$l_arglist]  ! Address of argument list
+			,.vs$a_irp [int$a_routine] ! Address of routine to call
+			);
+
+   !
+   ! See if we should delete the int or if the last AST will do it
+   !
+    IF vs$$vds_final_decisions ()	! Returns true if we should do it
+      THEN
+	BEGIN
+	long_size = .vs$a_irp [int$w_size];
+	vs$$acp_free_vm
+			(long_size
+			,vs$a_irp
+			,0
+			);
+	END;
+
+    END;	! End of Int not Irp decision.
+!
+! Clear "bug" and "sysres" global variables
+!
+BEGIN
+EXTERNAL vsta$gl_bug, vsta$gl_sysres;
+vsta$gl_bug = 0;
+vsta$gl_sysres = 0;
+END;
+
+!
+! Return
+!
+RETURN .stat;
+END;					! End routine VS$$ACP_DISPATCH
+
+%sbttl 'VS$$ACP_DIRECT_IO  --  Sets up window into user''s buffer'
+routine VS$$ACP_DIRECT_IO ( WRITE_FLAG ) =
+
+!++
+! Functional Description:
+!	Determines the number of pages the user's buffer is on, and calls
+!	$EXPREG to create a contiguous block of memory in P0 space. Map with
+!	$CRMPSC for each in turn (these are not physically contiguous, so
+!	they cannot be mapped all at once) to map them into the ACP's P0
+!	space.  The starting buffer address is returned in USER_BUFFER[0]
+!	the ending page is retured in USER_BUFFER [1]. They are also stored 
+!	in IRP$L_ABCNT and IRP$L_OBCNT, respectively, so that the DONE_IO
+!	routines can unmap and delete the Virtual Memory.
+!
+! Formal Parameters:
+!	WRITE_FLAG	Equals 1 if we will WRITE to the buffer, 0 if only
+!			READ access is required.
+!
+! Implicit Inputs:
+!	VS$A_IRP	Copy of the IRP, accessable at kernel mode
+!
+! Implicit Outputs:
+!	USER_BUFFER	Module-wide OWN array of 2 longwords
+!				[0]	Virt Addr of window starting byte
+!				[1]	Virt Page number of window end
+!	IRP$L_ABCNT	USER_BUFFER [0]
+!	IRP$L_OBCNT	USER_BUFFER [1]
+!			Note that these fields over-write the TTY_STATE bits
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!	Any of the several eror codes returned by $CRMPSC
+!
+! Side Effects:
+!	Calls kernel mode routine VS$$ACP_DIRECT_IO_K to actually perform
+!	the mapping, since access to the SVAPTE is required.
+!	Allocates virtual memory in P0 space.  This must be de-allocated
+!	when the data transfer is complete by calling $DELTVA. (The de-
+!	allocation can be performed in user mode.)
+!
+!--
+BEGIN
+LOCAL
+    flag,					! $CRMPSC flags
+    args: VECTOR [2,LONG],			! Argument list for $CMKRNL
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('DIRECT_IO')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Set flags for READ or READ/WRITE access to the buffer
+!
+IF (.write_flag EQL 1)
+  THEN flag = (SEC$M_PFNMAP OR SEC$M_WRT)
+  ELSE flag = (SEC$M_PFNMAP);
+
+!
+! Call VS$$ACP_DIRECT_IO_K to map the pages
+!
+ARGS [0] = 1;
+ARGS [1] = .FLAG;		! Flags for $CRMPSC
+
+stat = $CMKRNL	(ROUTIN = vs$$acp_direct_io_k
+		,ARGLST = args
+		);
+
+RETURN .stat;
+END;					! End routine VS$$ACP_DIRECT_IO
+
+routine VS$$ACP_DIRECT_IO_K ( FLAG ) =
+BEGIN	! Routine Direct_io_k
+LOCAL
+    nmax,
+    inaddress: VECTOR [2],
+    irpe: REF BLOCK [,BYTE],
+    new_irpe,
+    stat;
+
+!
+!  First, make sure the IRP indicates that this is a Direct-I/O.
+!
+vs$a_irp [irp$v_bufio] = 0;
+
+!
+!  Next, map the region pointed to by the irp (if svapte is non zero)
+!  There is only 1 region to map, i.e., there are no IRPEs.
+!
+IF .vs$a_irp [irp$l_svapte] NEQ 0
+  THEN
+    BEGIN	! IRP region
+    stat = vs$$acp_map_region_k
+			(.vs$a_irp [irp$w_bcnt]
+			,.vs$a_irp [irp$w_boff]
+			,.flag
+			,.vs$a_irp [irp$l_svapte]
+			,user_buffer
+			);
+  !
+  !  If this fails then return its status
+  !
+    IF NOT .stat THEN RETURN .stat;
+	
+	
+  !
+  !  Put the user_buffer (region map) info into the irp for unmapping
+  !  purposes.
+  !
+    vs$a_irp [irp$l_abcnt] = .user_buffer [0];
+    vs$a_irp [irp$l_obcnt] = .user_buffer [1];
+
+    END		!IRP region
+  ELSE		! There ARE some IRPEs
+
+  !
+  !  Now loop thru all the irpe's of this irp and map each region.  Remember
+  !  The irpe will contain pointers to 2 regions 
+  !
+    IF .vs$a_irp [irp$v_extend] 
+      THEN
+	BEGIN
+	new_irpe = .vs$a_irp [irp$l_extend];
+	DO
+	    BEGIN
+	!
+	!  Get pointer to the irpe
+	!		
+	    irpe = .new_irpe;
+
+	!
+	!  Map the first region of the irpe if its SVAPTE is not 0
+	!  Store the resulting map in the 4th and 5th Longwords of 
+	!  the irpe
+	!
+	    IF .irpe [irpe$l_svapte1] NEQ 0
+	      THEN
+		BEGIN
+		stat = vs$$acp_map_region_k
+				(.irpe [irpe$l_bcnt1]
+				,.irpe [irpe$w_boff1]
+				,.flag
+				,.irpe [irpe$l_svapte1]
+				,.irpe + 12	
+				);
+		!
+		!  If this fails then return its status
+		!
+		IF NOT .stat THEN RETURN .stat;
+		END;
+	!
+	!  Map the second region of the irpe if its SVAPTE is not 0
+	!  Store the resulting map in the 6th and 7th Longwords of 
+	!  the irpe
+	!
+	    IF .irpe [irpe$l_svapte2] NEQ 0
+	      THEN
+		BEGIN
+		stat = vs$$acp_map_region_k
+				(.irpe [irpe$l_bcnt2]
+				,.irpe [irpe$w_boff2]
+				,.flag
+				,.irpe [irpe$l_svapte2]
+				,.irpe + 20
+				);
+	!
+	!  If this fails then return its status
+	!
+		IF NOT .stat THEN RETURN .stat;
+		END;
+
+	!
+	!  Get pointer to next irpe
+	!
+	    new_irpe = .irpe [irpe$l_extend];
+
+	    END  ! End of loop to process all linked irpe's !
+
+	  UNTIL NOT .irpe [irpe$v_extend];
+
+	END  	! End of special mapping for linked irpe's !
+
+      ELSE
+	RETURN SS$_BADPARAM;	! If we found no IRPEs, but the extend bit is set
+RETURN SS$_NORMAL;		! Success
+END;				! End routine VS$$ACP_DIRECT_IO_K
+
+%sbttl 'VS$$ACP_MAP_REGION_K -- Map user region'
+routine VS$$ACP_MAP_REGION_K
+!++
+!  Functional Description
+!
+!  This routine maps a specified region pointed to by an irp or irpe.
+!
+!  Formal Parameters:
+!
+	(
+	bcnt,		! irp bcnt
+	boff,		! irp boff
+	access_type,	! access type needed by acp
+	svapte,		! irp svapte
+	region_map: REF VECTOR [,LONG]
+			! place to put the address of maped region start/end
+	):=
+	
+! Must be called in Kernal mode.
+!
+BEGIN
+LOCAL
+    page_count,		
+    region_page_pointers: VECTOR [2,LONG],
+    stat;
+
+!
+!  Determine how much memory is needed (in pages) to map this region to
+!  We need to know how many pages the specified buffer takes up.
+!  We assume that the specified buffer is contiguous
+!
+page_count = ((.bcnt + .boff)/512) + 1;
+
+!
+!  Now get that much contiguous memory from P0 space
+!
+stat = $EXPREG(
+		PAGCNT = .page_count,
+		RETADR = region_map [0],
+		ACMODE = 3,
+		REGION = 0
+		);
+!
+!  If this failed then return this bad status
+!
+IF NOT .stat THEN RETURN .stat;
+
+!
+!  Check to see if we got all the mem that we asked for
+!
+IF ((.region_map[1] - .region_map[0])/512) + 1 NEQ .page_count
+  THEN RETURN SS$_INSFMEM;
+
+!
+!  Now put address of where specified buffer starts in map.  This is
+!  the address of the first page plus the offset.
+!
+region_map[0] = .region_map[0] + .boff;
+
+!
+!  Loop thru all the pages of specified buffer and map each one individually
+!
+INCR n FROM 0 TO .page_count-1
+  DO
+    BEGIN
+  !
+  !  Get address of page to map depends on which iteration of loop
+  !  we are in.  Since we are only doing one page then the start
+  !  pointer is the same as the end pointer.
+  !
+    region_page_pointers [0] = .region_map[0] + .n * 512;
+    region_page_pointers [1] = .region_page_pointers [0];
+
+  !
+  !  Call system service to map section
+  !
+    stat = $CRMPSC (
+			INADR	= region_page_pointers,
+			ACMODE	= 3,
+			FLAGS	= .access_type,
+			PAGCNT	= 1,
+			VBN	= (.(.svapte + 4*.n)) AND %X'1fffff'
+			);
+    IF NOT .stat THEN RETURN .stat;
+
+    END;	! End of map each page loop !
+
+RETURN SS$_NORMAL;
+END;	! End of map region routine !
+
+%sbttl 'VS$$ACP_WRITE  --  Write action routine'
+routine VS$$ACP_WRITE: =
+
+!++
+! Functional Description:
+!	Initiates the writing of graphics or text data.
+!	Allocates and de-allocates a local buffer LBUF.
+!
+!--
+BEGIN
+GLOBAL
+
+    ! Flag which is usually 1 but some functions may set to 0 to
+    ! prevent us from doing io completion, since the function wants
+    ! to do the completion itself later.
+    !
+    done_io_allowed_flag;
+
+LOCAL
+    long_size,			! Longword to hold size for LIB$GET_VM
+    stat,
+    num,			! Number of data items
+    graphics;			! Codes text or graphics IO
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_WRITEVBLK')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+!
+! Allocate a local buffer LBUF
+!
+long_size = .vs$a_lirp [irp$w_boff];
+IF NOT vs$$acp_get_vm ( long_size, vs$a_lbuf, 0 )
+  THEN
+    BEGIN
+    $sysres	(vsta$_getmem
+		,integer_type, .LONG_SIZE
+		,string_type, %ASCID 'Local buffer'
+		);
+    $toperr (vsta$_accerr);
+    $done_io_with_error ( vsta$_accerr, 0, .vs$a_irp);
+    END;
+
+IF NOT vs$$acp_create_lbuf ()
+  THEN
+    BEGIN
+    $error (vsta$_no_ldata);
+    $toperr (vsta$_accerr);
+    $done_io_with_error ( vsta$_accerr, 0,.vs$a_irp );
+    END;
+
+!
+! Set up variables dependent on GRAPHICS or TEXT IO
+!
+IF (.vs$gl_full_function AND IO$M_GRAPHICS) NEQ 0
+  THEN 
+    BEGIN				! Graphics
+    graphics = 1;
+    num = .vs$a_lirp[irp$l_media];	! #Commands
+    END
+  ELSE 
+    BEGIN				! Text
+    graphics = 0;
+    num = .vs$a_lirp[irp$w_bcnt];	! # Chars
+    END;
+
+!
+! Until otherwise told, allow ourself to perform the done_io.
+!
+done_io_allowed_flag = 1;
+
+!
+! Do the Synchronized Write
+! The VS$$VDS_WRITE_VD routine will fill in the IOST fields of the IRP, so
+! we must do a DONE_IO_NO_IOSB
+!
+stat = vs$$vds_synchronize_vd
+		(.vs$gl_obj_id			!VDID
+		,.vs$a_irp			! IRP address
+		,vs$$vds_write_vd		! Routine address
+						! Routine parameters:
+		,.vs$gl_obj_id			!VDID
+		,.num				!# chars or commands
+		,.vs$ab_lbufdat			!Address of data
+		,.graphics			!Graphics or text
+		,.(vs$a_lirp [irp$l_media]+4)	!GIDIS/native or cc
+		,.vs$a_lbuf [tty$l_wb_fpc]	!Generic Text Code
+		,.vs$a_lbuf [tty$l_wb_fr3]	!Line and field position
+		,.vs$a_lbuf [tty$l_wb_fr4]	!Char & size info
+		);
+
+!
+! Make sure all the VB activity is done before doing the post-processing
+! but not if some function requested us not to.
+!
+IF .done_io_allowed_flag THEN
+	vs$$acp_done_io_no_iosb( .VS$A_IRP);	! Queues a NOOP to the device, and
+						! does a DONE_IO_NO_IOSB upon its return
+
+RETURN .stat;
+END;					! End routine VS$$ACP_WRITE
+
+%sbttl 'VS$$ACP_WRITE_GRAPHICS  --  Direct IO Write action routine '
+routine VS$$ACP_WRITE_GRAPHICS: =
+
+!++
+! Functional Description:
+!	Initiates the writing of a graphics command packet, using Direct IO.
+!
+!--
+BEGIN
+LOCAL
+    long_size,			! Longword to hold size for LIB$GET_VM
+    stat,
+    num,			! Number of data items
+    access_needed: INITIAL (0),	! 0 indicates read only
+    graphics;			! Codes text or graphics IO
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_WRITE_GRAPHICS')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+!
+! Get a window into the user's buffer.
+! USER_BUFFER [0] then points to the first byte of that buffer, and 
+! USER_BUFFER [1] has a last-page address.
+!
+!
+!  If this is a native graphics call then write access is needed to
+!  all buffers specified
+!
+IF .(vs$a_lirp [irp$l_media] + 4) EQL 1
+  THEN access_needed = 1;		! 1 indicates write needed
+
+stat = vs$$acp_direct_io ( .access_needed );
+IF NOT .stat
+  THEN 
+    BEGIN
+    $error (vsta$_dio_fail);
+    $toperr (vsta$_wrtgph);
+    $done_io_with_error ( vsta$_wrtgph, 0, .vs$a_irp );
+    END;
+
+!
+! Check to see if this was a native graphics write to VDX0.  If so do
+! not go thru SYNCH_VD but rather directly to the native graphics routine
+!
+IF (.vs$gl_obj_id EQL 0) AND (.(vs$a_lirp [irp$l_media] + 4) EQL 1)
+  THEN
+    BEGIN
+    IF NOT (stat = vsta$$nat_write ())
+      THEN
+	BEGIN
+	$error (vsta$_dio_fail);
+	$toperr (vsta$_wrtgph);
+!
+! Make sure correct status code is returned in iosb.  For instance, if program
+! tries to zero a bitmap with copy-area, and bitmap is too large, program
+! wants to see "SS$_BUFOVF", not "VSTA$_WRTGPH", since the latter is useless.
+! For synchronous operations, the latter is o.k. since the former is available
+! in error block, but in our case no error block is available.
+!
+	vs$$acp_done_io (.stat, 0, .vs$a_irp);
+	return ss$_normal
+	END
+      ELSE
+	BEGIN
+	!
+	! Make sure all the VB activity is done before doing the post-processing
+	!
+	vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+					! does a DONE_IO_NO_IOSB upon its return
+	RETURN SS$_NORMAL;
+	END;
+     END;
+	  
+!
+! Do the Synchronized Write
+! VS$$VDS_WRITE_VD will fill in the IOST fields of the IRP if successful
+!
+stat = vs$$vds_synchronize_vd
+		(.vs$gl_obj_id		!VDID
+		,.vs$a_irp		! IRP address
+		,vs$$vds_write_vd	! Routine address
+					! Routine parameters:
+		,.vs$gl_obj_id		!VDID
+		,.vs$a_lirp [irp$l_media] !# of commands
+		,.user_buffer [0]	!Address of data
+		,1			!Graphics = 1
+		,.(vs$a_lirp [irp$l_media] + 4) !GIDIS/native or cc
+		,0			!Generic Text Code
+		,0			!Line and field position
+		,0
+		);			!Char & size info
+
+IF NOT .stat
+  THEN 					!Bad status
+    BEGIN
+    $toperr (vsta$_wrtgph);
+!
+! Return whatever important error reason the deeper routines gave us.
+! It's important NOT to call $done_io_with_error as in other cases,
+! because native graphics are asynchronous, and hence VSTA$GET_ERROR_BLOCK
+! won't work, so program relies on iosb for error reason codes.  (If you
+! discover some SYNCHRONOUS examples going through this path and you want
+! $done_io_with_error, then please do some sort of "if" somewhere to decide
+! which case applies !)
+!
+    vs$$acp_done_io (.stat, 0, .vs$a_irp);
+    return ss$_normal
+    END;
+
+!
+! Make sure all the VB activity is done before doing the post-processing
+!
+vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+RETURN .stat;
+END;				! End routine VS$$ACP_WRITE_GRAPHICS
+
+%sbttl 'VS$$ACP_READ  --  Read action routine'
+routine VS$$ACP_READ: =
+!++
+! Functional Description:
+!	Initiates the reading from the keyboard.
+!
+!--
+BEGIN
+LOCAL
+    num_pb,		! Number of PBs a VD is pasted on
+    vkb_id,		! ID # of the Virtual Keyboard (PB_ID)
+    long_size,		! Longword to hold size for LIB$GET_VM
+    rxb: REF rxblock,	! Local pointer to prompt data, break table
+    prev_err,
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_READVBLK')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! If this is a native VKB read cancel and access is permitted, then cancel any
+! ongoing reads on the specified virtual keyboard only
+!
+IF (.vs$gl_full_function EQL (IO$_READ_VKB + IO$M_VD_CANCEL))
+  THEN
+    BEGIN
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_id] )
+      THEN
+	BEGIN
+	$toperr (vsta$_canrea);
+	$done_io_with_error (vsta$_canrea, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vkb_cancel_read (
+	.vs$a_vsx [vsx$w_id],
+	.vs$gl_pid,
+	.vs$a_lirp [irp$w_chan] )
+      THEN 
+	BEGIN
+	$error (vsta$_pb_x_fail, integer_type, .vs$a_vsx [vsx$w_id]);
+	$toperr (vsta$_canrea);
+	$done_io_with_error (vsta$_canrea, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp );
+    RETURN SS$_NORMAL;
+    END;
+
+!
+! Allocate a local buffer LBUF
+!
+long_size = .vs$a_lirp [irp$w_boff];
+prev_err = 0;
+WHILE 1 DO
+    BEGIN
+    IF NOT vs$$acp_get_vm ( long_size, vs$a_lbuf, 0 )
+      THEN
+	BEGIN
+	$sysres	(vsta$_getmem
+		,integer_type, .long_size
+		,string_type, %ASCID 'Local buffer'
+		);
+	prev_err = 1;
+	EXITLOOP;
+	END;
+
+    IF NOT vs$$acp_create_lbuf ()
+      THEN
+	BEGIN
+	$error (vsta$_no_ldata);
+	prev_err = 1;
+	EXITLOOP;
+	END;
+
+!
+! Set up the pointers, arguments, etc.
+!
+    rxb = .vs$a_lbuf [tty$l_rb_aes];		! Read Extension Block address
+!
+    IF (.vs$gl_main_function EQL io$_read_vkb) 
+      THEN
+	BEGIN
+    !
+    ! Determine the VKB_ID, i.e. the PB_ID, for which this READ is meant
+    !
+	vkb_id = vsta$$read_kernel_word (rxb [rx$w_pb_id]);
+	IF NOT vs$$vds_check_pb_access (.vkb_id)
+	  THEN
+	    BEGIN
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+	END
+      ELSE		!Main function NOT read_vkb
+	BEGIN
+	IF NOT vs$$get_emulator_vkb ( .vs$gl_obj_id, vkb_id )
+	  THEN
+	    BEGIN
+	    $error (vsta$_no_vkb_access, integer_type, .vs$gl_obj_id );
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+        vsta$$write_kernel_word (rxb [rx$w_pb_id], .vkb_id)
+	END;
+
+  ! Initiate the read
+
+    IF NOT vs$$read_vkb
+		(.vkb_id
+		,.vs$gl_full_function
+		,.vs$a_lirp [irp$l_svapte] +
+			    VS$K_TTY_RB_DATA	! Address of data buffer
+		,.vs$a_lirp [irp$w_bcnt]	! Bytes to read
+		,.vs$a_lbuf [tty$w_rb_timos]	! Seconds to wait
+		,rxb [rx$l_break_table]		! Address of break mask
+		,rxb [rx$b_prompt]		! Address of prompt string
+		,vsta$$read_kernel_word (rxb [rx$w_prompt_size])
+		,.vs$a_irp			! Address of IRP
+		)
+      THEN
+	BEGIN
+	$toperr (vsta$_reakey);	! vs$$read_vkb does the VS$$ACP_DONE_IO
+	EXITLOOP;
+	END;
+
+    EXITLOOP;		!All ok.
+    END;		!"WHILE 1 DO.."
+!
+! If error happened, put top-level error in error block and
+! return the error in the IOSB.
+!
+IF .prev_err
+  THEN
+    BEGIN
+    $toperr (vsta$_reakey);
+    $done_io_with_error (vsta$_reakey, 0, .vs$a_irp);
+    END;
+!
+! The AST routine does the DONE_IO, so just return from here
+!
+RETURN SS$_NORMAL
+END;				! End routine VS$$ACP_READ
+
+%sbttl 'VS$$ACP_SENSE_CHAR  --  Notices the sensing of terminal characteristics'
+routine VS$$ACP_SENSE_CHAR: =
+!++
+! Functional Description:
+!	Simply returns a successful completion code, at this point.
+!--
+BEGIN
+vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_SENSE_CHAR
+
+%sbttl 'VS$$ACP_SET_CHAR  --  Sets VD terminal characteristics'
+routine VS$$ACP_SET_CHAR: =
+
+!++
+! Functional Description:
+!	Simply returns a successful completion code, at this point.
+!
+!--
+BEGIN
+vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_SET_CHAR
+
+%sbttl 'VS$$ACP_CREATE  --  Object Creator'
+routine VS$$ACP_CREATE: =
+!++
+! Functional Description:
+!	Creates any of the SDA objects.
+!
+!--
+BEGIN
+LOCAL
+    ret_id,			! Returned ID of created object
+    long_size,			! Longword to hold size for LIB$GET_VM
+    prev_err,			! = 1 if no create access.
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_CREATE')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Check user's access to create something. Only processes that were
+! created on the VAXstation, or a subprocess thereof, may do an IO$CREATE
+! function in this ACP.
+!
+IF vsta$$pid_check_access (.vs$a_lirp [irp$l_pid])
+  THEN prev_err = 0		!Got create access
+  ELSE
+    BEGIN
+    prev_err = 1;		!No create access
+    $error  (vsta$_cre_acc);	! This is first error reason
+    END;
+!
+! Choose the appropriate creation
+!
+SELECTONE .vs$gl_full_function OF
+    SET
+!
+! Create Virtual Display  --  ASYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_VD]:
+    BEGIN ! Create VD
+  !
+  ! Allocate LBUF buffer for the Terminal (Window) name
+  !
+    WHILE 1 DO		!EXITLOOP when error found or got window descriptor
+	BEGIN
+	IF .prev_err THEN EXITLOOP;	!Don't bother if no create access
+	long_size = .vs$a_lirp [irp$w_boff];
+	IF (.long_size LEQ 0)
+	  THEN
+	    BEGIN
+	    w_desc[0] = 0;		!Null window name
+	    EXITLOOP;		!
+	    END;
+    ! non-null window name
+	IF NOT vs$$acp_get_vm ( long_size, vs$a_lbuf, 0 )
+	  THEN
+	    BEGIN
+	    prev_err = 1;
+	    $sysres (vsta$_getmem
+		,integer_type, .long_size
+		,string_type, %ASCID 'Local buffer'
+		);
+	    EXITLOOP;
+	    END;
+
+	IF NOT vs$$acp_create_lbuf ()	!Allocate LBUF
+	  THEN
+	    BEGIN
+	    prev_err = 1;
+	    $error (vsta$_no_ldata);
+	    $error (vsta$_accerr);	!Error reason
+	    EXITLOOP;
+	    END;
+
+      ! No errors, setup descriptor.
+
+	w_desc[0] = .vs$a_lirp [irp$w_bcnt];	! Fill in descriptor with #,
+	w_desc[1] = .vs$ab_lbufdat;		!	address
+	EXITLOOP;
+	END;		!WHILE 1 DO...
+  !
+  ! Select an emulator
+  !
+    SELECTONE .vs$a_vsx [vsx$w_vd_mode] OF
+	SET
+
+	[vs$k_vtem_vt100] :
+	BEGIN
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_crevt1);
+	    $done_io_with_error (vsta$_crevt1, 0, .vs$a_irp);
+	    END;
+	IF NOT vs$$vtem_vt100_create
+			(ret_id
+			,.vs$a_vsx [vsx$w_vd_rows]
+			,.vs$a_vsx [vsx$w_vd_cols_norm]
+			,.vs$a_vsx [vsx$w_vd_cols_wide]
+			,.vs$a_vsx [vsx$l_uic]
+			,.vs$a_vsx [vsx$w_vd_chars]
+			,.vs$a_vsx [vsx$w_vd_protection]
+			,w_desc
+			)
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_crevt1);		
+	    $done_io_with_error ( vsta$_crevt1, 0, .vs$a_irp);
+	    END;
+	END; !VT_100
+
+	[vs$k_vtem_4014] :
+	BEGIN
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_cretek);
+	    $done_io_with_error (vsta$_cretek, 0, .vs$a_irp);
+	    END;
+	IF NOT vsta$$tek_create
+			(ret_id
+			,.vs$a_vsx [vsx$w_vd_width]
+			,.vs$a_vsx [vsx$w_vd_height]
+			,.vs$a_vsx [vsx$w_vd_depth]
+			,.vs$a_vsx [vsx$w_vd_cols_norm]
+			,.vs$a_vsx [vsx$w_vd_cols_wide]
+			,.vs$a_vsx [vsx$l_uic]
+			,.vs$a_vsx [vsx$w_vd_chars]
+			,.vs$a_vsx [vsx$w_vd_protection]
+			,w_desc
+			)
+	  THEN 
+	    BEGIN
+	    $toperr (vsta$_cretek);
+	    $done_io_with_error ( vsta$_cretek, 0, .vs$a_irp );
+	    END;
+	END; !TEK4014
+
+	[VS$K_VTEM_GENERIC] :
+	BEGIN
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_credis);
+	    $done_io_with_error (vsta$_credis, 0, .vs$a_irp);
+	    END;
+
+	IF NOT vs$$vtem_generic_create
+			(ret_id
+			,.vs$a_vsx [vsx$w_vd_rows]
+			,.vs$a_vsx [vsx$w_vd_line_hite]
+			,.vs$a_vsx [vsx$w_vd_cols_norm]
+			,.vs$a_vsx [vsx$w_vd_cols_wide]
+			,.vs$a_vsx [vsx$l_uic]
+			,.vs$a_vsx [vsx$w_vd_height]
+			,.vs$a_vsx [vsx$w_vd_width]
+			,.vs$a_vsx [vsx$w_vd_depth]
+			,.vs$a_vsx [vsx$w_vd_foreground]
+			,.vs$a_vsx [vsx$w_vd_background]
+			,.vs$a_vsx [vsx$w_vd_chars]
+			,.vs$a_vsx [vsx$w_vd_protection]
+			,w_desc
+			)
+	  THEN 
+	    BEGIN
+	    $toperr (vsta$_credis);
+	    $done_io_with_error ( vsta$_credis, 0, .vs$a_irp );
+	    END;
+	END; !GENERIC
+
+
+	[OTHERWISE] : ! Return error in IOSB
+	BEGIN
+	$error (vsta$_bad_emul, integer_type, .vs$a_vsx [vsx$w_vd_mode]);
+	$toperr (vsta$_credis);
+	$done_io_with_error ( VSTA$_CREDIS,0,.VS$A_IRP);
+	END;
+
+	TES;
+  !
+  ! Return the VD_ID in the second IOSB longword
+  !
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .ret_id );
+
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END; !Create VD
+
+!
+! Create Virtual Tablet for a terminal  --  SYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_VD or IO$M_VTB]:
+    BEGIN ! Create VTB for terminal
+
+    IF NOT vs$$get_emulator_vkb
+			(.vs$gl_obj_id
+			,ret_id
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_nosuchtty);
+	$toperr (vsta$_cretab);
+	$done_io_with_error ( vsta$_cretab, 0, .vs$a_irp);
+	END;
+
+    IF NOT vs$$create_vtb
+			(.ret_id
+			,.vs$a_lirp [irp$l_pid]		!PID of owner to be
+			,0				!Default VB channel
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_nocrttytb);
+	$toperr (vsta$_cretab);
+	$done_io_with_error ( vsta$_cretab, 0, .vs$a_irp);
+	END;
+  !
+  ! Make sure that the tablet icon appears in the terminal header.
+  !
+    IF NOT vsta$$srv_tablet_indicator (.ret_id, 1)
+      THEN
+	BEGIN
+	$toperr (vsta$_cretab);
+	$done_io_with_error (vsta$_cretab, 0, .vs$a_irp);
+	END;
+  !
+  ! return the virtual tablet (or pasteboard) ID in the second
+  ! IOSB longword
+
+    vs$$acp_done_io (SS$_NORMAL, .ret_id, .vs$a_irp );
+
+    END; !Create terminal tablet
+
+
+!
+! Create Pasteboard  --  SYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_PB]:
+    BEGIN ! Create PB
+    IF .prev_err
+      THEN
+	BEGIN
+	$toperr (vsta$_crepbd);
+	$done_io_with_error (vsta$_crepbd, 0, .vs$a_irp);
+	END;
+
+    IF NOT vs$$vds_create_pb
+			(ret_id
+			,0			!Owner = 0 ( = user).
+			,.vs$a_vsx [vsx$w_pb_color]
+			,.vs$a_vsx [vsx$w_pb_width]
+			,.vs$a_vsx [vsx$w_pb_height]
+			,.vs$a_vsx [vsx$l_uic]
+			,.vs$a_vsx [vsx$l_pb_flags]
+			,.vs$a_vsx [vsx$w_pb_protection]
+			)
+      THEN
+	BEGIN
+	$toperr (vsta$_crepbd);
+	$done_io_with_error (vsta$_crepbd, 0, .vs$a_irp )
+	END
+      ELSE vs$$acp_done_io (SS$_NORMAL, .ret_id, .vs$a_irp);
+
+    END; !Create PB
+
+
+!
+! Create Window  --  ASYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_W]:
+    BEGIN ! Create W
+
+!
+! Allocate LBUF buffer
+!
+    long_size = .vs$a_lirp [irp$w_boff];
+    WHILE 1 DO			!EXITLOOP when we're satisfied
+	BEGIN
+	IF .prev_err THEN EXITLOOP;
+	w_desc[0] = 0;				!Assume null window nam
+	IF (.long_size LEQ 0) THEN EXITLOOP;	!Null window name
+	IF NOT vs$$acp_get_vm (long_size, vs$a_lbuf, 0)
+	  THEN
+	    BEGIN
+	    $sysres	(vsta$_getmem
+			,integer_type, .long_size
+			,string_type, %ASCID 'Local buffer'
+			);
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+	IF NOT vs$$acp_create_lbuf ()
+	  THEN
+	    BEGIN
+	    $error (vsta$_no_ldata);
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+	w_desc[0] = .vs$a_lirp [irp$w_bcnt];	!Fill in descriptor
+	w_desc[1] = .vs$ab_lbufdat;		! with #, address
+	EXITLOOP;
+	END;	!"while 1 do"..
+
+    WHILE 1 DO
+	BEGIN
+	IF .prev_err THEN EXITLOOP;		!Already have an error..
+    !
+    ! Make sure user can access this pasteboard.
+    !
+	IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_w_pb_id] )
+	  THEN
+	    BEGIN
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+
+	IF NOT vs$$vds_create_window
+			(.vs$a_vsx [vsx$w_w_pb_id]
+			,ret_id
+			,w_desc[0]		! Address of name descriptor
+			,.vs$a_vsx [vsx$w_w_x0]
+			,.vs$a_vsx [vsx$w_w_y0]
+			,.vs$a_vsx [vsx$w_w_dx]
+			,.vs$a_vsx [vsx$w_w_dy]
+			)
+	  THEN 
+	    BEGIN
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+
+	vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .ret_id ); !IOSB contents
+	EXITLOOP;		!Escape from WHILE 1 DO loop..
+	END;
+
+    IF .prev_err
+      THEN
+	BEGIN
+	$toperr (vsta$_crewin);
+	$done_io_with_error (vsta$_crewin, 0, .vs$a_irp);
+	END;
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END; !Create W
+!
+! Create Window  --  ASYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_SW]:
+    BEGIN ! Create W
+
+!
+! Allocate LBUF buffer
+!
+    long_size = .vs$a_lirp [irp$w_boff];
+    WHILE 1 DO			!EXITLOOP when we're satisfied
+	BEGIN
+	IF .prev_err THEN EXITLOOP;
+	w_desc[0] = 0;				!Assume null window nam
+	IF (.long_size LEQ 0) THEN EXITLOOP;	!Null window name
+	IF NOT vs$$acp_get_vm (long_size, vs$a_lbuf, 0)
+	  THEN
+	    BEGIN
+	    $sysres	(vsta$_getmem
+			,integer_type, .long_size
+			,string_type, %ASCID 'Local buffer'
+			);
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+	IF NOT vs$$acp_create_lbuf ()
+	  THEN
+	    BEGIN
+	    $error (vsta$_no_ldata);
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+	w_desc[0] = .vs$a_lirp [irp$w_bcnt];	!Fill in descriptor
+	w_desc[1] = .vs$ab_lbufdat;		! with #, address
+	EXITLOOP;
+	END;	!"while 1 do"..
+
+    WHILE 1 DO
+	BEGIN
+	IF .prev_err THEN EXITLOOP;		!Already have an error..
+    !
+    ! Make sure user can access this pasteboard.
+    !
+	IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_w_pb_id] )
+	  THEN
+	    BEGIN
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+
+	IF NOT vs$$vds_create_native_window
+			(.vs$a_vsx [vsx$w_w_pb_id]
+			,ret_id
+			,w_desc[0]		! Address of name descriptor
+			,.vs$a_vsx [vsx$w_w_x0]
+			,.vs$a_vsx [vsx$w_w_y0]
+			,.vs$a_vsx [vsx$w_w_dx]
+			,.vs$a_vsx [vsx$w_w_dy]
+			)
+	  THEN 
+	    BEGIN
+	    prev_err = 1;
+	    EXITLOOP;
+	    END;
+
+	vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .ret_id ); !IOSB contents
+	EXITLOOP;		!Escape from WHILE 1 DO loop..
+	END;
+
+    IF .prev_err
+      THEN
+	BEGIN
+	$toperr (vsta$_crewin);
+	$done_io_with_error (vsta$_crewin, 0, .vs$a_irp);
+	END;
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END; !Create W
+
+!
+! Create ViewPort  --  ASYNCHRONOUS
+!
+    [IO$_CREATE or IO$M_VP]:
+
+    BEGIN ! Create VP
+
+	IF NOT vs$$vss_create_vp
+			(.vs$a_vsx [vsx$w_vp_w_id]
+			,.srv_vs_id	! vs$a_vsx [vsx$w_vp_vs_id]
+			,ret_id
+			,.vs$a_vsx [vsx$w_vp_x0]
+			,.vs$a_vsx [vsx$w_vp_y0]
+			,.vs$a_vsx [vsx$w_vp_base]
+!			*** optional <HELP> left out ***
+			)
+	THEN BEGIN
+		$toperr (vsta$_crevie);
+		$done_io_with_error (vsta$_crevie, 0, .vs$a_irp);
+	       END
+
+	ELSE vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .ret_id ); !IOSB contents
+
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch (); 	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END; !Create vp
+!
+! Unrecognized creation modifier
+!
+    [OTHERWISE]:
+    BEGIN
+    $error (vsta$_bad_create, integer_type, .vs$gl_full_function);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp);
+    END;
+
+    TES;			! End of CREATE selectone
+
+RETURN SS$_NORMAL;
+END;				! End routine VS$$ACP_CREATE
+
+%sbttl 'VS$$ACP_DELETE  --  SDA object deletion'
+routine VS$$ACP_DELETE: =
+
+!++
+! Functional Description:
+!	Deletes an SDA object
+!	All the DELETE functions can be ASYNCHRONOUS.
+!--
+BEGIN
+LOCAL
+    ret_id,
+    emulator,
+    prev_err,
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $descriptor('IO$_DELETE')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+SELECTONE .vs$gl_full_function OF
+    SET
+
+    [IO$_DELETE or IO$M_VD]:
+    BEGIN
+  !
+  ! Determine the emulator type
+  !
+    IF NOT vs$$vds_get_vd_char
+			(.vs$a_vsx [vsx$w_id]
+			,0,0,0,0,0,0
+			,EMULATOR
+			,0,0
+			)
+      THEN
+	BEGIN
+	$error (vsta$_bad_emul, integer_type, .emulator);
+	$toperr (vsta$_deldis, 0, .vs$a_irp);
+	$done_io_with_error (vsta$_deldis, 0, .vs$a_irp);
+	END;
+  !
+  ! Select a terminal type to be deleted
+  ! We won't worry about synchronizing the HIPs to this, since
+  ! it's about to disappear anyway.
+  !
+    SELECTONE .emulator OF
+	SET
+
+	[VS$K_VTEM_VT100] :
+	BEGIN
+	IF NOT vs$$vtem_vt100_delete (.vs$a_vsx [vsx$w_id])
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_delvt1);
+	    $done_io_with_error (vsta$_delvt1, 0, .vs$a_irp);
+	    END;
+	END; !VT_100
+
+	[VS$K_VTEM_4014] :
+	BEGIN
+	IF NOT vsta$$tek_delete
+			(.vs$a_vsx [vsx$w_id]
+			,.vs$a_vsx [vsx$l_uic]
+			)
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_deltek);
+	    $done_io_with_error (vsta$_deltek, 0, .vs$a_irp );
+	    END;
+	END; !TEK4014
+
+	[VS$K_VTEM_GENERIC] :
+	BEGIN
+	IF NOT vs$$vtem_generic_delete (.vs$a_vsx [vsx$w_id], .vs$gl_pid)
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_deldis);
+	    $done_io_with_error (vsta$_deldis, 0, .vs$a_irp);
+	    END;
+	END; !GENERIC
+
+	[OTHERWISE] : ! Return error in IOSB
+	BEGIN
+	$error (vsta$_bad_emul, integer_type, .emulator);
+	$toperr (vsta$_deldis);
+	$done_io_with_error (vsta$_deldis, 0, .vs$a_irp);
+	END;
+
+	TES;
+    !
+    ! OK so far, wait for IO activity to cease.
+    !
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .vs$a_vsx [vsx$w_id] );
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch (); ! Queues a NOOP to the device, and
+			! does a DONE_IO_NO_IOSB upon its return
+
+    RETURN SS$_NORMAL;
+    END;	! Delete VD
+
+!
+! Delete Virtual Tablet on a terminal --  SYNCHRONOUS
+!
+    [IO$_DELETE or IO$M_VD or IO$M_VTB]:
+    BEGIN ! Delete VTB for terminal
+    IF NOT vs$$get_emulator_vkb
+			(.vs$gl_obj_id
+			,ret_id
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_nosuchtty);
+	$toperr (vsta$_deltab);
+	$done_io_with_error (vsta$_deltab, 0, .vs$a_irp);
+	END;
+
+    !
+    ! Such a terminal did exist -- Delete the virtual tablet if possible
+    ! (if it exists and the requestor has delete access to the pasteboard).
+    !
+    IF NOT vs$$delete_vtb
+			(.ret_id
+			,.vs$a_lirp [irp$l_pid]		!Pid of requestor
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_nodlttytb);
+	$toperr (vsta$_deltab);
+	$done_io_with_error (vsta$_deltab, 0, .vs$a_irp );
+	END;
+
+    !
+    ! Were able to delete the tablet -- Remove the tablet icon from the
+    ! terminal header and complete a job well done..
+    !
+    IF NOT vsta$$srv_tablet_indicator (.ret_id, 0)
+      THEN
+	BEGIN
+	$toperr (vsta$_deltab);
+	$done_io_with_error ( vsta$_deltab,0,.vs$a_irp );
+	END;
+
+    vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+
+    END; !Delete terminal tablet
+
+
+    [IO$_DELETE or IO$M_PB]:
+    BEGIN	!Delete PB
+
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_id] )
+      THEN
+	BEGIN
+	$toperr (vsta$_delpbd);
+	$done_io_with_error (vsta$_delpbd, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+    IF NOT vs$$vds_delete_pb ( .vs$a_vsx [vsx$w_id] )
+      THEN 
+	BEGIN
+	$toperr (vsta$_delpbd);
+	$done_io_with_error (vsta$_delpbd, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .vs$a_vsx [vsx$w_id] );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	!Delete PB
+
+    [IO$_DELETE or IO$M_W]:
+    BEGIN	!Delete Window
+
+    IF NOT vs$$vds_delete_window ( .vs$a_vsx [vsx$w_id] )
+      THEN 
+	BEGIN
+	$toperr (vsta$_delwin);
+	$done_io_with_error (vsta$_delwin, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .vs$a_vsx [vsx$w_id] );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	!Delete Window
+
+    [IO$_DELETE or IO$M_VP]:
+    BEGIN
+
+    IF NOT vs$$vss_delete_vp ( .vs$a_vsx [vsx$w_id] )
+      THEN 
+	BEGIN
+	$toperr (vsta$_delvie);
+	$done_io_with_error (vsta$_delvie, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, .vs$a_vsx [vsx$w_id] );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+	
+    END;			! End of delete viewport
+
+
+    [IO$_DELETE or IO$M_VS]:	! Image rundown 
+  !
+  ! Dispatch to the _PB_ routine to delete any temporary PBs
+  ! created by this process (this will also CANCEL any reads out-
+  ! standing on that VKB).
+  ! Cancel mouse and tablet requests, also.
+  !
+    BEGIN		! Clean up _PB_ structures
+
+    IF NOT vs$$vds_pb_multi_delete ( .vs$a_lirp [irp$l_pid] )
+      THEN 
+	$log_error (VSTA$_PB_RNDWN_FAIL,
+		integer_type, .vs$a_lirp [irp$l_pid] );
+
+    vsta$$mouse_cancel_requests (.vs$a_lirp [irp$l_pid]);
+    vs$$vtb_cancel_asts (.vs$a_lirp [irp$l_pid]);
+    vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+    END;		! Clean up _PB_ structures
+
+    [OTHERWISE]:
+    BEGIN
+    $error (vsta$_bad_delete, integer_type, .vs$gl_full_function );
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp );
+    END;
+
+    TES;
+
+RETURN SS$_NORMAL;
+END;				! End routine VS$$ACP_DELETE
+
+%sbttl 'VS$$ACP_ACCESS  --  Obtain Info from an SDA Object'
+routine VS$$ACP_ACCESS: =
+!++
+! Functional Description:
+!	Obtains characteristics of an SDA object.
+!	Uses DIRECT I/O.
+!	The address of the user's buffer is in IRP$L_SVAPTE.  This is the 
+!	buffer that gets filled-in with the object's characteristics.
+!	All the ACCESS functions are SYNCHRONOUS.
+!
+!--
+BEGIN
+LOCAL
+    buffer: REF vsublock,
+    window_name_desc: VECTOR [2,LONG],
+    height,
+    width,
+    depth,
+    back_color,
+    fore_color,
+    mode,
+    chars,
+    protection,
+    settings,
+    stat2,
+    stat;
+
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_ACCESS')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Get a window into the user's buffer
+!
+IF NOT vs$$acp_direct_io ( 1 )		! Need WRITE access to user's buffer
+  THEN
+    BEGIN
+    $error (vsta$_dio_fail);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp);
+    END;
+
+buffer = .user_buffer [0];		! Point to user's buffer
+!
+! Choose the appropriate routine
+!
+IF (.vs$gl_full_function AND %X'FFFFFFC0') EQL 0
+  THEN
+    stat = vsta$$get_error_block
+			(.vs$a_lirp [irp$l_pid]
+			,.buffer
+			,.vs$a_lirp [irp$w_bcnt]
+			)
+  ELSE
+    SELECTONE .vs$gl_full_function OF
+	SET
+    !
+    ! Access VD
+    !
+	[IO$_ACCESS or IO$M_VD]:
+	BEGIN
+	!
+	!  Get this vd chars to determine the mode.
+	!
+	IF NOT vs$$vds_get_display_char
+			(.vs$a_vsx [vsx$w_id]
+			,0			! Don't return the UIC
+			,height
+			,width
+			,depth
+			,back_color
+			,fore_color
+			,mode
+			,chars
+			,protection
+			)
+	  THEN 
+	    BEGIN
+	    $toperr (vsta$_getdis);	!"get display chars failed"
+	    $done_io_with_error (vsta$_getdis, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	    END;
+
+	SELECTONE .mode OF
+	    SET		! What type of vd is this (terminal?)
+
+	    [VS$K_VTEM_4014] :
+	    BEGIN	! Get tek characteristics
+
+	    !
+	    !  Call tek get chars routine.
+	    !
+	    IF NOT vsta$$tek_get_chars
+				(.vs$a_vsx [vsx$w_id]		! Vd_id
+				,settings
+				)
+	      THEN
+		BEGIN
+		$toperr (vsta$_gettek);
+		$done_io_with_error (vsta$_gettek, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+		END;
+					
+	    !
+	    !  Place the return information into the users buffer
+	    !
+	    buffer [vsu$w_vd_cols_norm] = .settings;
+	    END;	! End of getting tek chars
+
+		    
+	    [VS$K_VTEM_GENERIC] :
+	    BEGIN	! Start of access generic
+
+	    buffer [vsu$w_vd_height]	= .height;	! Longwords
+	    buffer [vsu$w_vd_width]	= .width;
+	    buffer [vsu$w_vd_depth]	= .depth;
+	    buffer [vsu$w_vd_background] = .back_color;
+	    buffer [vsu$w_vd_foreground] = .fore_color;
+	    buffer [vsu$w_vd_mode]	= .mode;
+	    buffer [vsu$w_vd_chars]	= .chars;
+	    buffer [vsu$w_vd_protection] = .protection;
+
+	    END;	! End of access generic
+
+	    [OTHERWISE] :
+	    !
+	    !  Note: Not allowed to set or get vt100 term chars.
+	    !
+	    BEGIN
+	    $error (vsta$_vd_acc_fail, integer_type, .vs$a_vsx [vsx$w_id]);
+	    $toperr (vsta$_getdis);
+	    $done_io_with_error (vsta$_getdis, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	    END;
+
+	    TES;	! End of what type of vd this is.
+
+	END;		! End of vd access.		
+!	
+! Access PB
+!
+	[IO$_ACCESS or IO$M_PB]:
+	BEGIN
+	IF NOT vs$$vds_check_pb_access ( .vs$a_vsx [vsx$w_id] )
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_getpbd);
+	    $done_io_with_error (vsta$_getpbd, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+
+	IF NOT vs$$vds_get_pb_char
+			(.vs$a_vsx [vsx$w_id]
+			,buffer [vsu$w_pb_color]
+			,buffer [vsu$w_pb_width]
+			,buffer [vsu$w_pb_height]
+			,buffer [vsu$l_pb_flags]
+			,buffer [vsu$w_pb_protection]
+			)
+	  THEN 
+	    BEGIN
+	    $toperr (vsta$_getpbd);
+	    $done_io_with_error (vsta$_getpbd, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	    END;
+
+	buffer [vsu$w_pb_color_spec] = -1;		! Just to be definite
+	END;		!Of access PB
+
+!
+! Access Window
+!
+	[IO$_ACCESS or IO$M_W]:
+	BEGIN
+	! Get max name size in window_name_desc [0]
+	window_name_desc[0] = vsx$k_data_len - vsx$k_w_name_pos + 1;
+	window_name_desc[1] = buffer [vsu$b_w_name];
+
+	IF NOT vs$$vds_get_window_char
+			(.vs$a_vsx [vsx$w_id]
+			,window_name_desc[0]
+			,buffer [vsu$w_w_pb_id]
+			,buffer [vsu$w_w_vp_id]
+			,buffer [vsu$w_w_x0]
+			,buffer [vsu$w_w_y0]
+			,buffer [vsu$w_w_dx]
+			,buffer [vsu$w_w_dy]
+			)
+	  THEN 
+	    BEGIN
+	    $toperr (vsta$_getwin);
+	    $done_io_with_error (vsta$_getwin, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+
+	buffer [vsu$w_w_name_len] = .window_name_desc[0];
+	END; ! Window ACCESS
+
+!
+! Access VKB
+!
+	[IO$_ACCESS or IO$M_VKB]:
+	IF NOT vs$$get_vkb_char
+			(.vs$a_vsx [vsx$w_id]
+			,buffer [vsu$l_vkb_state_bits]
+			,buffer [vsu$l_vkb_trans_table]
+			,buffer [vsu$l_vkb_devdepend]
+			)
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_getkey);
+	    $done_io_with_error (vsta$_getkey, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+!
+! Access GRAPHICS information
+!
+	[IO$_ACCESS or IO$M_GRAPHICS]:
+	BEGIN
+	LOCAL
+	    actual_words;
+
+	IF NOT vsta$$gid_report
+			(.vs$a_vsx [vsx$w_id]
+			,.buffer
+			,.vs$a_lirp [irp$w_bcnt]/2
+			,actual_words
+			)
+	  THEN
+	    BEGIN
+	    $error (vsta$_gid_acc_fail, integer_type, .vs$a_vsx [vsx$w_id]);
+	    $toperr (vsta$_reagph);
+	    $done_io_with_error (vsta$_reagph, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+
+	!
+	!  Return good status and the second longword will have the
+	!  number of bytes actually aquired
+	!
+	vs$$acp_done_io (SS$_NORMAL, .actual_words * 2, .vs$a_irp );
+
+	RETURN SS$_NORMAL;
+	END;
+
+
+!
+! No function code matched
+!
+	[OTHERWISE]: 
+	BEGIN
+	$error (vsta$_bad_access, integer_type, .vs$gl_full_function);
+	$toperr (vsta$_accerr);
+	$done_io_with_error (vsta$_accerr, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+	TES;
+
+!
+! Return success (if we haven't returned already..)
+!
+vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;				! End routine VS$$ACP_ACCESS
+
+%sbttl 'VS$$ACP_MODIFY  --  Sets Characteristics of an SDA Object'
+routine VS$$ACP_MODIFY: =
+!++
+! Functional Description:
+!	Alters the characteristics of an SDA object.
+! 	All the MODIFY functions are ASYNCHRONOUS, except for the VKB, 
+!	and TABLET, which are SYNCHRONOUS.
+!
+! Implicit Inputs:
+!	The VSX contains most of the device-dependent information.  However,
+!	the modify VD and PB functions find the address of the user's buffer in 
+!	IRP$L_SVAPTE; this buffer contains the data of interest.
+!
+! Implicit Outputs:
+!	Appropriate data structures in the various modules are changed, as 
+!	indicated by the data.
+!
+! Completion Codes:
+!	SS$_NORMAL
+!
+!--
+BEGIN
+LOCAL
+    buffer: REF vsublock,
+    window_name_desc: VECTOR [2,LONG],	! Descriptor for window name
+    height,
+    width,
+    depth,
+    back_color,
+    fore_color,
+    mode,
+    chars,
+    protection,
+    temp;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_MODIFY')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+!
+! Get a window into the user's buffer if necessary
+!
+IF (.vs$a_lirp [irp$l_svapte] NEQ 0)
+  THEN
+    BEGIN			! If there was Direct IO, BUFFER = P0VA
+    IF NOT vs$$acp_direct_io (0)	!Need READ access to user's buffer
+      THEN
+	BEGIN
+	$error (vsta$_accerr);
+	!$toperr (???)
+	$done_io_with_error (vsta$_accerr, 0, .vs$a_irp);
+	END;
+
+    buffer = .user_buffer [0];	! Point to user's buffer
+    END
+  ELSE
+    buffer = 0;			! No Direct IO means BUFFER = 0
+!
+! Choose the appropriate routine
+!
+SELECTONE .vs$gl_full_function OF
+    SET
+!
+! Modify VD
+! Synchronize the request with SYNCHRONIZE_VD
+!
+    [IO$_MODIFY or IO$M_VD]:
+    BEGIN
+
+  !
+  !  Disable the pid access checking here.  This is to avoid implicitly
+  !  having to have read access to get write access.
+  !
+    temp = .vs$gl_pid;		! Store the pid of this operation
+    vs$gl_pid = 0;		! 0 pid has no protection
+
+  !
+  !  Get this vd chars to determine the mode.
+  !
+    IF NOT vs$$vds_get_vd_char
+			(.vs$a_vsx [vsx$w_id]
+			,0		! Don't return the UIC
+			,height
+			,width
+			,depth
+			,back_color
+			,fore_color
+			,mode
+			,chars
+			,protection
+			)
+      THEN
+	BEGIN
+	vs$gl_pid = .temp;	! Restore the pid
+	$error (vsta$_vd_acc_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_getdis);
+	$done_io_with_error (vsta$_getdis, .vs$a_vsx [vsx$w_id], .vs$a_irp);
+	END;
+
+    vs$gl_pid = .temp;			! Restore the pid
+
+    SELECTONE .mode OF
+	SET		! What type of vd is this (terminal?)
+
+	[VS$K_VTEM_4014] :
+	BEGIN		! Set tek characteristics
+	!
+	!  Check access to tek vd.
+	!
+	IF NOT vs$$vds_chk_vd_write_access
+				(.vs$a_vsx [vsx$w_id]	! Pass vd_id
+				)
+	  THEN
+	    BEGIN
+	    $error (vsta$_vd_mod_fail, integer_type, .vs$a_vsx [vsx$w_id]);
+	    $toperr (vsta$_settek);
+	    $done_io_with_error (vsta$_settek, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+	!
+	!  Call tek set chars routine.
+	!
+	IF NOT vsta$$tek_set_chars
+			(.vs$a_vsx [vsx$w_id]		! Vd_id
+			,.buffer [vsu$w_vd_cols_norm]	! Straps
+			,.buffer [vsu$w_vd_cols_wide]	! Settings
+			)
+	  THEN
+	    BEGIN
+	    $error (vsta$_vd_mod_fail, integer_type, .vs$a_vsx [vsx$w_id]);
+	    $toperr (vsta$_settek);
+	    $done_io_with_error (vsta$_settek, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;					
+
+	END;	! End of setting tek chars
+
+		    
+	[VS$K_VTEM_GENERIC] :
+	IF NOT vs$$vds_synchronize_vd
+			(.vs$a_vsx [vsx$w_id]	! VD_ID
+			,.vs$a_irp		! IRP address
+			,vs$$vds_set_vd_char	! Routine address 
+						! Routine Parameters
+			,.vs$a_vsx [vsx$w_id]	!
+			,.vs$a_vsx  [vsx$l_uic]
+			,.buffer [vsu$w_vd_background]
+			,.buffer [vsu$w_vd_foreground]
+			,.buffer [vsu$w_vd_mode]
+			,.buffer [vsu$w_vd_chars]
+			,.buffer [vsu$w_vd_protection]
+			)
+	  THEN
+	    BEGIN
+	    $error (vsta$_vd_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	    $toperr (vsta$_setdsp);
+	    $done_io_with_error (vsta$_setdsp, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+
+	[OTHERWISE] :
+	!
+	!  Not allowed to set or get vt100 term chars.
+	!
+	    BEGIN
+	    $error (vsta$_vd_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	    $toperr (vsta$_setdsp);
+	    $done_io_with_error (vsta$_setdsp, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	    END;
+	TES;	! End of what type of vd this is.
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, 0 );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;
+!
+! Modify PB
+!
+    [IO$_MODIFY or IO$M_PB]:
+    BEGIN
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_id] )
+      THEN
+	BEGIN
+	$toperr (vsta$_setpbp);
+	$done_io_with_error (vsta$_setpbp, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vds_set_pb_char
+			(.vs$a_vsx [vsx$w_id]
+			,.vs$a_vsx [vsx$w_pb_color]
+			,.vs$a_vsx [vsx$w_pb_protection]
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_pb_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_setpbc);
+	$done_io_with_error (vsta$_setpbc, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	END;
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, 0 );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	! End modify PB loop
+
+
+!
+! Modify Window
+!
+    [IO$_MODIFY or IO$M_W]:
+    BEGIN
+    window_name_desc[0] = .vs$a_vsx [vsx$w_w_name_len];	! Set up the
+    window_name_desc[1] =  vs$a_vsx [vsx$b_w_name];	!  descriptor
+
+    IF NOT vs$$vds_set_window_char
+			(.vs$a_vsx [vsx$w_id]
+			,window_name_desc
+			,.vs$a_vsx [vsx$w_w_dx]
+			,.vs$a_vsx [vsx$w_w_dy]
+			)
+      THEN
+	BEGIN
+	$error (vsta$_w_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_setwin);
+	$done_io_with_error (vsta$_setwin, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	END;
+
+    vs$$acp_preset_iost ( .vs$a_irp, SS$_NORMAL, 0 );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	! End modify Window loop
+!
+! Modify PS is not allowed -- BUT WE USE IT FOR SESSION
+!	RUNDOWN
+!
+    [IO$_MODIFY or IO$M_PS]:
+    BEGIN		! Modify PS
+    vs$$acp_session_cleanup ();
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp);
+    END;		! Modify PS
+
+!
+! Modify VKB
+!
+    [IO$_MODIFY or IO$M_VKB]:
+    BEGIN	! Modify VKB 
+    IF NOT vs$$set_vkb_char
+			(.vs$a_vsx [vsx$w_id]
+			,.vs$a_vsx [vsx$l_vkb_mod_states]
+			,.vs$a_vsx [vsx$l_vkb_state_bits]
+			)
+      THEN 
+	BEGIN
+	$error (vsta$_vkb_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_setkem);
+	$done_io_with_error (vsta$_setkem, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	END;
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp);
+    END;		! Modify VKB 
+
+    [IO$_MODIFY or IO$M_VKB or IO$M_TRANS_TABLE]:
+    BEGIN	! Modify VKB ! Translation Table
+    IF NOT vs$$set_vkb_trans_table
+			(.vs$a_vsx [vsx$w_id]
+			,.vs$a_vsx [vsx$l_vkb_trans_table]
+			)
+      THEN
+	BEGIN
+	$error (vsta$_trtbl_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_setket);
+	$done_io_with_error (vsta$_setket, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	END;
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp);
+    END;	! Modify VKB ! Translation Table
+
+    [IO$_MODIFY or IO$M_VKB or IO$M_VKB_CHAR]:
+    BEGIN	! Modify VKB ! Characteristics (terminal-type)
+    IF NOT vs$$set_vkb_devdepend
+			(.vs$a_vsx [vsx$w_id]
+			,.vs$a_vsx [vsx$l_vkb_devdepend]
+			)
+      THEN
+	BEGIN
+	$error (vsta$_vkb_mod_fail, integer_type, .vs$a_vsx [vsx$w_id] );
+	$toperr (vsta$_setkey);
+	$done_io_with_error (vsta$_setkey, .vs$a_vsx [vsx$w_id], .vs$a_irp );
+	END;
+    vs$$acp_done_io( SS$_NORMAL, 0, .vs$a_irp);
+    END;		! Modify VKB ! Characteristics (terminal-type)
+!
+! No allowed function code matched
+!
+    [OTHERWISE]: 
+    BEGIN
+    $error	(vsta$_bad_modify
+		,integer_type, (.vs$gl_full_function - .vs$gl_main_function)
+		);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp );
+    END;
+
+    TES;
+
+!
+! Return the function value if successful
+!
+RETURN SS$_NORMAL;
+END;				! End routine VS$$ACP_MODIFY
+
+%sbttl 'VS$$ACP_ACPCONTROL  --  Manipulates SDA objects'
+routine VS$$ACP_ACPCONTROL: =
+
+!++
+! Functional Description:
+!	Manipulates SDA objects with respect to others.
+!	All ACP_CONTROL functions are ASYNCHRONOUS.
+!--
+
+BEGIN
+LOCAL
+    vkb_id,
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_ACPCONTROL')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Choose the appropriate routine
+!
+SELECTONE (.vs$gl_full_function - io$_acpcontrol) OF
+    SET
+
+  ! If no modifiers, assume this is a "cancel" request due to deassign
+  ! of the device, probably from image exit.
+  !
+    [0] :
+    BEGIN
+
+    ! Cancel mouse requests.
+    vsta$$mouse_cancel_requests (.vs$a_lirp[irp$l_pid]);
+  !
+  ! Cancel keyboard requests.
+  !
+    IF .vs$gl_obj_id EQL 0
+      THEN
+	BEGIN
+	stat = SS$_NORMAL;
+	vkb_id = 0;
+	END
+      ELSE
+	stat = vs$$get_emulator_vkb (.vs$gl_obj_id, vkb_id );
+
+    IF (.stat)
+      THEN
+	BEGIN
+	vs$$vkb_cancel_read (
+	    .vkb_id,
+	    .vs$a_lirp[irp$l_pid],
+	    .vs$a_lirp [irp$w_chan]);
+	END;
+  !
+  ! Cancel tablet requests.
+  !
+    vs$$vtb_cancel_asts (.vs$a_lirp[irp$l_pid]);
+  !
+  ! Cancel region requests.
+  !
+    vsta$$rgn_cancel_requests (.vs$a_lirp[irp$l_pid]);
+  !
+  ! Announce to system that we're done cleaning up.
+  !
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp )
+
+    END;
+
+!
+! Paste, unpaste, or move a VD on a PB
+!
+    [IO$M_CREATE or IO$M_VD or IO$M_PB] :
+    BEGIN
+    LOCAL
+	prev_err;
+
+    prev_err = 0;
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_ctrl_object_id] )
+      THEN
+	BEGIN
+	prev_err = 1;
+	END;		
+
+    SELECTONE (.vs$a_vsx [vsx$w_ctrl_stacking]) OF
+	SET
+
+	[VS$K_NORMAL]:		!Paste vd to PB
+	BEGIN
+	WHILE 1 DO
+	    BEGIN
+	    IF .prev_err THEN EXITLOOP;
+	    IF NOT vs$$vds_synchronize_vd
+			(.vs$a_vsx [vsx$w_ctrl_subject_id]	! VD_ID
+			,.vs$a_irp			! IRP address
+			,vs$$vds_paste_vd_to_pb		! Routine address 
+							! Routine Parameters
+			,.vs$a_vsx[vsx$w_ctrl_object_id]
+			,.vs$a_vsx[vsx$w_ctrl_subject_id]
+			,.vs$a_vsx[vsx$w_ctrl_x0]
+			,.vs$a_vsx[vsx$w_ctrl_y0]
+			,0				!Position at listhead
+			)
+	      THEN
+		BEGIN
+		prev_err = 1;
+		EXITLOOP;
+		END;
+	    EXITLOOP;		!Success, leave "loop"
+	    END;		!Of "WHILE" loop
+
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_pasdis);
+	    $done_io_with_error (vsta$_pasdis, 0, .vs$a_irp );
+	    END;
+
+	END;		! VD on PB
+
+	[VS$K_SLIDE]:		! Move VD on PB
+	BEGIN					! Stacking not clear
+	WHILE 1 DO
+	    BEGIN
+	    IF .prev_err THEN EXITLOOP;
+	    IF NOT vs$$vds_synchronize_vd
+			(.vs$a_vsx [vsx$w_ctrl_subject_id] ! VD_ID
+			,.vs$a_irp		! IRP address
+			,vs$$vds_move_vd_in_pb	! Routine address 
+						! Routine Parameters
+			,.vs$a_vsx[vsx$w_ctrl_object_id]
+			,.vs$a_vsx[vsx$w_ctrl_subject_id]
+			,.vs$a_vsx[vsx$w_ctrl_x0]
+			,.vs$a_vsx[vsx$w_ctrl_y0]
+			)
+	      THEN
+		BEGIN
+		prev_err = 1;
+		EXITLOOP;
+		END;
+
+	    EXITLOOP;		!Success
+	    END;		!"While 1 DO.."
+
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_movdis);
+	    $done_io_with_error (vsta$_movdis, 0, .vs$a_irp );
+	    END;
+
+	END;		! Slide VD on PB
+
+	[VS$K_POP_TO_TOP]:		!pop vd to top of PB
+	BEGIN
+	WHILE 1 DO
+	    BEGIN
+	    IF .prev_err THEN EXITLOOP;
+            IF NOT vs$$vds_synchronize_vd
+			(.vs$a_vsx [vsx$w_ctrl_subject_id]	! VD_ID
+			,.vs$a_irp		! IRP address
+			,vs$$vds_move_vd_to_top_of_pb	! Routine address 
+							! Routine Parameters
+			,.vs$a_vsx [vsx$w_ctrl_object_id]
+			,.vs$a_vsx [vsx$w_ctrl_subject_id]
+			,0		! Position at listhead
+			)
+	      THEN
+		BEGIN
+		prev_err = 1;
+		EXITLOOP;
+		END;
+
+	    EXITLOOP;		!Success
+	    END;		!"while 1 do.."
+
+	IF .prev_err
+	  THEN
+	    BEGIN
+	    $toperr (vsta$_movtop);
+	    $done_io_with_error (vsta$_movtop, 0, .vs$a_irp );
+	    END;
+	END;
+
+	TES;		!paste, move, or pop.
+  !
+  ! We've called the routine and found no user errors.
+  ! Return when the IO is really done.
+  !
+    vs$$acp_preset_iost ( .vs$a_irp, SS$_NORMAL,0 );
+  !
+  ! Make sure all the VB activity is done before doing the
+  ! post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+    END;
+
+    [IO$M_DELETE or IO$M_VD or IO$M_PB] :
+
+    BEGIN		! Unpaste VD from PB
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_ctrl_object_id] )
+      THEN
+	BEGIN
+	$toperr (vsta$_remdis);		!"remove display failed"
+	$done_io_with_error (vsta$_remdis, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vds_synchronize_vd
+			(.vs$a_vsx [vsx$w_ctrl_subject_id]	! VD_ID
+			,.vs$a_irp			! IRP address
+			,vs$$vds_unpaste_vd_from_pb	! Routine address 
+							! Routine Parameters
+			,.vs$a_vsx[vsx$w_ctrl_object_id]
+			,.vs$a_vsx[vsx$w_ctrl_subject_id]
+			)
+      THEN
+	BEGIN
+	$toperr (vsta$_remdis);		!"remove display failed"
+	$done_io_with_error (vsta$_remdis, 0, .vs$a_irp );
+	END;
+
+    vs$$acp_preset_iost ( .vs$a_irp, SS$_NORMAL,0 );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;		! Unpaste VD from PB
+!
+! Paste or unpaste a PB to or from a PB
+!
+    [IO$M_CREATE or IO$M_PB] :
+    BEGIN	! Paste PB to PB
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_ctrl_object_id])
+      THEN
+	BEGIN
+	$toperr (vsta$_paspbd);
+	$done_io_with_error (vsta$_paspbd, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_ctrl_subject_id])
+      THEN
+	BEGIN
+	$toperr (vsta$_paspbd);
+	$done_io_with_error (vsta$_paspbd, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vds_paste_pb_to_pb
+			(.vs$a_vsx[vsx$w_ctrl_object_id]
+			,.vs$a_vsx[vsx$w_ctrl_subject_id]
+			,.vs$a_vsx[vsx$w_ctrl_x0]
+			,.vs$a_vsx[vsx$w_ctrl_y0]
+			)
+      THEN
+	BEGIN
+	$toperr (vsta$_paspbd);
+	$done_io_with_error (vsta$_paspbd, 0, .vs$a_irp );
+	END;
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, 0 );
+  !
+  ! Make sure all the VB activity is done before doing the post-processing
+  !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	! Paste PB to PB
+
+    [IO$M_DELETE or IO$M_PB] :
+    BEGIN	! Unpaste PB from PB
+		! Check user's access to bottom PB only.
+		!
+    IF NOT vs$$vds_check_pb_access (.vs$a_vsx [vsx$w_ctrl_object_id] )
+      THEN
+	BEGIN
+	$toperr (vsta$_rempbd);
+	$done_io_with_error (vsta$_rempbd, 0, .vs$a_irp );
+	END;
+
+    IF NOT vs$$vds_unpaste_pb_from_pb
+		(.vs$a_vsx [vsx$w_ctrl_object_id]
+		,.vs$a_vsx [vsx$w_ctrl_subject_id]
+		)
+      THEN 
+	BEGIN
+	$toperr (vsta$_rempbd);
+	$done_io_with_error (vsta$_rempbd, 0, .vs$a_irp );
+	END;
+
+    vs$$acp_preset_iost ( .vs$a_irp, SS$_NORMAL, 0 );
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	! Unpaste PB from PB
+!
+! Move a Window on a PB
+!
+    [IO$M_CREATE or IO$M_W or IO$M_PB] :
+    BEGIN	! Move W on PB
+
+    IF NOT vs$$vds_move_window_in_pb
+			(.vs$a_vsx [vsx$w_ctrl_subject_id]
+			,.vs$a_vsx [vsx$w_ctrl_x0]
+			,.vs$a_vsx [vsx$w_ctrl_y0]
+			)
+      THEN
+	BEGIN
+	$toperr (vsta$_movwin);
+	$done_io_with_error (vsta$_movwin, 0, .vs$a_irp );
+	END;
+
+    vs$$acp_preset_iost (.vs$a_irp, SS$_NORMAL, 0 );
+    !
+    ! Make sure all the VB activity is done before doing the post-processing
+    !
+    vs$$acp_final_asynch ();	! Queues a NOOP to the device, and
+				! does a DONE_IO_NO_IOSB upon its return
+
+    END;	! Move W on PB
+
+
+
+!
+! No function code matched
+!
+    [OTHERWISE] :   
+    BEGIN
+    $error	(vsta$_bad_move
+		,integer_type, (.vs$gl_full_function - IO$_ACPCONTROL)
+		);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp );
+    END;
+
+    TES;					! End of 'Selectone' set
+
+RETURN SS$_NORMAL;
+END;				! End routine VS$$ACP_ACPCONTROL
+
+%sbttl 'VS$$ACP_ACTIVATE -- Activates a pointing or input device'
+routine VS$$ACP_ACTIVATE: =
+!++
+! Functional Description:
+!	All ACTIVATE functions are SYNCHRONOUS.
+!
+!--
+BEGIN
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_ACTIVATE')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+SELECTONE (.vs$gl_full_function - IO$_ACTIVATE) OF
+    SET
+  !
+  ! Note: There is no library routine that will activate or deactivate
+  !       there mouse or tablet. These routines are supported for
+  !       debugging purposes. They are not supported, and malicious
+  !       users can call them and cause problems.
+  !
+    [IO$M_VKB] :
+    IF NOT vs$$activate_vkb (.vs$a_vsx [vsx$w_id]) 
+      THEN 
+	BEGIN
+	$error	(vsta$_vkb_actv_fail
+		,integer_type, .vs$a_vsx [vsx$w_id]
+		);
+	$toperr (vsta$_bug);	!? No top-level error exists.
+	$done_io_with_error (vsta$_bug, 0, .vs$a_irp );
+	END;
+
+    [IO$M_TABLET] :
+    IF NOT vs$$activate_vtb (.vs$a_vsx [vsx$w_id])
+      THEN 
+	BEGIN
+	$error	(vsta$_vtb_actv_fail
+		,integer_type, .vs$a_vsx [vsx$w_id]
+		);
+	$toperr (vsta$_bug);	!? No top-level error exists.
+	$done_io_with_error (vsta$_bug, 0, .vs$a_irp );
+	END;
+
+    [OTHERWISE] :
+    BEGIN
+    $error	(vsta$_bad_activate
+		,integer_type, (.vs$gl_full_function - IO$_ACTIVATE)
+		);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp );
+    END;
+
+    TES;
+
+vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_ACTIVATE
+
+%sbttl 'VS$$ACP_DEACTIVATE -- Deactivates a pointing or input device'
+routine VS$$ACP_DEACTIVATE: =
+
+!++
+! Functional Description:
+!	All DEACTIVATE functions are SYNCHRONOUS.
+!
+!--
+BEGIN
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_DEACTIVATE')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+SELECTONE (.vs$gl_full_function - IO$_DEACTIVATE) OF
+    SET
+  !
+  ! See comments in VS$$ACP_ACTIVATE
+  !
+    [IO$M_VKB] :
+    IF NOT vs$$deactivate_vkb (.vs$a_vsx [vsx$w_id]) 
+      THEN 
+	BEGIN
+	$error	(vsta$_vkb_dactv_fail
+		,integer_type, .vs$a_vsx [vsx$w_id]
+		);
+	$toperr (vsta$_bug);
+	$done_io_with_error (vsta$_bug, 0, .vs$a_irp );
+	END;
+
+    [IO$M_TABLET] :
+    IF NOT vs$$deactivate_vtb (.vs$a_vsx [vsx$w_id])
+      THEN 
+	BEGIN
+	$error	(vsta$_vtb_dactv_fail
+		,integer_type, .vs$a_vsx [vsx$w_id]
+		);
+	$toperr (vsta$_bug);
+	$done_io_with_error (vsta$_bug, 0, .vs$a_irp );
+	END;
+
+    [OTHERWISE] :
+    BEGIN
+    $error	(vsta$_bad_deactivate
+		,integer_type, (.vs$gl_full_function - IO$_DEACTIVATE)
+		);
+    $toperr (vsta$_accerr);
+    $done_io_with_error (vsta$_accerr, 0, .vs$a_irp );
+    END;
+
+    TES;
+
+vs$$acp_done_io ( SS$_NORMAL, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_DEACTIVATE
+
+%sbttl 'VS$$ACP_UETP -- UETP Functions'
+routine VS$$ACP_UETP =
+
+!++
+! Functional Description:
+!	Either get device information from the hardware, or
+!	create a session for UETP.
+!
+!--
+BEGIN
+EXTERNAL
+    vs$gl_uetp_irp,		! UETP end-session IRP holder
+    vsta$gl_inuse,		! Flag saying whether someone's using ACP
+    vsta$gl_uetp_username_desc: VECTOR [0,LONG];
+LOCAL 
+    long_size,
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_DIAGNOSE')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Set our identity to be the ACP's, so we pass protection muster
+!
+!VS$GL_PID = .VS$GL_ACP_PID;
+vs$gl_pid = 0;		     ! Set to zero to indicate ACP
+vs$gl_uic = .vs$gl_acp_uic;
+
+!
+! Choose appropriate action
+!
+SELECTONE (.vs$gl_full_function - .VS$GL_MAIN_FUNCTION) OF
+    SET
+    [IO$M_DIAGNOSTIC] :
+    BEGIN		! Hardware information
+  !
+  ! Make sure there is no authorized user 
+  !
+    IF ( .vsta$gl_inuse )
+      THEN
+	BEGIN			!No error block for UETP functions
+	$done_io_with_error (SS$_DEVALLOC, 0, .vs$a_irp);
+	END;
+  !
+  ! RESET so VBDRIVER finds out the graphics processor unibus offset
+  !
+    IF NOT (stat = vsta$$drive_reset (.vs$gw_channel))
+      THEN
+	BEGIN
+	vs$$acp_done_io (.stat, 0, .vs$a_irp);	!TELL UETP process
+	RETURN .stat
+	END;
+  !
+  ! Get status from ONYX to DRIVER
+  !
+    IF NOT (stat = vsta$$drive_report_to_vb (.vs$gw_channel ) )
+      THEN
+	BEGIN
+	vs$$acp_done_io (.stat, 0, .vs$a_irp);
+	RETURN .stat
+	END;
+  !
+  ! Powerup the device so it runs through its memory checks, etc.
+  !
+    IF NOT (stat = vsta$$drive_powerup (.vs$gw_channel))
+      THEN
+	BEGIN
+	vs$$acp_done_io (.stat, 0, .vs$a_irp);	!Tell UETP process
+	RETURN .stat
+	END;
+  !
+  ! Go get the status from the driver, and report it to the UETP.
+  !
+    stat = vsta$$kernel_call(
+			vsta$$drive_get_vb_status
+			,.vs$gw_channel
+			,.vs$a_lirp [irp$l_svapte] + VS$K_TTY_DATA );
+
+    END;		! Hardware information
+
+    [IO$M_CREATE] :
+    BEGIN		! Create UETP session
+  !
+  ! Make sure there is no authorized user 
+  !
+    IF ( .vsta$gl_inuse )
+      THEN
+	BEGIN
+	$done_io_with_error (SS$_DEVALLOC, 0, .vs$a_irp);
+	END;
+
+    long_size = .vs$a_lirp [irp$w_boff];
+    IF (.long_size LEQ 0)
+      THEN		! If no username, return error
+	$done_io_with_error (SS$_BADPARAM, 0, .vs$a_irp );
+
+    IF NOT vs$$acp_get_vm ( long_size, vs$a_lbuf, 0 )
+      THEN
+	$done_io_with_error ( vsta$_sysres, 0, .vs$a_irp );
+
+    IF NOT vs$$acp_create_lbuf ()
+      THEN			!Allocate LBUF
+	$done_io_with_error ( VSTA$_NO_LDATA, 0, .vs$a_irp );
+
+    vsta$gl_uetp_username_desc [0] = .vs$a_lirp [irp$w_bcnt]; !Size
+    vsta$gl_uetp_username_desc [1] = .vs$ab_lbufdat;	  !Location
+
+    stat = vs$$ctrl_exit_idle_actions (0);	!0 = UETP called us
+    END;		! Create UETP session
+
+    [IO$M_RESET] :	! End UETP session
+    BEGIN
+  ! If there was no UETP session going on, return SS$_DEVNOTALLOC
+  ! If UETP is not in control of the session, return SS$_DEVNOTALLOC
+    IF (.vsta$gl_uetp_username_desc [0] EQL 0)
+      THEN
+	$done_io_with_error (SS$_DEVNOTALLOC, 0, .vs$a_irp);
+    vs$gl_uetp_irp = .vs$a_irp;
+    vs$a_irp = 0;
+    stat = vsta$$srv_end_session ();	!End the session
+    END;
+
+    [OTHERWISE] :
+    BEGIN		! Bad function code
+    stat = SS$_ILLIOFUNC;
+    END;		! Bad function code
+
+    TES;
+
+IF .vs$a_irp LSS 0 THEN
+  vs$$acp_done_io ( .stat, 0, .vs$a_irp );
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_UETP
+
+%sbttl 'VS$$ACP_STOP -- Deletes multiple VDs and PBs'
+routine VS$$ACP_STOP =
+
+!++
+! Functional Description:
+!	Performs Image and Session Rundown  --  ASYNCHRONOUS
+!	No DONE_IO is performed, because this function cannot result from a
+!	$QIO call to VDDRIVER.
+!	A IO$M_DELETE modifier indicates that VDDRIVER has deleted a
+!	UCB, whose slot must now be zeroed.
+!	A IO$M_VD_CANCEL modifier causes all IRPs in the ACP's queues to
+!	be CANCELed.
+!
+!--
+BEGIN
+LOCAL 
+    vkb,			! VKB ID number
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_STOP')
+		,devnam = $DESCRIPTOR('OPA0:')
+		);
+!
+! Identify the VD we are dealing with
+!
+vs$gl_obj_id = .vs$a_lirp [irp$l_iost1];
+
+!
+! Choose appropriate action
+!
+SELECTONE (.vs$gl_full_function - .VS$GL_MAIN_FUNCTION) OF
+    SET
+
+    [IO$M_VD_CANCEL] :
+  !
+  ! Cancel all I/O on this VD channel
+  !
+    BEGIN
+    IF NOT vsta$$kernel_call (
+	vs$$acp_cancel_vd_io,
+	.vs$gl_obj_id,
+	.vs$a_lirp [irp$w_chan])		! which channel's io to cancel
+      THEN $log_error ( SS$_CANCEL);
+!
+! Cancel all region requests on this vd.
+!
+    vsta$$rgn_cancel_1_vds_requests (.vs$gl_obj_id, .vs$gl_obj_id);
+
+    IF vs$$get_emulator_vkb			!If the VKB exists, cancel any
+			(.vs$gl_obj_id		! reads on the channel
+			,vkb
+			)
+      THEN
+	BEGIN		! Cancel current read
+	IF NOT vs$$vkb_cancel_read (
+	    .vkb,
+	    .vs$a_lirp [irp$l_pid],		! which process
+	    .vs$a_lirp [irp$w_chan])		! which channel's reads to halt
+	  THEN $log_error ( SS$_CANCEL );
+	END;			! Cancel current read
+
+    END;		! Cancel I/O on the VD
+
+    [IO$M_VD + IO$M_DELETE] :
+  !
+  ! If this is a signal that VDDRIVER has deleted a UCB, then just zero
+  ! the UCB slot.
+  !
+    vs$al_vd_ucb [ .vs$gl_obj_id ] = 0;
+
+    [IO$M_VD] :
+  !
+  ! Dispatch to the DELETE_VD routine to delete this VD if it is 
+  ! temporary.
+  !
+	IF NOT vs$$vds_vd_multi_delete		!Delete VD if temporary
+			(.vs$gl_acp_pid
+			,.vs$gl_obj_id
+			)	! VD_ID of this VD
+	  THEN	$log_error (vsta$_vd_rndwn_fail, 
+			integer_type, .vs$gl_obj_id, 
+			integer_type, .vs$gl_acp_pid );
+
+
+    [IO$M_PB] :
+  !
+  ! Dispatch to the _PB_ routine to delete any temporary PBs
+  ! created by this process (this will also CANCEL any reads out-
+  ! standing on that VKB).
+  ! Cancel mouse and tablet requests, also.
+  !
+    BEGIN		! Clean up _PB_ structures
+
+    IF NOT vs$$vds_pb_multi_delete ( .vs$a_lirp [irp$l_pid] )
+      THEN 
+	$log_error (VSTA$_PB_RNDWN_FAIL,
+		integer_type, .vs$a_lirp [irp$l_pid] );
+
+    vsta$$mouse_cancel_requests (.vs$a_lirp [irp$l_pid]);
+    vs$$vtb_cancel_asts (.vs$a_lirp [irp$l_pid])
+    END;		! Clean up _PB_ structures
+
+    [OTHERWISE] :
+    $log_error (SS$_ILLIOFUNC);
+
+    TES;
+
+!
+! Normally, we would do a DONE_IO here, but since this IO func code cannot
+! result from a $QIO, we must simply eliminate this IRP.
+!
+IF NOT (stat = $CMKRNL ( routin=VS$$ACP_DELETE_IRP ))
+  THEN $log_error (VSTA$_IRP_X_FAIL);
+
+RETURN .stat;
+END;			!End of routine VS$$ACP_STOP
+
+%sbttl 'VS$$ACP_VSTAPTR -- Perform all VSTA Pointer Functions (Mouse + Tablet)'
+routine VS$$ACP_VSTAPTR: =
+
+!++
+! Functional Description:
+!
+!	This routine is responsible for all VAXstation pointer functions:
+! establishing movement ASTs, button ASTs, and boundary ASTs, and getting
+! information about the mouse or tablet.
+!
+!--
+BEGIN
+LOCAL
+    stat;
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_VSTAPTR')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+SELECTONE (.vs$gl_full_function - IO$_VSTAPTR) OF
+    SET
+
+    [IO$M_MOVE_AST + IO$M_MOUSE] :
+    RETURN vsta$$mouse_lib_move_ast
+		(.vs$a_vsx [vsx$l_ptr_pb_id]
+		,.vs$a_vsx [vsx$l_ptr_dt]
+		);
+
+    [IO$M_MOVE_AST + IO$M_TABLET] :
+    RETURN vs$$set_vtb_ptr_move_ast
+		(.vs$a_vsx [vsx$l_ptr_pb_id]
+		,.vs$a_vsx [vsx$l_ptr_x0]
+		,.vs$a_vsx [vsx$l_ptr_y0]
+		,.vs$a_vsx [vsx$l_ptr_dx]
+		,.vs$a_vsx [vsx$l_ptr_dt]
+		);
+
+    [IO$M_BUTTON_AST + IO$M_MOUSE] :
+    RETURN vsta$$mouse_lib_button_ast
+		(.vs$a_vsx [vsx$l_ptr_pb_id]
+		,.vs$a_vsx [vsx$l_ptr_up_mask]
+		,.vs$a_vsx [vsx$l_ptr_down_mask]
+		,.vs$a_vsx [vsx$l_ptr_dt]
+		);
+
+    [IO$M_BUTTON_AST + IO$M_TABLET] :
+    RETURN vs$$set_vtb_button_ast
+		(.vs$a_vsx [vsx$l_ptr_pb_id]
+		,.vs$a_vsx [vsx$l_ptr_up_mask]
+		,.vs$a_vsx [vsx$l_ptr_down_mask]
+		,.vs$a_vsx [vsx$l_ptr_dt]
+		);
+
+    [IO$M_BOUNDARY_AST + IO$M_MOUSE] :
+    RETURN vsta$$mouse_lib_boundary_ast
+		(.vs$a_vsx [vsx$l_ptr_pb_id]
+		,.vs$a_vsx [vsx$l_ptr_dt]
+		);
+
+    [IO$M_PTR_INFO + IO$M_MOUSE]  :
+    RETURN vsta$$mouse_get_info (.vs$a_vsx [vsx$l_ptr_pb_id]);
+
+    [IO$M_PTR_INFO + IO$M_TABLET] :
+    RETURN vs$$get_vtb_info (.vs$a_vsx [vsx$l_ptr_pb_id]);
+
+    [OTHERWISE] :
+    BEGIN
+    $error	(vsta$_bad_ptr
+		,integer_type, (.vs$gl_full_function - IO$_VSTAPTR)
+		);
+    $toperr (vsta$_getmos);
+    $done_io_with_error	(vsta$_getmos, 0, .vs$a_irp);
+    END;
+
+    TES;
+
+END;			!End of routine VS$$ACP_VSTAPTR
+
+%sbttl 'VS$$ACP_VTEMDATA -- Sends Port Driver Output Data to Emulator'
+routine VS$$ACP_VTEMDATA: =
+
+!++
+! Functional Description:
+!
+!	This routine is responsible for initiating output to an emulated
+! device as a result of receiving data on the output port of that device.
+! All synchronization is done at a higher level. This is strictly an internal
+! function.
+!
+!--
+BEGIN
+
+ROUTINE get_buffer_size(buffer_size: REF VECTOR[0,WORD]) =
+  BEGIN
+    buffer_size[0] = .vs$a_irp[irp$w_bcnt];
+    RETURN SS$_NORMAL;
+  END;
+
+EXTERNAL
+	vs$gl_vd_name_desc: VECTOR;
+BIND
+	vd_name = .vs$gl_vd_name_desc[1]
+	  : VECTOR[,BYTE];
+OWN
+	buffer_size: WORD,		!Output buffer size
+	arg_list: VECTOR[2,LONG]	!$CMKRNL argument list
+		INITIAL(1,buffer_size);	!
+LOCAL
+	vd_id,				!Virtual display ID
+	dev_string: VECTOR[2]		!Device controller/unit for errors
+	  INITIAL(1,vd_name[2]),	!
+	emulator_type,			!Emulator type
+	buffer_adr,			!Output buffer address
+	small_buffer,			!To hold small buffers (performance)
+	status: INITIAL(SS$_NORMAL);	!Return status value
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_VTEMDATA')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Allocate storage for the output buffer
+!
+    $CMKRNL(
+	ROUTIN = get_buffer_size,
+	ARGLST = arg_list);
+!
+    IF .buffer_size LEQ vs$k_small_vtem_buf THEN
+      buffer_adr = small_buffer
+    ELSE
+      IF NOT vs$$acp_get_vm ( buffer_size, buffer_adr, 0 ) THEN
+	BEGIN
+	  $log_error (vsta$_no_ldata);
+	  vs$$acp_done_io(SS$_NORMAL,0,.vs$a_irp);
+	  RETURN SS$_NORMAL;
+	END;
+!
+! Copy the data into local storage and deallocate the nonpaged pool used
+!
+    vsta$$kernel_call(
+			vs$$acp_move_vtemdata,
+			vd_id,
+			emulator_type,
+			.buffer_size,
+			.buffer_adr);
+!
+! Based on the device type, send the data to the appropriate emulator
+!
+    SELECTONE .emulator_type OF
+      SET
+	  [vs$k_vtem_vt100] :
+		status = vs$$vtem_vt100_write(
+					.vd_id,
+					.buffer_adr,
+					.buffer_size);
+	  [vs$k_vtem_4014] :
+		status = vsta$$tek_write(
+					.vd_id,
+					.buffer_adr,
+					.buffer_size);
+	  [OTHERWISE] :
+		BEGIN
+		  status = vs$$vtem_generic_write(
+					.vd_id,
+					.buffer_adr,
+					.buffer_size,
+					0);
+		END;
+      TES;
+!
+    IF NOT .status THEN
+      vsta$$error_logger(.status);
+!
+    IF .buffer_size GTR vs$k_small_vtem_buf THEN
+      vs$$acp_free_vm ( buffer_size, buffer_adr, 0 );
+!
+! Now post-process the request (it will just get deallocated)
+!
+    vs$$acp_done_io(SS$_NORMAL,0,.vs$a_irp);
+
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_VTEMDATA
+
+%sbttl 'VS$$ACP_VSTAHI -- Perform Human Interface Function'
+routine VS$$ACP_VSTAHI: =
+
+!++
+! Functional Description:
+!
+!	This routine is responsible for performing the specified human
+! interface function. This is the mechanism by which certain human interface
+! functions can be performed from outside the ACP. These can be either internal
+! or external functions. No access checking is performed.
+!
+!--
+BEGIN
+EXTERNAL
+	vsta$gl_session_in_progress,		!Session in progress flag
+	vtem$al_vkb_symbol_vecs: VECTOR;	!Symbol table list
+LOCAL
+	table: REF VECTOR[0,WORD,SIGNED],	!Symbol table address
+	ttable_index,				!Translation table index
+	symbol_index,				!Symbol table index
+	msg_dsc: VECTOR[2],			!Text string descriptor
+	local_buf,				!For temp. local buffer
+	status: INITIAL(SS$_NORMAL);		!Return status value
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_VSTAHI')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! If this is an internal request, make the ACP the requestor
+!
+	IF .vs$a_lirp[irp$l_pid] LSS 0 THEN
+	  vs$gl_pid = .vs$gl_acp_pid;
+!
+! Go perform human interface subfunction
+!
+	SELECTONE ((.vs$gl_full_function - IO$_VSTAHI) AND
+		   (NOT IO$M_VD_INTERNAL)) OF
+	  SET
+!
+! If this is a special key function, process it
+!
+	  [IO$M_VD_SPKEY] :		! HELP/MAIN-MENU functions
+	    BEGIN
+	      SELECTONE (.vs$a_lirp[irp$l_iost2] AND %X'ff') OF
+	        SET
+		  [vs$k_help_key] : vsta$$help_button_pressed();
+		  [vs$k_menu_key] : vsta$$popup_main_menu();
+	        TES;
+	    END;
+!
+! Pull the translation table and symbol table index values out of the IRP
+! and display the new symbol key mappings
+!
+	  [IO$M_VD_NEWSYM] :		! Remap symbol key definitions
+	    BEGIN
+	      ttable_index = .vs$a_lirp[irp$l_iost1];
+	      symbol_index = .vs$a_lirp[irp$l_iost2];
+	      table = .vtem$al_vkb_symbol_vecs[.ttable_index];
+	      vsta$$hi_new_symbols( table[.symbol_index] );
+	    END;
+!
+! Take care of terminal XON/XOFF indicator (and block further output)
+!
+	  [IO$M_VD_HOLD] :
+	    BEGIN
+	      IF .vs$gl_obj_id GTR 0 THEN
+		vs$$vds_vd_eset_xon_xoff(.vs$gl_obj_id,.vs$a_lirp[irp$l_iost2]);
+	    END;
+!
+! Take care of OEM mode behavior (from now on)
+!
+	  [IO$M_VD_OEM] :
+	    vs$gl_oem_flags = .vs$a_lirp[irp$l_iost2];
+!
+! Take care of NOTICES
+!
+	  [IO$M_VD_NOTICE] :
+	    IF .vsta$gl_session_in_progress THEN
+	      BEGIN
+	        msg_dsc[0] = .vs$a_lirp[irp$w_bcnt];
+	        IF NOT (status = vs$$acp_get_vm ( msg_dsc[0], local_buf, 0 )) THEN
+		  $done_io_with_error( vsta$_vstaerr,.status,.vs$a_irp);
+!
+	        vsta$$move_kernel_bytes(
+				.msg_dsc[0],
+				.vs$a_lirp[irp$l_svapte] + vs$k_vtem_head_size,
+				.local_buf);
+!
+	        msg_dsc[1] = .local_buf;		! Address of data
+	        vsta$$announce ( msg_dsc );
+	        vs$$acp_free_vm( msg_dsc[0], local_buf, 0 );
+	      END;
+!
+! Take care of  GIN mode data from the terminal port driver which is destined
+! for the TEK emulator
+!
+	    [IO$M_VD_GIN] :
+		tk$$gin_mode(.vs$gl_obj_id);
+!
+	  TES;
+!
+	vs$$acp_done_io(.status, 0, .vs$a_irp);
+
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_VSTAHI
+
+%sbttl 'VS$$ACP_BROADCAST  --  Relays VMS Broadcasts to Human Interface'
+routine VS$$ACP_BROADCAST: =
+
+!++
+! Functional Description:
+! 	Passes the address of the broadcast message and the VD_ID of the
+!	intended recipient to the human interface routine VSTA$$ANNOUNCE.
+!	If the terminal is in BROADCAST mode, a WRITE is performed to it,
+!	which accomplishes the broadcast.
+!	ASYNCHRONOUS if the WRITE is performed, SYNCHRONOUS if not.
+!
+!--
+BEGIN
+LOCAL
+    done_arguments: VECTOR [2,LONG] INITIAL (1,0), ! Arguments for $CMKRNL
+    message_descr: VECTOR [2,LONG],	! Descriptor for Broadcast message
+    long_size,				! Longword to hold size for LIB$GET_VM
+    stat,
+    pb_id,				! Which Pasteboard the VD is on
+    num,				! Number of data items
+    graphics;				! Codes text or graphics IO
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_BROADCAST')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+!
+! Allocate a local buffer LBUF
+!
+long_size = .vs$a_lirp [irp$w_bcnt] + %X'30';	! Header size + message size
+IF NOT (stat = vs$$acp_get_vm ( long_size, vs$a_lbuf, 0 ))
+  THEN $done_io_with_error( vsta$_vstaerr,.stat,.vs$a_irp);
+
+IF NOT (stat = vs$$acp_create_lbuf ())
+  THEN $done_io_with_error( vsta$_vstaerr,.stat,.vs$a_irp);
+
+!
+! Store our size, so correct size block gets freed later.
+!
+vs$a_lbuf [tty$w_wb_size] = .long_size;
+
+graphics = 0;
+num = .vs$a_lirp [irp$w_bcnt];		! # Chars
+
+!
+! Send the message to the Human Interface but only if an authorized session
+! is under way, since at best the message would be unavailable since the
+! Notices Document is only accessible once a session is under way.
+!
+if (external vsta$gl_authorized ; .vsta$gl_authorized)
+then (
+message_descr [0] = .num;			! Number of bytes in string
+message_descr [1] = .vs$ab_lbufdat;		! Address of data
+vsta$$announce ( message_descr )
+);
+!
+! Presume Success
+!
+stat = SS$_NORMAL;
+
+!
+! Do the Synchronized Write only if the terminal is in BROADCAST mode (and
+! it wasn't the template
+!
+IF .vs$gl_obj_id NEQ 0 THEN
+  IF ( $CMKRNL (ROUTIN = vs$$acp_term_broadcast)) THEN
+    BEGIN	! Write Broadcast message
+
+    IF NOT vs$$vds_synchronize_vd
+			(.vs$gl_obj_id		!vdid
+			,.vs$a_irp		! IRP address
+			,vs$$vds_write_vd	! Routine address
+						! Routine parameters:
+			,.vs$gl_obj_id		!vdid
+			,.num			!# CHARS OR COMMANDS
+			,.vs$ab_lbufdat		!aDDRESS OF DATA
+			,.graphics		!gRAPHICS OR TEXT
+			,.(vs$a_lirp[irp$l_media]+4)	!gidis/NATIVE OR CC
+			,.vs$a_lbuf [tty$l_wb_fpc]	!gENERIC tEXT cODE
+			,.vs$a_lbuf [tty$l_wb_fr3]	!lINE AND FIELD POSITION
+			,.vs$a_lbuf [tty$l_wb_fr4]	!cHAR & SIZE INFO
+			)
+      THEN
+	BEGIN
+	! Ignore error and continue
+	1
+	END;
+
+    vs$$get_emulator_vkb			! Get PB_ID for ctrl-R
+			(.vs$gl_obj_id		! VDID
+			,pb_id			! Address for PB
+			);
+    vs$$vds_synchronize_vd			! Do a ctrl-R if necessary
+			(.vs$gl_obj_id		!VDID
+			,.vs$a_irp		! IRP address
+			,vs$$vkb_do_control_r	! Routine address
+						! Routine parameters:
+			,.pb_id			! Pasteboard (VKB) number
+			);
+
+    END;	! Write Broadcast message
+
+!
+! FORK to the system completion routine to indicate that we're done with
+!	this terminal.
+!
+done_arguments [0] = 1;		! One argument
+done_arguments [1] = .vs$a_lirp [irp$l_wind]; ! Pass the TWP address
+
+$CMKRNL (ROUTIN = vs$$acp_done_broadcast
+	,ARGLST = done_arguments [0]
+	);
+
+
+!
+! Normally, we would do a DONE_IO here, but since this IO funccode cannot
+! result from a $QIO, we must simply eliminate this IRP.
+!
+IF NOT ($CMKRNL ( ROUTIN=vs$$acp_delete_irp ))
+  then $log_error (VSTA$_IRP_X_FAIL);
+
+RETURN SS$_NORMAL;
+END;			!End of routine VS$$ACP_BROADCAST
+
+routine VS$$ACP_TERM_BROADCAST =
+begin
+	if (.VS$A_UCB [UCB$L_DEVDEPEND] and 
+		(TT$M_NOBRDCST or TT$M_PASSALL)) neq 0
+			then return 0
+			else return 1;
+end;	! Routine VS$$ACP_TERM_BROADCAST
+
+%sbttl 'VS$$ACP_MOUNT  --  Mounts or dismounts the VSACP'
+routine VS$$ACP_MOUNT: =
+
+!++
+! Functional Description:
+!	Mounts or dismounts the VSACP
+!	Called in KERNEL mode, to access UCB
+!
+!--
+
+BEGIN
+
+IF (.vs$gl_acp_broadcast)
+  THEN $BROAD	(MSGBUF = $DESCRIPTOR('IO$_MOUNT')
+		,DEVNAM = $DESCRIPTOR('OPA0:')
+		);
+
+IF (.vs$gl_full_function AND io$m_delete) NEQ 0
+  THEN
+    BEGIN
+    vs$gl_template_ucb [ucb$l_devchar] = 
+		.vs$gl_template_ucb [ucb$l_devchar] OR DEV$M_DMT;
+
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp );
+    vs$gl_exit_reason = 1;		! Flag for $EXIT to be performed
+    vs$a_irp = 0;			! So EXIT handler doesn't do
+					!  another DONE_IO
+    RETURN SS$_NORMAL;
+    END
+  ELSE
+    BEGIN
+    vs$gl_template_ucb [ucb$l_devchar] = 
+			.vs$gl_template_ucb [ucb$l_devchar] OR DEV$M_MNT;
+
+    vs$$acp_done_io (SS$_NORMAL, 0, .vs$a_irp );
+    RETURN SS$_NORMAL;
+    END;  !
+
+END;			!End of routine VS$$ACP_MOUNT
+
+END				!End of module VS$ACP_DSPCH
+ELUDOM

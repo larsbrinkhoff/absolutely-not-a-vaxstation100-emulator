@@ -1,0 +1,1457 @@
+MODULE VS$SRV_INIT (
+			IDENT = 'HI SERVER Initialization Module'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VSTA)
+!
+! ABSTRACT:
+!    This module is the initialization module for the human interface.
+!
+! ENVIRONMENT:
+!	VSACP process.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_init_srv,		!Called when the ACP starts up
+    vsta$$srv_start_session,	!Called when the session starts
+    vsta$$srv_end_session,	!Called when the session ends
+    vsta$$srv_init_after_auth,	!More initialization, after user has authorized
+    get_logname_vbx0,		!Get logical name of VBx0:
+    create_term_mbx,		!Create termination mbx for HI created jobs
+    create_vs_ps,		!Create VS and PS
+    give_ps_help,		!Give help for PS
+    startup_clock,		!Startup the timer
+    set_clock,			!Set the clock to go off at a certain time
+    clock_timeout,		!AST routine called when the clock goes off.
+    get_bottom_vp_stuff,	!Get bottom-most VP stuff (PB, window)
+    del_bottom_vp_stuff,	!Called at end session.
+    create_bottom_vp,		!Create the VP itself
+    setup_default_vkb,		!Setup the default VKB (so MAIN MENU works)
+    init_default_read,		!Do read call to the default VKB.
+    default_char_input;		!Routine called when the default VKB gets
+				! a character
+    
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Symbols like vsta$k_default_protection
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSTATERM';
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!For VS$M_VKB
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!string_type...
+LIBRARY	'VSTA$LIBRARY:LIBMACROS';	! $return_error (status)
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+GLOBAL
+    srv_vs_id,			!Virtual screen id
+    srv_ps_id,			!Physical screen id
+    vsta$gl_session_in_progress:!Session in progress flag
+		INITIAL(0),	!
+    vsta$gl_cmd_efn,		!EFN for command interrupts
+    vsta$gl_term_mbx_efn,	!Termination mbx event flag
+    vsta$gl_term_mbx_set:	!Termination mailbox setup? (Boolean)
+		 INITIAL(0),
+    vsta$gl_term_mbx_unit:	!Termination mbx unit for HI jobs
+		INITIAL(0),
+    vsta$gw_term_mbx_chan: WORD,!Termination mbx channel number for HI jobs
+    vsta$gl_term_mbx_buf:	!Termination mbx buffer
+		BLOCK[acc$k_termlen,BYTE],
+    vsta$gl_end_session_flag,	!=1 if we are ending a session.
+    vsta$gl_bottom_vp,		!Bottom-most VP (note: Can't be seen).
+    hi_vbname_desc: VECTOR [2],	!Descriptor for ASCII name
+				! of the VB: device, from my SYS$OUTPUT.
+    job_q_hdr:	VECTOR [2]	!Job queue header
+		INITIAL (job_q_hdr, job_q_hdr),
+    vs$gw_vbchan: WORD;		!Channel number of VBx0:
+
+OWN
+    user_lognam: VECTOR[11,BYTE]!Logical name string for this ACP
+	INITIAL(BYTE('VSTA$x_USER')),
+    user_lognam_desc: VECTOR[2] !Logical name string descriptor
+	INITIAL(11,user_lognam),
+    bottom_win_id,		!Window id for bottom VP
+    default_vkb_id,		!"the default" VKB id.
+    def_char: VECTOR [6,BYTE];	!Character(s) read in by default KBD read.
+
+EXTERNAL ROUTINE
+    vsta$$get_ef,			!Allocate event flag
+    vs$$acp_usage_trace,
+    vsta$$read_kernel_word,	!Read the address of a word from system space
+    vsta$$drive_attach_cursor,	!Attach cursor
+    vsta$$mouse_set_cursor_position,
+				!Tell hardware where to put cursor
+    vs$$txt_defineSystemWideFont,	!Define a system-wide font.
+    vs$$txt_init_systemwide_fonts,	!Define system-wide fonts we need
+    vs$$txt_delete_all_sw_fonts,	!Delete all system-wide fonts
+    vs$$vds_create_pb,		!Create a pasteboard
+    vs$$vds_delete_pb,		!Delete a pasteboard
+    vs$$vds_vd_multi_delete,	!Delete every conceavable VD
+    vs$$set_default_vkb,	!Set the default VKB
+    vs$$clear_default_vkb,	!Undo the above.
+    vs$$activate_vkb,		!Activate (the default) VKB
+    vs$$read_vkb,		!Read from VKB
+    vs$$vtb_cancel_ast_state,	!Clear tablet AST state on end-session
+    vsta$$kbrd_sound_bell,	!Ring the bell
+    vs$$vss_create_vs,		!Create a virtual screen
+    vs$$vss_set_vs_char,	! Set virtual screen color.
+    vs$$vss_create_ps,		!Create a physical screen
+    vs$$vss_delete_vs,		!Delete a virtual screen
+    vs$$vss_delete_ps,		!Delete a physical screen
+    vs$$vds_create_term_window,	!Create a terminal window
+    vs$$vss_create_vp,		!Create a viewport.
+    vs$$vss_delete_vp,		!Delete a viewport.
+    vs$$acp_device_job_cleanup,	!Session-end cleanup of I/O, jobs
+    vsta$$mouse_end_session,	!End session for mouse routines
+    vsta$$srv_end_notices,	!End session (delete notices)
+    vsta$$srv_auth_uetp,	!Authorize the UETP
+    vsta$$srv_auth_end,		!End session actions for authorization module
+    vsta$$srv_create_logged_in,	!Create a logged in terminal.
+    vsta$$srv_term_mbx_ast,	!Termination mailbox read satisfied AST
+    vsta$$symb_init,		!Init the Symbol mechanism
+    vsta$$symb_end,		!End session actions for symbol module
+    vsta$$symb_appear,		!Make the symbol bar appear.
+    vsta$$symb_disappear,	!make the symbol bar disappear.
+    vsta$$foot_init,		!Init the Footer mechanism at start session
+    vsta$$foot_disappear,	!Make the footer bar disappear.
+    vsta$$foot_end_session,	!End session actions for footer bar.
+    vsta$$edit_end,		!End session for edit module
+    vsta$$srv_vss_end_session,	!End session for VSS module
+    vsta$$srv_job_end,		!End session for job module
+    vs$$ctrl_startup,		!Startup the ONYX
+    vs$$ctrl_shutdown,		!Shut down the ONYX
+    vsta$$srv_forms_init,	!Init forms.
+    vsta$$srv_forms_end,	!End session actions for forms.
+    vsta$$srv_init_debugging,	!Some initial debugging routine
+    vsta$$srv_cmd_get_logname,	!Compute command logical name
+    vsta$$check_command,	!Routine to check for command
+    vsta$$srv_do_authorize,	!Do the authorization
+    vsta$$srv_prof_sysread,	!Read the system profile
+    vsta$$srv_prof_userread,	!Read the user's profile
+    vsta$$srv_cursor_normal,	!Put up the normal mouse cursor
+    vsta$$srv_cursor_thinking,	!Put up the thinking mouse cursor
+    vsta$$srv_log_out_user_jobs, !Log out all jobs we created.
+    vsta$$set_ps_help,		!Set HELP routine for PS
+    vsta$$srv_disp_help_kwd,	!Display HELP document keyword.
+    vsta$$dmm_init,		!Display Memory Manager initialize routine.
+    vs$$post_ast_request,	!Queue up an action for later.
+    vsta$$tek_init_module,	!Initialize the tek4014 data.
+    vsta$$nudge_keyclick,	!Turn on or off keyclick
+    vsta$$nudge_autor,		!Turn on or off autorepeat
+    vsta$$nudge_keyboard,	!set the Kbd value
+    vsta$$get_acp_def_kbd,	!get the default kbd for this ACP 
+    vsta$$error,		!ACP error reporting path
+    vsta$$error_Logger;		!Log an error.
+
+EXTERNAL
+    notice_vd_id,		!Holds virtual display id for notices
+    wdb_last_id,		!Last id used for a wdb
+    vp_place_counter,		!Controls vp positioning.
+    srv$gl_username_desc: VECTOR[2],	!Descriptor of current username
+    srv$gl_auto_termtype,	!Type of terminal to create at authorization.
+    vsta$gl_top_vp,		!Top VP id (except for SYMBOL and FOOTER)
+    vs$gl_vd_name_desc: VECTOR [2],	!Descriptor to "VDx0:"
+    srv_gl_ignore_delw,		!Set to 1 if so VSS Module won't look for
+				! the window that got deleted.
+    srv$gl_language,		!Language as specified in profile
+    srv$gl_screen_halftone_pattern,	! Screen color, from user Profile.
+    vsta$gl_authorized;		!=1 if user is authorized.
+
+
+GLOBAL ROUTINE vsta$$srv_init_srv =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine is called when the system is first started up.
+! There are no arguments to this routine.
+!
+! ERROR HANDLING:
+!	Errors from called routines are passed back to the caller.
+!	The called routines will have called vsta$$error_logger.
+!--
+BEGIN
+LOCAL
+    status;			!Return status
+
+
+!Get logical name translation for VBx0:
+IF NOT (status =
+    get_logname_vbx0 ()	!Gets descriptor into hi_vbname_desc
+	)
+  THEN RETURN .status;
+
+!*** Do something debug ***
+vsta$$srv_init_debugging ();	!Whatever we wish to debug at the time
+
+!Compute logical name for getting commands
+IF NOT (status =
+    vsta$$srv_cmd_get_logname ()
+	)
+  THEN RETURN .status;
+
+!Set up HI job termination mailbox message reception
+IF NOT .vsta$gl_term_mbx_set
+  THEN
+    BEGIN
+      IF NOT (status =
+	create_term_mbx ()
+	)
+	THEN RETURN .status;
+      vsta$gl_term_mbx_set = 1;
+    END;
+
+!
+! Do VB calls.
+!
+IF NOT (status =
+    vs$$ctrl_startup ()
+        )
+  THEN RETURN .status;
+
+!
+! Now wait for "start session", at QIO level.
+!
+RETURN SS$_NORMAL		!Return good status
+END;
+
+GLOBAL ROUTINE vsta$$srv_start_session
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when the user has hit the mouse button to start
+!	and the microcode has been successfully loaded.
+! FORMAL PARAMETERS:
+	(user_flag		!=1 if user hit mouse button
+				!=0 if UETP did the priv QIO.
+	) =
+! ERROR HANDLING:
+!	If called routines fail, log "can't start session" and end session
+!	so that things get properly cleaned up.
+!--
+BEGIN
+MACRO
+    $log_and_die =
+	BEGIN
+!
+! Note that we post the end session request rather than call it directly, so
+! that OUR caller can have an oppurtunity to clean up before end session gets
+! called.
+!
+	vs$$post_ast_request (vsta$$srv_end_session);
+	return vsta$$error_logger (vsta$_stases)
+				!"Can't start session"
+	END %;
+EXTERNAL
+    vsta$gl_screen_size_x,
+    vsta$gl_screen_size_y,
+    vsta$_inidmm,	!"Can't initialize display memory"
+    vsta$_defptrfnt,	!"Can't define the POINTER font"
+    vsta$_initek,	!"Can't initialize tektronics emulator module"
+    vsta$_ini_form,	!"can't initialize FORM module"
+    vsta$_ini_notice,	!"can't initialize NOTICE module"
+    vsta$_ini_symb,	!"Can't initialize SYMB module"
+    vsta$_symb_appear,	!"Can't make the symbol bar appear"
+    vsta$_curthink,	!"Can't put up hourglass cursor"
+    vsta$_curnormal,	!"Can't put up normal cursor"
+    vsta$_attcur,	!"Can't attach cursor"
+    vsta$_stases;	!"Can't start session"
+LOCAL
+    status;
+!
+! Initialize wdb id's to start low so we don't run out.
+!
+	wdb_last_id = 0;
+!
+! Call the Display Memory Manager init routine to reset display memory
+! usage for this session
+!
+IF NOT (status =
+   vsta$$dmm_init ()
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_inidmm);	!"can't initialize display memory"
+    $log_and_die;
+    END;
+!
+! Define the font "pointers" (the mouse cursors) so we can quickly put
+! up the hourglass icon.
+!
+IF NOT (status =
+    vs$$txt_defineSystemWideFont
+		(%ASCID 'VSTA$FONT:POINTERS.FNT'	!File name
+		,%ASCID 'VSTA$CURSOR_TYPEFACE'		!Typeface
+		,0, 0					!Typesize, rend.
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_defptrfnt);
+    $log_and_die;
+    END;
+!
+! Put up picture of cursor.  Note:  The cursor will not actually appear on the
+!    screen until it is attached to a valid object (such as the mouse).
+!
+IF NOT vsta$$srv_cursor_thinking ()
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_curthink);
+    $log_and_die;
+    END;
+!
+! Attach the cursor to the mouse.  Note:  The cursor will now appear on the
+!    screen, provided that it has been loaded.  
+!
+IF NOT (status =
+    vsta$$drive_attach_cursor (.vs$gw_vbchan) !Let user move the cursor around
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    vsta$$error_logger (vsta$_attcur);
+    $log_and_die;
+    END;
+!
+! Set mouse position (and thus, the cursor position as well, since it is now
+!    attached to the mouse) to be near the upper left corner of the screen, so
+!    that it does not obscure the authorisation form.  Absolute coordinates
+!    must be used, as the precise placement of the authorisation cannot be
+!    known until later on, after the authorisation form is put up on the
+!    screen (the internal width/height variables are not precise, as they
+!    do not account for the edges of the window).  The mouse position must
+!    be initialised to ensure that if the user presses the MENU key without
+!    moving the mouse, the menu will appear where the cursor is on the screen
+!    rather than where it ended up during the previous session.  Note:  The
+!    cursor will appear to "jump" at this point, as it was previously shown at
+!    the top of the screen following the 'attach cursor' command.
+!
+	if not (status = vsta$$mouse_set_cursor_position (
+	    64 * 4,
+	    64 * 4
+	    ))
+	then return .status;
+!
+! Call the Tek4014 init routine to reset emulator data areas
+! for this session
+!
+IF NOT (status =
+   vsta$$tek_init_module ()
+	)
+  THEN
+    BEGIN
+    vsta$$error_Logger (vsta$_initek);	!"can't initialize tek module"
+    $log_and_die;
+    END;
+!
+! Create PB and window for the bottom VP.
+! Note: Can't create the VP itself until we've created a VS.
+!
+IF NOT (status =
+    get_bottom_vp_stuff ()
+	)
+  THEN $log_and_die;
+
+! Read in the site-system profile.
+! Do this here so as to get VS color info from System profile, in case it
+! is specified.
+vsta$$srv_prof_sysread ();	!All errors are non-fatal.
+
+! Create a virtual screen and a physical screen
+IF NOT (status =
+    create_vs_ps (.srv$gl_screen_halftone_pattern)
+	)
+  THEN $log_and_die;
+
+! Define system-wide fonts from VSTA$FONT:FONTSDEF.TXT
+IF NOT (status =
+    vs$$txt_init_systemwide_fonts ()
+	)
+  THEN $log_and_die;
+
+
+! Create the bottom VP.
+IF NOT (status =
+    create_bottom_vp ()	
+	)
+  THEN $log_and_die;
+vsta$gl_top_vp = .vsta$gl_bottom_vp;	!Initialize "top_vp"
+
+
+! get the default keyboard for this VaxStation(ACP)		
+IF NOT (status = vsta$$get_acp_def_kbd ()			
+       )	
+  THEN $log_error_and_return (.status);	
+
+! Initialize the Kbd setting here.	
+! vsta$gl_keyboard will have the right translation table index on return.
+! It is important to do this here so that user will have no trouble with 
+! login if the keyboard is different from AMERICAN.	
+
+IF NOT (status = vsta$$nudge_keyboard ()
+       )
+  THEN $log_error_and_return (.status);	
+
+!
+! Turn on / off keyclick and autorepeat depending on what
+! the system profile wants.
+!
+vsta$$nudge_keyclick ();	!(see VSSRVINTR.B32)
+vsta$$nudge_autor ();		! . .
+
+! Initialize forms
+IF NOT (status =
+    vsta$$srv_forms_init (.srv$gl_language)	!Init forms using the
+	)					!site's language
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_ini_form);
+    $log_and_die;
+    END;
+
+! Initialize notices
+notice_vd_id = 0;
+
+! Init the SYMBOL key display mechanism
+IF NOT (status=
+    vsta$$symb_init ()
+       )
+   THEN
+    BEGIN
+    vsta$$error_logger (vsta$_ini_symb);
+    $log_and_die;
+    END;
+
+! Make the symbol bar appear.
+IF NOT (status =
+    vsta$$symb_appear ()
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_symb_appear);
+    END;		!Not fatal..
+
+! Set help routine called when user hits HELP key while pointing to PS.
+! Ignore errors since they are not fatal.
+!
+vsta$$set_ps_help (.srv_ps_id, give_ps_help, 0);
+
+! If user hit mouse button to start, put up the auth form.
+! Else go and authorize the UETP user.
+
+IF (.user_flag EQL 1)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_do_authorize ()
+	    )
+      THEN $log_and_die;
+    END
+  ELSE
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_auth_uetp ()	!This takes care of after_auth_actions, also.
+	    )
+      THEN $log_and_die;
+    END;
+
+!
+! Put up the normal cursor
+!
+IF NOT (status =
+    vsta$$srv_cursor_normal ()	!Make the cursor an "up-arrow"
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_curnormal);
+    $log_and_die;
+    END;
+
+RETURN SS$_NORMAL		!More initialization only AFTER user has
+				! authorized. But for now, we must return
+				! to let the username and password be read.
+END;
+
+GLOBAL ROUTINE vsta$$srv_init_after_auth =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when authorization is complete for the user.
+!	Finish initialization.
+! ERROR HANDLING:
+!	If any called routines fail, then log "can't initialize user session
+!	after authorization" and end the session.
+!--
+BEGIN
+MACRO
+    $log_and_die =
+	BEGIN
+!
+! Note that we post the end session request rather than call it directly, so
+! that OUR caller can have an oppurtunity to clean up before end session gets
+! called.
+!
+	vs$$post_ast_request (vsta$$srv_end_session);
+	return vsta$$error_logger (vsta$_iniaftaut)
+	END %;
+EXTERNAL
+    vsta$_curthink,		!"Can't put up hourglass cursor"
+    vsta$_curnormal,		!"Can't put up normal cursor"
+    vsta$_ini_form,		!"Can't initialize FORM module"
+    vsta$_ini_foot,		!"Can't initialize FOOT module"
+    vsta$_iniaftaut;		!"can't initialize after authorization"
+EXTERNAL ROUTINE
+    get_oc_main_pb,		!Get menu for "other choices"
+    get_end_sess_confirm,	!Get menu for "end session confirm"
+    get_main_menu_pb;		!Get menu for "main menu"
+LOCAL
+    sysinput_dev: REF VECTOR[0,BYTE],
+    status;
+!
+! While we are busy, show user the hourglass so he knows that
+! the ACP will not be responding to mouse button hits.
+!
+IF NOT vsta$$srv_cursor_thinking ()		!Put up hourglass icon
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_curthink);
+    $log_and_die;
+    END;
+!
+! Create the menus that user wasn't allowed to use until after authorizing.
+! Delaying these until here speeds up authorization for the user.
+!
+IF NOT get_oc_main_pb ()	!used by the main menu
+  THEN $error (vsta$_hi_menu
+		,string_type, %ASCID 'main menu Other Choices'
+		);
+
+IF NOT get_end_sess_confirm ()	!Used by the main menu
+  THEN $error (vsta$_hi_menu
+		,string_type, %ASCID 'End Session confirmation'
+		);
+
+IF NOT get_main_menu_pb ()
+  THEN $error (vsta$_hi_menu
+		,string_type, %ASCID 'Main menu'
+		);
+!
+! Setup a default VKB so the main menu key works.
+!
+IF NOT (status =
+    setup_default_vkb ()
+	)
+  THEN $log_and_die;
+
+! Read the user's profile, if it exists.
+vsta$$srv_prof_userread ();	!All errors are non-fatal.
+
+! Set the Virtual Screen color to the value from the user's profile.
+IF NOT (status=vs$$vss_set_vs_char(.srv_vs_id,.srv$gl_screen_halftone_pattern)
+       )
+  THEN $log_error_and_return (.status);	
+
+! get the default keyboard for this VaxStation(ACP) in case it was changed
+! by the user-profile	
+IF NOT (status = vsta$$get_acp_def_kbd ()
+       )
+  THEN $log_error_and_return (.status);	
+
+
+! Initialize the Kbd setting here. vsta$gl_keyboard will have the right	
+! translation table index on return.
+
+IF NOT (status = vsta$$nudge_keyboard ()
+       )
+  THEN $log_error_and_return (.status);	
+
+! Incase the default language changed..
+! Initialize forms
+IF NOT (status =
+    vsta$$srv_forms_init (.srv$gl_language)	!Init forms using the
+	)					!user's language
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_ini_form);
+    $log_and_die;		!Something important missing ?
+    END;
+
+! Init the Workstation footer (status) display mechanism
+IF NOT (status=
+    vsta$$foot_init ()				!This makes footer appear, too.
+       )
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_ini_foot);	!"?can't initialize the footer"
+    $log_and_die;
+    END;
+
+startup_clock ();		!Set an alarm clock so we don't just
+				! sleep forever. Log errors and ignore.
+
+!
+! Force first viewport to be in center of screen.
+!
+vp_place_counter = 0;
+
+!
+! Set up group-wide logical name (with system UIC) to point at username for
+! automatic logins of user jobs
+!
+sysinput_dev = .vs$gl_vd_name_desc[1];
+user_lognam[5] = .sysinput_dev[2];
+$crelog(
+	tblflg = 1,			!Group logical name table
+	lognam = user_lognam_desc,	!This ACP's user logical name desc.
+	eqlnam = srv$gl_username_desc);	!Current username desc.
+
+!
+! Turn on / off keyclick and autorepeat depending on what
+! the profile wants.
+!
+vsta$$nudge_keyclick ();	!(see VSSRVINTR.B32)
+vsta$$nudge_autor ();		! . .
+
+!
+! Create a terminal for the user if the profile set up our variable.
+!
+IF (.srv$gl_auto_termtype NEQ vsta$k_termtype_null)
+  THEN
+    vsta$$srv_create_logged_in (.srv$gl_auto_termtype);	!Errors are put
+							! in notices or logged.
+!
+! Put up the normal cursor
+!
+IF NOT (status =
+    vsta$$srv_cursor_normal ()	!Make the cursor an "up-arrow"
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_curnormal); !"Can't put up normal cursor"
+    $log_and_die;
+    END;
+!
+! Session successfully started with authorized user
+!
+vsta$gl_session_in_progress = 1;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_end_session =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when "end session" menu item was selected.
+!	or the link was broken.
+!--
+BEGIN
+
+	external routine
+	    vsta$$drive_set_fo_no_exit;
+EXTERNAL
+    vsta$gl_uetp_username_desc: VECTOR [2],
+    vsta$_dassgn,		!"$dassgn system service failed"
+    vsta$_psnotdel,		!"PS not deleted"
+    vsta$_vsnotdel;		!"VS not deleted"
+LOCAL
+    status;
+
+!
+! Delete logical name which points at username for this VAXstation
+!
+$dellog(
+	tblflg = 1,			!Group logical name table
+	lognam = user_lognam_desc);	!Descriptor of user logical name
+!
+! Stop user processes and I/O if we can.
+!
+vs$$acp_device_job_cleanup ();
+
+!
+! Note to rest of ACP that we're ending a session.
+!
+vsta$gl_end_session_flag = 1;
+!
+! Cancel command timer request.
+!
+$cantim (REQIDT = 515);		!Always returns SS$_NORMAL, even if
+				! the request id doesn't exist.
+!
+! End session for mouse. (gets rid of event flags used, etc.)
+!
+vsta$$mouse_end_session ();
+
+!
+! Delete the PS and blank the screen.  We check variable first, since
+! there may not be any physical screen, such as if user turned device off
+! before we created physical screen during previous session.
+!
+	if .srv_ps_id neq 0
+	then vs$$vss_delete_ps (.srv_ps_id);
+	srv_ps_id = 0;	! PS is gone, clear the global variable.
+!
+! Now delete the virtual screen. This will attempt
+! to delete any associated VP's and PS's.
+!
+	if .srv_vs_id neq 0
+	then vs$$vss_delete_vs (.srv_vs_id);
+	srv_vs_id = 0;	! VS is gone, clear the global varaible.
+!
+! Shutdown the ONYX 
+!
+	vs$$ctrl_shutdown ();
+!
+! Tell hardware NOT to put up the "press finger to start" icon when the
+! vb channel is deassigned.  We will put up the icon when we're done cleaning
+! up (a major portion of which happens asynchronously as vms tells us to
+! delete user vd's as user channels are deassigned).  See module vsacp, routine
+! vs$$acp_all_objects_gone, for the code that eventually puts up the finger
+! icon.
+!
+	if not (status = vsta$$drive_set_fo_no_exit (.vs$gw_vbchan))
+	then vsta$$error_logger (.status);
+!
+!*** No MORE IO attempted to the VAXstation ***
+!
+! Deassign our channel to VB driver (This cancels outstanding INPUT requests).
+!
+IF NOT (status =
+    $dassgn (CHAN = .vs$gw_vbchan)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);	!report $deassign status
+    vsta$$error_Logger	(vsta$_dassgn
+			,string_type, hi_vbname_Desc
+			);
+    END;
+
+vs$gw_vbchan = 0;		!Delete invalid channel number.
+
+!
+! End session for authorization.
+!
+vsta$$srv_auth_end ();		!Nobody is authorized now.
+
+!
+! End session for footer.
+!
+vsta$$foot_end_session ();
+
+!
+! End session for symbol bar.
+!
+vsta$$symb_end ();
+
+!
+! End session for notices.
+!
+vsta$$srv_end_notices ();
+
+!
+! End session for editable fields.
+!
+vsta$$edit_end ();
+
+!
+! End session for forms module.
+!
+vsta$$srv_forms_end ();
+
+!
+! End session for jobs (all JRB's get deleted).
+!
+vsta$$srv_job_end ();
+vsta$$srv_vss_end_session ();	!Clear "current kbd", etc.
+
+!
+! Perform tablet cleanup
+!
+vs$$vtb_cancel_ast_state ();
+
+!
+! Get rid of persistent VDs 
+!
+vs$$vds_vd_multi_delete (0,0);
+!
+! Clear the default VKB, and delete the bottom VP
+!
+vs$$clear_default_vkb ();
+del_bottom_vp_stuff ();
+
+!
+! Delete all the system-wide fonts.
+!
+vs$$txt_delete_all_sw_fonts ();
+
+!
+! Nullify the last user's automatic logged-in terminal type.
+srv$gl_auto_termtype = vsta$k_termtype_null;
+
+!
+! If this was a UETP session, make sure the UETP name descriptor is
+! null, in case the UETP process later does a $qio to end the session.
+!
+vsta$gl_uetp_username_desc [0] = 0;
+
+!
+! Since the ACP has probably now grown to monstrous proportions, consuming
+! mass quantities of physical memory, we'll be generous and give some back
+! until the next session is started.
+!
+$purgws	(INADR = UPLIT(0,%x'7fffffff') );
+
+! We intentionally do NOT re-initialize yet, since at some time
+! soon, processes will asynchronously release their resources.
+! Only after all resources have been relinquished for this ending
+! session do we want to call vsta$$srv_init_srv to re-initialize.
+
+vs$$acp_usage_trace ($DESCRIPTOR('End of workstation session'));
+
+! Session successfully terminated
+
+vsta$gl_session_in_progress = 0;
+
+RETURN SS$_NORMAL			!Go back to wait for activity
+					! to stop, at the ACPDSPCH loop.
+END;
+
+ROUTINE get_logname_vbx0 =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets ascii "VBx0:" and puts the descriptor in 'hi_vbname_desc'
+!	Assigns a channel to the device.
+! ERROR HANDLING:
+!	vsta$$error_Logger is called if the channel can't be assigned.
+!	returns the error from $assign.
+!--
+	begin
+
+	own
+	    vb_name_str: VECTOR [5,BYTE];	!Holds ASCII "VBx0:"
+
+	external routine
+	    vsta$$drive_set_fo_exit;
+
+	external
+	    vsta$_ass_dev;		!"$assign system service failed"
+
+	local
+	    vb_chan,
+	    status;
+!
+! Copy string "VDx0:", then just change the "D" to a "B"
+!
+CH$MOVE (5
+	,.vs$gl_vd_name_desc [1]
+	,vb_name_str
+	);
+
+!
+!  If variant is 1 then we are compiling for the QVSS device
+!
+%if %variant EQL 1
+%then
+	!
+	!  Get name of QV device
+	!
+	vb_name_str [0] = %C'Q';
+	vb_name_str [1] = %C'V';
+%else
+
+	!
+	!  Get name of VB device
+	!
+	vb_name_str [1] = %C'B';		!VB not VD
+
+%fi
+
+hi_vbname_desc [0] = 5;
+hi_vbname_desc [1] = vb_name_str;
+!
+! Aassign a channel to VAXstation hardware and put in vs$gw_vbchan
+!
+IF NOT (status =
+    $assign	(DEVNAM = hi_vbname_desc
+		,CHAN = vb_chan
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);	!Report the $assign error
+!
+!"$assign system service failed for device !AC"
+!
+    vsta$$error_logger	(vsta$_ass_dev
+			,string_type, hi_vbname_desc
+			);
+    RETURN .status;
+    END;
+
+	vs$gw_vbchan = .vb_chan;
+!
+! Only now that we really have a channel to the device, do we clear the flag
+! that showed that the device had been off.  Clearing the flag in the wrong
+! place can cause great pains, particularly if user turns acp off
+! and on during session startup, particularly just as microcode is being
+! loaded.
+!
+	(external vsta$gl_vb_off ; vsta$gl_vb_off = 0);
+!
+! Tell hardware to put up mouse finger if the channel ever gets deassigned.
+! (During normal session-end, we'll revert this decision, but for abnormal
+! deassigns, we want to show icon.)
+!
+	if not (status = vsta$$drive_set_fo_exit (.vs$gw_vbchan))
+	then vsta$$error_logger (.status);
+
+	ss$_normal
+
+END;
+
+ROUTINE create_term_mbx =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Creates a process termination mailbox for all HI created jobs.
+!	2. Stores the unit number of mailbox in global location for $CREPRCs.
+!	3. Issues initial read to mailbox.
+!
+! IMPLICIT OUTPUTS:
+!	vsta$gl_term_mbx_unit		: Unit number of mbx device
+!	vsta$gw_term_mbx_chan		: Channel to mbx
+!	vsta$gl_term_mbx_buf		: Termination mailbox buffer
+!--
+BEGIN
+BIND
+    what_desc = %ASCID 'process termination mailbox';
+EXTERNAL
+    sch$gw_proclim,		!SYSGEN parameter MAXPROCESSCNT
+    vsta$_crembx,		!"$crembx system service failed"
+    vsta$_getdvi,		!"$getdvi system service failed"
+    vsta$_qio;			!"$qio system service failed"
+LOCAL
+    iosb: VECTOR[4,WORD],
+    info_buffer: VECTOR[4] INITIAL((dvi$_unit^16)+4,vsta$gl_term_mbx_unit,0,0),
+    status;
+
+!
+! Determine worst case mailbox buffer size to account for "simultaneous"
+! deletion of many jobs and then create the process termination mailbox
+!
+IF NOT (status =
+    $crembx	(CHAN = vsta$gw_term_mbx_chan
+		,MAXMSG = acc$k_termlen
+		,BUFQUO = acc$k_termlen *
+				vsta$$read_kernel_word(sch$gw_proclim)
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+!
+!"$crembx system service failed to create mailbox for !AC
+!
+    vsta$$error_logger	(vsta$_crembx
+			,string_type, what_desc
+			);
+    RETURN .status;
+    END;
+
+!
+! Get the termination mailbox device unit number for use by $CREPRC
+!
+IF NOT (status =
+    $getdvi	(EFN = .vsta$gl_term_mbx_efn	!(allocated at ACP startup)
+		,CHAN   = .vsta$gw_term_mbx_chan
+		,ITMLST = info_buffer
+		,IOSB   = iosb
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+!
+!$getdvi system service failed to get information about !AC"
+!
+    vsta$$error_logger	(vsta$_getdvi
+			,string_type, what_desc
+			);
+    RETURN .status;
+    END;
+!
+! Wait for the specified event flag to be set. This is to be compatable with
+! future versions of VMS which will return to you before they are really done
+! getting what you want.
+!
+$WAITFR	(EFN = .vsta$gl_term_mbx_efn);
+
+IF NOT .iosb[0]
+  THEN
+    BEGIN
+    vsta$$error_logger (.iosb[0]);
+    vsta$$error_logger	(vsta$_getdvi
+			,string_type, what_desc
+			);
+    vsta$gl_term_mbx_unit = 0;
+    RETURN .iosb[0];
+    END;
+
+!
+! Issue initial read to mailbox (without waiting, of course). The ast routine
+! will issue future read requests
+!
+IF NOT (status =
+    $QIO	(EFN    = .vsta$gl_term_mbx_efn	 !Assigned at ACP startup
+		,CHAN   = .vsta$gw_term_mbx_chan
+		,FUNC   = IO$_READVBLK
+		,ASTADR = vsta$$srv_term_mbx_ast
+		,P1     = vsta$gl_term_mbx_buf
+		,P2     = acc$k_termlen
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+!
+!$qio system service failed to !AC from !AC
+!
+    vsta$$error_logger	(vsta$_qio
+			,string_type, %ASCID 'Read from'
+			,string_type, what_desc
+			);
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE startup_clock =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Starts up the timer.
+! ERROR HANDLING:
+!	vsta$$error_logger called if can't set the timer, status from
+!	$bintim or "set_clock" returned.
+!--
+BEGIN
+EXTERNAL
+    vsta$_bintim;		!"$bintim system service failed"
+OWN
+    plusnn:	BLOCK [30,BYTE]
+		INITIAL ('0 00:00:02.00'),	!2 seconds delta time
+    plusnn_desc: VECTOR [2]
+		INITIAL (13, plusnn);		!Descriptor to it
+LOCAL
+    qtime: VECTOR [2],			!Quad time word
+    status;
+
+IF NOT (status =
+    $bintim	(TIMBUF = plusnn_desc	!Convert to binary
+		,TIMADR = qtime
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+    vsta$$error_logger (vsta$_bintim);
+    RETURN .status
+    END;
+
+IF NOT (status =
+    set_clock (qtime)		!Set the clock
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_clock
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets up a timer interrupt for the given time.
+!	AST routine = clock_timeout.
+! FORMAL PARAMETERS:
+	(qw_time		!Address of quadword time in system format
+	)=
+! ERROR HANDLING:
+!	vsta$$error_logger called if $setimr fails, $setimr status returned.
+!--
+BEGIN
+EXTERNAL
+    vsta$_setimr;		!"$setimr system service failed"
+LOCAL
+    status;
+
+IF NOT (status =
+   $setimr	(DAYTIM = .qw_time	!Set timer to go off then.
+		,ASTADR = clock_timeout
+		,EFN = .vsta$gl_cmd_efn	!Unique efn to use for cmd
+					! interrupts.
+		,REQIDT = 515		!Request identification.
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+    vsta$$error_logger (vsta$_setimr);
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL		!Timer set up ok, return.
+END;
+
+ROUTINE clock_timeout =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the clock timer goes off.
+! ERROR HANDLING:
+!	Errors from called routines are ignored. (the called
+!	routines will have logged the errors).
+!--
+BEGIN
+LOCAL
+    qtime_addr;			!Address of qtime word
+
+IF (.vsta$gl_end_session_flag NEQ 0)
+  THEN RETURN SS$_NORMAL;	!He ended the session, forget it.
+
+qtime_addr = 0;			!Let command set this non-zero if it
+				! wants us to wait a different amount of
+				! time than the usual.
+
+vsta$$check_command (qtime_addr);
+
+IF (.qtime_addr EQL 0)
+  THEN startup_clock ()
+  ELSE set_clock (.qtime_addr);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_vs_ps
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a VS and a PS for this VAXstation
+! FORMAL PARAMETERS:
+	(vs_color		!Color of the VS
+	) =
+! ERROR HANDLING:
+!	vsta$$error_logger is called if can't create ps or vs,
+!	and the error status is returned to the caller.
+!--
+BEGIN
+EXTERNAL
+    vsta$_vsnotcre,		!VS not created
+    vsta$_psnotcre;		!PS not created
+LOCAL
+    status;			! Holder for routine status.
+
+!Create the VS
+IF NOT (status=
+    vs$$vss_create_vs
+		(.vs_color		! color
+		,srv_vs_id		!Address of returned id
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_vsnotcre);	!"?can't create vs"
+    RETURN .status;
+    END;
+
+!Create the PS
+IF NOT (status =
+    vs$$vss_create_ps
+		(.srv_vs_id
+		,srv_ps_id	!Addr of returned ps id
+		,0		! Origin info.
+		,0
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_psnotcre);	!?Can't create ps
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE give_ps_help =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	If not OK to give help yet, remember user requested it.
+!	(This is if the HELP document is not ready to be displayed yet).
+!	If OK, if before authorization, give help about "Authorization form"
+!	 else give help about "Definitions"
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.vsta$gl_authorized)
+  THEN RETURN vsta$$srv_disp_help_kwd (%ASCID 'Definitions')
+  ELSE RETURN vsta$$srv_disp_help_kwd (%ASCID 'Authorization form');
+
+END;
+
+ROUTINE get_bottom_vp_stuff =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create a VP that will be the bottommost in the stacking order.
+! IMPLICIT OUTPUTS:
+!	default_vkb_id
+!--
+BEGIN
+BIND what_desc = %ASCID 'bottom VP/default KBD';
+EXTERNAL
+    vsta$_crepb_for,		!Create pasteboard failed for ..
+    vsta$_crewin_for;		!Create window failed for..
+LOCAL
+    status;
+
+IF NOT (status =
+    vs$$vds_create_pb
+		(default_vkb_id		!Returned PB-id
+		,1			!ACP owns it
+		,0			!Color
+		,1			!Width
+		,1			!Height
+		,0			!UIC
+		,vs$m_vkb		!Keyboard
+		,vsta$k_default_protection
+					!Prot
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger	(vsta$_crepb_for
+			,string_type, what_desc
+			);
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    vs$$vds_create_term_window
+		(.default_vkb_id	!PB-id
+		,bottom_win_id		!Place to put window id
+		,%REF (0)		!Name
+		,0, 0			!Origin
+		,1, 1			!Width, height
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger	(vsta$_crewin_for
+			,string_type, what_Desc
+			);
+    RETURN .status
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE del_bottom_vp_stuff =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the SDA objects we created for the bottom VP and
+!	default keyboard.
+!--
+BEGIN
+BIND what_desc = %ASCID 'bottom VP/default KBD';
+EXTERNAL
+    vsta$_delpb_for;	!"delete pasteboard failed for .."
+LOCAL
+    status;
+!
+! Don't delete the pasteboard if it isn't there, which happens if user
+! turns device off real early during session startup.
+!
+	if .default_vkb_id neq 0
+	then
+	begin
+
+	srv_gl_ignore_delw = 1;		!Tell VSS module that a terminal
+					! window is being deleted.
+	IF NOT (status =
+	    vs$$vds_delete_pb (.default_vkb_id)
+		)
+	  THEN
+!	     vsta$$error_logger	(vsta$_delpb_for
+!				,string_type, what_desc
+!				);
+	      SS$_NORMAL;
+!
+! Mark that it's gone.
+!
+	default_vkb_id = 0;
+
+	srv_gl_ignore_delw = 0		!Make 0 incase routine failed.
+	end;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_bottom_vp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates the viewport for the bottom VP. Must have a VS at this point.
+!--
+BEGIN
+BIND what_desc = %ASCID 'bottom VP/default KBD';
+EXTERNAL
+    vsta$_crevp_for;		!"Create VP failed for .."
+LOCAL
+    status;
+
+IF NOT (status =
+    vs$$vss_create_vp
+		(.bottom_win_id		!Window id
+		,.srv_vs_id		!VS
+		,vsta$gl_bottom_vp	!Vp-id here
+		,-10			!X
+		,-10			!Y
+		,0			!"on top" - but not for long!
+		)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger	(vsta$_crevp_for
+			,string_type, what_desc
+			);
+    RETURN .status
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_default_vkb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Setup the default VKB (so MAIN MENU works). The keyboard is
+!	activated, too.
+! IMPLICIT OUTPUTS:
+!	default_vkb_id
+!--
+BEGIN
+BIND what_desc = %ASCID 'default vkb';
+EXTERNAL
+    vsta$_setdefvkb,		!"Can't setup default VKB"
+    vsta$_actvkb,		!"can't activate VKB"
+    vsta$_rea_def_vkb;		!"Can't read default VKB"
+LOCAL
+    status;
+
+IF NOT (status =
+    vs$$set_default_vkb (.default_vkb_id)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_setdefvkb);	!can't setup default KBD
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    vs$$activate_vkb (.default_vkb_id)
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger	(vsta$_actvkb);
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    init_default_read ()	!Let me see if user types characters
+	)			! to it!
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_rea_def_vkb);
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE init_default_read =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does a read to the default VKB.
+! ERROR HANDLING:
+!	Errors from vs$$read_vkb are passed back to caller.
+!--
+BEGIN
+OWN
+    breaktable: VECTOR [16]
+	INITIAL (REP 16 OF (-1));
+LOCAL
+    status;
+
+IF NOT (status =
+    vs$$read_vkb
+		(.default_vkb_id	!VKB
+		,IO$_READPBLK+IO$M_ESCAPE	! Function code
+		,def_char		!Buffer address
+		,6			!Buffer size (room for escape sequence)
+		,0			!TIMEOUT
+		,breaktable		! Terminator characters
+		,0			! Prompt string (none)
+		,0			! Prompt size (none)
+		,default_char_input	! Completion routine (process level)
+		)
+	)
+  THEN RETURN .status;		!Pass back status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE default_char_input
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the user types a character to the default VKB
+! FORMAL PARAMETERS:
+	(iosb1			!Status code
+	,iosb2
+	,iosb3
+	,iosb4
+	) =
+! ERROR HANDLING:
+!	Errors are logged and the if an error occurs another read
+!	to the default VKB is not issued.
+!--
+BEGIN
+EXTERNAL
+    vsta$_rea_def_vkb;		!"Can't read default VKB"
+LOCAL
+    status;
+
+IF (.iosb1 NEQ SS$_NORMAL)
+  THEN
+    BEGIN
+    IF (.iosb1 EQL SS$_ABORT)
+      THEN RETURN SS$_NORMAL;		!Somebody cancelled the read.
+    vsta$$error_logger (.iosb1);	!Report the bad status
+    END;
+
+vsta$$kbrd_sound_bell (.vs$gw_vbchan);	! Ring the bell
+
+! Issue another read.
+IF NOT (status =
+    init_default_read ()
+	)
+  THEN
+    BEGIN
+    vsta$$error_logger (vsta$_rea_def_vkb);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

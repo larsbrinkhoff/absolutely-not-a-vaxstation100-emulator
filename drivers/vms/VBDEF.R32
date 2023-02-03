@@ -1,0 +1,930 @@
+ 
+!*** MODULE $VBDEF ***
+! 
+! 	$VBDEF - VS100 Device Definitions
+! 	Version 01-00
+! 
+! 
+! +++
+!  Facility:
+! 
+! 	VAX/VMS VS100 display driver
+! 
+!  Abstract:
+! 
+! 	This file contains the internal data structure and constant definitions
+! 	used by the VAXstation 100 display device driver.
+! 
+!  Environment:
+! 
+! 	The definitions in this file pertain to the VS100 graphics workstation
+! 	device.
+! 
+! ---
+! 
+! 
+!  Random internal constants
+! 
+! 
+! 
+!  ===== VAXSTATION INSTRUCTION OPCODES =====
+! 
+!  VS100 instruction opcodes: OpcodeWord<07:00>
+! 
+!  VS100 opcode word:
+! 
+!      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!   |             command modifier bits             |    opcode     |
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+! 
+! 
+!  ===== VAXSTATION INSTRUCTION OPCODES DEFINITIONS =====
+! 
+literal VB$K_OPC_NOP = 0;               !  NoOperation
+literal VB$K_OPC_COPY = 1;              !  CopyArea
+literal VB$K_OPC_DRAW = 2;              !  DrawCurve
+literal VB$K_OPC_PRINT = 3;             !  PrintText
+literal VB$K_OPC_FLOOD = 4;             !  FloodArea
+literal VB$K_OPC_LOAD_CUR = 5;          !  LoadCursor
+literal VB$K_OPC_SET_CUR = 6;           !  SetCursorPosition
+literal VB$K_OPC_ATT_CUR = 7;           !  AttachCursor
+literal VB$K_OPC_GET_CUR = 8;           !  GetCursorPosition
+literal VB$K_OPC_MOVE = 9;              !  MoveObject
+literal VB$K_OPC_MOVEROM = 128;         !  RomMoveObject
+literal VB$K_OPC_REPORT = 10;           !  ReportStatus
+literal VB$K_OPC_REPORTROM = 129;       !  RomReportStatus
+literal VB$K_OPC_FILL = 11;             !  FillArea
+literal VB$K_OPC_GET_MOU = 12;          !  GetMousePosition
+literal VB$K_OPC_SET_MOU = 13;          !  SetMouseCharacteristics
+literal VB$K_OPC_GET_TAB = 14;          !  GetTabletPosition
+literal VB$K_OPC_SET_RPT = 15;          !  SetEventReporting
+! 
+! 
+!  ===== VAXSTATION INSTRUCTION MODIFIERS =====
+! 
+!  VS100 instruction opcodes modifiers: OpcodeWord<31:08>
+! 
+!  VS100 opcode word for copy area:
+! 
+!      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!   |                 | dmk | map | off | smk | src |    opcode     |
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+! 
+! 	src -
+! 	    SourceConstant
+! 	    SourceBitmap
+! 	    SourceHalftone
+! 	smk -
+! 	    SourceMaskRectangle
+! 	    SourceMaskBitmap
+! 	off -
+! 	    (not used)
+! 	map -
+! 	    IdentityMap
+! 	    SourceMapAddress
+! 	    SourceMapLiteral
+! 	    Source/DestinationMapAddress
+! 	    Source/DestinationMapLiteral
+! 	dmk -
+! 	    DestinationMaskNone
+! 	    DestinationMaskLiteralRectangle
+! 	    DestinationMaskRectangleList
+! 
+!  VS100 opcode word for draw curve:
+! 
+!      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!   |     | sec | ptn | dmk | map | off | smk | src |    opcode     |
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+! 
+! 	src -
+! 	    (see copy area)
+! 	smk -
+! 	    (see copy area)
+! 	off -
+! 	    (see copy area)
+! 	map -
+! 	    (see copy area)
+! 	dmk -
+! 	    (see copy area)
+! 	ptn -
+! 	    NoPatternString
+! 	    LiteralPatternState
+! 	    IndirectPatternState
+! 	    UpdateLiteralPatternState
+! 	    UpdateIndirectPatternState
+! 	sec -
+! 	    NoSecondSource
+! 	    ConstantSecondSource
+! 	    HalftoneSecondSource
+! 	    BitmapSecondSource
+! 
+!  VS100 opcode word for print text:
+! 
+!      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!   |             |c|t| dmk | map | ini | fnt | src |    opcode     |
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+! 
+! 	src -
+! 	    SourceConstant
+! 	    SourceFont
+! 	    SourceHalftone
+! 	fnt -
+! 	    FontNoMast
+! 	    FontMask
+! 	ini -
+! 	    DestinationOffsetLiteral
+! 	    DestinationOffsetAddress
+! 	    DestinationOffsetLiteralUpdate
+! 	    DestinationOffsetAddressUpdate
+! 	map -
+! 	    (see copy area)
+! 	dmk -
+! 	    (see copy area)
+! 	t -
+! 	     8BitCharacters
+! 	     16BitCharacters
+! 	c -
+! 	     NoControlString
+! 	     ControlString
+! 
+!  VS100 opcode word for flood area:
+! 
+!      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!   |                 | dmk |     |seed | smk | src |    opcode     |
+!   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+!    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+! 
+! 	src -
+! 	    (see copy area)
+! 	smk -
+! 	    (see copy area)
+! 	off -
+! 	    (see copy area)
+! 	dmk -
+! 	    (see copy area)
+! 	bnd - 
+! 	    BoundryMapLiteral
+! 	    BoundryMapPointer
+! 
+! 
+!  ===== VAXSTATION INSTRUCTION MODIFIERS DEFINITIONS =====
+! 
+literal VB$K_MOD_SRC_CONSTANT = 0;      !  SourceConstant
+literal VB$K_MOD_SRC_BITMAP = 256;      !  SourceBitmap
+literal VB$K_MOD_SRC_FONT = 256;        !  SourceFont
+literal VB$K_MOD_SRC_HALFTONE = 512;    !  SourceHalftone
+literal VB$K_MOD_SMK_RECTANGLE = 0;     !  SourceMaskRectangle
+literal VB$K_MOD_SMK_NONE = 0;          !  SourceMaskNoFont
+literal VB$K_MOD_SMK_BITMAP = 2048;     !  SourceMaskBitmap
+literal VB$K_MOD_SMK_FONT = 2048;       !  SourceMaskFont
+literal VB$K_MOD_INI_LITERAL = 0;       !  DestinationOffsetLiteral
+literal VB$K_MOD_INI_POINTER = 16384;   !  DestinationOffsetAddress
+literal VB$K_MOD_INI_UPDLIT = 32768;    !  DestinationOffsetLiteralUpdate
+literal VB$K_MOD_INI_UPDPTR = 49152;    !  DestinationOffsetAddressUpdate
+literal VB$K_MOD_MAP_IDEN = 0;          !  IdentityMap
+literal VB$K_MOD_MAP_SRC = 131072;      !  SourceMapAddress
+literal VB$K_MOD_MAP_SLIT = 262144;     !  SourceMapLiteral
+literal VB$K_MOD_MAP_SRCDST = 393216;   !  Source/DestinationMapAddress
+literal VB$K_MOD_MAP_SDLIT = 524288;    !  Source/DestinationMapLiteral
+literal VB$K_MOD_DMK_NONE = 0;          !  DestinationMaskNone
+literal VB$K_MOD_DMK_RECTANGLE = 1048576; !  DestinationMaskLiteralRectangle
+literal VB$K_MOD_DMK_RECLIST = 2097152; !  DestinationMaskRectangleList
+literal VB$K_MOD_PTN_NONE = 0;          !  NoPatternString
+literal VB$K_MOD_PTN_LITERAL = 8388608; !  PatternStringLiteral
+literal VB$K_MOD_PTN_POINTER = 25165824; !  PatternStringPointer
+literal VB$K_MOD_PTN_UPDLIT = 41943040; !  PatternStringUpdateLiteral
+literal VB$K_MOD_PTN_UPDPTR = 58720256; !  PatternStringUpdatePointer
+literal VB$K_MOD_SEC_NONE = 0;          !  SecondSourceNone
+literal VB$K_MOD_SEC_CONSTANT = 67108864; !  SecondSourceConstant
+literal VB$K_MOD_SEC_BITMAP = 134217728; !  SecondSourceBitmap
+literal VB$K_MOD_SEC_HALFTONE = 201326592; !  SecondSourceHalftone
+literal VB$K_MOD_TXT_8BIT = 0;          !  8BitCharacters
+literal VB$K_MOD_TXT_16BIT = 8388608;   !  16BitCharacters
+literal VB$K_MOD_CTL_NONE = 0;          !  NoControlString
+literal VB$K_MOD_CTL_STRING = 16777216; !  ControlString
+literal VB$K_MOD_BND_LITERAL = 0;       !  BoundryMapLiteral
+literal VB$K_MOD_BND_POINTER = 0;       !  BoundryMapPointer
+! 
+! 
+!  ===== VAXSTATION FUNCTION CODES =====
+! 
+!  VS100 function codes: CSR0Word<05:01>
+! 
+literal VB$K_FUN_INIT = 2;              !  InitializeDisplay
+literal VB$K_FUN_SEND = 4;              !  SendPacket
+literal VB$K_FUN_START = 6;             !  StartMicrocode
+literal VB$K_FUN_PWRUP = 10;            !  PowerupReset
+literal VB$K_FUN_ABORT = 18;            !  Abort
+literal VB$K_FUN_STATUS = 20;           !  Status
+literal VB$K_FUN_SAVE_SCREEN = 22;      !  Save screen
+literal VB$K_FUN_ENABBA = 32;           !  EnableBBA
+literal VB$K_FUN_DISBBA = 34;           !  DisableBBA
+literal VB$K_FUN_INFINITE = 36;         !  InfiniteRetry
+literal VB$K_FUN_FINITE = 38;           !  FiniteRetry
+! 
+! 
+!  ===== VAXSTATION DEVICE DEFINITIONS =====
+! 
+literal VB$K_DEV_NONE = 0;              !  NoDevice
+literal VB$K_DEV_MOUSE = 1;             !  Mouse
+literal VB$K_DEV_KEY = 2;               !  Keyboard
+literal VB$K_DEV_TABLET = 3;            !  Tablet
+literal VB$K_DEV_AUX = 4;               !  Auxilliry
+literal VB$K_DEV_CONSOLE = 5;           !  Console
+literal VBM_NONE = 1;
+literal VBM_MOUSE = 2;
+literal VBM_KEY = 4;
+literal VBM_TABLET = 8;
+literal VBM_AUX = 16;
+literal VBM_CONSOLE = 32;
+macro DEV_BLOCK = 0,0,8,0 %;
+literal VBS_DEV_BLOCK = 1;
+macro VBV_NONE = 0,0,1,0 %;             !  NoDevice
+macro VBV_MOUSE = 0,1,1,0 %;            !  Mouse
+macro VBV_KEY = 0,2,1,0 %;              !  Keyboard
+macro VBV_TABLET = 0,3,1,0 %;           !  Tablet
+macro VBV_AUX = 0,4,1,0 %;              !  Auxilliry
+macro VBV_CONSOLE = 0,5,1,0 %;          !  Console
+! 
+! 
+!  ===== VAXSTATION CSR DEFINITIONS =====
+! 
+!  VS100 CSR definitions
+! 
+literal VB$M_CSR_GO = 1;
+literal VB$M_CSR_FUNCTION = 62;
+literal VB$M_CSR_IE = 64;
+literal VB$M_CSR_SPARE_1 = 128;
+literal VB$M_CSR_SPARE_2 = 256;
+literal VB$M_CSR_MAINT_DONE = 512;
+literal VB$M_CSR_CRC_DISABLE = 1024;
+literal VB$M_CSR_MAINT_MODE = 2048;
+literal VB$M_CSR_XMIT_ON = 4096;
+literal VB$M_CSR_LINK_ERR = 8192;
+literal VB$M_CSR_LINK_AVAIL = 16384;
+literal VB$M_CSR_LINK_TRANS = 32768;
+literal VB$M_IRR_REASON = 32767;
+literal VB$M_IRR_ERROR = 32768;
+literal VB$M_KRR_CODE = 255;
+literal VB$M_KRR_TRAN = 256;
+literal VB$M_KRR_DEV = 7680;
+macro CSR_BLOCK = 0,0,0,0 %;
+literal VBS_CSR_BLOCK = 16;
+! 
+!     CSR0 (+^o00) - Control and Status Register
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|Link|Link|Link|Xmit|Main|CRC |Main|    |    |Intr|        Function        | Go |
+! 	|Tran|Aval|Err | On |Mode|Disa|Done|    |    |Enab|          Code          | Bit|
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VBR_CSR_WORD = 0,0,16,0 %;
+literal VBS_CSR_WORD = 2;
+macro VB_CSR = 0,0,16,0 %;              !  ControlStatusCSR
+macro VBR_CSR_BITS = 0,0,16,0 %;
+macro VB$V_CSR_GO = 0,0,1,0 %;          !  Go
+macro VB$V_CSR_FUNCTION = 0,1,5,0 %;
+literal VB$S_CSR_FUNCTION = 5;          !  Function
+macro VB$V_CSR_IE = 0,6,1,0 %;          !  InterruptEnable
+macro VB$V_CSR_SPARE_1 = 0,7,1,0 %;     !  Spare
+macro VB$V_CSR_SPARE_2 = 0,8,1,0 %;     !  Spare
+macro VB$V_CSR_MAINT_DONE = 0,9,1,0 %;  !  MaintenanceDone
+macro VB$V_CSR_CRC_DISABLE = 0,10,1,0 %; !  CRCDisable
+macro VB$V_CSR_MAINT_MODE = 0,11,1,0 %; !  MaintenanceMode
+macro VB$V_CSR_XMIT_ON = 0,12,1,0 %;    !  TransmitterOn
+macro VB$V_CSR_LINK_ERR = 0,13,1,0 %;   !  LinkError
+macro VB$V_CSR_LINK_AVAIL = 0,14,1,0 %; !  LinkAvailable
+macro VB$V_CSR_LINK_TRANS = 0,15,1,0 %; !  LinkTransition
+! 
+!     CSR1 (+^o02) - Interrupt Reason Register
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|Err |    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+! 	|Flag|    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VBR_INT_WORD = 2,0,16,0 %;
+literal VBS_INT_WORD = 2;
+macro VB_IRR = 2,0,16,0 %;              !  InterruptReasonCSR
+macro VBR_INT_BITS = 2,0,16,0 %;
+macro VB$V_IRR_REASON = 2,0,15,0 %;
+literal VB$S_IRR_REASON = 15;           !  ErrorReason
+macro VB$V_IRR_ERROR = 2,15,1,0 %;      !  ErrorFlag
+! 
+!     CSR2 (+^o04) - Keyboard Receive Register
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|    |    |    |      Device       | Up/|                  Key                  |
+! 	|    |    |    |       Code        |Down|                  Code                 |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VBR_KEY_WORD = 4,0,16,0 %;
+literal VBS_KEY_WORD = 2;
+macro VB_KRR = 4,0,16,0 %;              !  KeyboardReceiveCSR
+macro VBR_KEY_BITS = 4,0,16,0 %;
+macro VB$V_KRR_CODE = 4,0,8,0 %;
+literal VB$S_KRR_CODE = 8;              !  KeyCode
+macro VB$V_KRR_TRAN = 4,8,1,0 %;        !  TranslationFlag
+macro VB$V_KRR_DEV = 4,9,4,0 %;
+literal VB$S_KRR_DEV = 4;               !  DeviceCode
+! 
+!     CSR3 (+^o06) - Function Parameter Register (low address)
+!     CSR4 (+^o10) - Function Parameter Register (high address)
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|                                    Packet                                     |
+! 	|                                  Low Address                                  |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 	|                                    Packet                                     |
+! 	|                                 High Address                                  |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VB_PR1 = 6,0,16,0 %;              !  FunctionParameterLowCSR
+macro VB_PR2 = 8,0,16,0 %;              !  FunctionParameterHighCSR
+! 
+!     CSR5 (+^o12) - Cursor Position Register X
+!     CSR6 (+^o14) - Cursor Position Register Y
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|                                    Cursor                                     |
+! 	|                                  X Position                                   |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 	|                                    Cursor                                     |
+! 	|                                  Y Position                                   |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VB_CXR = 10,0,16,0 %;             !  CursorPositionXCSR
+macro VB_CYR = 12,0,16,0 %;             !  CursorPositionYCSR
+! 
+!     CSR7 (+^o36) - Interrupt Vector Register
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|                                Interrupt Vector                               |
+! 	|                                    Address                                    |    
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+macro VB_IVR = 14,0,16,0 %;             !  InterruptVectorRegister
+! 
+! 
+!  ==== Interrupt Reason Codes ====
+! 
+literal VB$K_CC_INIT = 1;
+literal VB$K_CC_CMD = 2;
+literal VB$K_CC_START = 4;
+literal VB$K_CC_BUTTON = 8;
+literal VB$K_CC_CURSOR = 16;
+literal VB$K_CC_TABLET = 32;
+literal VB$K_CC_MOUSE = 64;
+literal VB$K_CC_PWRUP = 128;
+literal VB$K_CC_ABORT = 256;
+literal VB$K_CC_STATUS = 512;
+! 
+!  ==== Sub-Status Reason Codes ====
+! 
+literal VB$K_CCS_SUCCESS = 1;
+literal VB$K_CCS_FAILURE = 2;
+literal VB$K_CCS_WHAT = 3;
+! 
+! 
+!  ===== ERROR LOGGING CODES =====
+! 
+!  Error logging reasons
+literal VB$K_ELG_CMD_TIME = 101;        !  CommandTimeout
+literal VB$K_ELG_FUN_TIME = 102;        !  Function timeout
+literal VB$K_ELG_LINK_TIME = 103;       !  LightTransitionTimeout
+literal VB$K_ELG_LINK_ERR = 104;        !  LinkError
+literal VB$K_ELG_LINK_ON = 105;         !  Link Transition To On During Session
+literal VB$K_ELG_LINK_OFF = 106;        !  Link Transition To Off During Session
+literal VB$K_ELG_VAX_SPUR = 107;        !  VAXUBWSpuriousInterrupt
+literal VB$K_ELG_WGA_HW = 108;          !  WGA hardware error
+literal VB$K_ELG_WGA_POWERUP = 109;     !  WGA powerup error
+literal VB$K_ELG_POWERFAIL = 110;       !  Host system power failed
+literal VB$K_ELG_BREAK_LINK = 111;      !  Turn link off from host when ABORT timed out or 
+!  report status timed out
+! 
+!  WGA Hardware Error Codes
+! 
+literal VB$K_ELG_WGA_ERR_NYI = 32768;   !  Not Yet Implemented
+literal VB$K_ELG_WGA_ERR_IFC = 32769;   !  Invalid Function Code
+literal VB$K_ELG_WGA_ERR_ICC = 32770;   !  Invalid Command Code
+literal VB$K_ELG_WGA_ERR_RNXM = 32771;  !  Bus Error: Non-Existent Memory
+literal VB$K_ELG_WGA_ERR_RO = 32772;    !  Bus Error: Retry Overflow
+literal VB$K_ELG_WGA_ERR_LD = 32773;    !  Bus Error: Link Down
+literal VB$K_ELG_WGA_ERR_SBE = 32774;   !  Bus Error: Unexplained
+literal VB$K_ELG_WGA_ERR_AE = 32775;    !  Address Error
+literal VB$K_ELG_WGA_ERR_ZD = 32776;    !  Spurious Interrupt
+literal VB$K_ELG_WGA_ERR_II = 32777;    !  Illegal Instruction
+literal VB$K_ELG_WGA_ERR_BNXM = 32778;  !  BBA NXM (Non-Existent Memory)
+literal VB$K_ELG_WGA_ERR_BNI = 32779;   !  BBA Not Installed
+literal VB$K_ELG_WGA_ERR_KCQO = 32780;  !  Keyboard Command Queue Overflow
+literal VB$K_ELG_WGA_ERR_TCQO = 32781;  !  Tablet Command Queue Overflow (no longer used)
+literal VB$K_ELG_WGA_ERR_MEQO = 32782;  !  Mouse Event Queue Overflow
+literal VB$K_ELG_WGA_ERR_TEQO = 32783;  !  Tablet Event Queue Overflow
+literal VB$K_ELG_WGA_ERR_ABORT = 32784; !  Unable to Abort BBA
+literal VB$K_ELG_WGA_ERR_KEQO = 32785;  !  Keyboard Event Queue Overflow
+literal VB$K_ELG_WGA_ERR_KOR = 32786;   !  Keyboard Overrun
+literal VB$K_ELG_WGA_ERR_TOR = 32787;   !  Tablet Overrun
+literal VB$K_ELG_WGA_ERR_KFE = 32788;   !  Keyboard Framming Error
+literal VB$K_ELG_WGA_ERR_TFE = 32789;   !  Tablet Framming Error
+! 
+!  WGA Powerup Error
+!  
+literal VB$K_ELG_WGA_ERR_PASS = 32896;  !  Base for Test Numbers
+literal VB$K_ELG_WGA_ERR_REG = 32897;   !  68000 Processor Register
+literal VB$K_ELG_WGA_ERR_RHB = 32898;   !  ROM Checksum High Byte
+literal VB$K_ELG_WGA_ERR_PR = 32899;    !  Program RAM
+literal VB$K_ELG_WGA_ERR_CRTC = 32900;  !  CRTC Registers
+literal VB$K_ELG_WGA_ERR_TU = 32901;    !  Tablet USART
+literal VB$K_ELG_WGA_ERR_KU = 32902;    !  Keyboard USART
+literal VB$K_ELG_WGA_ERR_FOE = 32903;   !  FOTR Electrical Loop Back
+literal VB$K_ELG_WGA_ERR_VTO = 32904;   !  Vsync Time Out (no longer used)
+literal VB$K_ELG_WGA_ERR_0FRAME = 32905; !  Frame 0 of the Frame Buffer
+literal VB$K_ELG_WGA_ERR_BS = 32906;    !  BBA Scratchpad RAM
+literal VB$K_ELG_WGA_ERR_BC = 32907;    !  BBA Copyarea Command
+literal VB$K_ELG_WGA_ERR_TTO = 32908;   !  Tablet Time Out
+literal VB$K_ELG_WGA_ERR_FOO = 32909;   !  FOTR Optical Loop Back
+literal VB$K_ELG_WGA_ERR_KTO = 32910;   !  Keyboard Time Out
+literal VB$K_ELG_WGA_ERR_KST = 32911;   !  Keyboard Self-Test
+literal VB$K_ELG_WGA_ERR_VR = 32912;    !  Vector RAM
+literal VB$K_ELG_WGA_ERR_1FRAME = 32913; !  Frame 1 of the Frame Buffer
+literal VB$K_ELG_WGA_ERR_2FRAME = 32914; !  Frame 2 of the Frame Buffer
+literal VB$K_ELG_WGA_ERR_3FRAME = 32915; !  Frame 3 of the Frame Buffer
+literal VB$K_ELG_WGA_ERR_TP = 32916;    !  Tablet Port Loop Back
+literal VB$K_ELG_WGA_ERR_KP = 32917;    !  Keyboard Port Loop Back
+literal VB$K_ELG_WGA_ERR_FOED = 32918;  !  FOTR Electrical CRC Disabled
+literal VB$K_ELG_WGA_ERR_FOOD = 32919;  !  FOTR Optical CRC Disabled
+literal VB$K_ELG_WGA_ERR_BT = 32920;    !  BBA Time Out
+literal VB$K_ELG_WGA_ERR_RLB = 32921;   !  ROM Checksum Low Byte
+! 
+! 
+!  ===== KEYBOARD DEFINITIONS =====
+! 
+!  Keyboard character buffer:
+! 
+! 	+-----------+
+! 	| W_KB_HEAD |
+! 	+-----------+
+! 	| W_KB_TAIL |
+! 	+-----------+
+!       | W_KB_BUFF |
+! 	+--       --+
+!       |           |
+! 	+-----------+
+! 
+macro CHAR_BLOCK = 0,0,0,0 %;
+literal VB$S_CHAR_BLOCK = 6;
+macro VB$W_KB_HEAD = 0,0,16,0 %;        !  Ring buffer head pointer
+macro VB$W_KB_TAIL = 2,0,16,0 %;        !  Ring buffer tail pointer
+macro VB$W_KB_BUFF = 4,0,16,0 %;        !  Ring buffer
+! 
+!  Character bit definitions
+! 
+! 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+! 	|         | Del| Sym|Cntl|Shft|Caps| Up/|               Character               |
+! 	|         |Flag|Down|Down|Down|Lock|Down|                  Code                 |
+! 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+! 
+literal VB$M_CHAR_CODE = 255;
+literal VB$M_CHAR_TRAN = 256;
+literal VB$M_CHAR_CAPS = 512;
+literal VB$K_CHAR_CAPS = 176;
+literal VB$M_CHAR_SHFT = 1024;
+literal VB$K_CHAR_SHFT = 174;
+literal VB$M_CHAR_CNTL = 2048;
+literal VB$K_CHAR_CNTL = 175;
+literal VB$M_CHAR_SYM = 4096;
+literal VB$K_CHAR_SYM = 177;
+literal VB$M_CHAR_DEL = 8192;
+macro CHAR_BIT = 0,0,16,0 %;
+literal VB$S_CHAR_BIT = 2;
+macro VB$V_CHAR_CODE = 0,0,8,0 %;
+literal VB$S_CHAR_CODE = 8;             !  CharacterCode
+macro VB$V_CHAR_TRAN = 0,8,1,0 %;       !  UpDownTransition
+macro VB$V_CHAR_CAPS = 0,9,1,0 %;       !  CapitalLock
+macro VB$V_CHAR_SHFT = 0,10,1,0 %;      !  Shift
+macro VB$V_CHAR_CNTL = 0,11,1,0 %;      !  Control
+macro VB$V_CHAR_SYM = 0,12,1,0 %;       !  Symbol
+macro VB$V_CHAR_DEL = 0,13,1,0 %;       !  Delete
+! 
+! 
+!  Random constants
+! 
+literal VB$K_TIMEOUT = 10;              !  Command timeout in seconds
+literal VB$K_SCMAX = 10;                !  Max number of Status
+!  Requests before aborting
+!  a command.
+! 
+! 
+!  ===== AST CONTROL BLOCK DEFINITIONS =====
+! 
+!  ACB definitions
+! 
+literal ACB$K_VB_LENGTH = 48;           !  ACBSize
+macro ACB_BLOCK = 0,0,0,0 %;
+literal ACB$S_ACB_BLOCK = 48;
+macro ACB$B_SYS_DEFINED = 0,0,0,0 %;
+literal ACB$S_SYS_DEFINED = 24;
+macro ACB$A_TPC = 24,0,32,0 %;          !  AST routine address
+macro ACB$L_TASTPRM = 28,0,32,0 %;      !  AST parameter
+macro ACB$W_TMODE = 32,0,16,0 %;        !  AST access mode
+macro ACB$W_TCHAN = 34,0,16,0 %;        !  AST channel number
+macro ACB$L_TPID = 36,0,32,0 %;         !  AST requestor PID
+macro ACB$L_MASK = 40,0,32,0 %;         !  Button mask
+macro ACB$L_FLAG = 44,0,32,0 %;         !  Action flags
+!   ACB Flag definitions
+literal ACB_FLAG$M_RETPOS = 1;
+literal ACB_FLAG$M_RETBUT = 2;
+macro ACB_FLAG = 0,0,8,0 %;
+literal ACB_FLAG$S_ACB_FLAG = 1;
+macro ACB_FLAG$V_RETPOS = 0,0,1,0 %;    !  Return Position
+macro ACB_FLAG$V_RETBUT = 0,1,1,0 %;    !  Return Button Info
+! 
+! 
+!  ===== UNIT CONTROL BLOCK DEFINTIONS =====
+! 
+!  UCB definitions following standard system definitions
+! 
+literal FKB$K_FR5 = 24;                 !  SavedR5Offset
+literal UCB$K_VB_LENGTH = 482;          !  UCBSize
+macro UCB_BLOCK = 0,0,0,0 %;
+literal UCB$S_UCB_BLOCK = 482;
+macro UCB$B_SYS_DEFINED = 0,0,0,0 %;
+literal UCB$S_SYS_DEFINED = 160;
+macro UCB$W_VB_CSR_REG = 160,0,16,0 %;  !  SavedCSR
+macro UCB$W_VB_KEY_REG = 162,0,16,0 %;  !  SavedKeyboardRegister
+macro UCB$W_VB_CSR3 = 164,0,16,0 %;     !  Saved CSR3
+macro UCB$W_VB_CSR4 = 166,0,16,0 %;     !  Saved CSR4
+macro UCB$W_VB_XPOS_REG = 168,0,16,0 %; !  SavedXPositionRegister
+macro UCB$W_VB_YPOS_REG = 170,0,16,0 %; !  SavedYPositionRegister
+macro UCB$W_VB_ROM = 172,0,16,0 %;      !  ROMVersion
+macro UCB$L_VB_DEV_TYPE = 174,0,32,0 %; !  DeviceType
+macro UCB$W_VB_DEV_VERSION = 178,0,16,0 %; !  DeviceVersion
+macro UCB$W_VB_MCODE = 180,0,16,0 %;    !  MicrocodeVersion
+macro UCB$A_VB_SCREEN = 182,0,32,0 %;   !  VisibleFrameBuffer
+macro UCB$W_VB_SCREEN_X = 186,0,16,0 %; !  VisibleFrameBufferX
+macro UCB$W_VB_SCREEN_Y = 188,0,16,0 %; !  VisibleFrameBufferY
+macro UCB$W_VB_SCREEN_Z = 190,0,16,0 %; !  VisibleFrameBufferZ
+macro UCB$A_VB_FRAME = 192,0,32,0 %;    !  FreeFrameBuffer
+macro UCB$L_VB_FRAME_SIZE = 196,0,32,0 %; !  FreeFrameBufferSize
+macro UCB$A_VB_PROGRAM = 200,0,32,0 %;  !  FreeProgramSpace
+macro UCB$L_VB_PROGRAM_SIZE = 204,0,32,0 %; !  FreeProgramSpaceSize
+macro UCB$A_VB_UNIBUS = 208,0,32,0 %;   !  UnibusOffset
+macro UCB$L_VB_UNIBUS_SIZE = 212,0,32,0 %; !  UnibusSize
+macro UCB$W_VB_DRIVER = 216,0,16,0 %;   !  DriverVersion
+macro UCB$W_VB_COMMAND = 218,0,16,0 %;  !  CurrentCommandCode
+macro UCB$L_VB_SAVER3 = 220,0,32,0 %;   !  TemporarySaveR3
+macro UCB$W_VB_INT_REASON = 224,0,16,0 %; !  Interrupt Reason
+macro UCB$W_VB_CC_REASON = 226,0,16,0 %; !  Command Completion Reason
+macro UCB$W_VB_TEMP_DEVSTS = 228,0,16,0 %; !  Temporary Device Status
+macro UCB$W_VB_SUB_STATUS = 230,0,16,0 %; !  SubStatus (ABORT and STATUS)
+macro UCB$W_VB_SCNT = 232,0,16,0 %;     !  Count of Status Requests
+macro UCB$W_VB_SPRG = 234,0,16,0 %;     !  Value of Status Progress
+macro UCB$W_VB_SPRGU = 236,0,16,0 %;    !  Value of Status Update
+macro UCB$W_VB_STEMP = 238,0,16,0 %;    !  alignment only !!!
+macro UCB$L_VB_FELG_FLINK = 240,0,32,0 %; !  ErrorLogForkForwardLink
+macro UCB$L_VB_FELG_BLINK = 244,0,32,0 %; !  ErrorLogForkBackwardLink
+macro UCB$W_VB_FELG_SIZE = 248,0,16,0 %; !  ErrorLogForkSize
+macro UCB$B_VB_FELG_TYPE = 250,0,8,0 %; !  ErrorLogForkType
+macro UCB$B_VB_FELG_FIPL = 251,0,8,0 %; !  ErrorLogForkIPL
+macro UCB$L_VB_FELG_FPC = 252,0,32,0 %; !  ErrorLogForkPC
+macro UCB$L_VB_FELG_FR3 = 256,0,32,0 %; !  ErrorLogForkR3
+macro UCB$L_VB_FELG_FR4 = 260,0,32,0 %; !  ErrorLogForkR4
+macro UCB$L_VB_FELG_FR5 = 264,0,32,0 %; !  ErrorLogForkR5
+macro UCB$W_VB_ELG_DEVDEPEND = 268,0,16,0 %; !  devdepend for error logging
+macro UCB$W_VB_ELG_REASON = 270,0,16,0 %; !  error log reason
+macro UCB$W_VB_ELG_STS = 272,0,16,0 %;  !  sts for error logging
+macro UCB$W_VB_ELG_DROPPED_ERROR = 274,0,16,0 %; !  dropped error count
+macro UCB$W_VB_ELG_UNSOL = 276,0,16,0 %; !  unsolicit interrupt count
+macro UCB$W_VB_ELG_UNKNOWN = 278,0,16,0 %; !  unknown interrupt count
+macro UCB$W_VB_ELG_LINK_ERROR = 280,0,16,0 %; !  link error count
+macro UCB$W_VB_ELG_FLASH = 282,0,16,0 %; !  flash count
+macro UCB$W_VB_ELG_LIGHT_ON = 284,0,16,0 %; !  light on count
+macro UCB$W_VB_ELG_LIGHT_OFF = 286,0,16,0 %; !  light off count
+macro UCB$W_VB_ELG_COMMAND = 288,0,16,0 %; !  command code at error
+macro UCB$W_VB_ELG_CSR0 = 290,0,16,0 %; !  csr 0 for error logging
+macro UCB$W_VB_ELG_CSR1 = 292,0,16,0 %; !  csr 1 for error logging
+macro UCB$W_VB_ELG_CSR2 = 294,0,16,0 %; !  csr 2 for error logging
+macro UCB$W_VB_ELG_CSR3 = 296,0,16,0 %; !  csr 3 for error logging
+macro UCB$W_VB_ELG_CSR4 = 298,0,16,0 %; !  csr 4 for error logging
+macro UCB$W_VB_ELG_CSR5 = 300,0,16,0 %; !  csr 5 for error logging
+macro UCB$W_VB_ELG_CSR6 = 302,0,16,0 %; !  csr 6 for error logging
+macro UCB$W_VB_ERROR = 304,0,16,0 %;    !  ErrorLogReason
+macro UCB$L_VB_UNKNOWN = 306,0,32,0 %;  !  UnknownInterruptCounter
+macro UCB$L_VB_UNSOL = 310,0,32,0 %;    !  UnsolicitedInterruptCounter
+macro UCB$L_VB_LINK_ERROR = 314,0,32,0 %; !  LinkError
+macro UCB$L_VB_FLASH = 318,0,32,0 %;    !  LightFlash
+macro UCB$L_VB_LIGHT_ON = 322,0,32,0 %; !  LightOnTransition
+macro UCB$L_VB_LIGHT_OFF = 326,0,32,0 %; !  LightOffTransition
+macro UCB$L_VB_ERROR_LOST = 330,0,32,0 %; !  Count of Errors Lost
+macro UCB$L_VB_KB_OWNER = 334,0,32,0 %; !  Keyboard Owner's PID
+macro UCB$W_VB_KB_STATE = 338,0,16,0 %; !  KeyboardCharacterState
+macro UCB$A_VB_KB_BUFFER = 340,0,32,0 %; !  VirtualKeyboardBuffer
+macro UCB$W_VB_KB_SIZE = 344,0,16,0 %;  !  VirtualKeyboardBufferSize
+macro UCB$A_VB_KB_FULL_AST = 346,0,32,0 %; !  KeyboardFullASTBlock
+macro UCB$W_VB_KB_FULL_THRESH = 350,0,16,0 %; !  KeyboardFullThreshold
+macro UCB$A_VB_KB_WAKE_AST = 352,0,32,0 %; !  KeyboardWakeupASTBlock
+macro UCB$W_VB_KB_WAKE_THRESH = 356,0,16,0 %; !  KeyboardWakeupThreshold
+macro UCB$A_VB_MOUSE_MOVE = 358,0,32,0 %; !  CursorMovementASTBlock
+macro UCB$W_VB_MOUSE_STATE = 362,0,16,1 %; !  MouseButtonState
+macro UCB$A_VB_MOUSE_BUTTON = 364,0,32,0 %; !  MouseButtonASTBlock
+macro UCB$A_VB_MOUSE_LIST = 368,0,32,0 %; !  MouseButtonASTList
+macro UCB$W_VB_MOUSE_X = 372,0,16,1 %;  !  MouseXPosition
+macro UCB$W_VB_MOUSE_Y = 374,0,16,1 %;  !  MouseYPosition
+macro UCB$A_VB_TABLET_MOVE = 376,0,32,0 %; !  TabletMovementASTBlock
+macro UCB$W_VB_TABLET_STATE = 380,0,16,1 %; !  TabletButtonState
+macro UCB$A_VB_TABLET_BUTTON = 382,0,32,0 %; !  TabletButtonASTBlock
+macro UCB$A_VB_TABLET_LIST = 386,0,32,0 %; !  TabletButtonASTList
+macro UCB$W_VB_TABLET_X = 390,0,16,1 %; !  TabletXPosition
+macro UCB$W_VB_TABLET_Y = 392,0,16,1 %; !  TabletYPosition
+macro UCB$A_VB_EXIT_IDLE = 394,0,32,0 %; !  ExitIdleLoopASTBlock
+macro UCB$A_VB_LINK_AST = 398,0,32,0 %; !  LinkTransitionASTBlock
+macro UCB$L_VB_LINK_ONEXIT_PID = 402,0,32,0 %; !  OnExit Cleanup PID
+macro UCB$L_VB_PIO_OWNER = 406,0,32,0 %; !  PIO Owner's PID
+macro UCB$W_VB_PIO_STATE = 410,0,16,0 %; !  PIO State
+macro UCB$W_VB_PIO_TIMEOUT = 412,0,16,0 %; !  PIO timeout counter
+macro UCB$A_VB_PIO_WCP_FL = 414,0,32,0 %; !  WCP queue forward link
+macro UCB$A_VB_PIO_WCP_BL = 418,0,32,0 %; !  WCP queue backward link
+macro UCB$W_VB_PIO_WCP_CT = 422,0,16,0 %; !  WCP Count - total
+macro UCB$W_VB_PIO_WCP_CMR = 424,0,16,0 %; !  WCP Count - # of UMRs used
+macro UCB$W_VB_PIO_WCP_CIU = 426,0,16,0 %; !  WCP Count - in use
+macro UCB$W_VB_PIO_WCP_CMIU = 428,0,16,0 %; !  WCP Count - Max in use
+macro UCB$L_VB_PIO_WCP_CNA = 430,0,32,0 %; !  WCP Count - not available
+macro UCB$L_VB_PIO_WCP_CTR = 434,0,32,0 %; !  WCP Count - total request
+macro UCB$A_VB_PIO_DBD_FL = 438,0,32,0 %; !  DB queue forward link
+macro UCB$A_VB_PIO_DBD_BL = 442,0,32,0 %; !  DB queue backward link
+macro UCB$W_VB_PIO_DB_CT = 446,0,16,0 %; !  DB Count - # of buffers
+macro UCB$W_VB_PIO_DB_CMR = 448,0,16,0 %; !  DB Count - # of UMRs used
+macro UCB$W_VB_CMD_SS_CNT = 450,0,16,0 %; !  Status Send count
+macro UCB$W_VB_ABORT_CMD_CNT = 452,0,16,0 %; !  Abort Command count
+macro UCB$W_VB_FO_SHUTDOWN_CNT = 454,0,16,0 %; !  Fiber Optics Shutdown count
+macro UCB$W_VB_ABORT_WHAT_CNT = 456,0,16,0 %; !  Abort What count
+macro UCB$W_VB_UMR_RETRY = 458,0,16,0 %; !  UMR allocation retry counter
+macro UCB$W_VB_UMR_ALLOC_FAIL = 460,0,16,0 %; !  UMR allocation Fail count
+macro UCB$L_VB_PIO_POST_FL = 462,0,32,0 %; !  PIO post processing queue forward link
+macro UCB$L_VB_PIO_POST_BL = 466,0,32,0 %; !  PIO post processing queue backward link
+macro UCB$L_VB_PIO_CNT = 470,0,32,0 %;  !  Count of PIOs performed
+macro UCB$A_VB_KB_SYSRTN = 474,0,32,0 %; !  slot to put in system routine address
+macro UCB$A_VB_SAVE_SCREEN_AST = 478,0,32,0 %; !  list head for save screen ASt block
+literal VB$M_MCVALID = 1;
+literal VB$M_LINK_AVAIL = 2;
+literal VB$M_TRANS_EXP = 4;
+literal VB$M_DEBUG_MCODE = 8;
+literal VB$M_ERRLOG_IP = 16;
+literal VB$M_CMD_IP = 32;
+literal VB$M_ABORT_IP = 64;
+literal VB$M_STATUS_IP = 128;
+macro DEVDEPEND = 0,0,8,0 %;
+literal VB$S_DEVDEPEND = 1;
+macro VB$V_MCVALID = 0,0,1,0 %;
+macro VB$V_LINK_AVAIL = 0,1,1,0 %;
+macro VB$V_TRANS_EXP = 0,2,1,0 %;
+macro VB$V_DEBUG_MCODE = 0,3,1,0 %;
+macro VB$V_ERRLOG_IP = 0,4,1,0 %;
+macro VB$V_CMD_IP = 0,5,1,0 %;
+macro VB$V_ABORT_IP = 0,6,1,0 %;
+macro VB$V_STATUS_IP = 0,7,1,0 %;
+! 
+! 
+!  ===== COMMAND DESCRIPTOR BLOCK =====
+! 
+!  Command descriptor Block:
+!     size = 
+! 
+!   +-------------+-------------+
+!   |          A_FLINK          |
+!   +-------------+-------------+
+!   |         L_OPERAND         |
+!   +-------------+-------------+
+!   |      (VMS reserved)       |
+!   +-------------+-------------+
+!   | W_CMD_DESC  | W_FUNCTION  |
+!   +-------------+-------------+
+!   | W_SBM_DEST  | W_SBM_SRC   |
+!   +-------------+-------------+
+!   |             |  W_OFFSET   | 
+!   +-------------+-------------+
+!   |             |             |
+!   +-------------+-------------+
+!   |             |             |
+!   +-------------+-------------+
+!   |             |             |
+!   +-------------+-------------+
+!   |           A_CMD           |
+!   +---------------------------+
+!   |         A_ADDRESS         |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+! 
+macro COMMAND_BLOCK = 0,0,0,0 %;
+literal CMD$S_COMMAND_BLOCK = 72;
+macro CMD$A_FLINK = 0,0,32,0 %;         !  ForwardLink
+macro CMD$L_OPERAND = 4,0,32,1 %;       !  CommandHostOperandCount
+macro CMD$L_RESERVED = 8,0,32,1 %;      !  VMSReserved
+macro CMD$W_FUNCTION = 12,0,16,0 %;     !  CommandFunctionCode
+macro CMD$W_CMD_DESC = 14,0,16,0 %;     !  CommandDescriptor
+macro CMD$W_SBM_SRC = 16,0,16,0 %;      !  Same Bitmap Source Offset
+macro CMD$W_SBM_DEST = 18,0,16,0 %;     !  Same Bitmap Dest.  Offset
+macro CMD$W_OFFSET = 20,0,0,0 %;
+literal CMD$S_OFFSET = 16;              !  OperandOffset
+macro CMD$A_CMD = 36,0,32,0 %;          !  Command
+macro CMD$A_ADDRESS = 40,0,0,0 %;
+literal CMD$S_ADDRESS = 32;             !  OperandSVAddress
+! 
+! 
+!  ===== WGA COMMAND PACKET (WCP) BLOCK =====
+! 
+!  WCP Block:
+!     header size = WCP$K_HEADER_LENGTH
+! 
+!   +-------------+-------------+
+!   |          A_IOQFL          |
+!   +-------------+-------------+
+!   |          A_IOQBL		|
+!   +-------------+-------------+
+!   |      (VMS reserved)       |
+!   +-------------+-------------+
+!   |   W_FLAGS   |   W_TYPE	|
+!   +-------------+-------------+
+!   |   W_NUMREG  |  W_MAPREG	|
+!   +-------------+-------------+
+!   |         A_DAADDR		| 
+!   +-------------+-------------+
+!   |    W_DAU    |    W_DAS	|
+!   +-------------+-------------+
+!   |         L_SPARE_1		|
+!   +===========================+
+!   | <start of command packet> |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+!   |                           |
+!   +---------------------------+
+! 
+literal WCP$K_HEADER_LENGTH = 32;       !  Header Size
+macro WGA_COMMAND_PACKET = 0,0,0,0 %;
+literal WCP$S_WGA_COMMAND_PACKET = 32;
+macro WCP$A_IOQFL = 0,0,32,0 %;         !  ForwardLink
+macro WCP$A_IOQBL = 4,0,32,0 %;         !  BackwardLink
+macro WCP$L_RESERVED = 8,0,32,1 %;      !  VMSReserved
+! 
+macro WCP$W_TYPE = 12,0,16,0 %;         !  Type
+macro WCP$W_FLAGS = 14,0,16,0 %;        !  Flags
+macro WCP$W_MAPREG = 16,0,16,0 %;       !  Starting UBA Map Register
+macro WCP$W_NUMREG = 18,0,16,0 %;       !  Number of UBA Map Registers
+macro WCP$A_DAADDR = 20,0,32,0 %;       !  Address of Data Area
+macro WCP$W_DAS = 24,0,16,0 %;          !  Data Area Size
+macro WCP$W_DAU = 26,0,16,0 %;          !  Data Area Used
+macro WCP$L_SPARE_1 = 28,0,32,1 %;      !  Spare
+! 
+!   WCP Types
+! 
+literal WCP$K_TYPE_OR = 1;              !  On Request
+literal WCP$K_TYPE_PIO = 2;             !  Pre-Alloc-Locked-Mapped
+literal WCP$K_TYPE_US = 3;              !  User Supplied
+! 
+!   WCP Flags
+! 
+literal WCP$M_FLAG_LCK = 1;
+literal WCP$M_FLAG_MAP = 2;
+literal WCP$M_FLAG_ULCK = 4;
+literal WCP$M_FLAG_UMAP = 8;
+literal WCP$M_FLAG_DALLOC = 16;
+macro WCP_FLAGS = 0,0,8,0 %;
+literal WCP$S_WCP_FLAGS = 1;
+macro WCP$V_FLAG_LCK = 0,0,1,0 %;
+macro WCP$V_FLAG_MAP = 0,1,1,0 %;
+macro WCP$V_FLAG_ULCK = 0,2,1,0 %;
+macro WCP$V_FLAG_UMAP = 0,3,1,0 %;
+macro WCP$V_FLAG_DALLOC = 0,4,1,0 %;
+! 
+! 
+! 
+!  ===== Data Buffer Descriptor (DBD) BLOCK =====
+! 
+!  DBD Block:
+! 
+! 
+!   +-------------+-------------+
+!   |          A_IOQFL          |
+!   +-------------+-------------+
+!   |          A_IOQBL		|
+!   +-------------+-------------+
+!   |      (VMS reserved)       |
+!   +-------------+-------------+
+!   |   W_FLAGS   |   W_TYPE	|
+!   +-------------+-------------+
+!   |   W_NUMREG  |  W_MAPREG	|
+!   +-------------+-------------+
+!   |         A_VAX_ADDR	| 
+!   +-------------+-------------+
+!   |          L_SVAPTE		| 
+!   +-------------+-------------+
+!   |           L_BCNT		| 
+!   +-------------+-------------+
+!   |   W_SPARE_1 |   W_BOFF    |
+!   +---------------------------+
+!   |         A_GP_ADDR		| 
+!   +-------------+-------------+
+!   |         L_CREATOR         |
+!   `---------------------------'
+! 
+macro DB_DESC_BLOCK = 0,0,0,0 %;
+literal DBD$S_DB_DESC_BLOCK = 44;
+macro DBD$A_IOQFL = 0,0,32,0 %;         !  ForwardLink
+macro DBD$A_IOQBL = 4,0,32,0 %;         !  BackwardLink
+macro DBD$L_RESERVED = 8,0,32,1 %;      !  VMSReserved
+! 
+macro DBD$W_TYPE = 12,0,16,0 %;         !  Type
+macro DBD$W_FLAGS = 14,0,16,0 %;        !  Flags
+macro DBD$W_MAPREG = 16,0,16,0 %;       !  Starting UBA Map Register
+macro DBD$W_NUMREG = 18,0,16,0 %;       !  Number of UBA Map Registers
+macro DBD$A_VAX_ADDR = 20,0,32,0 %;     !  VAX Address
+macro DBD$L_SVAPTE = 24,0,32,0 %;       !  SVAPTE of Buffer
+macro DBD$L_BCNT = 28,0,32,0 %;         !  Byte Count
+macro DBD$W_BOFF = 32,0,16,0 %;         !  Byte Offset
+macro DBD$W_SPARE_1 = 34,0,16,0 %;      !  Spare
+macro DBD$A_GP_ADDR = 36,0,32,0 %;      !  Graphics Processor Address
+macro DBD$L_CREATOR = 40,0,32,1 %;      !  creator's pid 
+! 
+!   DBD Types
+! 
+! 	constant(
+! 		) equals 1 increment 1   prefix  DBD$K_TYPE tag "";
+! 
+! 
+!   DBD Flags
+! 
+! 	aggregate  DBD_FLAGS structure  prefix  DBD$;
+! 	end  DBD_FLAGS;
+! 
+! 
+! 
+!  Argument block definitions
+! 
+macro ARG_BLOCK = 0,0,0,0 %;
+literal ARG$S_ARG_BLOCK = 24;
+macro ARG$R_ARG1_BLOCK = 0,0,32,0 %;
+literal ARG$S_ARG1_BLOCK = 4;
+macro ARG$B_P1 = 0,0,8,0 %;
+macro ARG$W_P1 = 0,0,16,0 %;
+macro ARG$L_P1 = 0,0,32,0 %;
+macro ARG$R_ARG2_BLOCK = 4,0,32,0 %;
+literal ARG$S_ARG2_BLOCK = 4;
+macro ARG$B_P2 = 4,0,8,0 %;
+macro ARG$W_P2 = 4,0,16,0 %;
+macro ARG$L_P2 = 4,0,32,0 %;
+macro ARG$R_ARG3_BLOCK = 8,0,32,0 %;
+literal ARG$S_ARG3_BLOCK = 4;
+macro ARG$B_P3 = 8,0,8,0 %;
+macro ARG$W_P3 = 8,0,16,0 %;
+macro ARG$L_P3 = 8,0,32,0 %;
+macro ARG$R_ARG4_BLOCK = 12,0,32,0 %;
+literal ARG$S_ARG4_BLOCK = 4;
+macro ARG$B_P4 = 12,0,8,0 %;
+macro ARG$W_P4 = 12,0,16,0 %;
+macro ARG$L_P4 = 12,0,32,0 %;
+macro ARG$R_ARG5_BLOCK = 16,0,32,0 %;
+literal ARG$S_ARG5_BLOCK = 4;
+macro ARG$B_P5 = 16,0,8,0 %;
+macro ARG$W_P5 = 16,0,16,0 %;
+macro ARG$L_P5 = 16,0,32,0 %;
+macro ARG$R_ARG6_BLOCK = 20,0,32,0 %;
+literal ARG$S_ARG6_BLOCK = 4;
+macro ARG$B_P6 = 20,0,8,0 %;
+macro ARG$W_P6 = 20,0,16,0 %;
+macro ARG$L_P6 = 20,0,32,0 %;
+! 
+! 
+!   WGA Device Types
+! 
+literal VB$K_DT_UNKNOWN = 0;
+literal VB$K_DT_VS100 = 256;
+!   constant	VS125	  equals  %x0125  prefix VB$K_DT tag"";
+!   constant	VS300	  equals  %x0300  prefix VB$K_DT tag"";
+! 
+! 
+! 
+!  End of module $VBDEF
+! 

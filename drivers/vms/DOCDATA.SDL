@@ -1,0 +1,231 @@
+MODULE docdata;
+/*
+/* Internal data structures, constants, for VSTADOC
+/*
+#keyword_length = 32;		/* Size of keywords
+#max_typeface_len = 128;	/* Max size of a typeface string
+#max_filename_str_len = 128;	/* Max size of a filename string
+#index_item_length = 40;	/* Size of index items
+
+/*
+/* Minimum space from the bottom of the last line of text to the page
+/* number line.
+/*
+CONSTANT doc_param$K_space_pn EQUALS 30;
+/*
+/* Lineheight of the page number line.
+/*
+CONSTANT doc_param$K_lineheight_pn EQUALS 15;
+/*
+/* Types of tokens parsed from input TXT file
+/*
+CONSTANT (
+	text_line,
+	cmd_end,
+	eol,
+	ff,
+	cmd_text,
+	eof
+	) EQUALS 0 INCREMENT 1 PREFIX doc_tok$ TAG "";
+CONSTANT doc_tok$_maxtoken EQUALS doc_tok$_eof;
+/*
+/* File page header
+/*
+AGGREGATE page_block STRUCTURE PREFIX pgb$;
+	flink		ADDRESS;
+	blink		ADDRESS;
+        line_q_hdr_fl	ADDRESS;	/* line block q hdr flink
+	line_q_hdr_bl	ADDRESS;	/* line block q hdr blink
+	num_ovls	WORD;		/* How many OVL's there are.
+	num_chks	WORD;		/* Number of checkoff entries there are
+	num_edits	WORD;		/* Number of editable entries there are
+	ovl_q_hdr_fl	ADDRESS;	/* Q hdr of overlayed pictures
+	ovl_q_hdr_bl	ADDRESS;	/* . .
+	chk_q_hdr_fl	ADDRESS;	/* Q hdr for CHECKOFF stuff
+	chk_q_hdr_bl	ADDRESS;
+	edit_q_hdr_fl	ADDRESS;	/* Q hdr for editable stuff
+	edit_q_hdr_bl	ADDRESS;
+	page_num	WORD;		/* Nominal page number
+	y_so_far	WORD;		/* Height used so far
+END page_block;
+/*
+/* line block
+/*
+AGGREGATE txt_line_block STRUCTURE PREFIX lin$;
+	flink		ADDRESS;
+	blink		ADDRESS;
+	leftmargin	WORD;		/* in pixels
+	rightmargin	WORD;		/* in pixels
+	lineheight	WORD UNSIGNED;	/* in pixels
+	num_words	WORD UNSIGNED;	/* number of "words" on this line
+	wrd_actual_num	WORD UNSIGNED;	/* Actual number of words that can
+					/* be stored in word block list.
+	num_rcals	WORD UNSIGNED;	/* Number of RCALs stored in list.
+	word_block	ADDRESS;	/* Addr of word block list
+	rcal_list	ADDRESS;	/* List of routine calls at
+					/* character positions
+	rcal_listend	ADDRESS;	/* End of list ptr.
+	fld0_attrib	LONGWORD;	/* Attributes for the first field
+	cidx		WORD UNSIGNED;	/* # chars so far in total-line
+	space_used	WORD UNSIGNED;	/* # pixels used so far
+	num_extra_flds	WORD UNSIGNED;	/* Number of extra fields
+	fld_block	ADDRESS;	/* Address of extra fld block	
+	ovflow		BITFIELD LENGTH 1; /* set to 1 if line overflowed
+					/* (means justification can be done).
+END txt_line_block;
+/*
+/* Word block - used to help do FILL
+/*
+AGGREGATE word_block STRUCTURE PREFIX wrd$;
+	len		WORD UNSIGNED;	/* How long word is (bytes)
+	pixels		WORD UNSIGNED;	/* How many pixels word takes up.
+	delim_type	BYTE UNSIGNED;	/* Type of delimiter after word
+ CONSTANT delim_none EQUALS 0;		/* No delimiter (word may continue)
+ CONSTANT delim_none_punc EQUALS 1;	/* None, but punc char was last.
+ CONSTANT delim_space EQUALS 2;		/* Single space
+ CONSTANT delim_punc EQUALS 3;		/* Other puctuation (comma, period,..)
+					/* followed by space or EOL.
+	start_pos	WORD UNSIGNED;	/* Starting position in the line
+END word_block;
+
+/*
+/* Extra field block
+/*
+AGGREGATE fld_block STRUCTURE PREFIX fld$;
+	start	WORD UNSIGNED;		/* Starting position on line
+	attrib	LONGWORD;		/* Attributes
+END fld_block;
+
+/*
+/* Field formats
+/*
+CONSTANT doc$K_ff_center EQUALS 1;	/* Centered.
+CONSTANT doc$K_ff_rj EQUALS 2;		/* Right justified.
+
+/*
+/* Parameters for getting memory for a blockvector of word blocks.
+/*
+CONSTANT param$K_start_num_wrdb EQUALS 15;	/* Starting number of word blocks
+CONSTANT param$K_incr_wrdb EQUALS 10;		/* Incremental number of word blocks
+
+/*
+/* Types of measurement-units
+/*
+CONSTANT (
+	centimeters,
+	inches,
+	pixels
+	) EQUALS 0 INCREMENT 1 PREFIX m_units$;
+
+/*
+/* Font definition block
+/*
+AGGREGATE font_def_block STRUCTURE PREFIX fdb$;
+	flink		ADDRESS;	/* forward link
+	blink		ADDRESS;	/* backward link
+	typesize	WORD UNSIGNED;	/* typesize
+	renditions	LONGWORD;	/* renditions for this font
+	filename_len	WORD UNSIGNED;	/* # bytes in filename string
+	typeface_len	WORD UNSIGNED;	/* # bytes in typeface string
+	filename_str	BYTE DIMENSION (#max_filename_str_len);	/* Filename string
+	typeface_str	BYTE DIMENSION (#max_typeface_len);	/* typeface string
+END font_def_block;
+/*
+/* Format of sort record for INDEX
+/*
+AGGREGATE sort_rec_block STRUCTURE PREFIX srb$;
+CONSTANT key_length EQUALS #index_item_length;
+	key_to_sort	BYTE DIMENSION (#index_item_length);
+	idx_str		BYTE DIMENSION (#index_item_length);
+	page_num	WORD UNSIGNED;
+CONSTANT key_size EQUALS .;
+	idx_str_len	WORD UNSIGNED;
+CONSTANT rec_length EQUALS .;
+END sort_rec_block;
+
+/*
+/* Format of keyword record
+/*
+AGGREGATE kwd_rec_block STRUCTURE PREFIX kwd$;
+CONSTANT key_length EQUALS #keyword_length;
+	key_to_sort	BYTE DIMENSION (#keyword_length);
+CONSTANT key_size EQUALS .;
+	pagedef		WORD UNSIGNED;	/* Page where defined
+CONSTANT rec_length EQUALS .;
+END kwd_rec_block;
+
+/*
+/* Format of table of contents block
+/*
+AGGREGATE toc_block STRUCTURE PREFIX toc$;
+	flink		ADDRESS;
+	blink		ADDRESS;
+	pagenum		WORD UNSIGNED;
+	size		WORD UNSIGNED;
+CONSTANT hdr_size EQUALS .;
+/* The string follows the header...
+END toc_block;
+
+/*
+/* Format of internal RCAL blocks (IR)
+/*
+AGGREGATE ir_hdr STRUCTURE PREFIX irb$;
+	flink		ADDRESS;	/* Link to next block (or 0)
+	type		WORD UNSIGNED;	/* What type of field
+	size		WORD UNSIGNED;	/* Size (bytes) including this hdr.
+END ir_hdr;
+
+AGGREGATE ir_sel STRUCTURE PREFIX irb$;
+	sel_cidx	WORD UNSIGNED;	/* Which cidx is start of sel region
+	sel_len		WORD UNSIGNED;	/* How many chars total
+	sel_xstart	WORD UNSIGNED;	/* Starting x-origin of selectable fld
+	sel_len_pixels	WORD UNSIGNED;	/* How many pixels total
+	sel_page	WORD UNSIGNED;	/* Page number (filled in
+					/* after GENERATE)
+	sel_link	WORD UNSIGNED;	/* Program LINK
+	sel_kwd		BYTE DIMENSION (#keyword_length);
+END ir_sel;
+
+AGGREGATE ir_deff STRUCTURE PREFIX irb$;
+	deffont_fn_len	WORD UNSIGNED;	/* Length (bytes) of filename
+	deffont_tf_len	WORD UNSIGNED;	/* Length (bytes) of typeface
+	deffont_ts	WORD UNSIGNED;	/* Typesize
+	deffont_rend	LONGWORD;	/* Rendition bits
+	deffont_cidx	WORD UNSIGNED;	/* Char position of this call
+	deffont_fn_str	BYTE DIMENSION (#max_filename_str_len);
+	deffont_tf_str	BYTE DIMENSION (#max_typeface_len);
+END ir_deff;
+
+AGGREGATE ir_settf STRUCTURE PREFIX irb$;
+	typeface_len	WORD UNSIGNED;	/* Length of typeface
+	typeface_cidx	WORD UNSIGNED;	/* Char position of this call
+	typeface_str	BYTE DIMENSION (#max_typeface_len);
+END ir_settf;
+
+AGGREGATE ir_setts STRUCTURE PREFIX irb$;
+	typesize	WORD UNSIGNED;
+	typesize_cidx	WORD UNSIGNED;	/* Char position of this call
+END ir_setts;
+
+AGGREGATE ir_setrend STRUCTURE PREFIX irb$;
+	rend_on		LONGWORD;
+	rend_off	LONGWORD;
+	rend_cidx	WORD UNSIGNED;	/* Char position of this call
+END ir_setrend;
+
+AGGREGATE ir_markf STRUCTURE PREFIX irb$;
+	markf_cidx	WORD UNSIGNED;	/* Char position of this call
+END ir_markf;
+
+AGGREGATE ir_editable STRUCTURE PREFIX irb$;
+	ed_field	WORD UNSIGNED;
+	ed_space	WORD UNSIGNED;
+	ed_id		WORD UNSIGNED;
+	ed_typesize	LONGWORD;
+	ed_rend_on	LONGWORD;
+	ed_rend_off	LONGWORD;
+	ed_typeface_len	LONGWORD;
+	ed_typeface_str	BYTE DIMENSION (#max_typeface_len);
+END ir_editable;
+
+END_MODULE;

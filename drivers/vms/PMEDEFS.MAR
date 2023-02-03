@@ -1,0 +1,307 @@
+; ************************* PME MACRO LIBRARY ********************************
+;
+;
+; This is the macro library used for the Performance Measurement and Evaluation
+; routines written in the assembly language.  The PMEDEFS macro defined herein
+; is used to define the symbolic names of all components of the PME bucket file.
+; This includes the names of the components of the bucket file header, the buck-
+; et group record, and the bucket record.
+;
+;
+
+	.TITLE	PMEDEFS Performance Measurement and Evaluation
+	.IDENT	/V01-01/
+
+
+	.MACRO	PMEDEFS			; Bucket file structure definitions
+
+
+;		****** OVERALL STRUCTURE OF THE BUCKET FILE ******
+;
+;
+;
+;	+---------------------------------------------------------------+
+;	|                                                               |
+;	|                   Bucket File Header Record                   |
+;	|                                                               |
+;	+---------------------------------------------------------------+
+;	|                                                               |
+;	|                     Bucket Group Records                      |
+;	|                                                               |
+;	+---------------------------------------------------------------+
+;	|                                                               |
+;	|            Index Tables, one for each Bucket Group            |
+;	|                                                               |
+;	+---------------------------------------------------------------+
+;	|                                                               |
+;	|                        Bucket Records                         |
+;	|                                                               |
+;	+---------------------------------------------------------------+
+;	|                                                               |
+;	|                       Bucket Name Table                       |
+;	|                                                               |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; This diagram describes the overall structure of the Bucket File.  The
+; individual components are diagrammed and described in more detail in the
+; sections that follow.
+;
+;
+;
+; The sizes of the various kinds of records.
+;
+HDRRECSIZ	=	20*4		; Size of the Bucket File Header Record
+GRPRECSIZ	=	20*4		; Size of each Bucket Group Record
+BKTRECSIZ	=	5*4		; Size of each Bucket Record
+NAMRECSIZ	=	5*4		; Size of each Bucket Name Table entry
+
+; 		********* THE BUCKET FILE HEADER RECORD *********
+;
+;
+;
+;	+---------------------------------------------------------------+
+;   0	|                   HDRSENT (Sentinel value)                    |
+;	+----                                                       ----+
+;   1	|                          '*<PME$>*'                           |
+;	+---------------------------------------------------------------+
+;   2	|               HDRFLAGS (Bucket file flag bits)                |
+;	+---------------------------------------------------------------+
+;   3	|        HDRNUMRUNS (Number of runs contributing counts)        |
+;	+---------------------------------------------------------------+
+;   4	|   HDRDEFCNTR (Counter for all PC values not in any bucket)    |
+;	+---------------------------------------------------------------+
+;   5	|            HDRNUMBKTS (Number of distinct buckets)            |
+;	+---------------------------------------------------------------+
+;   6	|        HDRBGRPTR (Byte pointer to first Group Record)         |
+;	+---------------------------------------------------------------+
+;   7	|        HDRINDXPTR (Byte pointer to first Index Table)         |
+;	+---------------------------------------------------------------+
+;   8	|       HDRBRECPTR (Byte pointer to first Bucket Record)        |
+;	+---------------------------------------------------------------+
+;   9	|       HDRNAMPTR (Byte pointer to the Bucket Name Table)       |
+;	+---------------------------------------------------------------+
+;  10	|      HDRNXTPTR (Byte pointer to next available location)      |
+;	+---------------------------------------------------------------+
+;  11	|                                                               |
+;	|                                                               |
+;  ..	|                                                               |
+;	|               Unused (Reserved for future use)                |
+;  ..	|                                                               |
+;	|                                                               |
+;  19	|                                                               |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; Definitions of all bucket file Header Record components as byte offsets
+; relative to the start of the file (the header is the first thing there).
+;
+HDRSENT		=	0*4		; The header sentinel
+HDRFLAGS	= 	2*4		; The header flag bits
+HDRNUMRUNS	=	3*4		; The number of bucket file runs
+HDRDEFCNTR	=	4*4		; Default counter for PC values (used
+					;      when no other bucket applies)
+HDRNUMBKTS	=	5*4		; Number of distinct buckets in file
+HDRBGRPTR	=	6*4		; Pointer to first Bucket Group Record
+HDRINDXPTR	=	7*4		; Pointer to first Index Table
+HDRBRECPTR	=	8*4		; Pointer to first Bucket Record
+HDRNAMPTR	=	9*4		; Pointer to first Bucket Name Record
+HDRNXTPTR	=	10*4		; Pointer to next available location
+					;      (i.e. size of bucket file)
+
+
+; Definitions of the flag bits in the HDRFLAGS field.
+;
+HDRFLG_CLR	=	1@0		; Clear all bucket counts flag
+HDRFLG_ABS	=	1@1		; Print absolute addresses in histogram
+
+;		********* THE BUCKET GROUP RECORD *********
+;
+;
+;
+;	+---------------------------------------------------------------+
+;   0	|        GRPLOWBND (Lower bound of group address range)         |
+;	+---------------------------------------------------------------+
+;   1	|         GRPHIBND (Upper bound of group address range)         |
+;	+---------------------------------------------------------------+
+;   2	|      BUCKETSIZE (Number of bytes per Index Table entry)       |
+;	+---------------------------------------------------------------+
+;   3	|        RELTBLPTR (Byte pointer to group's Index Table)        |
+;	+---------------------------------------------------------------+
+;   4	|    ABSTBLPTR (Address of group's Index Table at run-time)     |
+;	+---------------------------------------------------------------+
+;   5	|       GRPNAME (Bucket group's identifying text string)        |
+;	|                                                               |
+;  ..	|                                                               |
+;	|                        (15 longwords)                         |
+;  ..	|                                                               |
+;	|                                                               |
+;  19	|                                                               |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; There is one Bucket Group Record for each Sampling command entered to the
+; PMEBUILD program.  Each such Bucket Group also has an Index Table which is
+; pointed to by RELTBLPTR (a byte offset relative to the start of the bucket
+; file).  At run-time, when counts are actually being tallied in the appro-
+; priate Bucket Records, the absolute (i.e., virtual) memory address of the
+; Index Table is stored in ABSTBLPTR for efficiency.  The Index Table is
+; always large enough to accommodate the entire address range between GRPLOWBND
+; and GRPHIBND, given that each Index Table entry corresponds to a range of
+; BUCKETSIZE bytes.  After the last real Bucket Group Record there is a dummy
+; Group Record with BUCKETSIZE = 0; this record serves as the table terminator.
+;
+;
+;
+; Definitions for all Bucket Group Record components as byte offsets
+;
+GRPLOWBND	=	0*4		; Lower bound of group address range
+GRPHIBND	=	1*4		; Upper bound of group address range
+BUCKETSIZE	=	2*4		; Size in bytes of each index table
+					;      entry's address range
+RELTBLPTR	=	3*4		; Address of group's index table
+					;      relative to start of file
+ABSTBLPTR	=	4*4		; Absolute address of group's index
+					;      table in memory (run-time only)
+GRPNAME		=	5*4		; The group's "name", i.e. title string
+					;      (this is 15 longwords long)
+
+;		************ THE INDEX TABLE ************
+;
+;
+;
+;	+---------------------------------------------------------------+
+;   0	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;   1	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;   2	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;   3	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record Pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;  ..	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+; N-1	|                     Bucket Record pointer                     |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; There is one Index Table for each Bucket Group.  Bucket Records are accessed
+; by computing an index into the Index Table from the Program Counter value to
+; be tallied, and then linearly searching the linked list of Bucket Records to
+; which the selected Index Table entry points.  If no Bucket Record with the
+; right address range is found, the default counter (HDRDEFCNTR in the Header
+; Record) is incremented instead.  So that every Index Table entry will point to
+; some Bucket Record, the very first Bucket Record in the file is a dummy record
+; with an inverted address range (so that no PC address can be in that range).
+; Index Table entries which do not point to any real Bucket Record point to this
+; dummy record.  All Index Table pointers are byte offsets relative to the start
+; of the Bucket File.
+;
+; As mentioned above, there is one Index Table per Bucket Group.  When there are
+; several groups, their Index Tables are simply stored one after another in
+; group order.
+;
+
+;		************ THE BUCKET RECORD ************
+;
+;
+;
+;	+---------------------------------------------------------------+
+;   0	|      FLINK (Forward link to next Bucket Record or zero)       |
+;	+---------------------------------------------------------------+
+;   1	|       BKTLOWBND (Lower bound of bucket's address range)       |
+;	+---------------------------------------------------------------+
+;   2	|       BKTHIBND (Upper bound of bucket's address range)        |
+;	+---------------------------------------------------------------+
+;   3	|  COUNT (Number of Program Counter references to this bucket)  |
+;	+---------------------------------------------------------------+
+;   4	|      BUCKETNUM (This bucket's identifying Bucket Number)      |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; Bucket Records whose address ranges overlap the same Index Table entry address
+; range are linked together in a linked list via the FLINK field.  The last
+; Bucket Record on the list has a zero FLINK.  Each FLINK value is a byte offset
+; relative to the start of the Bucket File.  Since a given bucket's address
+; range may cover many Index Table entries, there can be many Bucket Records
+; for a given distinct bucket.  For this reason each Bucket Record carries a
+; Bucket Number which uniquely identifies the bucket for which this record is
+; accumulating PC counts.  To get the total count for that bucket, PMEHISTO
+; sums the counts for all Bucket Records with the same Bucket Number.
+;
+;
+;
+; Definitions for all Bucket Record components as byte offsets
+;
+FLINK		=	0*4		; Forward link to next bucket record
+BKTLOWBND	=	1*4		; Lower bound of bucket's address range
+BKTHIBND	=	2*4		; Upper bound of bucket's address range
+COUNT		=	3*4		; Number of PC references to this bucket
+BUCKETNUM	=	4*4		; Bucket number represented by this
+					;      bucket record
+
+;		************ THE BUCKET NAME TABLE ************
+;
+;
+;
+;	+---------------------------------------------------------------+
+;   0	|    The program-unit relative base address for this bucket.    |
+;	+---------------------------------------------------------------+
+;   1	|                                                               |
+;	|                                                               |
+;  ..	|       The program unit name for this bucket (16 bytes)        |
+;	|                                                               |
+;   4	|                                                               |
+;	+---------------------------------------------------------------+
+;
+;
+;
+; The Bucket Name Table consists of one entry as shown above for each distinct
+; bucket in the Bucket File.  The Name Table is in order of bucket number, with
+; HDRNAMPTR in the Header Record pointing to the Name Table entry for bucket
+; number 1. HDRNUMBKTS, also in the header, gives the number of distinct buckets
+; and hence the number of Name Table entries.  HDRNXTPTR in the header points to
+; the first available location in the Bucket File after the Name Table.
+;
+; The Name Table is built by PMEBUILD and is used by PMEHISTO for two purposes:
+; first to print the appropriate program unit name (module name, routine name,
+; etc.) for each bucket in the histogram, and second to compute the proper
+; program-unit relative address range for each bucket so this can be displayed
+; in the histogram.  If absolute addresses are to be displayed in the histogram,
+; the base address stored in the Name Table is not used.
+;
+
+;		************ OTHER DEFINITIONS ************
+;
+;
+;
+; The maximum size we can handle for a file name (in characters).
+;
+MAXNAMSIZ	=	40		; Maximum length of a file name
+
+	.ENDM	PMEDEFS			; End of definitions
+
+
+; Macro to define the default file name to be used for all bucket definition
+; and sampling files when no user-specified file name is given.
+;
+	.MACRO	PMEDEFNAME		; Macro to define the default file
+	.ASCII	"PMEFILE"		;      name for all .PMD, .PME, .PMS,
+	.ENDM	PMEDEFNAME		;      and .HIS files
+
+	.END

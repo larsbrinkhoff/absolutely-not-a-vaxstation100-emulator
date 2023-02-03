@@ -1,0 +1,67 @@
+ 
+!*** MODULE VSTA$OUTPUT_DRIVER ***
+! 
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+!  Define some constants
+! 
+literal us = 31;                        ! To mark last control char.
+! 
+!  Special character indicators
+! 
+literal vsta$m_special_char = 1;
+literal vsta$m_lower_case = 2;
+literal vsta$k_block_size = 1;          ! Length of data block
+macro spchar_bits = 0,0,8,0 %;
+literal vsta$s_spchar_bits = 1;
+macro vsta$v_special_char = 0,0,1,0 %;  ! Control characters
+macro vsta$v_lower_case = 0,1,1,0 %;    ! Lowercase characters
+macro vsta$v_extra_bits = 0,2,6,0 %;
+literal vsta$s_extra_bits = 6;          ! For future DEC use
+! 
+!  VAXstation Output Driver Data Base Block
+! 
+literal vs$odrv_m_control_o = 1;
+literal vs$odrv_m_doing_esc = 2;
+literal vs$odrv_m_mbx_enable = 4;
+literal vs$odrv_m_skip_lf = 8;
+literal vs$odrv_m_wrapped = 16;
+literal vs$odrv_m_extra = 224;
+literal vs$odrv_k_block_size = 23;      ! Length of data block
+macro odrv = 0,0,0,0 %;
+literal vs$odrv_s_odrv = 23;
+macro vs$odrv_a_flink = 0,0,32,0 %;     ! Ptr to next device data base
+macro vs$odrv_a_blink = 4,0,32,0 %;     ! Ptr to previous device data
+macro vs$odrv_w_size = 8,0,16,0 %;      ! Data block size
+macro vs$odrv_w_type = 10,0,16,0 %;     ! Data block type
+macro vs$odrv_l_vd_id = 12,0,32,0 %;    ! Virtual display ID
+macro vs$odrv_b_column = 16,0,8,0 %;    ! Current column position
+macro vs$odrv_b_line = 17,0,8,0 %;      ! Current line number
+macro vs$odrv_b_last_char = 18,0,8,0 %; ! Last character processed
+macro vs$odrv_r_state_field = 19,0,32,0 %;
+literal vs$odrv_s_state_field = 4;
+macro vs$odrv_l_state = 19,0,32,0 %;    ! Output device state
+macro vs$odrv_r_state_bits = 19,0,8,0 %;
+literal vs$odrv_s_state_bits = 1;
+macro vs$odrv_v_control_o = 19,0,1,0 %; ! Control-O toggle bit
+macro vs$odrv_v_doing_esc = 19,1,1,0 %; ! ESC sequence in progress
+macro vs$odrv_v_mbx_enable = 19,2,1,0 %; ! MBX data enable bit
+macro vs$odrv_v_skip_lf = 19,3,1,0 %;   ! Skip leading <LF> indicator
+macro vs$odrv_v_wrapped = 19,4,1,0 %;   ! Wrapped indication
+macro vs$odrv_v_extra = 19,5,3,0 %;
+literal vs$odrv_s_extra = 3;            ! For future DEC abuse
+! 
+!  End of module VSTA$OUTPUT_DRIVER
+! 

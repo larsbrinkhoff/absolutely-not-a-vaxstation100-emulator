@@ -1,0 +1,271 @@
+module mouseast (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! VAXstation routines for doing mouse ast bookkeeppiinngg.
+
+forward routine!s . . .
+
+	vsta$$mouse_post_vb_ast,	! Do specific hardware mouse qio.
+	pb_rb_found,			! Find pb and rb for an irp
+	mouse_timeout_ast,		! Queue up request to handle mse tmout.
+	mouse_timeout;			! Handle mouse timeout.
+
+library 'vsta$library:vsacpdef';	! Symbols like vs$k_tty_data
+library 'vsta$library:libmacros';	! symbols like $base
+library 'vsta$library:termio';		! Symbols like "type"
+library 'vsta$library:vsvtb';		! rb_block
+library 'vsta$library:vsvdspb';		! Symbols like pb_block
+library 'sys$library:lib';		! Symbols like irp$w_boff
+
+$vsta_psect;				! Define PSECTs
+
+external routine!s . . .
+
+	vs$$vds_pb_found,	! Find pb database given an id.
+	vsta$$error,		! Error reporting.
+	vsta$$ptr_done_io;	! Finish pointer request.
+
+external
+
+	vs$vds_a_pb_lh_ptr : vector[2],	! header for pb's
+	vs$a_irp,		! Address of irp for qio.
+	vs$a_lirp : ref block[,byte];	! Readable copy of current irp.
+
+global routine vsta$$mouse_post_vb_ast
+!++
+! Functional description:
+!
+!	Request the hardware to tell us when a mouse condition occurs.
+!	
+! Formal parameters:
+ (
+	efn,		! Event flag number
+	astprm,		! Ast parameter
+	function,	! Function code being posted, such as "button pressed",
+			! or "mouse moved"
+	astadr,		! Ast routine to call when action happens.
+	p1, p2		! OPTIONAL qio parameters
+ ) =
+!
+!--
+
+	begin
+
+	external
+
+	    ! Database containing hardware channel numbers.
+	    vs$gw_vbchan : word;
+
+	$qio (
+	    efn = .efn,
+	    chan = .vs$gw_vbchan,
+	    func = .function,
+	    p1 = $parameter_or_0 (p1),
+	    p2 = $parameter_or_0 (p2),
+	    p3 = .astadr,
+	    p4 = .astprm
+	    )
+
+	end;
+
+ROUTINE pb_rb_found(
+	irp_adr,		!I/O request Address we're searching for
+	pb_adr,			! Where to write pb address
+	request_adr		! Where to write request block address
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the request
+! block and its I/O request which corresponds to the I/O request packet
+! address specified. If found, return the pb and the request block address.
+! All pasteboards are searched.
+!
+! FORMAL PARAMETERS:
+!
+!	IRP_ADR	    : Address of I/O request packet address to search for
+!			(input parameter)
+!	REQUEST_ADR : Address to contain address of request data block
+!			(output parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	Pointer to existing pasteboards on the system.
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	rb: REF rb_BLOCK,		!Ptr to arbitrary RB
+	pb: REF pb_block;		!Ptr to arbitrary pb
+
+!
+! Search through the list of known pb's (forward through the
+! list of pb's since we are more than likely dealing with a newer one but
+! backwards through the request lists since we are more likely timing out
+! an older request).
+!
+	pb = .vs$vds_a_pb_lh_ptr[0];
+	WHILE .pb NEQ vs$vds_a_pb_lh_ptr[0] DO
+	  BEGIN
+!
+! Search through all pointer movement request blocks
+!
+	    rb = .pb[vs$vds_a_pb_mov_tail];
+	    WHILE .rb NEQ pb[vs$vds_a_pb_mov_ptr] DO
+	      BEGIN
+		IF .rb[vs$rb_a_irp] EQL .irp_adr THEN
+		  BEGIN
+		    .pb_adr = .pb;
+		    .request_adr = .rb;
+		    RETURN 1;
+		  END;
+		rb = .rb[vs$rb_a_blink];
+	      END;
+!
+! Search through all button action request blocks
+!
+	    rb = .pb[vs$vds_a_pb_btn_tail];
+	    WHILE .rb NEQ pb[vs$vds_a_pb_btn_ptr] DO
+	      BEGIN
+		IF .rb[vs$rb_a_irp] EQL .irp_adr THEN
+		  BEGIN
+		    .pb_adr = .pb;
+		    .request_adr = .rb;
+		    RETURN 1;
+		  END;
+		rb = .rb[vs$rb_a_blink];
+	      END;
+!
+! Search through all boundary action request blocks
+!
+	    rb = .pb[vs$vds_a_pb_bou_tail];
+	    WHILE .rb NEQ pb[vs$vds_a_pb_bou_ptr] DO
+	      BEGIN
+		IF .rb[vs$rb_a_irp] EQL .irp_adr THEN
+		  BEGIN
+		    .pb_adr = .pb;
+		    .request_adr = .rb;
+		    RETURN 1;
+		  END;
+		rb = .rb[vs$rb_a_blink];
+	      END;
+!
+! Still haven't found it - Look at next pb
+!
+	    pb = .pb[vs$vds_a_pb_next_ptr];
+	  END;
+!
+	RETURN 0;		!return not found
+END;				! of routine pb_rb_found
+
+global ROUTINE mouse_timeout_ast
+!++
+! Functional description:
+!
+!	Ast routine for timeout of mouse operations, which merely
+!	queues up a request for the actual work to be done.  See routine
+!	mouse_timeout for actual work.
+!
+! Formal parameters:
+ (
+	astprm			! parameter for timeout routine
+ ) =
+!
+!--
+	begin
+
+	external routine
+
+	    vs$$post_ast_request;	! Queue request for later delivery.
+!
+! Queue up request so that mouse_timeout will do the work at non-ast level
+! real soon.
+!
+	vs$$post_ast_request (mouse_timeout, .astprm)
+
+	end;
+
+ROUTINE mouse_timeout (
+			irp_adr			!IRP which timed out
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for mouse operation timeouts.
+! This involves doing the I/O post-processing on the specified I/O request
+! packet with a return status of SS$_TIMEOUT.
+!
+! FORMAL PARAMETERS:
+!
+!	IRP_ADR : Address of I/O request packet which has timed out
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL	: Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	pb: REF pb_BLOCK,		!Virtual tablet Block address
+	rb: REF rb_BLOCK,		!rb  address
+	status;				!To contain return status value
+
+!
+! See if we still have an I/O request around with this IRP
+!
+	IF NOT pb_rb_found (.irp_adr, pb, rb)
+	THEN
+	  RETURN SS$_NORMAL;
+!
+! Yup. Still around...Do the post-processing with a SS$_TIMEOUT
+!
+	vsta$$ptr_done_io(
+			0,
+			rb[$base],
+			SS$_TIMEOUT);
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine mouse_timeout
+
+end
+eludom

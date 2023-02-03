@@ -1,0 +1,936 @@
+! VSGIAS.BLI - VaxStation GIdis Appearance Selectors, Bliss source
+!
+MODULE VSTA$GID_as(
+    IDENT = 'GIDIS Appearance Selectors',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This file contains routines for the following Gidis functions:
+!		select_writing_color
+!		select_background_color
+!		set_writing_mode
+!		line_texture
+!		area_texture
+!		set_clipping_region
+!		plane_select
+!		area_texture
+!		fill_to_x
+!		fill_to_y
+!		fill_to_point
+!		fill_off
+!		set_pixel_size
+!
+!	To use this module, require VSGIAS.REQ to declare the routines
+!	and symbols.
+!
+! Environment:
+!
+GLOBAL LITERAL GID$$AS_Edit_level = 7;
+!
+!--
+
+LIBRARY 'VSTA$LIBRARY:vsging';		! Native graphics interface constants
+LIBRARY 'VSTA$LIBRARY:vsgisf';		! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgicx';		! Gidis coordinate transformations
+LIBRARY 'VSTA$LIBRARY:vsgipa';
+LIBRARY 'VSTA$LIBRARY:vsgial';		! Alphabet manager
+LIBRARY 'VSTA$LIBRARY:libmacros';
+LIBRARY 'vsta$library:vstasyms';
+
+library_file_crock;
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+	VS$$ACP_Get_VM,
+	VS$$ACP_Free_VM,
+	VSTA$$Error;
+
+LITERAL				! Writing modes
+    Transparent = 0,
+    transparent_negate = 1,
+    complement = 2,
+    complement_negate = 3,
+    overlay = 4,
+    overlay_negate = 5,
+    replace = 6,
+    replace_negate = 7,
+    erase = 8,
+    write = 9;
+
+LITERAL
+    GID$AS_K_resolvable_colors = 17;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_define_usable_space(
+!	The following values are coordinates in the Gidis
+!	virtual coordinate space.
+    left,		! minimum value for left limit in X
+    top,		! minimum value for top limit in Y
+    right,		! maximun value for right limit in X
+    bottom		! maximun value for bottom limit in Y
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Sets the extereme values for the size of the clipping rectangle
+!	for the set_clipping_region opcode. The clipping region set by
+!	that opcode is clipped to these limits before it is used.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ left_clipping_limit] = .left;
+    sf[ top_clipping_limit] = .top;
+    sf[ right_clipping_limit] = .right;
+    sf[ bottom_clipping_limit] = .bottom;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_set_clipping_region(
+!	The following values are coordinates in the Gidis
+!	virtual coordinate space.
+    left,		! Value of left limit in X
+    top,		! Value of top limit in Y
+    right,		! Value of right limit in X
+    bottom		! Value of bottom limit in Y
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Sets the region that drawing is clipped to.
+! Algorithm:
+!	Range check the clipping region, and set.
+! Side effects:
+!-
+    BEGIN
+
+!	Clip each boundary to the pre-determined limits:
+
+    IF .left LSS .sf[ left_clipping_limit]
+    THEN left = .sf[ left_clipping_limit];
+    IF .top LSS .sf[ top_clipping_limit]
+    THEN top = .sf[ top_clipping_limit];
+    IF .right GTR .sf[ right_clipping_limit]
+    THEN right = .sf[ right_clipping_limit];
+    IF .bottom GTR .sf[ bottom_clipping_limit]
+    THEN bottom = .sf[ bottom_clipping_limit];
+!
+!	Ensure that the bottom is below the top and that left is to the
+!	left of right.
+    IF .bottom LSS .top THEN bottom = .top;
+    IF .right LSS .left THEN right = .left;
+!	Convert to X, Y, Width, Height format required for native graphics
+!	and convert to native coordinate space
+
+    sf[ clipping_x] = GID$$CX_map_coordinate( .left);
+    sf[ clipping_y] = GID$$CX_map_coordinate( .top);
+    sf[ clipping_width]	=
+	GID$$CX_map_coordinate( .right) - .sf[ clipping_x] + 1;
+    sf[ clipping_height] =
+	GID$$CX_map_coordinate( .bottom) - .sf[ clipping_y] + 1;
+    1
+    END;
+
+
+!+
+ROUTINE setup_writing_mode_block =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ shading_needs_updating] = 1;
+    CASE .sf[ writing_mode] FROM 0 TO 9 OF
+    SET
+    [ Transparent]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_sourcedest;
+!	sf[ map_for_dc] = 12;
+	sf[ map_for_dc] = 5;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = 0;
+	sf[ char_background] = -1;
+	sf[ char_foreground] = -1;
+	sf[ map_type_for_ca] = nat$k_map_sourcedest;
+!	sf[ map_for_ca] = 12;
+	sf[ map_for_ca] = 5;
+	sf[ writing_pattern] = 0;
+	END;
+    [ transparent_negate]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_sourcedest;
+!	sf[ map_for_dc] = 12;
+	sf[ map_for_dc] = 5;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = 0;
+	sf[ char_background] = -1;
+	sf[ char_foreground] = -1;
+	sf[ map_type_for_ca] = nat$k_map_sourcedest;
+!	sf[ map_for_ca] = 12;
+	sf[ map_for_ca] = 5;
+	sf[ writing_pattern] = 0;
+	END;
+    [ complement]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_sourcedest;
+	sf[ map_for_dc] = 6;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = 1;
+	sf[ char_foreground] = 1;
+	sf[ char_background] = -1;
+	sf[ map_type_for_ca] = nat$k_map_sourcedest;
+	sf[ map_for_ca] = 6;
+	sf[ writing_pattern] = .sf[ line_texture];
+	END;
+    [ complement_negate]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_sourcedest;
+	sf[ map_for_dc] = 6;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = 1;
+	sf[ char_foreground] = 1;
+	sf[ char_background] = 1;
+	sf[ map_type_for_ca] = nat$k_map_sourcedest;
+	sf[ map_for_ca] = 9;
+	sf[ writing_pattern] = NOT .sf[ line_texture];
+	END;
+    [ overlay]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = .sf[ foreground_color];
+	sf[ char_foreground] = .sf[ foreground_color];
+	sf[ char_background] = -1;
+	IF .sf[ area_texture_type] EQL nat$k_src_constant
+	THEN ! There is no user defined pattern, use replace mode
+	    BEGIN
+	    sf[ map_type_for_ca] = nat$k_map_identity;
+	    END
+	ELSE ! User halftone is involved, use true overlay mode
+	    BEGIN
+	    sf[ map_type_for_ca] = nat$k_map_sourcedest;
+	    sf[ map_for_ca] = 7;
+	    END;
+	sf[ writing_pattern] = .sf[ line_texture];
+	END;
+    [ overlay_negate]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = .sf[ foreground_color];
+	sf[ char_foreground] = .sf[ background_color];
+	sf[ char_background] = .sf[ foreground_color];
+	IF .sf[ area_texture_type] EQL nat$k_src_constant
+	THEN ! There is no user defined pattern, use replace mode
+	    BEGIN
+	    sf[ map_type_for_ca] = nat$k_map_source;
+	    sf[ map_for_ca] = 2;
+	    END
+	ELSE ! User halftone is involved, use true overlay mode
+	    BEGIN
+	    sf[ map_type_for_ca] = nat$k_map_sourcedest;
+	    sf[ map_for_ca] = 7;
+	    END;
+	sf[ writing_pattern] = NOT .sf[ line_texture];
+	END;
+    [ replace]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_altern_src;
+	sf[ source1] = .sf[ foreground_color];
+	sf[ source2] = .sf[ background_color];
+	sf[ char_background] = .sf[ background_color];
+	sf[ char_foreground] = .sf[ foreground_color];
+	sf[ map_type_for_ca] = nat$k_map_identity;
+	sf[ writing_pattern] = .sf[ line_texture];
+	END;
+    [ replace_negate]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_altern_src;
+	sf[ source1] = .sf[ foreground_color];
+	sf[ source2] = .sf[ background_color];
+	sf[ char_foreground] = .sf[ background_color];
+	sf[ char_background] = .sf[ foreground_color];
+	sf[ map_type_for_ca] = nat$k_map_identity;
+	sf[ writing_pattern] = NOT .sf[ line_texture];
+	END;
+    [ erase]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = .sf[ background_color];
+	sf[ char_background] = .sf[ background_color];
+	sf[ char_foreground] = -1;
+	sf[ map_type_for_ca] = nat$k_map_identity;
+	sf[ writing_pattern] = -1;
+	END;
+    [ write]:
+	BEGIN
+	sf[ map_type_for_dc] = nat$k_map_identity;
+	sf[ pattern_mode] = nat$k_ptn_single_src;
+	sf[ source1] = .sf[ foreground_color];
+	sf[ char_foreground] = -1;
+	sf[ char_background] = .sf[ foreground_color];
+	sf[ map_type_for_ca] = nat$k_map_identity;
+	sf[ writing_pattern] = -1;
+	END;
+    TES;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_set_number_colors(	! Select the color range
+    color_value	! Number of intensity values desired
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Sets the range of colors to try to emulate
+! Algorithm:
+!	Range check the limit, and set limits accordingly
+! Side effects:
+!-
+    BEGIN
+    IF .color_value-1 GEQU GID$AS_K_resolvable_colors
+    THEN color_value = GID$AS_K_resolvable_colors;
+    sf[ number_colors] = .color_value;
+    1
+    END;
+
+!+
+ROUTINE translate_writing_color(
+    color_value	! Intensity value to translate
+    ) =
+! Routine value:
+!	Translated color
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Given a user's color number, it translates this, using the number
+!	colors set in set_number_colors, to an appropriate workstation color.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	translated;
+
+!	Account for the incorrect color order on Onyx, where black is 0 and
+!	white is 1, and other colors are 2-15.
+
+    IF .color_value EQL .sf[ number_colors]-1
+    THEN ! Color is supposed to be solid white
+	translated = 1
+    ELSE IF .color_value EQL 0
+    THEN ! Color is supposed to be black
+	translated = 0
+    ELSE ! Color has to be scaled
+	BEGIN
+	translated =
+	    .color_value * GID$AS_K_resolvable_colors / .sf[ number_colors];
+	translated = .translated + 1;
+
+!	Range check the color, and cause out of range to be white.
+
+	IF .translated GEQU GID$AS_K_resolvable_colors
+	THEN translated = 1;
+	END;
+
+    .translated
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_select_writing_color(	! Select the foreground color
+    color_value	! Intensity value to use for foreground color
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ foreground_color] = translate_writing_color( .color_value);
+    setup_writing_mode_block()
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_select_background_color(	! Select the background color
+    color_value	! Intensity value to use for background color
+    ) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ background_color] = translate_writing_color( .color_value);
+    setup_writing_mode_block()
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_Set_writing_mode(
+    new_mode
+    ) =
+! Routine value:
+!	Error status
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	This function inplements the general case of these writing modes for
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .new_mode GTRU 9
+    THEN 1
+    ELSE
+	BEGIN
+	sf[ writing_mode] = .new_mode;
+	setup_writing_mode_block()
+	END
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_set_pixel_size(
+    width,
+    height
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ x_pixel_size] = GID$$CX_map_coordinate( .width);
+    IF .sf[ x_pixel_size] LEQ 0 THEN sf[ x_pixel_size] = 1;
+    sf[ y_pixel_size] = GID$$CX_map_coordinate( .height);
+    IF .sf[ y_pixel_size] LEQ 0 THEN sf[ y_pixel_size] = 1;
+!    IF (.sf[ x_pixel_size] EQL 1) AND (.sf[ y_pixel_size] EQL 1)
+!    THEN
+    sf[ print_last_pixel] = 0;
+!    ELSE sf[ print_last_pixel] = path_supress_last_pixel_flag;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_Line_texture(
+    p_length,	! Pattern length, in bits
+    p_pattern,	! Pattern contents, first bit is low order
+    p_mult	! Pattern multiplier
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Change the line texture used for the next linear drawing operation
+! Algorithm:
+!	IF the texture is all ones, and so was the old one, do nothing.
+!	Otherwise, arrange for the deallocation of the old pattern state
+!	in a completion routine, allocate a new pattern state buffer, and
+!	initialize it.  Change the pattern in the state table, and update the
+!	writing mode information that goes with it.
+! Side effects:
+!-
+    BEGIN
+
+    ROUTINE lt_completion_routine( pattern_state) =
+!   Used to free the old pattern state at the right time, after all pending
+!   operations are done with it.
+	BEGIN
+	IF .pattern_state NEQ 0
+	THEN VS$$ACP_Free_vm( %ref(4), pattern_state)
+	ELSE 1
+	END;
+
+    LOCAL status;
+
+   IF .p_length EQL 0
+   THEN ! Length 0 is solid by definition
+	BEGIN
+	p_pattern = 1;
+	p_length = 1;
+	p_mult = 1;
+	END;
+
+    IF .p_length GTRU 16
+    THEN p_length = 16;		! Length out of range is 16
+
+!	If both old and new pattern are all ones or all zeros, don't bother
+!	flushing the path buffer or deallocating the pattern state.
+
+    IF (.p_pattern< 0, .p_length, 1> EQL -1)
+    AND (.(sf[ line_texture])< 0, .sf[ line_texture_length], 1> EQL -1)
+    THEN RETURN 1;	! Nothing really changed.
+
+    IF (.p_pattern< 0, .p_length, 1> EQL 0)
+    AND (.(sf[ line_texture])< 0, .sf[ line_texture_length], 1> EQL 0)
+    THEN RETURN 1;	! Nothing really changed.
+
+!	Terminate any path in progress by flushing the path buffer
+
+    status = GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    IF NOT .status THEN VSTA$$Error( .status);
+
+! Arrange for old pattern state to be freed in a completion routine
+! NOTE: This code is duplicated in GID_DISPOSE in module VSGISM.
+
+    IF .sf[ pattern_state] NEQ 0
+    THEN status = $VstaNoop(	! A NOP hardware function that causes the done
+				! routine to execute at the right time
+	ASTADR = lt_completion_routine,
+	ASTPRM = .sf[ pattern_state]);
+    IF NOT .status THEN VSTA$$Error( .status);
+
+!	Create new pattern state information
+
+    status = VS$$ACP_get_vm( %ref(4), sf[ pattern_state]);
+    IF NOT .status THEN VSTA$$Error( .status);
+
+!	Zero out the new pattern state block
+    (.sf[ pattern_state]) = 0;
+
+!	Change the pattern state information
+
+    sf[ line_texture_length] = .p_length;
+    sf[ line_texture] = .p_pattern;
+    sf[ line_texture_mult] = .p_mult;
+    setup_writing_mode_block();
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_Area_texture(
+    alphabet,	! Alphabet to get texture from, 0 is special case
+    char,	! Character to use for texture
+    x_size,	! A "Unit size" for the texture
+    y_size	! in X and Y
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Set the area texture to the appropriate constant or halftone
+!	according to the parameters provided.
+! Algorithm:
+!	There are three different area textures: that of solid pattern,
+!	pattern register, and from a character set.  Each case is handled
+!	somewhat differently.
+! Side effects:
+!-
+    BEGIN
+
+    COMPILETIME state_file_size = 0;
+    FIELD set_area_texture_block =
+	SET
+	sat_length = word_scalar,	! Pattern length for texture
+	sat_pattern = word_scalar,	! actual pattern
+	sat_mult = word_scalar		! multiplier
+	TES;
+    LITERAL sat_table_size = state_file_size;
+    UNDECLARE state_file_size;
+
+    LOCAL
+	texture_block: REF state_instance FIELD (set_area_texture_block),
+	texture_foreground,
+	texture_background,
+	status;
+
+    status = 1;
+    sf[ shading_alphabet] = .alphabet;
+    sf[ shading_char] = .char;
+    sf[ shading_width] = .x_size;
+    sf[ shading_height] = .y_size;
+    sf[ area_texture_type] = nat$k_src_ht_bitmap;
+
+!	Determine correct texture to write into the texture as foregorund
+!	and background colors for this writing mode.
+
+    CASE .sf[ writing_mode] FROM 0 TO 9 OF
+    SET
+    [ transparent,
+     transparent_negate,
+     complement,
+     complement_negate]:
+	BEGIN
+	texture_foreground = 1;
+	texture_background = 0;
+	END;
+    [ overlay]:
+	BEGIN
+	texture_foreground = .sf[ foreground_color];
+	texture_background = 0;
+	END;
+    [ overlay_negate]:
+	BEGIN
+	texture_foreground = 0;
+	texture_background = .sf[ foreground_color];
+	END;
+    [ replace]:
+	BEGIN
+	texture_foreground = .sf[ foreground_color];
+	texture_background = .sf[ background_color];
+	END;
+    [ replace_negate]:
+	BEGIN
+	texture_foreground = .sf[ background_color];
+	texture_background = .sf[ foreground_color];
+	END;
+    [ erase]:
+	BEGIN
+	texture_foreground = .sf[ background_color];
+	texture_background = .sf[ background_color];
+	END;
+    [ write]:
+	BEGIN
+	texture_foreground = .sf[ foreground_color];
+	texture_background = .sf[ foreground_color];
+	END;
+    TES;
+
+    IF .alphabet EQL 0 and .char EQL 0
+    THEN ! Do the special case of pattern register filling
+	BEGIN
+
+	ROUTINE at1_completion_routine(
+	    stuff: REF state_instance FIELD (set_area_texture_block)
+	    ) : NOVALUE =
+	    BEGIN
+	    VS$$ACP_Free_vm( %ref(sat_table_size), stuff);
+	    END;
+
+	IF .(sf[ line_texture])< 0, .sf[ line_texture_length], 1> EQL -1
+	THEN ! Texture is a solid 1, set modes for writing constant
+	    BEGIN
+	    sf[ area_texture_type] = nat$k_src_constant;
+	    END
+	ELSE 	  ! Texture is not a solid, so draw the appropriate texture
+	    BEGIN ! into the area texture bitmap
+	    status = VS$$ACP_get_vm( %ref(sat_table_size), texture_block);
+	    IF NOT .status THEN VSTA$$Error( .status);
+
+	    texture_block[ sat_length] = .sf[ line_texture_length];
+	    texture_block[ sat_pattern] = .sf[ line_texture];
+	    texture_block[ sat_mult] = .sf[ line_texture_mult];
+
+	    status = $VSTACOPY(
+		SOURCE = .texture_background,
+		DSTTYP = nat$k_dst_bitmap,
+		DST = sf[ area_texture_descriptor]);
+	    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+	    $VSTADRAW(
+		DSTTYP = nat$k_dst_bitmap,
+		DST = sf[ area_texture_descriptor],
+		SOURCE = .texture_foreground,
+		MSKTYP = nat$k_msk_rectangle,
+		MASK = UPLIT WORD( 16, 1),
+		PTHNUM = 2,
+		PTHADR = UPLIT WORD( 0, 0, 2, 0, 16, 0),
+!		PATMOD = nat$k_ptn_altern_src,! DELETED TEMPORARY
+		PATBLK = .texture_block,
+		PATSTA = UPLIT WORD( 0, 0),
+		SSOURC = .texture_background,
+		ASTADR = at1_completion_routine,
+		ASTPRM = .texture_block
+	    )
+	    END
+	END
+    ELSE ! Not the special case, write the selected character into the texture
+	BEGIN
+
+	COMPILETIME state_file_size = 0;
+	FIELD cell_texture_block =
+	    SET
+	    ctb_block_length = longword_scalar,	! Length of this block
+	    ctb_string_desc = what_follows,	! String to output
+		ctb_string_length = longword_scalar,
+	        ctb_string_address = longword_scalar,
+	    ctb_font_header_address = longword_scalar,
+	    ctb_font_desc = what_follows,	! Font to print with
+		ctb_font_address = longword_scalar,
+		ctb_font_location = longword_scalar,
+		ctb_font_reserved = longword_vector( 3),
+	    ctb_font_instance = longword_scalar,! For dereferencing
+	    ctb_control_string = what_follows_word_vector
+	    TES;
+	LITERAL ctb_table_size = state_file_size;
+	UNDECLARE state_file_size;
+
+	ROUTINE at2_completion_routine(
+	    stuff : REF state_instance FIELD (cell_texture_block)
+	    ) : NOVALUE =
+	    BEGIN
+	    GID$$AL_dereference_font( .stuff[ ctb_font_instance]);
+	    VS$$ACP_free_vm( stuff[ ctb_block_length], stuff);
+	    END;
+
+	LOCAL
+	    cell_stuff: REF state_instance FIELD (cell_texture_block),
+	    font_header_address,
+	    font_address,
+	    font_location,
+	    font_instance,
+	    across,	! Number of characters that fit across 16 pixels
+	    down,	! Number of characters that fit down 16 pixels
+	    chwidth,	! character width
+	    interspace;	! inter-character space
+
+!	Start by clearing out whatever was there
+
+	status = $VSTACOPY(
+	    SOURCE = .texture_background,
+	    DSTTYP = nat$k_dst_bitmap,
+	    DST = sf[ area_texture_descriptor]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+!	Find the right font and measure how many fit across and down a
+!	16x16 halftone
+
+	status = GID$$AL_get_alphabet_font(
+	    .alphabet,
+	    GID$$CX_map_coordinate( .x_size),
+	    GID$$CX_map_coordinate( .y_size),
+	    0,
+	    font_instance,
+	    font_header_address,
+	    font_address,
+	    font_location);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	
+	chwidth = GID$$AL_char_width( .font_header_address, .char);
+	across = 16 / .chwidth;
+	down = 16 / GID$$AL_char_height( .font_header_address, .char);
+	IF .across EQL 0 THEN across = 1;
+	IF .down EQL 0 THEN down = 1;
+
+!	Across spacing is accomplished with inter-character space
+!	Down spacing is accomplished with the control string
+!	The string itself is right after the control string
+
+	status = VS$$ACP_get_vm(
+	    %ref(ctb_table_size + ((10+.across)*.down)),
+	    cell_stuff);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	cell_stuff[ ctb_block_length] = ctb_table_size + ((10+.across)*.down);
+	cell_stuff[ ctb_font_instance] = .font_instance;
+	cell_stuff[ ctb_font_header_address] = .font_header_address;
+	cell_stuff[ ctb_font_address] = .font_address;
+	cell_stuff[ ctb_font_location] = .font_location;
+	cell_stuff[ ctb_string_length] =
+	    .across*.down;
+	cell_stuff[ ctb_string_address] =
+	    cell_stuff[ ctb_control_string, 5*.down];
+	interspace = (16/.across) - .chwidth;
+	INCR i FROM 0 TO .down-1 DO
+	    BEGIN	! Fill the control string for each line of chars
+	    LOCAL index;
+
+	    index = .i*5;
+	    cell_stuff[ ctb_control_string, .index] = pt_out_opcode;
+	    cell_stuff[ ctb_control_string, .index + 1] = .across;
+	    cell_stuff[ ctb_control_string, .index + 2] = pt_adjust_opcode;
+	    cell_stuff[ ctb_control_string, .index + 3] = 
+		-.across*(.chwidth+.interspace);
+	    cell_stuff[ ctb_control_string, .index + 4] = 16 / .down;
+	    END;
+
+	CH$FILL( .char,
+	    .cell_stuff[ ctb_string_length],
+	    .cell_stuff[ ctb_string_address]);
+
+	status = $VSTAPRINT(
+	    DSTTYP = nat$k_dst_bitmap,
+	    DST = sf[ area_texture_descriptor],
+	    DSTOFF = UPLIT( 0, 0),
+	    SOURCE = .texture_foreground,
+	    MSKTYP = nat$k_msk_font_bitmap,
+	    MASK = cell_stuff[ ctb_font_desc],
+	    TXTDSC = cell_stuff[ ctb_string_desc],
+	    CTRNUM = .down*5,
+	    CTRADR = cell_stuff[ ctb_control_string, 0],
+	    CHRPAD = .interspace,
+	    ASTADR = at2_completion_routine,
+	    ASTPRM = .cell_stuff
+	    );
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    setup_writing_mode_block();
+    sf[ shading_needs_updating] = 0;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AS_save_state =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ s_writing_mode] = .sf[ writing_mode];
+    sf[ s_foreground_color] = .sf[ foreground_color];
+    sf[ s_background_color] = .sf[ background_color];
+    sf[ s_x_pixel_size] = .sf[ x_pixel_size];
+    sf[ s_y_pixel_size] = .sf[ y_pixel_size];
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_save_linear_texture =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ s_line_texture_length] = .sf[ line_texture_length];
+    sf[ s_line_texture] = .sf[ line_texture];
+    sf[ s_line_texture_mult] = .sf[ line_texture_mult];
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_save_area_texture =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = 1;
+    sf[ s_area_texture_type] = .sf[ area_texture_type];
+    IF .sf[ area_texture_type] NEQ nat$k_src_constant
+    THEN ! Area texture is a bitmap, save that too
+	BEGIN
+        status = $VSTACOPY(
+	    SRCTYP=nat$k_src_bitmap,
+	    SOURCE=sf[ area_texture_descriptor],
+	    DSTTYP = nat$k_dst_bitmap,
+	    DST = sf[ s_area_texture_descriptor]);
+        IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    sf[ s_shading_mode] = .sf[ shading_mode];
+    sf[ s_shading_x] = .sf[ shading_x];
+    sf[ s_shading_y] = .sf[ shading_y];
+
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_restore_state =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ writing_mode] = .sf[ s_writing_mode];
+    sf[ foreground_color] = .sf[ s_foreground_color];
+    sf[ background_color] = .sf[ s_background_color];
+    sf[ x_pixel_size] = .sf[ s_x_pixel_size];
+    sf[ y_pixel_size] = .sf[ s_y_pixel_size];
+    setup_writing_mode_block()
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_restore_linear_texture =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    GID$$AS_line_texture(
+	.sf[ line_texture_length],
+	.sf[ line_texture],
+	.sf[ line_texture_mult])
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AS_restore_area_texture =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = 1;
+    sf[ area_texture_type] = .sf[ s_area_texture_type];
+    IF .sf[ area_texture_type] NEQ nat$k_src_constant
+    THEN ! Area texture is a bitmap, get that too
+	BEGIN
+        status = $VSTACOPY(
+	    SRCTYP=nat$k_src_bitmap,
+	    SOURCE=sf[ s_area_texture_descriptor],
+	    DSTTYP = nat$k_dst_bitmap,
+	    DST = sf[ area_texture_descriptor]);
+        IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    IF .sf[ shading_mode] NEQ .sf[ s_shading_mode]
+    THEN GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    sf[ shading_mode] = .sf[ s_shading_mode];
+    sf[ shading_x] = .sf[ s_shading_x];
+    sf[ shading_y] = .sf[ s_shading_y];
+
+    .status
+    END;
+
+END
+ELUDOM

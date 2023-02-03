@@ -1,0 +1,486 @@
+!*** MODULE VSTA$LIB ***
+! 
+! +++
+!  Facility:
+! 
+! 	VAX/VMS VAXstation Programmer Interface Library
+! 
+!  Abstract:
+! 
+!    This module contains all the sharable library common macro definitions
+!    dealing with the VAXstation entities in the context of a VAX workstation
+!    running the associated workstation display software; an implementation of
+!    the System Display Architecture.
+! 
+!    Operations have been provided to allow the manipulation of paste_boards,
+!    which in turn provide the basic application mechanism for specifying
+!    spatial relationships between native displays and virtual terminals
+!    and provide a mechanism for the application to specify what parts of those
+!    native displays and terminals can be made visible through the use of
+!    windows. The number of allowable objects is limited only by the machine's
+!    memory capacity.
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one
+!    VAXstation graphics subsystem.
+! 
+! ---
+! 
+!
+library 'sys$library:lib';		! symbols like "irp$c_length"
+
+! Here is macro $protection, which allows generation of protection values.
+! The macro's definition was stolen from Starlet's "$rms_valpro".  $protection
+! is "better" than $rms_valpro, because:
+!
+!	1) Ommitting a value is valid (for instance, if no group access
+!	   wanted, leave it out.
+!	2) You don't have a "WORD ()" forced around your protection.  Hence
+!	   $protection will work fine for passing a protection by value to
+!	   a routine.  (Feel free to use WORD ($protection ()) where
+!	   appropriate !)
+!	3) The addition of keywords (SYSTEM, OWNER, GROUP, WORLD) means you
+!	   needn't remember the order of the four parameters.
+!
+! Here is $protection.  It's internal macros follow.  Note that the comments
+! on the support macros have been left as they were in STARLET.REQ.
+!
+keywordMacro
+	$protection (SYSTEM='0', OWNER='0', GROUP='0', WORLD='0')=
+	    %IF %LENGTH GTR 4
+	    %THEN
+		0
+		%ERROR('Illegal value of parameter PRO')
+	    %ELSE
+		($vsta_VALPR1(SYSTEM)) OR ($vsta_VALPR1(OWNER))^4 OR
+		($vsta_VALPR1(GROUP))^8 OR ($vsta_VALPR1(WORLD))^12
+	    %FI %;
+!++
+!
+! $vsta_VALPRO (and support macros ...)
+!
+!	Internal macro.  Permits the initialization
+!	of a protection-word following the RSX-11M
+!	and STARLET conventions.
+!
+!--
+macro	$vsta_VALPR2(RWEDCHAR)[]=
+	    AND NOT
+	    %IF       %IDENTICAL(RWEDCHAR,'R') %THEN XAB$M_NOREAD
+	    %ELSE %IF %IDENTICAL(RWEDCHAR,'W') %THEN XAB$M_NOWRITE
+	    %ELSE %IF %IDENTICAL(RWEDCHAR,'E') %THEN XAB$M_NOEXE
+	    %ELSE %IF %IDENTICAL(RWEDCHAR,'D') %THEN XAB$M_NODEL
+	    %ELSE %IF %IDENTICAL(RWEDCHAR,'0') %THEN 0
+	    %ELSE 0 %ERROR('Illegal value "', RWEDCHAR, '" of parameter PRO')
+	    %FI %FI %FI %FI %FI
+	    $vsta_VALPR2(%REMAINING) %,
+
+	$vsta_VALPR1(RWEDGROUP)=
+	    %B'1111'  $vsta_VALPR2(%EXPLODE(RWEDGROUP)) %;
+
+literal
+
+	$true = 1,
+	$false = 0;
+
+structure
+
+	! The following structure allows local variables and routine parameters
+	! to be dubbed as an irp, similar to the way they are dubbed as other
+	! kinds of blocks.  For instance,
+	!
+	!	local
+	!
+	!	    irp : ref irp_block;
+	!
+	! If starlet.req were created with sdl/lang=blissf, this wouldn't be
+	! needed.
+	!
+	irp_block [byte_number, position, size, ext] = [irp$c_length]
+	    (irp_block + byte_number) <position, size, ext>;
+
+
+	! Definition of string descriptor (search for "$string_descriptor"
+	! and "sd$w_len" for examples of use.
+	!
+	structure
+
+	    $string_descriptor_str [offset, position, bitWidth, e ; size] =
+
+	        [size]
+		($string_descriptor_str + offset)<position, bitWidth, e>;
+
+	field
+
+	    $string_descriptor$fieldset =
+
+		set
+		sd$w_len = [0,0,16,0],
+		sd$a_adr = [4,0,32,0]
+		tes;
+
+	literal
+
+	    sd$s_string_descriptor = 8;	! useful symbol for blockvectors
+
+	macro
+
+	    $string_descriptor =
+
+		$string_descriptor_str [sd$s_string_descriptor]
+		field ($string_descriptor$fieldset)
+
+	    % ;
+
+! KEYWORDMACROS:	>>> Please keep this list alphabetical <<<
+!
+!
+! Keyword macro to replace system $QIOW macro with call to VSTA$$QIOW
+! which allocates and deallocates event flags surrounding the call, etc.
+!
+KEYWORDMACRO VSTA$QIOW(EFN=0,CHAN=0,FUNC=0,IOSB=0,ASTADR=0,
+	ASTPRM=0,P1=0,P2=0,P3=0,P4=0,P5=0,P6=0)=
+    (
+    EXTERNAL ROUTINE VSTA$$QIOW: BLISS ADDRESSING_MODE(GENERAL);
+    VSTA$$QIOW(EFN,CHAN,FUNC,IOSB,ASTADR,
+	ASTPRM,P1,P2,P3,P4,P5,P6)
+    ) %;
+!
+! Keyword macro to replace system $QIO with call to VSTA$$QIO_NORWM
+! which turns off resource wait mode for the duration of the QIO.  This
+! prevents processes from hanging forever in an MWAIT state.
+!
+KEYWORDMACRO $VSTA$QIO_NORWM(EFN=0,CHAN=0,FUNC=0,IOSB=0,ASTADR=0,
+	ASTPRM=0,P1=0,P2=0,P3=0,P4=0,P5=0,P6=0)=
+    (
+    EXTERNAL ROUTINE VSTA$$QIO_NORWM: BLISS ADDRESSING_MODE(GENERAL);
+    VSTA$$QIO_NORWM(EFN,CHAN,FUNC,IOSB,ASTADR,
+	ASTPRM,P1,P2,P3,P4,P5,P6)
+    ) %;
+
+! MACROS:	>>> Please keep this list alphabetical <<<
+!
+MACRO
+
+!
+! Define macro for referencing external routines.  This has an advantage
+! over listing external routines explicitly in that you can add or remove
+! external routine references without having to add or remove the name from a
+! list elsewhere.  Also, you can MOVE a routine containing a reference to
+! an external routine, without having to worry about adding the external
+! name to a list in the new module.
+!
+	$ertn (name) =
+	    begin
+	    external routine name ; name
+	    end
+	    % ,
+!
+	FILL_WORD_PARAM(argument,word_adr) =
+	    word_adr = argument %,
+
+	FITS_IN_WORD(argument)[ ] = (
+	    BIND
+	      arg_value = argument;
+	    IF (arg_value LSS -32768) OR (arg_value GTR %X'ffff') THEN
+	      $false
+	    ELSE
+	      BEGIN
+		%if not %null(%remaining) %then
+		  fill_word_param(arg_value,%remaining);
+		%fi
+		$true
+	      END)%,
+!
+	! Use the following macro instead of
+	!
+	!	if not (s = $please_do_this (params))
+	!	then return .s;
+	!
+	! Instead, say
+	!
+	!	if not (s = $please_do_this (params))
+	!	then $log_error_and_return (.s);
+	!
+	! Use the macro in the acp when an unexpected error has been detected,
+	! and you're at ast level.  Pass the macro the list of params that
+	! you'd pass to vsta$$error_logger.
+	! 
+	$LOG_ERROR_AND_RETURN (params) [] =
+	    begin
+	    external routine vsta$$error_logger;	! avail user of
+							! having to say this
+	    vsta$$error_logger (params
+		%if not %null (%remaining)
+		%then , %remaining		! allow arbitrary parameters
+		%fi
+		);
+	    return params			! return original status code
+	    end %,
+!
+	PARAMETER_RANK(argument)[ ] =
+	    (BUILTIN
+	      argptr;
+	    ((argument - argptr()) ^ -2))%,
+!
+	! Return value of some pass-by-reference parameter, or 0 if nothing
+	! passed.
+	!
+	PARAMETER_VALUE(argument)[ ] =
+	    (BUILTIN
+	      argptr,
+	      nullparameter;
+	    IF nullparameter((argument - argptr()) ^ -2) THEN
+	      0
+	    ELSE
+	      ..argument)%,
+!
+	! Return address of some pass-by-reference parameter, or 0 if nothing
+	! passed.
+	!
+	PARAMETER_ADDRESS(argument)[ ] =
+	    (BUILTIN
+	      argptr,
+	      nullparameter;
+	    IF nullparameter((argument - argptr()) ^ -2) THEN
+	      0
+	    ELSE
+	      .argument)%,
+!
+	! Return value of some pass-by-value parameter, or 0 if nothing
+	! passed.
+	!
+	$PARAMETER_OR_0(argument)[ ] =
+	    (BUILTIN
+	      argptr,
+	      nullparameter;
+	    IF nullparameter((argument - argptr()) ^ -2) THEN
+	      0
+	    ELSE
+	      .argument)%,
+!
+    LIB_ADD_ERR(status) [] = (
+	external routine vsta$$build_local_msgvec;
+	vsta$gl_local_error = $true;
+
+	%if %null(%remaining)
+	%then
+	    vsta$$build_local_msgvec(status);
+	%else
+	    vsta$$build_local_msgvec(status,%remaining);
+	%fi
+				)%,
+!
+    LIB_ADD_EERR(status) [] = (
+	EXTERNAL LITERAL status;
+	external routine vsta$$build_local_msgvec;
+	vsta$gl_local_error = $true;
+
+	%if %null(%remaining)
+	%then
+	    vsta$$build_local_msgvec(status);
+	%else
+	    vsta$$build_local_msgvec(status,%remaining);
+	%fi
+				)%,
+!
+    LIB_RET_ERR(status) [] = (
+	EXTERNAL LITERAL status;
+	external routine vsta$$build_local_msgvec;
+	vsta$gl_local_error = $true;
+
+	%if %null(%remaining)
+	%then
+	    vsta$$build_local_msgvec(status);
+	%else
+	    vsta$$build_local_msgvec(status,%remaining);
+	%fi
+	RETURN status
+				)%,
+!
+    LIB_RET_IERR(status) [] = (
+	external routine vsta$$build_local_msgvec;
+	vsta$gl_local_error = $true;
+
+	%if %null(%remaining)
+	%then
+	    vsta$$build_local_msgvec(status);
+	%else
+	    vsta$$build_local_msgvec(status,%remaining);
+	%fi
+	RETURN status
+				)%,
+!
+	STRING_LENGTH(s) =
+		%CHARCOUNT(s) + 1%,	!ASCIZ string length
+!
+	ASCID(s) =
+		UPLIT(%CHARCOUNT(s),UPLIT BYTE(s))%, !Build ascii descriptor
+!
+	LONG_WORD(num_bytes) =
+		num_bytes ^ -2%,		!Convert bytes to long
+
+ 
+	! Use "$please_bind" rather than "bind" in order to allow bind's
+	! at other than the beginning of blocks.
+	!
+	! Restrictions:
+	!
+	! 1)	$please_bind works by doing a "begin bind" and remembering
+	!	how many have been done since the last "$please_end".
+	!	Hence a "$please_end" must occur somewhere within the block
+	!	in which some $please_bind's occur.
+	!
+	! 2)	Do not use a $please_bind within a deeper block than one
+	!	already containing some $please_bind's.  (However, if you
+	!	insist, you may insert a $please_end before a deeper block
+	!	and then $please_bind is allowed in the inner block, but I
+	!	suggest only using $please_end at the end of a routine.
+	!
+	$please_bind =
+
+	    begin
+
+	    %if not %declared (bind_level)
+	    %then compileTime bind_level = 0;
+	    %fi
+
+	    %assign (bind_level, bind_level + 1)	! remember level
+
+	    bind
+
+	    % ,
+!
+	! Use $please_end before the "end" of a routine in which some
+	! $please_bind's have been done.
+	!
+	$please_end =
+
+	    ! Put in an "end" for each level of $please_bind we're
+	    ! finishing.
+	    !
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+	    %if %declared (bind_level) %then %if bind_level neq 0
+	    %then %assign (bind_level, bind_level - 1) end %fi %fi
+
+	    %if %declared (bind_level)
+	    %then
+		%if bind_level neq 0
+		%then %error ('Too many $please_bind''s in one block')
+		%fi
+	    %fi
+	    % ,
+
+    ! Acp mechanism for returning an error with an arbitrary number of
+    ! parameters and logging the error as well.
+    !
+    $RETURN_BUG(status) [] = (
+	external routine vsta$$error_logger,vsta$$error;
+	EXTERNAL LITERAL status;
+
+	%if %null(%remaining)
+	%then
+	  BEGIN
+	    vsta$$error_logger(status);
+	    RETURN (vsta$$error(status));
+	  END;
+	%else
+	  BEGIN
+	    vsta$$error_logger(status,%remaining);
+	    RETURN (vsta$$error(status,%remaining));
+	  END;
+	%fi
+				)%,
+
+    ! Acp mechanism for returning an error with an arbitrary number of
+    ! parameters.
+    !
+    $RETURN_ERROR(status) [] = (
+	external routine vsta$$error;
+	EXTERNAL LITERAL status;
+
+	%if %null(%remaining)
+	%then
+	    RETURN (vsta$$error(status))
+	%else
+	    RETURN (vsta$$error(status,%remaining))
+	%fi
+				)%,
+
+    ! 
+    ! Library routine call initialization stuff
+    !
+    VSTACALL_INIT(dummy) = (
+
+	EXTERNAL
+		vsta$gl_first_call;
+
+	EXTERNAL ROUTINE
+		vsta$$init,
+		vsta$$delete_local_error;
+
+	IF .vsta$gl_first_call THEN
+		vsta$$init();
+	vsta$$delete_local_error();
+
+				)%,
+
+	$base = 0,0,0,0 % ,	! foo[$base] reveals address of foo, regardless
+				! of whether foo is a ref variable or not.
+
+	! When removing a library routine (making it obsolete), replace
+	! its body with
+	!
+	!	vsta_obsolete_routine ()
+	!
+	vsta_obsolete_routine (dummy) =
+
+	begin
+
+	external routine vsta$obsolete;
+
+	builtin fp;
+
+	map fp : ref block [,byte];
+
+	bind
+
+	    ! Get pc of the call.
+	    !
+	    pc_of_call = .fp[sf$l_save_pc];
+
+	! Pass pc to routine that knows how to return an error indicating
+	! where the obsolete call is.
+	!
+	vsta$obsolete (pc_of_call)
+
+	end
+
+	% ,
+!
+! PSECTS for VAXstation library modules
+!
+    $VSTA_PSECT =
+	PSECT
+	  CODE   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	  PLIT   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	  OWN    = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	  GLOBAL = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL))
+		%;
+
+! 
+!  End of module VSTA$LIB
+! 

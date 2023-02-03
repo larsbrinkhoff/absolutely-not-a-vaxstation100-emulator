@@ -1,0 +1,75 @@
+MODULE VB$ASSIGN(	IDENT = 'ASSIGNVB',
+			ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:
+! ABSTRACT:
+! This is a utility routine which will assign a channel to device VB:
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+	assign;		!
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+!
+! MACROS:
+! EQUATED SYMBOLS:
+! OWN STORAGE:
+! EXTERNAL REFERENCES:
+
+GLOBAL ROUTINE assign (channel) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! Assigns a channel number to device VB:
+!
+! FORMAL PARAMETERS:
+!
+!	channel		address of place to put channel number
+!			(passed by address so higher level languages can call)
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!	returns status code as returned from system service assign
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+GLOBAL
+	vs$aw_vb_channel: VECTOR [2,WORD],
+	vs$aw_vc_channel: VECTOR [2,WORD];
+OWN
+	status;
+
+!Assign a channel to VB: driver
+status = $ASSIGN	(devnam = $descriptor('VS$100'),
+			chan = vs$aw_vb_channel[0]);
+
+.channel = .vs$aw_vb_channel [0];
+
+RETURN .status;
+
+END;
+END
+ELUDOM

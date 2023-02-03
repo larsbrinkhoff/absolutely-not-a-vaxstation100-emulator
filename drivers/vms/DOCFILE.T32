@@ -1,0 +1,312 @@
+!*** MODULE docfile ***
+! 
+!  Binary document file offsets used by VSTADOC and the human interface.
+! 
+!  Misc constants
+! 
+literal vsta$K_doc_keyword_length = 31;
+! 
+!  Header
+literal hdr$k_sanity_data = 1431634177; !  The value that must be there.
+literal hdr$k_block_length = 162;
+literal hdr$s_title_string = 128;
+FIELD hdr$header_block_FIELDSET =
+  SET
+  hdr$l_sanity = [0,0,32,1],            !  Sanity word
+  hdr$l_version = [4,0,32,1],           !  version number
+  hdr$l_language_key = [8,0,32,1],      !  which language
+  hdr$w_page_width = [12,0,16,0],       !  # pixels of X
+  hdr$w_page_length = [14,0,16,0],      !  # pixels in height
+  hdr$w_num_toc_pages = [16,0,16,0],    !  # pages in TOC
+  hdr$w_toc_ppe_block = [18,0,16,0],    !  Block # where page-ptr-entries start
+  hdr$w_num_body_pages = [20,0,16,0],   !  # pages in the body
+  hdr$w_body_ppe_block = [22,0,16,0],   !  Block # where body pages start
+  hdr$w_num_index_pages = [24,0,16,0],  !  # pages in the index
+  hdr$w_index_ppe_block = [26,0,16,0],  !  Block # where index page-ptr-entries
+!  start.
+  hdr$w_num_keywords = [28,0,16,0],     !  number of keywords
+  hdr$w_kwd_num_blocks = [30,0,16,0],   !  How many blocks in keyword list
+  hdr$w_title_len = [32,0,16,0],        !  How many chars in title
+  hdr$b_title_string = [34,0,0,1]       !  The title string itself
+  TES;
+literal hdr$s_header_block = 162;
+MACRO header_block = BLOCK [hdr$s_header_block,byte] FIELD (hdr$header_block_FIELDSET) %;
+FIELD ppe$page_ptr_entry_FIELDSET =
+  SET
+  ppe$w_block = [0,0,16,1],             !  Which block the page entry is in
+  ppe$w_num_blocks = [2,0,16,1]         !  How many blocks it takes up
+  TES;
+literal ppe$s_page_ptr_entry = 4;
+MACRO page_ptr_entry = BLOCK [ppe$s_page_ptr_entry,byte] FIELD (ppe$page_ptr_entry_FIELDSET) %;
+! 
+!  The next 0, 1 or more blocks contains
+!  page-ptr entries for TOC
+! 
+!  Then comes page-ptr entries for main body pages
+! 
+!  Then comes page_ptr entries for index pages
+! 
+! 
+!  Language types
+! 
+literal doc_lang$k_english = 0;
+literal doc_lang$k_french = 1;
+literal doc_lang$k_german = 2;
+literal doc_lang$k_italian = 3;
+literal doc_lang$k_swedish = 4;
+literal doc_lang$k_dutch = 5;
+literal doc_lang$K_HELP = 6;            !  special language for help keywords
+literal doc_lang$k_next_type = 7;
+! 
+!  Keyword entries
+! 
+literal kw$s_ascii = 31;
+FIELD kw$keyword_block_FIELDSET =
+  SET
+  kw$w_page_number = [0,0,16,0],        !  page number
+  kw$b_ascii = [2,0,0,1]                !  ASCII keyword.
+  TES;
+literal kw$s_keyword_block = 33;
+MACRO keyword_block = BLOCK [kw$s_keyword_block,byte] FIELD (kw$keyword_block_FIELDSET) %;
+! 
+!  Page entries (starts at top of block)
+! 
+FIELD pe$page_entry_FIELDSET =
+  SET
+  pe$w_num_ldes = [0,0,16,0],           !  How many LDE's there are.
+  pe$w_checkoff_block = [2,0,16,0],     !  Block number where checkoff stuff is
+  pe$w_num_ck_blocks = [4,0,16,0],      !  How many blocks there are.
+  pe$w_picture_block = [6,0,16,0],      !  Block number where picture info starts
+  pe$w_num_pic_blocks = [8,0,16,0],     !  How many blocks there are.
+  pe$w_editable_block = [10,0,16,0],    !  Block number where editable info is
+  pe$w_num_edit_blocks = [12,0,16,0]    !  How many blocks there are.
+  TES;
+literal pe$s_page_entry = 14;
+MACRO page_entry = BLOCK [pe$s_page_entry,byte] FIELD (pe$page_entry_FIELDSET) %;
+! 
+!  Line entries (These blocks go right after the page_entry)
+! 
+FIELD lde$lindef_entry_FIELDSET =
+  SET
+  lde$w_num_lines = [0,0,16,0],         !  How many lines to define
+  lde$w_lin_size = [2,0,16,0]           !  Line height of each one
+  TES;
+literal lde$s_lindef_entry = 4;
+MACRO lindef_entry = BLOCK [lde$s_lindef_entry,byte] FIELD (lde$lindef_entry_FIELDSET) %;
+! 
+!  After the page entry, and at the top of each continuation block,
+!  there is the following entry...
+! 
+FIELD pbe$page_block_entry_FIELDSET =
+  SET
+  pbe$w_num_rcals = [0,0,16,0]          !  Number of RCALs in the remainder of
+!  this block
+  TES;
+literal pbe$s_page_block_entry = 2;
+MACRO page_block_entry = BLOCK [pbe$s_page_block_entry,byte] FIELD (pbe$page_block_entry_FIELDSET) %;
+! 
+!  Picture block format:
+! 
+FIELD pich$picture_block_header_FIELD =
+  SET
+  pich$w_num_ents = [0,0,16,0]          !  Number of picture entries in this block
+  TES;
+literal pich$s_picture_block_header = 2;
+MACRO picture_block_header = BLOCK [pich$s_picture_block_header,byte] FIELD (pich$picture_block_header_FIELD) %;
+!  max # chars in picture file name
+literal pic$K_max_chars_picfile = 100;
+literal pic$s_file_str_str = 100;
+FIELD pic$picture_entry_FIELDSET =
+  SET
+  pic$l_file_name_len = [0,0,32,1],     !  Number of characters in filename
+  pic$b_file_str_str = [4,0,0,1],       !  The file name
+  pic$w_x_origin = [104,0,16,0],
+  pic$w_y_origin = [106,0,16,0],
+  pic$w_x_size = [108,0,16,0],
+  pic$w_y_size = [110,0,16,0],
+  pic$l_vd_id = [112,0,32,1]            !  Storage for the ACP (sneaky!)
+  TES;
+literal pic$s_picture_entry = 116;
+MACRO picture_entry = BLOCK [pic$s_picture_entry,byte] FIELD (pic$picture_entry_FIELDSET) %;
+! 
+!  CHECKOFF block format:
+! 
+FIELD ckh$checkoff_header_FIELDSET =
+  SET
+  ckh$w_num_ents = [0,0,16,0]           !  Number of entries in this block
+  TES;
+literal ckh$s_checkoff_header = 2;
+MACRO checkoff_header = BLOCK [ckh$s_checkoff_header,byte] FIELD (ckh$checkoff_header_FIELDSET) %;
+FIELD cke$checkoff_entry_FIELDSET =
+  SET
+  cke$w_type = [0,0,16,0],              !  Type code (set to "1")
+  cke$w_id = [2,0,16,0],                !  The ID
+  cke$w_line = [4,0,16,0],              !  Text line number
+  cke$w_field = [6,0,16,0],             !  X-origin of field (text field start)
+  cke$l_spare_lw = [8,0,32,1]           !  ACP will use this to store the
+!  vd-id of the terminal or other AST
+!  data.
+  TES;
+literal cke$s_checkoff_entry = 12;
+MACRO checkoff_entry = BLOCK [cke$s_checkoff_entry,byte] FIELD (cke$checkoff_entry_FIELDSET) %;
+! 
+!  Editable field blocks
+! 
+FIELD edh$editable_header_FIELDSET =
+  SET
+  edh$w_num_ents = [0,0,16,0]           !  How many in this block
+  TES;
+literal edh$s_editable_header = 2;
+MACRO editable_header = BLOCK [edh$s_editable_header,byte] FIELD (edh$editable_header_FIELDSET) %;
+literal ede$k_typeface_str = 36;        !  Where typeface string starts
+! 
+literal ede$k_flag_center = 1;          !  Center the field
+FIELD ede$editable_entry_FIELDSET =
+  SET
+  ede$w_type = [0,0,16,0],              !  Type code (set to 1)
+  ede$w_id = [2,0,16,0],                !  ID
+  ede$w_size = [4,0,16,0],              !  # bytes in this entry
+  ede$w_line = [6,0,16,0],              !  Text line number
+  ede$w_field = [8,0,16,0],             !  Field position
+  ede$w_y_orig = [10,0,16,0],           !  Where in VD field starts
+  ede$w_space = [12,0,16,0],            !  Width of field
+  ede$w_y_extent = [14,0,16,0],         !  Height of field
+  ede$l_typesize = [16,0,32,1],         !  Typesize
+  ede$l_rend_on = [20,0,32,1],          !  REnd bits to turn on
+  ede$l_rend_off = [24,0,32,1],         !  Rend bits to turn off
+  ede$l_flags = [28,0,32,1],            !  Edit flags
+  ede$l_typeface_len = [32,0,32,1]      !  Length of typeface
+!  Edit flags
+! 
+  TES;
+literal ede$s_editable_entry = 36;
+MACRO editable_entry = BLOCK [ede$s_editable_entry,byte] FIELD (ede$editable_entry_FIELDSET) %;
+! 
+!  RCAL types
+! 
+literal doc_rcal$k_def_field = 0;       !  Define field
+literal doc_rcal$k_undef_field = 1;     !  Undefine field (used for default field)
+literal doc_rcal$k_center_field = 2;    !  Set field format to CENTER
+literal doc_rcal$k_rj_field = 3;        !  Set field format to RIGHTJUSTIFY
+literal doc_rcal$k_insert_text = 4;     !  Call INSERT TEXT
+literal doc_rcal$k_append_text = 5;     !  Call APPEND TEXT
+literal doc_rcal$k_set_selectable = 6;  !  Set SELECTABLE field
+literal doc_rcal$k_def_font = 7;        !  DEFINE a font
+literal doc_rcal$k_set_typeface = 8;    !  SET TYPEFACE
+literal doc_rcal$k_set_typesize = 9;    !  SET TYPESIZE
+literal doc_rcal$k_set_rendition = 10;  !  SET RENDITION		
+literal doc_rcal$k_editable = 11;       !  Setup editable field.
+literal doc_rcal$k_mark_field = 12;     !  Mark field (not used in file)
+! 
+!  RCAL block format
+!  (each type of RCAL is different).
+!  RCAL blocks NEVER cross a block boundary.
+! 
+FIELD rcl$rcal_header_FIELDSET =
+  SET
+  rcl$w_type = [0,0,16,0],              !  Type of RCAL
+  rcl$w_size = [2,0,16,0]               !  Size of RCAL block (incl header)
+  TES;
+literal rcl$s_rcal_header = 4;
+MACRO rcal_header = BLOCK [rcl$s_rcal_header,byte] FIELD (rcl$rcal_header_FIELDSET) %;
+FIELD rcl$rcal_def_field_FIELDSET =
+  SET
+  rcl$w_def_fld_line = [0,0,16,0],      !  Which line
+  rcl$w_def_fstart = [2,0,16,0],        !  Starting position
+  rcl$w_def_fsize = [4,0,16,0]          !  Field size
+  TES;
+literal rcl$s_rcal_def_field = 6;
+MACRO rcal_def_field = BLOCK [rcl$s_rcal_def_field,byte] FIELD (rcl$rcal_def_field_FIELDSET) %;
+FIELD rcl$rcal_undef_field_FIELDSET =
+  SET
+  rcl$w_undef_fld_line = [0,0,16,0]     !  Which line
+  TES;
+literal rcl$s_rcal_undef_field = 2;
+MACRO rcal_undef_field = BLOCK [rcl$s_rcal_undef_field,byte] FIELD (rcl$rcal_undef_field_FIELDSET) %;
+FIELD rcl$rcal_center_field_FIELDSET =
+  SET
+  rcl$w_cen_fld_line = [0,0,16,0],      !  Which line
+  rcl$w_cen_fld_id = [2,0,16,0]         !  Field id (LM)
+  TES;
+literal rcl$s_rcal_center_field = 4;
+MACRO rcal_center_field = BLOCK [rcl$s_rcal_center_field,byte] FIELD (rcl$rcal_center_field_FIELDSET) %;
+FIELD rcl$rcal_rj_field_FIELDSET =
+  SET
+  rcl$w_rj_fld_line = [0,0,16,0],       !  Which line
+  rcl$w_rj_fld_id = [2,0,16,0]          !  Field id
+  TES;
+literal rcl$s_rcal_rj_field = 4;
+MACRO rcal_rj_field = BLOCK [rcl$s_rcal_rj_field,byte] FIELD (rcl$rcal_rj_field_FIELDSET) %;
+literal rcl$k_ins_txt_str = 6;          !  Where the field starts
+FIELD rcl$rcal_insert_text_FIELDSET =
+  SET
+  rcl$w_ins_txt_line = [0,0,16,0],      !  Which line
+  rcl$w_ins_txt_fld = [2,0,16,0],       !  Field id
+  rcl$w_ins_txt_size = [4,0,16,0]       !  How many bytes follow
+  TES;
+literal rcl$s_rcal_insert_text = 6;
+MACRO rcal_insert_text = BLOCK [rcl$s_rcal_insert_text,byte] FIELD (rcl$rcal_insert_text_FIELDSET) %;
+literal rcl$k_app_txt_str = 6;          !  Where the field starts
+FIELD rcl$rcal_append_text_FIELDSET =
+  SET
+  rcl$w_app_txt_line = [0,0,16,0],      !  Which line
+  rcl$w_app_txt_fld = [2,0,16,0],       !  Starting field id
+  rcl$w_app_txt_size = [4,0,16,0]       !  How many bytes follow
+  TES;
+literal rcl$s_rcal_append_text = 6;
+MACRO rcal_append_text = BLOCK [rcl$s_rcal_append_text,byte] FIELD (rcl$rcal_append_text_FIELDSET) %;
+FIELD rcl$rcal_set_selectable_FIELDSE =
+  SET
+  rcl$w_sel_x_orig = [0,0,16,0],        !  X-origin in VD
+  rcl$w_sel_y_orig = [2,0,16,0],        !  Y-origin in VD
+  rcl$w_sel_x_extent = [4,0,16,0],      !  X-extent of region
+  rcl$w_sel_y_extent = [6,0,16,0],      !  Y-extent of region
+  rcl$w_sel_link = [8,0,16,0],          !  Program link (0 if inter-doc ref)
+!  NOTE: Don't arbitrarily expand width
+!  of this field.  File VSSRVFORM.B32
+!  stuffs it and something else into a
+!  single longword.
+  rcl$w_sel_docpage = [10,0,16,0]       !  Page # of inter-doc reference
+  TES;
+literal rcl$s_rcal_set_selectable = 12;
+MACRO rcal_set_selectable = BLOCK [rcl$s_rcal_set_selectable,byte] FIELD (rcl$rcal_set_selectable_FIELDSE) %;
+literal rcl$k_deffont_fn_str = 10;      !  Where the filename string starts
+FIELD rcl$rcal_def_font_FIELDSET =
+  SET
+  rcl$w_deffont_fn_len = [0,0,16,0],    !  Length (bytes) of filename
+  rcl$w_deffont_tf_len = [2,0,16,0],    !  Length (bytes) of typeface
+  rcl$w_deffont_ts = [4,0,16,0],        !  Typesize
+  rcl$l_deffont_rend = [6,0,32,1]       !  Rendition bits
+  TES;
+literal rcl$s_rcal_def_font = 10;
+MACRO rcal_def_font = BLOCK [rcl$s_rcal_def_font,byte] FIELD (rcl$rcal_def_font_FIELDSET) %;
+literal rcl$k_typeface_str = 2;         !  Where the typeface string starts
+FIELD rcl$rcal_set_typeface_FIELDSET =
+  SET
+  rcl$w_typeface_len = [0,0,16,0]       !  Length of typeface
+  TES;
+literal rcl$s_rcal_set_typeface = 2;
+MACRO rcal_set_typeface = BLOCK [rcl$s_rcal_set_typeface,byte] FIELD (rcl$rcal_set_typeface_FIELDSET) %;
+FIELD rcl$rcal_set_typesize_FIELDSET =
+  SET
+  rcl$w_typesize = [0,0,16,0]           !  What size to set
+  TES;
+literal rcl$s_rcal_set_typesize = 2;
+MACRO rcal_set_typesize = BLOCK [rcl$s_rcal_set_typesize,byte] FIELD (rcl$rcal_set_typesize_FIELDSET) %;
+FIELD rcl$rcal_set_rendition_FIELDSET =
+  SET
+  rcl$l_rend_on = [0,0,32,1],           !  Rendition bits to turn on
+  rcl$l_rend_off = [4,0,32,1]           !  Rendition bits to turn off
+  TES;
+literal rcl$s_rcal_set_rendition = 8;
+MACRO rcal_set_rendition = BLOCK [rcl$s_rcal_set_rendition,byte] FIELD (rcl$rcal_set_rendition_FIELDSET) %;
+FIELD rcl$rcal_editable_FIELDSET =
+  SET
+  rcl$w_ed_id = [0,0,16,0]              !  Editable id
+!  NOTE: Don't arbitrarily expand width
+!  of this field.  File VSSRVFORM.B32
+!  stuffs it and something else into a
+!  single longword.
+  TES;
+literal rcl$s_rcal_editable = 2;
+MACRO rcal_editable = BLOCK [rcl$s_rcal_editable,byte] FIELD (rcl$rcal_editable_FIELDSET) %;

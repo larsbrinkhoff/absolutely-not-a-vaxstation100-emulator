@@ -1,0 +1,3333 @@
+%TITLE 'vs$vds_pb -- VAX STATION VIRTUAL DISPLAY SERVICES: PASTEBOARD'
+MODULE vs$vds_pb (
+		IDENT = '1.2-2',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the routines and data structures relevent to
+!   dealing with the workstation PASTE_BOARD as an entity in the context of
+!   a VAX workstation running the associated workstation display software;
+!   an implementation of the System Display Architecture.
+!
+!   Operations have been provided to allow the manipulation of paste_boards,
+!   which in turn provide the basic application mechanism for specifying
+!   spatial relationships between virtual displays and provide a mechanism
+!   for the application to specify what parts of those virtual displays can be
+!   made visible. The number of allowable paste_boards is limited only by
+!   memory capacity and data tables are maintained on a per-paste_board basis.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Public routines
+!
+!	NONE
+!
+! Private routines
+!
+	vs$$vds_vrec_intersect,		!Get dimensions of intersecting rect.
+	vs$$vds_create_pb,		!Create a pasteboard
+	vs$$vds_check_pb_access,	!Check user's accessibility of PB
+	vs$$vds_get_pb_char,		!Get the characteristics of a pb
+	vs$$vds_set_pb_char,		!Set the characteristics of a pb
+	vs$$vds_get_pb_color_table,	!Get the color lookup table of a pb
+	vs$$vds_set_pb_color_table,	!Set the color lookup table of a pb
+	vs$$vds_display_vd_in_pb,	!Display virtual display in pasteboard
+	vs$$vds_move_vd_in_pb,		!Move virtual display in pasteboard
+	vs$$vds_move_vd_to_top_of_pb,	!Move VD to the top of a pasteboard
+	vs$$vds_delete_pb,		!Delete a pasteboard
+	vs$$vds_pb_multi_delete,	!Image and session rundown deletes
+	vs$$vds_add_rec_to_pb,		!Add a rectangle to a pasteboard
+	vs$$vds_remove_rec_from_pb,	!Remove a rectangle from a pasteboard
+	vs$$vds_add_rec_to_vvr,		!Add rectangle to VD visible rect. list
+	vs$$vds_consolidate_vvr: NOVALUE, !Consolidate VVR rectangles
+	vs$$vds_remove_rec_from_vvr,	!Remove rec. from VD visible rect. list
+	vs$$vds_add_rec_to_vor,		!Add rectangle to VD occluded rec. list
+	vs$$vds_remove_rec_from_vor,	!Remove rec. from VD occluded rec. list
+	vs$$vds_get_sub_rect,		!Get subrectangles outside intersection
+	vs$$vds_vd_found,		!Find a VD by ID in linked list
+	vs$$vds_pb_found;		!Find a pasteboard by ID in linked list
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! Things like "$return_error"
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	! ACP symbols and defs.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Define error symbols
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';		! Symbols like "rectangle_block"
+LIBRARY 'VSTA$LIBRARY:VSVSSVS';		! Symbols like ps_block
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! BUILT-IN MACHINE INSTRUCTIONS INTO BLISS-32
+!
+BUILTIN
+	INSQUE,				! Insert element into queue
+	REMQUE;				! Remove element from queue
+!
+! MACROS:
+!
+MACRO
+    MAKE_LONG(a,b,c,d) =		!Make bytes into longword
+	((a)^24 or (b)^16 or (c)^8 or (d))%;
+!
+! When a non-privileged user program performs some operation that involves
+! manipulating an object that the user doesn't have access to
+! (such as pasting vt100 on it's pasteboard or pasting header with tablet
+! icon on a human interface pasteboard), we need to allow the operation.
+! The "requestor_pid" OPTIONAL parameter allows the human interface to declare
+! that this operation is being done by US rather than the USER.
+!
+! The following macro sees if a specific requestor was specified, and uses
+! it.  Otherwise, the global calling process's pid is used.
+!
+macro $requestor =
+	begin
+	external vs$gl_pid;
+	if $parameter_or_0 (requestor_pid) neq 0
+	then .requestor_pid
+	else .vs$gl_pid
+	end % ;
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+! GLOBAL STORAGE:
+!
+
+GLOBAL
+	default_color_table: BLOCKVECTOR[vs$vds_k_color_table_size,4,BYTE]
+	    INITIAL(REP vs$vds_k_color_table_size OF (MAKE_LONG(5,5,5,5))),
+					!Default pasteboard color lookup table
+	vs$vds_a_pb_lh_ptr: VECTOR[2]
+			INITIAL(REP 2 OF (vs$vds_a_pb_lh_ptr[0])),
+					!Pasteboard queue head pointer
+	vs$vds_l_curr_w_id: INITIAL(0);	!Most recent assigned window ID
+!
+! EXTERNAL REFERENCES:
+!
+EXTERNAL
+	vs$gl_acp_pid,			! Global contains PID of the ACP
+	vs$gl_pid,			! Global contains PID from current QIO
+	vs$gw_vbchan: WORD;		! VB channel (used for VKB call)
+
+EXTERNAL ROUTINE
+	vsta$$acp_check_read_access,	!Check read access to object
+	vsta$$acp_check_write_access,	!Check write access to object
+	vsta$$acp_check_delete_access,	!Check delete access to object
+	vsta$$set_pb_help,		!Routine to set help data for pb
+	vsta$$srv_disp_help_kwd,	!Routine to display help doc page
+	vsta$$srv_window_created,	!Tell HI about a new window
+	vsta$$srv_window_deleted,	!Tell HI about a removed window
+	vs$$vds_add_rec_to_window,	!Add a rectangle to a window
+	vs$$vds_delete_window,		!Delete a window
+	vs$$vds_remove_rec_from_window,	!Remove a rectangle from a window
+	vs$$vds_unpaste_pb_from_pb,	!Unpaste a pasteboard from a PB
+	vs$$vds_unpaste_vd_from_pb,	!Unpaste virual display from PB
+	vs$$vds_update_pon_pbs,		!Update pasted-on PB's after VD change
+	vs$$vss_set_vp_color,		!Update the color of viewport
+	vs$$vss_delete_vp,		!Delete a viewport by ID
+	vs$$vss_display_vd_in_vp,	!Display virtual display in viewport
+	vs$$vds_vd_onto_pb,		!Tell VD about adding new PB
+	vs$$vds_vd_from_pb,		!Tell VD about removing a PB
+	vs$$vds_set_vd_char,		!Set VD characteristics by ID
+	vs$$vds_get_vd_char,		!Get VD characteristics by ID
+	vs$$vds_create_vd,		!Create a virtual display
+	vs$$vds_delete_vd,		!Delete a virtual display
+	vs$$create_vkb,			!Create a virtual keyboard for a PB
+	vs$$delete_vkb,			!Delete a virtual keyboard for a PB
+	vs$$create_vtb,			!Create a virtual tablet for a PB
+	vs$$delete_vtb,			!Delete a virtual tablet for a PB
+	vsta$$error,			!ACP error return status handler
+	vs$$acp_get_vm,			! memory allocation routine
+	vs$$acp_free_vm;		! memory deallocation routine
+!
+!
+
+
+%SBTTL 'vs$$vds_vrec_intersect -- Get intersecting rectangle dimensions'
+GLOBAL ROUTINE vs$$vds_vrec_intersect(
+			x_coor,		!X-coordinate of block
+			y_coor,		!Y-coordinate of block
+			length,		!Length of block
+			height,		!Height of block
+			rect_ptr:REF rectangle_block,
+					!Ptr to input rectangle dimensions
+			vrect_ptr_or_0:REF rectangle_block
+					!Optional Ptr to visible rectangle
+					!subset dimen.
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating and computing the dimensions
+! of the rectangle at the intersection of the rectangle and block passed as
+! parameters. Presumably, this block is a virtual display, window, viewport,
+! or physical screen and only the values of its X,Y coordinates, length,
+! and height need be passed. The address of the rectangle data structure which
+! contains the same information but is generally available as a block structure
+! and is more easily passed by address. The dimensions of the intersecting
+! rectangle are returned in the same block format as the rectangle passed as
+! a parameter (but will be all zeros if no intersection). A "boolean" return
+! status indicates whether or not there was an intersection.
+!
+! FORMAL PARAMETERS:
+!
+!	X_COOR    : Longword X-coordinate of block structure (window, etc.)
+!			(Input parameter)
+!	Y_COOR    : Longword Y-coordinate of block structure (window, etc.)
+!			(Input parameter)
+!	LENGTH    : Longword length of block structure (window, viewport, etc.)
+!			(Input parameter)
+!	HEIGHT    : Longword height of block structure (window, viewport, etc.)
+!			(Input parameter)
+!	RECT_PTR  : Address of rectangle block data structure
+!			(Input parameter)
+!	VRECT_PTR_OR_0 : Optional address of rectangle block data structure
+!			(Output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Rectangle intersection
+!	$false (=0)		!NO rectangle intersection
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+	local
+
+	    ! This rectangle block is only used if the caller doesn't
+	    ! supply one.
+	    !
+	    rec : rectangle_block;
+
+	bind
+
+	    ! Decide which rectangle block to use, caller's or ours.
+	    ! We choose ours if caller doesn't supply one, which happens
+	    ! if caller only wants $true or $false and doesn't want actual
+	    ! intersection rectangle.
+	    !
+	    vrect_ptr =
+		begin
+		if $parameter_or_0 (vrect_ptr_or_0) eql 0
+		then rec[$base]
+		else vrect_ptr_or_0[$base]
+		end : rectangle_block;
+
+!
+! Determine the x,y, and extent of the rectangle which might be at the
+! intersection of the two rectangles passed as parameters
+!
+	vrect_ptr[vs$vds_l_r_x_coor] = MAX(.x_coor,
+					   .rect_ptr[vs$vds_l_r_x_coor]);
+	vrect_ptr[vs$vds_l_r_y_coor] = MAX(.y_coor,
+					   .rect_ptr[vs$vds_l_r_y_coor]);
+	vrect_ptr[vs$vds_l_r_length] = MIN(.x_coor + .length,
+		.rect_ptr[vs$vds_l_r_x_coor] + .rect_ptr[vs$vds_l_r_length])
+					- .vrect_ptr[vs$vds_l_r_x_coor];
+!
+! If the intersecting rectangle length is non-positive, then there is no
+! intersection
+!
+	IF .vrect_ptr[vs$vds_l_r_length] LEQ 0 THEN
+	  RETURN $false;
+!
+	vrect_ptr[vs$vds_l_r_height] = MIN(.y_coor + .height,
+		.rect_ptr[vs$vds_l_r_y_coor] + .rect_ptr[vs$vds_l_r_height])
+					- .vrect_ptr[vs$vds_l_r_y_coor];
+!
+! If the intersecting rectangle length is non-positive, then there is no
+! intersection
+!
+	IF .vrect_ptr[vs$vds_l_r_height] LEQ 0 THEN
+	  RETURN $false;
+!
+! Return indication that there WAS an intersection
+!
+	RETURN $true;
+    END;			! Of routine vs$$vds_vrec_intersect
+
+
+
+
+%SBTTL 'vs$$vds_create_pb -- Create Pasteboard'
+GLOBAL ROUTINE vs$$vds_create_pb(
+			pb_id,		!Returned pasteboard ID
+			owner,		!Pasteboard owner (0 = user, 1 = ACP)
+			color,		!Pasteboard color number
+			length,		!Length of pasteboard
+			height,		!Height of pasteboard
+			uic,		!Creator's UIC
+			chars,		!Flags: Permanent, optional devices
+			protection:word,!UIC protection code
+			help_keyword	!OPTIONAL adr of help kwd descriptor
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating pasteboards, the entity
+! which provides the mechanism for spatially relating virtual displays. They
+! are an abstract entity which appear finite in size to the application
+! program, but must exist to provide a universe for the virtual displays and
+! windows.
+!	This routine adds this pasteboard to the linked list of PB's, makes it
+! the last-referenced pasteboard, allocates the virtual space needed, and
+! initializes all the data tables associated with this pasteboard. A unique
+! pasteboard ID is returned to the calling program to be used in future
+! references to this pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID : Longword unique pasteboard ID
+!		 (output parameter)
+!	OWNER : Longword pasteboard owner (0= user, 1= ACP)
+!		 (input parameter)
+!	COLOR : Longword pasteboard color indicator
+!		 (input parameter)
+!	LENGTH : Longword pasteboard length
+!		 (input parameter)
+!	HEIGHT : Longword pasteboard height
+!		 (input parameter)
+!	UIC : Longword owner code
+!		 (input parameter)
+!	CHARS : Longword bitvector: Permanent or temporary, optional devices
+!		 (input parameter)
+!	PROTECTION : Word Protection code (standard VMS: SOGW RWED)
+!		 (input parameter)
+!	HELP_KEYWORD : Address of descriptor of keyword identifying which
+!			VAXstation help document page should be displayed
+!			when this pasteboard is asked for help.
+!		 (input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global address pointer to first PB in linked list
+!
+! IMPLICIT OUTPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global address pointer to first PB in linked list.
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_PBBADSIZE		!Bad pasteboard size specified
+!	LIB$_xxx		!RTL error return status
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be consumed if possible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				!To hold return status value
+	ctb : REF BLOCKVECTOR[0,BYTE],	!Ptr to pasteboard color lookup table
+	pbb : REF pb_block,	!Address of allocated pasteboard block
+	pb_ptr : REF pb_block; !Ptr to arbitrary PB block element
+
+!
+! Verify that a legal length and height have been passed by the caller
+!
+	IF (.length LEQ 0) OR (.height LEQ 0) THEN
+	  $return_error( vsta$_pbbadsize,
+			integer_type, .length,
+			integer_type, .height);
+!
+! Try to get virtual memory required for the color lookup table
+!
+	IF (NOT (status=vs$$acp_get_vm 
+		(UPLIT (vs$vds_k_color_table_size*4),ctb, 0))) THEN
+	  $return_error(vsta$_pbnotcr);
+!
+! Try to get virtual memory required for this pasteboard data structure
+!
+	IF (NOT (status=vs$$acp_get_vm 
+		(UPLIT (vs$vds_k_pb_length),pbb, 0))) THEN
+	  $return_error(vsta$_pbnotcr);
+!
+! We have successfully allocated the virtual memory -- initialize the
+! pasteboard data block (including the default color lookup table)
+!
+	CH$MOVE(vs$vds_k_color_table_size*4,	!Number of bytes
+		default_color_table,		!Source address
+		.ctb);				!Destination address
+!
+	! Initialize entire block to 0, so that items (such as mouse
+	! data !) that want to be 0 are so.
+	!
+	ch$fill (0, vs$vds_k_pb_length, .pbb);
+
+	pbb[vs$vds_w_pb_size] = vs$vds_k_pb_length;
+	pbb[vs$vds_l_pb_color] = .color;
+	pbb[vs$vds_l_pb_length] = .length;
+	pbb[vs$vds_l_pb_height] = .height;
+	pbb[vs$vds_b_pb_chars] = .chars;
+	pbb[vs$vds_l_pb_uic] = .uic;
+	pbb[vs$vds_w_pb_prot] = .protection;
+	pbb[vs$vds_l_pb_pid] = 
+		(selectone .owner of
+		    set
+			[0] : .vs$gl_pid;
+			[1] : .vs$gl_acp_pid;
+		    tes);
+	pbb[vs$vds_a_pb_color_table] = .ctb;
+	pbb[vs$vds_a_pb_pon_ptr] = pbb[vs$vds_a_pb_pon_ptr];
+	pbb[vs$vds_a_pb_pon_tail] = pbb[vs$vds_a_pb_pon_ptr];
+	pbb[vs$vds_a_pb_pme_ptr] = pbb[vs$vds_a_pb_pme_ptr];
+	pbb[vs$vds_a_pb_pme_tail] = pbb[vs$vds_a_pb_pme_ptr];
+	pbb[vs$vds_a_pb_vdl_ptr] = pbb[vs$vds_a_pb_vdl_ptr];
+	pbb[vs$vds_a_pb_vdl_tail] = pbb[vs$vds_a_pb_vdl_ptr];
+	pbb[vs$vds_a_pb_wl_ptr] = pbb[vs$vds_a_pb_wl_ptr];
+	pbb[vs$vds_a_pb_wl_tail] = pbb[vs$vds_a_pb_wl_ptr];
+	pbb[vs$vds_a_pb_btn_ptr] = pbb[vs$vds_a_pb_btn_ptr];
+	pbb[vs$vds_a_pb_btn_tail] = pbb[vs$vds_a_pb_btn_ptr];
+	pbb[vs$vds_a_pb_mov_ptr] = pbb[vs$vds_a_pb_mov_ptr];
+	pbb[vs$vds_a_pb_mov_tail] = pbb[vs$vds_a_pb_mov_ptr];
+	pbb[vs$vds_a_pb_bou_ptr] = pbb[vs$vds_a_pb_bou_ptr];
+	pbb[vs$vds_a_pb_bou_tail] = pbb[vs$vds_a_pb_bou_ptr];
+	pbb[vs$vds_b_pb_internal_flag] = .owner;	!=0 if this is the
+							!user's pasteboard.
+!
+! Update the pasteboard linked list to contain this pasteboard and initialize
+! its unique ID at the same time
+!
+	IF .vs$vds_a_pb_lh_ptr[0] EQL vs$vds_a_pb_lh_ptr[0] THEN
+	  BEGIN
+	    .pb_id = pbb[vs$vds_l_pb_id] = 1;
+	  END
+	ELSE
+	  BEGIN
+	    pb_ptr = .vs$vds_a_pb_lh_ptr[0];
+	    .pb_id = pbb[vs$vds_l_pb_id] = .pb_ptr[vs$vds_l_pb_id] + 1;
+	  END;
+!
+	INSQUE(.pbb,vs$vds_a_pb_lh_ptr[0]);
+!
+! If help pointer supplied, remember it.
+!
+	if $parameter_or_0 (help_keyword) neq 0
+	then
+	    if not (status = vsta$$set_pb_help (
+		.pbb[vs$vds_l_pb_id],		! which pb to set help for
+		vsta$$srv_disp_help_kwd,	! routine that displays help
+		.help_keyword			! help page to display
+		))
+	    then $log_error_and_return (.status);
+!
+! For now, create a virtual keyboard and tablet for every pasteboard
+!
+	IF (.chars AND vs$m_vkb) NEQ 0 THEN
+	  vs$$create_vkb(
+			..pb_id,
+			.vs$gw_vbchan);
+	IF (.chars AND vs$m_vtb) NEQ 0 THEN
+	  vs$$create_vtb(
+			..pb_id,
+			0,			!Owner PID
+			.vs$gw_vbchan);
+
+	RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_create_pb
+
+
+%SBTTL 'vs$$vds_check_pb_access - Checks User Access of PB'
+GLOBAL ROUTINE vs$$vds_check_pb_access(
+			pb_id		!Pasteboard id
+			) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns error if user is disallowed access to the specified pasteboard.
+!--
+BEGIN
+
+LOCAL
+    pb_ptr: REF pb_block;	!Ptr to this pasteboard block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! Return error if this pasteboard was created internally by the ACP itself.
+!
+	IF (.pb_ptr [vs$vds_b_pb_internal_flag] NEQ 0) THEN
+	  $return_error( vsta$_pb_unavailable,
+			integer_type, .pb_id);
+!
+	RETURN SS$_NORMAL			!Return successful
+END;
+
+
+%SBTTL 'vs$$vds_get_pb_char -- Get Pasteboard Characteristics'
+GLOBAL ROUTINE vs$$vds_get_pb_char(
+			pb_id,			     !Pasteboard ID
+			pb_color: REF VECTOR[0,WORD],!Pasteboard color word
+			length: REF VECTOR[0,WORD],  !Pasteboard length
+			height: REF VECTOR[0,WORD],  !Pasteboard height
+			pb_flags,		     !Perm., optional devices
+			pb_protection: REF VECTOR[0,WORD], !UIC protection code
+			requestor_pid		     !Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning pasteboard characteristics,
+! the entity which provides the mechanism for spatially relating virtual
+! displays. They are an abstract entity which appear finite in size
+! to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or the characteristics of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID    : Longword unique pasteboard ID
+!			(input parameter)
+!	PB_COLOR  : Address for word pasteboard color indicator
+!			(output parameter)
+!	LENGTH	  : Address for word pasteboard length
+!			(output parameter)
+!	HEIGHT	  : Address for word pasteboard height
+!			(output parameter)
+!	PB_FLAGS  : Address for longword pb flags (permanence, optional devices)
+!			(output parameter)
+!	PB_PROTECTION : Word UIC protection code (Standard VMS: SOGW RWED)
+!			(output parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_ptr: REF pb_block;		!Ptr to this pasteboard block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have READ access to this pasteboard, don't give
+! out any information
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Pasteboard ID was found -- Return the characteristics longword to calling
+! routine
+!
+	IF .pb_color NEQ 0 THEN
+	  pb_color[0] = .pb_ptr[vs$vds_l_pb_color];
+	IF .length NEQ 0 THEN
+	  length[0] = .pb_ptr[vs$vds_l_pb_length];
+	IF .height NEQ 0 THEN
+	  height[0] = .pb_ptr[vs$vds_l_pb_height];
+	IF .pb_flags NEQ 0 THEN
+	  .pb_flags = .pb_ptr[vs$vds_b_pb_chars];
+	IF .pb_protection NEQ 0 THEN
+	  pb_protection[0] = .pb_ptr[vs$vds_w_pb_prot];
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_get_pb_char
+
+
+%SBTTL 'vs$$vds_set_pb_char -- Set Pasteboard Characteristics'
+GLOBAL ROUTINE vs$$vds_set_pb_char(
+			pb_id,		!Pasteboard ID
+			pb_color,	!Paseboard color longword
+			pb_protection:word,
+					!UIC protection code
+			requestor_pid	!Who is doing the setting
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting pasteboard characteristics,
+! the entity which provides the mechanism for spatially relating virtual
+! displays. They are an abstract entity which appear fixed in size
+! to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or sets the characteristics of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	PB_COLOR  : Longword pasteboard color indicator
+!			(input parameter)
+!	PB_PROTECTION : Word UIC protection code (Standard VMS: SOGW RWED)
+!			(input parameter)
+!		  
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_BADCOLOR		!Specified color out of range
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	w_ptr: REF w_block,		!Ptr to arbitrary window block
+	pb_ptr: REF pb_block;		!Ptr to this pasteboard block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have WRITE access to this pasteboard, don't allow
+! any changes to this pasteboard
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Pasteboard ID was found -- Set the characteristics longword according to
+! parameter from calling routine if withing acceptable limits
+!
+	IF .pb_color GTR vs$vds_k_color_table_size THEN
+	  $return_error( vsta$_badcolor,
+			integer_type, .pb_color);
+!
+	IF .pb_color NEQ pb_ptr[vs$vds_l_pb_color] THEN !Change in color
+	    begin	!Color change
+		pb_ptr[vs$vds_l_pb_color] = .pb_color;
+
+	!
+	!  Update the background color of every viewport which is mapped to a
+	!  window in this pasteboard.
+	!
+		w_ptr = .pb_ptr[vs$vds_a_pb_wl_ptr];
+		WHILE .w_ptr NEQ pb_ptr[vs$vds_a_pb_wl_ptr] DO
+		  BEGIN
+		    IF .w_ptr[vs$vds_l_w_vp_id] NEQ 0 THEN
+		      vs$$vss_set_vp_color(
+	                                   .w_ptr[vs$vds_l_w_vp_id],
+	                                   .pb_color);
+		    w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+		  END;
+	!
+	! This color change operation has to be reflected on any pasteboards that this
+	! pasteboard is attached to
+	!
+		IF (NOT (status = vs$$vds_update_pon_pbs(
+					.pb_ptr,
+					.pb_color,
+					0,
+					0,
+					5))) THEN		!Set color
+		  $return_error( vsta$_badcolor,
+				integer_type, .pb_color);
+	    end;	!Color change
+!
+! Set Protection Code, if specified
+!
+	pb_ptr[vs$vds_w_pb_prot] = .pb_protection;
+	
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_set_pb_char
+
+
+%SBTTL 'vs$$vds_get_pb_color_table -- Get Pasteboard Color Lookup Table'
+GLOBAL ROUTINE vs$$vds_get_pb_color_table(
+			pb_id,		!Pasteboard ID
+			pb_color_table: REF BLOCKVECTOR[0,0,BYTE],
+					!Pasteboard color lookup table
+			requestor_pid	!Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning the pasteboard color lookup
+! table, the entity which provides the mechanism for spatially relating virtual
+! displays. They are an abstract entity which appear fixed in size
+! to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or the color lookup table of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID          : Longword unique pasteboard ID
+!				(input parameter)
+!	pb_color_table : Address to contain the pasteboard color lookup table
+!				(output parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_ptr: REF pb_block;		!Ptr to this pasteboard block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have READ access to this pasteboard, don't give
+! out any information
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Pasteboard ID was found -- Return a copy of the color lookup table
+!
+	CH$MOVE(vs$vds_k_color_table_size*4,		!Number of bytes
+		.pb_ptr[vs$vds_a_pb_color_table],	!Source address
+		.pb_color_table);			!Destination address
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_get_pb_color_table
+
+
+%SBTTL 'vs$$vds_set_pb_color_table -- Set Pasteboard Color Lookup Table'
+GLOBAL ROUTINE vs$$vds_set_pb_color_table(
+			pb_id,		!Pasteboard ID
+			pb_color_table: REF BLOCKVECTOR[0,0,BYTE],
+					!Paseboard color lookup table
+			requestor_pid	!Who is doing the setting
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting pasteboard color lookup table,
+! the entity which provides the mechanism for spatially relating virtual
+! displays. They are an abstract entity which appear fixed in size
+! to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or sets up the color lookup table of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID          : Longword unique pasteboard ID
+!				(input parameter)
+!	pb_color_table : Address of new color lookup table
+!				(input parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_ptr: REF pb_block;		!Ptr to this pasteboard block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have WRITE access to this pasteboard, don't allow
+! changes to the pasteboard
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Pasteboard ID was found -- Set the color lookup table according to
+! parameter from calling routine
+!
+	CH$MOVE(vs$vds_k_color_table_size*4,		!Number of bytes
+		.pb_color_table,			!Source address
+		.pb_ptr[vs$vds_a_pb_color_table]);	!Destination address
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_set_pb_color_table
+
+
+%SBTTL 'vs$$vds_display_vd_in_pb -- Display Virtual Display in Pasteboard'
+GLOBAL ROUTINE vs$$vds_display_vd_in_pb(
+			pb_id,		!Unique pasteboard ID
+			vd_id		!Virtual display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will display a virtual display in a previously created
+! and attached pasteboard. Virtual displays provide the virtual devices
+! with which application programs may do I/O. Data which is written to a
+! virtual display may or may not be visible on the display of the user, but is
+! potentially visible.
+!	This routine displays this virtual display in the pasteboard by
+! displaying it in each viewport for which there is a window onto the
+! pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being displayed in the PB
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dx,					!Relative window/VD offset
+	dy,					!Relative window/VD offset
+	w_ptr: REF w_block,		!Ptr to this window block
+	vd_ptr: REF vd_block,		!Ptr to this VD block
+	pb_ptr: REF pb_block,		!Ptr to this PB block
+	status;					!Return status value
+
+!
+! See if this virtual display exists in pasteboard specified.
+! Return error status if not found.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vd_ptr) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! Loop through this pasteboard's window list and display virtual display
+! in viewport if mapped to a window onto the pasteboard.
+!
+	w_ptr = .pb_ptr[vs$vds_a_pb_wl_ptr];
+	WHILE .w_ptr NEQ pb_ptr[vs$vds_a_pb_wl_ptr] DO
+	  BEGIN
+	    IF .w_ptr[vs$vds_l_w_vp_id] NEQ 0 THEN
+	      BEGIN
+		dx = .vd_ptr[vs$vds_l_vd_x_coor] -
+					.w_ptr[vs$vds_l_w_x_coor];
+		dy = .vd_ptr[vs$vds_l_vd_y_coor] -
+					.w_ptr[vs$vds_l_w_y_coor];
+		IF (NOT (status = vs$$vss_display_vd_in_vp(
+						.w_ptr[vs$vds_l_w_vp_id],
+						.vd_id,
+						.dx,
+						.dy))) THEN
+		  $return_error( vsta$_vdnotdisp,
+				integer_type, .vd_id,
+				integer_type, .pb_id);
+	      END;
+	    w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+	  END;
+!
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_display_vd_in_pb
+
+
+%SBTTL 'vs$$vds_move_vd_in_pb -- Move Virtual Display in Pasteboard'
+GLOBAL ROUTINE vs$$vds_move_vd_in_pb(
+			pb_id,		!Unique pasteboard ID
+			vd_id,		!Unique virtual display ID
+			x_coor,		!New X-coordinate
+			y_coor,		!New Y-coordinate
+			requestor_pid	!Who is doing the moving
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will move a virtual display within a previously created
+! and attached pasteboard. Virtual displays provide the virtual devices
+! with which application programs may do I/O. Data which is written to a
+! virtual display may or may not be visible on the display of the user, but is
+! potentially visible.
+!	This routine effectively moves the virtual display to a new origin by
+! computing a new set of visible and occluded rectangles within this virtual
+! display on this pasteboard, redisplaying the virtual display to reflect
+! these changes, and updating the corresponding physical screen(s).
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being moved within the PB
+!			(input parameter)
+!	X_COOR : New value of the X-coordinate within the pasteboard
+!			(input parameter)
+!	Y_COOR : New value of the Y-coordinate within the pasteboard
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!	VSTA$_VDWONTFIT		!VD won't fit on pasteboard after operation
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	old_x,					!Save previous X-coordinate
+	old_y,					!Save previous Y-coordinate
+	uic,					!UIC of VD owner
+	protection,				!Protection on VD
+	temp_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+						!Temporary rectangle holder
+	vdb: REF vd_block,		!Ptr to arbitrary VD block
+	vd_ptr: REF vd_block,		!Ptr to this VD block
+	pb_ptr: REF pb_block,		!Ptr to this PB block
+	status;					!Return status value
+
+!
+! See if this virtual display exists in this pasteboard.
+! Return error status if not found.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vd_ptr) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! If the requestor does not have WRITE access to this pasteboard, its
+! appearance can not be changed
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Requestor must also have READ access to the VD to move it 
+!
+	IF NOT vs$$vds_get_vd_char(
+				.vd_id,
+				uic,
+				0,0,0,0,0,0,0,
+				protection) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.uic,
+				.protection) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Display',
+			integer_type, .vd_id);
+!
+! Make sure that there is a move here
+!
+	x_coor = MAX(.x_coor,0);
+	y_coor = MAX(.y_coor,0);
+!
+	IF (.x_coor EQL .vd_ptr[vs$vds_l_vd_x_coor]) AND
+	   (.y_coor EQL .vd_ptr[vs$vds_l_vd_y_coor]) THEN
+	  RETURN SS$_NORMAL;
+!
+! Make sure this virtual display will still fit on the pasteboard after
+! the move
+!
+	IF (.x_coor + .vd_ptr[vs$vds_l_vd_length]) GTR
+	   (.pb_ptr[vs$vds_l_pb_length]) THEN
+	  $return_error( vsta$_vdwontfit,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+	IF (.y_coor + .vd_ptr[vs$vds_l_vd_height]) GTR
+	   (.pb_ptr[vs$vds_l_pb_height]) THEN
+	  $return_error( vsta$_vdwontfit,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! Just remove the old "rectangle" and "add" the new one.
+!
+	IF (NOT (status = vs$$vds_remove_rec_from_pb(
+					.pb_ptr,
+					.vd_ptr,
+					vd_ptr[vs$vds_l_vd_x_coor])))
+	  THEN
+	    $return_error( vsta$_vdnotmoved,
+			  integer_type, .vd_id,
+			  integer_type, .pb_id);
+!
+! Now establish the new coordinates of this virtual display.
+!
+	old_x = .vd_ptr[vs$vds_l_vd_x_coor];
+	vd_ptr[vs$vds_l_vd_x_coor] = .x_coor;
+	old_y = .vd_ptr[vs$vds_l_vd_y_coor];
+	vd_ptr[vs$vds_l_vd_y_coor] = .y_coor;
+	IF (NOT (status = vs$$vds_add_rec_to_pb(
+					.pb_ptr,
+					.vd_ptr,
+					vd_ptr[vs$vds_l_vd_x_coor])))
+	  THEN
+	    $return_error( vsta$_vdnotmoved,
+			  integer_type, .vd_id,
+			  integer_type, .pb_id);
+!
+! This move operation has to be reflected on any pasteboards that this
+! pasteboard is attached to
+!
+	IF (NOT (status = vs$$vds_update_pon_pbs(
+					.pb_ptr,
+					.vd_id,
+					.x_coor,
+					.y_coor,
+					3))) THEN		!Move VD
+	  $return_error( vsta$_vdnotmoved,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_move_vd_in_pb
+
+
+%SBTTL 'vs$$vds_move_vd_to_top_of_pb -- Move Virtual Display to top of PB'
+GLOBAL ROUTINE vs$$vds_move_vd_to_top_of_pb(
+			pb_id,		!Unique pasteboard ID
+			vd_id,		!Unique virtual display ID
+			position,	!Where top really is (really)
+			requestor_pid	!Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will move a virtual display to the top of its
+! attached pasteboard by pulling it out from wherever it is in the stack of
+! virtual displays (on a given pasteboard) and overlaying it on top, making the
+! entire virtual display potentially visible. Data which is written to a
+! virtual display may or may not be visible on the display of the user,
+! but is potentially visible.
+!	This routine effectively moves the virtual display to the top by
+! computing a new set of visible rectangles within this virtual display on this
+! pasteboard and initializing its occluded rectangle list to empty,
+! redisplaying the virtual display to reflect these changes, and updating the
+! corresponding physical screen(s). In essence, a
+! vs$$vds_unpaste_vd_from_pb followed by a vs$$vds_paste_vd_to_pb.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being moved to top of PB
+!			(input parameter)
+!	POSITION : Address of position in list where top really is (0 => head)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !Return status value
+	uic,				 !UIC of VD owner
+	protection,			 !Protection on VD
+	temp_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+					 !Temporary rectangle holder
+	pb_ptr : REF pb_block, !Ptr to current PB block element
+	w_ptr : REF w_block,   !Ptr to current window block element
+	vvr_ptr : REF vvr_block, !Ptr to current VVR block element
+	next_vvr,			 !Save ptr to next VVR block element
+	vor_ptr : REF vor_block, !Ptr to current VOR block element
+	next_vor,			 !Save ptr to next VOR block element
+	occ_ptr : REF occ_block, !Ptr to current OCC block element
+	next_occ,			 !Save ptr to next OCC block element
+	vd_ptr : REF vd_block, !Address of arbitrary VD block
+	vdb : REF vd_block;	 !Address of virtual display block(ID)
+
+!
+! Try to find this virtual display ID in the pasteboard's virtual display
+! list to insure a valid operation, keeping track of whose pointing to it
+! in the list.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vdb) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! If the requestor does not have WRITE access to this pasteboard, its
+! appearance can not be changed
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Requestor must also have READ access to the VD to move it 
+!
+	IF NOT vs$$vds_get_vd_char(
+				.vd_id,
+				uic,
+				0,0,0,0,0,0,0,
+				protection) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.uic,
+				.protection) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Display',
+			integer_type, .vd_id);
+!
+! If this one's already on top, then we're done
+!
+	IF .pb_ptr[vs$vds_a_pb_vdl_ptr] EQL .vdb THEN
+	  RETURN SS$_NORMAL;
+!
+! Virtual display found -- Clear out BOTH rectangle lists so we can start
+! fresh -- First the visible rectangle list (not forgetting the windows)
+!
+	vvr_ptr = .vdb[vs$vds_a_vd_vvr_ptr];
+	WHILE .vvr_ptr NEQ vdb[vs$vds_a_vd_vvr_ptr] DO
+	  BEGIN
+	    next_vvr = .vvr_ptr[vs$vds_a_vvr_next_ptr];
+!
+	    w_ptr = .pb_ptr[vs$vds_a_pb_wl_ptr];
+	    WHILE .w_ptr NEQ pb_ptr[vs$vds_a_pb_wl_ptr] DO
+	      BEGIN
+		IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.w_ptr,
+						.vd_id,
+						vvr_ptr[vs$vds_l_vvr_r_x_coor],
+						.pb_ptr[vs$vds_l_pb_color]
+								))) THEN
+		  $return_error( vsta$_vdnotmoved,
+				integer_type, .vd_id,
+				integer_type, .pb_id);
+		w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+	      END;
+!
+	    REMQUE(.vvr_ptr,vvr_ptr);
+	    vs$$acp_free_vm(UPLIT (vs$vds_k_vvr_length),vvr_ptr, 0);
+	    vvr_ptr = .next_vvr;
+	  END;
+!
+! Free all the memory occupied by this virtual display's occluded rectangle
+! block data structures and associated occlusion blocks
+!
+	vor_ptr = .vdb[vs$vds_a_vd_vor_ptr];
+	WHILE .vor_ptr NEQ vdb[vs$vds_a_vd_vor_ptr] DO
+	  BEGIN
+	    next_vor = .vor_ptr[vs$vds_a_vor_next_ptr];
+!
+	    occ_ptr = .vor_ptr[vs$vds_a_vor_occ_ptr];
+	    WHILE .occ_ptr NEQ vor_ptr[vs$vds_a_vor_occ_ptr] DO
+	      BEGIN
+		next_occ = .occ_ptr[vs$vds_a_occ_next_ptr];
+		REMQUE(.occ_ptr,occ_ptr);
+		vs$$acp_free_vm(UPLIT (vs$vds_k_occ_length),occ_ptr, 0);
+		occ_ptr = .next_occ;
+	      END;		!Of while OCC blocks remain
+!
+	    REMQUE(.vor_ptr,vor_ptr);
+	    vs$$acp_free_vm(UPLIT (vs$vds_k_vor_length),vor_ptr, 0);
+	    vor_ptr = .next_vor;
+	  END;		!Of while occluded rectangle blocks remain
+!
+! Since the virtual display list is ordered by most recently pasted being
+! closest to the head of the list, this virtual display block must be placed
+! at the head of the list (as it is now on top of everything else on this
+! pasteboard but may not be on any attached pasteboards).
+!
+	REMQUE(.vdb,vdb);
+	IF .position EQL 0 THEN
+	  INSQUE(.vdb,pb_ptr[vs$vds_a_pb_vdl_ptr])
+	ELSE
+	  INSQUE(.vdb,.position);
+!
+! Add this "rectangle" to the top of the pasteboard
+!
+	IF (NOT (status = vs$$vds_add_rec_to_pb(
+					.pb_ptr,
+					.vdb,
+					vdb[vs$vds_l_vd_x_coor])))
+	  THEN
+	    $return_error( vsta$_vdnotmoved,
+			  integer_type, .vd_id,
+			  integer_type, .pb_id);
+!
+! This move-to-top operation has to be reflected on any pasteboards that this
+! pasteboard is attached to
+!
+	IF (NOT (status = vs$$vds_update_pon_pbs(
+					.pb_ptr,
+					.vd_id,
+					0,
+					0,
+					4))) THEN	!Move VD to top
+	  $return_error( vsta$_vdnotmoved,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+        RETURN SS$_NORMAL;
+    END;	! end of routine vs$$vds_move_vd_to_top_of_pb
+
+
+%SBTTL 'vs$$vds_delete_pb -- Delete Pasteboard'
+GLOBAL ROUTINE vs$$vds_delete_pb(
+			pb_id,		!Unique pasteboard ID
+			requestor_pid	!Who is doing the deletion
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting pasteboards, the entity
+! which provides the mechanism for spatially relating virtual displays. They
+! are an abstract entity which appear limitless in size to the application
+! program, but must exist to provide a universe for the virtual displays
+! and windows.
+!	This routine removes this pasteboard from the linked list of PB's,
+! deletes any windows and disassociates from any virtual displays associated
+! to this pasteboard, and then deallocates the virtual space occupied by this
+! pasteboard.
+!
+! Any outstanding mouse ast's are delivered in order that the object waiting
+! for mouse events know that such events will never happen.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be deleted
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global pasteboard list head pointer.
+!
+! IMPLICIT OUTPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global pasteboard list head pointer.
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen and to the spatial
+! relationship between any existing virtual displays previously pasted to
+! this pasteboard and other virtual displays. Also, if successful, virtual
+! memory should be freed by a call to this routine.
+!
+!--
+
+	BEGIN
+
+	EXTERNAL ROUTINE
+
+	    vsta$$mouse_cancel_asts,
+	    ps_pointer;
+
+    LOCAL
+	ps : ref ps_block,
+	status,				 !To contain return status value
+	pon_ptr: REF pon_block,	 !Ptr to arbitrary PON block
+	next_pon,			 !Save ptr to next PON block
+	w_ptr : REF w_block,   !Ptr to window block element
+	next_w,				 !Save ptr to next window in list
+	vd_ptr : REF vd_block, !Ptr to VD block element
+	next_vd,			 !Save ptr to next VD in list
+	pb_ptr : REF pb_block; !Ptr to PB block element (of ID)
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have DELETE access to this pasteboard, it
+! can not be deleted
+!
+	IF NOT vsta$$acp_check_delete_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'DELETE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Pasteboard was found -- Unpaste this pasteboard from every other
+! pasteboard its pasted to
+!
+	pon_ptr = .pb_ptr[vs$vds_a_pb_pon_ptr];
+	WHILE .pon_ptr NEQ pb_ptr[vs$vds_a_pb_pon_ptr] DO
+	  BEGIN
+	    next_pon = .pon_ptr[vs$vds_a_pon_next_ptr];
+	    IF (NOT (status = vs$$vds_unpaste_pb_from_pb(
+					.pon_ptr[vs$vds_l_pon_pb_id],
+					.pb_id,
+					$requestor))) THEN
+	      $return_error( vsta$_pbnotdel,
+			  integer_type, .pb_id);
+!
+	    pon_ptr = .next_pon;
+	  END;
+!
+! Unpaste every pasteboard that's pasted on this pasteboard
+!
+	pon_ptr = .pb_ptr[vs$vds_a_pb_pme_ptr];
+	WHILE .pon_ptr NEQ pb_ptr[vs$vds_a_pb_pme_ptr] DO
+	  BEGIN
+	    next_pon = .pon_ptr[vs$vds_a_pon_next_ptr];
+	    IF (NOT (status = vs$$vds_unpaste_pb_from_pb(
+					.pb_id,
+					.pon_ptr[vs$vds_l_pon_pb_id],
+					$requestor))) THEN
+	      $return_error( vsta$_pbnotdel,
+			  integer_type, .pb_id);
+!
+	    pon_ptr = .next_pon;
+	  END;
+!
+! Delete all windows in this pasteboard's window list
+!
+	w_ptr = .pb_ptr[vs$vds_a_pb_wl_ptr];
+	WHILE .w_ptr NEQ pb_ptr[vs$vds_a_pb_wl_ptr] DO
+	  BEGIN
+	    next_w = .w_ptr[vs$vds_a_w_next_ptr];
+	    IF (NOT (status = vs$$vds_delete_window(
+						.w_ptr[vs$vds_l_w_id],
+						$requestor))) THEN
+	      $return_error( vsta$_pbnotdel,
+			  integer_type, .pb_id);
+	    w_ptr = .next_w;
+	  END;		!Of while still windows in list
+!
+! Delete the virtual keyboard and tablet which may exist for this pasteboard
+!
+	IF (.pb_ptr[vs$vds_b_pb_chars] AND vs$m_vkb) NEQ 0 THEN
+	  vs$$delete_vkb(.pb_id, $requestor);
+	IF (.pb_ptr[vs$vds_b_pb_chars] AND vs$m_vtb) NEQ 0 THEN
+	  vs$$delete_vtb(.pb_id,0, $requestor);	!Owner PID =0 (flags internal)
+!
+! Disassociate all virtual displays from this pasteboard
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    next_vd = .vd_ptr[vs$vds_a_vd_next_ptr];
+	    IF (NOT (status = vs$$vds_unpaste_vd_from_pb(
+						.pb_id,
+						.vd_ptr[vs$vds_l_vd_id],
+						$requestor))) THEN
+	      $return_error( vsta$_pbnotdel,
+			  integer_type, .pb_id);
+	    vd_ptr = .next_vd;
+	  END;		!Of while still virtual displays in list
+!
+! Cancel outstanding mouse requests for this pb.a
+!
+	IF NOT vsta$$mouse_cancel_asts (
+	    .pb_ptr,
+	    0)		! 0 means cancel all pid's mouse requests for this pb
+	THEN $return_error (vsta$_pbnotdel, integer_type, .pb_id);
+!
+! Remove this pasteboard from the linked list of pasteboards
+!
+	REMQUE(.pb_ptr,pb_ptr);
+!
+! Deallocate the virtual space occupied by the pasteboard color lookup table
+!
+	vs$$acp_free_vm (UPLIT (vs$vds_k_color_table_size*4),
+				pb_ptr[vs$vds_a_pb_color_table], 0);
+!
+! Deallocate the virtual space occupied by the pasteboard data structure
+!
+	vs$$acp_free_vm (UPLIT (vs$vds_k_pb_length),pb_ptr, 0);
+!
+        RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_delete_pb
+
+
+%SBTTL 'vs$$vds_pb_multi_delete -- Deletes all, or all temporary, PBs'
+GLOBAL ROUTINE vs$$vds_pb_multi_delete(
+			pid			!Process ID (or 0)
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is called 2 ways by VDDRIVER's CANCEL routine:
+! 		If PID is not zero, then all temporary PBs with that PID
+!			are deleted (Image Rundown).
+!		If PID is zero, then all PBs (except the ACP's PBs,
+!			created by the Human Interface) are deleted 
+!			(VAXstation session rundown).
+!
+! FORMAL PARAMETERS:
+!
+!	PID       : Longword Process ID (or 0)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global address pointer to first PB in linked list
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	All (or all temporary) PBs, and any windows residing thereon, will be
+!	deleted.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	next_pb_ptr,			 !Saves next PBB pointer
+	pb_ptr: REF pb_block;		 !Ptr to current pasteboard block
+!
+! Loop through all the PBs in the queue; if PID not= 0, check whether PIDs match
+!	and whether the PB is temporary before deleting it.
+!
+!
+	pb_ptr = .vs$vds_a_pb_lh_ptr[0];	!Start with first PB
+	WHILE (.pb_ptr NEQ vs$vds_a_pb_lh_ptr[0]) DO
+	  BEGIN		! Main PB loop
+	  next_pb_ptr = .pb_ptr[vs$vds_a_pb_next_ptr]; !Save next PB
+
+	  IF ( 
+		( (.pid eql 0) and 			!Delete All
+			((.pb_ptr[vs$vds_l_pb_pid] neq 0) and	!Not the ACP's
+			 (.pb_ptr[vs$vds_l_pb_pid] neq .vs$gl_acp_pid)))
+
+	      or ((.pid eql .pb_ptr[vs$vds_l_pb_pid]) 	!The owners match
+			    and (.pb_ptr[vs$vds_v_pb_perm] eql 0)
+			    and (.pb_ptr[vs$vds_v_pb_term] eql 0) ) !Temporary
+!
+! Note that we avoid deleting pb's that are part of terminals.  This
+! allows a process's image to create a temporary terminal, spawn a subprocess
+! that does IO on terminal, then exit.  In such case, we would normally
+! delete terminal and not subprocess.  However, subprocess needs terminal,
+! so by avoiding deleting the terminal's pb here, pb properly stays around
+! until the process goes away, deleting its terminal channel and allowing the
+! terminal to be deleted which will explicitly delete the pb.
+!
+		)
+	      THEN
+		IF NOT .pb_ptr[vs$vds_v_pb_term] THEN
+		  vs$$vds_delete_pb(.pb_ptr[vs$vds_l_pb_id], .vs$gl_acp_pid);
+
+	  pb_ptr = .next_pb_ptr;	! Even if the pb block is blown away
+	  END;		! Main PB loop
+!
+        RETURN ss$_normal;
+    END;			! end of routine vs$$vds_pb_multi_delete
+
+
+%SBTTL 'vs$$vds_add_rec_to_pb -- Add Rectangle to Pasteboard'
+global ROUTINE vs$$vds_add_rec_to_pb(
+			pb_adr:REF pb_block, !Address of pasteboard
+			vd_adr:REF vd_block, !Address of VD
+			rect_adr:REF rectangle_block     !Ptr to X,Y coordinates,
+			) =			   !height, and length of rect.
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding a rectangle (a block with X,Y
+! coordinates, height, and length) to a pasteboard by overlaying it on top of
+! whatever was there before. The rectangle is the lowest form of an abstract
+! and defines all the potentially visible regions within a pasteboard.
+!	This routine adds this rectangle to the visible and/or occluded
+! rectangle lists of the virtual display indicated (by ID), depending on
+! whether or not it is covered (completely or partially) by other virtual
+! displays. Any new visible rectangles determined by this operation are then
+! added to all window visible rectangle lists for windows whose boundaries
+! contain these rectangles (or portions of these rectangles). If this new
+! rectangle covers a previously visible rectangle, the rectangle is removed
+! from any window visible rectangle lists. Naturally, virtual space is
+! allocated/deallocated as needed to add/remove rectangle blocks from any
+! virtual display or window visible rectangle lists.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ADR   : Address of pasteboard block
+!			(input parameter)
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	RECT_ADR : Address of rectangle block (X,Y coordinates, height,
+!		   and length of rectangle)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the contents of a user's viewport which is
+! mapped to a window that is effected by the addition of this new rectangle.
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!RTL return status value
+	blocking_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+						!Storage for blocking rect.
+	del_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+						!Storage for rect. to delete
+	nsubrect,				!Number of subrectangles
+	subrect: BLOCKVECTOR[4,vs$vds_k_rec_length,BYTE],
+						!Storage for subrectangles
+	rb: REF rectangle_block,			!Ptr to arbitrary rectangle
+	w_ptr: REF w_block,		!Ptr to arbitrary window
+	vd_ptr: REF vd_block,		!Ptr to arbitrary VD block
+	vrb_ptr: REF vvr_block,	!Ptr to arbitrary VVR block
+	next_vrb,				!Save ptr to next VVR block
+	before_ptr,				!Position in linked list flag
+	orb_ptr: REF vor_block,	!Ptr to arbitrary VOR block
+	next_orb,				!Save ptr to next VOR block
+	occ_adr: REF occ_block,	!Ptr to new OCC block
+	local_occ: occ_block,
+						!Local occ block storage
+	dummylh: VECTOR[2],			!Dummy queue list head ptr
+	vrb: REF vvr_block;		!Ptr to visible rect. block
+
+!
+	dummylh[0] = local_occ;
+	dummylh[1] = local_occ;
+!
+! First add this rectangle to the visible rectangle list of the virtual
+! display passed as a parameter and to all windows in the pasteboard (if
+! this rectangle is on top)
+!
+	IF (NOT (status = vs$$vds_add_rec_to_vvr(
+						.vd_adr,
+						.rect_adr))) THEN
+	  $return_error( vsta$_recnotadd,
+			integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+	vd_ptr = .pb_adr[vs$vds_a_pb_vdl_ptr];
+	IF .vd_ptr EQL .vd_adr THEN
+	  BEGIN
+	    w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+	    WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+	      BEGIN
+		IF (NOT (status = vs$$vds_add_rec_to_window(
+					.w_ptr,
+					.vd_adr,
+					.rect_adr,
+					$true))) THEN
+		  $return_error( vsta$_recnotadd,
+				integer_type, .vd_adr[vs$vds_l_vd_id]);
+		w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+	      END;	!Of while windows remain for this pasteboard
+	  END
+	ELSE
+	  BEGIN
+!
+! We must fragment the rectangle passed as a parameter into its visible
+! and occluded counter parts depending on where this virtual display is with
+! respect to other virtual displays in the pasteboard. If this is a new virtual
+! display and this rectangle is being added on top of the pasteboard, this
+! section will be skipped.
+!
+	WHILE .vd_ptr NEQ .vd_adr DO
+	  BEGIN
+	    IF vs$$vds_vrec_intersect(.vd_ptr[vs$vds_l_vd_x_coor],
+					.vd_ptr[vs$vds_l_vd_y_coor],
+					.vd_ptr[vs$vds_l_vd_length],
+					.vd_ptr[vs$vds_l_vd_height],
+					.rect_adr,blocking_rect) THEN
+	      BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection is the only portion
+! obstructing the new rectangle being added. Now this blocking rectangle must
+! be checked against all the visible and occluded rectangles (which are part
+! of the new rectangle being added) to see what its occluding.
+!
+!
+! Now for each virtual display occluded rectangle, if there is an intersection,
+! the rectangle at the intersection is at least doubly occluded and must have
+! the current virtual display ID added to the occlusion list for this rectangle
+! and any subrectangles outside the intersection are new occluded rectangles.
+!
+		orb_ptr = .vd_adr[vs$vds_a_vd_vor_ptr];
+		WHILE .orb_ptr NEQ vd_adr[vs$vds_a_vd_vor_ptr] DO
+		  BEGIN
+		    next_orb = .orb_ptr[vs$vds_a_vor_next_ptr];
+		    IF vs$$vds_vrec_intersect(
+					.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					blocking_rect,del_rect) THEN
+		      BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+			IF (NOT (status = vs$$vds_get_sub_rect(
+					.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					del_rect,nsubrect,subrect))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are new
+! occluded rectangles. Add each of these new subrectangles to the VD's
+! occluded rectangle list as the original rectangle is about to be deleted.
+!
+			INCR count FROM 0 TO (.nsubrect - 1) DO
+			  BEGIN
+			    rb = subrect + (.count * vs$vds_k_rec_length);
+			    IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_adr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					.rb))) THEN
+			      $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+			  END;	!Of adding each new subrectangle
+!
+! The rectangle from the intersection must have this VD's ID added to its
+! occlusion list (which previously was the same as the original rectangle).
+!
+!
+! Allocate memory for this new occ block element and put it in the occlusion
+! list.
+!
+			IF (NOT (status=vs$$acp_get_vm(
+				UPLIT (vs$vds_k_occ_length),occ_adr, 0))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+			occ_adr[vs$vds_l_occ_vd_id] = .vd_ptr[vs$vds_l_vd_id];
+			INSQUE(.occ_adr,orb_ptr[vs$vds_a_vor_occ_ptr]); 
+!
+! Now add this rectangle with the expanded occlusion list to this VD's occluded
+! rectangle list
+!
+			IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_adr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					del_rect))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+			IF (NOT (status = vs$$vds_remove_rec_from_vor(
+					.vd_adr,
+					.orb_ptr))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		      END;		!Of if ORB and blocking rect intersect
+		    orb_ptr = .next_orb;
+		  END;		!Of while occluded rectangles remain in VD
+!
+! Now for each virtual display visible rectangle, if there is an intersection,
+! the rectangle at the intersection must be removed from the virtual display's
+! visible rectangle list and placed on its occluded rectangle list with the
+! current virtual display ID as the occlusion indicator.
+!
+		vrb_ptr = .vd_adr[vs$vds_a_vd_vvr_ptr];
+		WHILE .vrb_ptr NEQ vd_adr[vs$vds_a_vd_vvr_ptr] DO
+		  BEGIN
+		    next_vrb = .vrb_ptr[vs$vds_a_vvr_next_ptr];
+		    IF vs$$vds_vrec_intersect(
+					.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					blocking_rect,del_rect) THEN
+		      BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+			IF (NOT (status = vs$$vds_get_sub_rect(
+					.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					del_rect,nsubrect,subrect))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are still
+! visible to the VD. Add each of these new subrectangles to the VD's
+! visible rectangle list as the old rectangle is about to be deleted.
+!
+			INCR count FROM 0 TO (.nsubrect - 1) DO
+			  BEGIN
+			    rb = subrect + (.count * vs$vds_k_rec_length);
+			    IF (NOT (status = vs$$vds_add_rec_to_vvr(
+							.vd_adr,
+							.rb))) THEN
+			      $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+			  END;		!Of adding each new subrectangle
+!
+! The rectangle from the intersection must be added to this VD's occluded
+! rectangle list and removed from any windows that previously contained it.
+!
+			local_occ[vs$vds_l_occ_vd_id] =
+						.vd_ptr[vs$vds_l_vd_id];
+			local_occ[vs$vds_a_occ_next_ptr] = dummylh[0];
+!
+			IF (NOT (status = vs$$vds_add_rec_to_vor(
+							.vd_adr,
+							local_occ,
+							del_rect))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+			w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+			WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+			  BEGIN
+			    IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.w_ptr,
+						.vd_adr[vs$vds_l_vd_id],
+						del_rect,
+						.pb_adr[vs$vds_l_pb_color]
+								))) THEN
+			      $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+			    w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+			  END;	!Of while windows remain for this pasteboard
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+			IF (NOT (status = vs$$vds_remove_rec_from_vvr(
+					.vd_adr,
+					.vrb_ptr))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Reset pointer to head of list so ACP doesn't enter infinite loop...
+! List may have been modified by call to vs$$vds_add_rec_to_vvr() above.
+!
+  			next_vrb = .vd_adr[vs$vds_a_vd_vvr_ptr];
+!                                          
+		      END;		!Of if rectangles intersect
+		    vrb_ptr = .next_vrb;
+		  END;		!Of while visible rectangles remain in VD
+	      END;		!Of if blocking rectangle exists
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;			!Of while virtual displays remain in PB
+!
+! Now that the original rectangle has been dismembered, we must now add
+! those rectangles which are new visible rectangles for this virtual display
+! to all the windows in the pasteboard.
+!
+	  w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+	  WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+	    BEGIN
+	      vrb_ptr = .vd_adr[vs$vds_a_vd_vvr_ptr];
+	      WHILE .vrb_ptr NEQ vd_adr[vs$vds_a_vd_vvr_ptr] DO
+		BEGIN
+		  IF vs$$vds_vrec_intersect(
+					.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					.rect_adr,del_rect) THEN
+		    IF (NOT (status = vs$$vds_add_rec_to_window(
+					.w_ptr,
+					.vd_adr,
+					vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					$true))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+		  vrb_ptr = .vrb_ptr[vs$vds_a_vvr_next_ptr];
+		END;	!Of while visible rectangles remain in virtual display
+	      w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+	    END;	!Of while windows remain for this pasteboard
+	END;			!Of if this rectangle not on top of PB
+!
+! Now we must step through each virtual display which is "underneath" the
+! virtual display which is adding the rectangle and determine which parts of
+! THEM are to be visible and which are to be occluded by the addition of this
+! rectangle
+!
+	vd_ptr = .vd_adr[vs$vds_a_vd_next_ptr];
+	WHILE .vd_ptr NEQ pb_adr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+!
+! Now for each virtual display occluded rectangle, if there is an intersection,
+! the rectangle at the intersection is at least doubly occluded and must have
+! the current virtual display ID added to the occlusion list for this rectangle
+! and any subrectangles outside the intersection are new occluded rectangles.
+!
+	    orb_ptr = .vd_ptr[vs$vds_a_vd_vor_ptr];
+	    WHILE .orb_ptr NEQ vd_ptr[vs$vds_a_vd_vor_ptr] DO
+	      BEGIN
+		next_orb = .orb_ptr[vs$vds_a_vor_next_ptr];
+		IF vs$$vds_vrec_intersect(.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					.rect_adr,del_rect) THEN
+		  BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+		    IF (NOT (status = vs$$vds_get_sub_rect(
+					.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					del_rect,nsubrect,subrect))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are new
+! singly occluded rectangles. Add each of these new subrectangles to the VD's
+! occluded rectangle list as the original rectangle is about to be deleted.
+!
+		    INCR count FROM 0 TO (.nsubrect - 1) DO
+		      BEGIN
+			rb = subrect + (.count * vs$vds_k_rec_length);
+			IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_ptr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					.rb))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		      END;	!Of adding each new subrectangle
+!
+! The rectangle from the intersection must have this VD's ID added to its
+! occlusion list (which previously was the same as the original rectangle).
+!
+!
+! Allocate memory for this new occ block element and put it in the occlusion
+! list.
+!
+		    IF (NOT (status=vs$$acp_get_vm(
+				UPLIT (vs$vds_k_occ_length),occ_adr, 0))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		    occ_adr[vs$vds_l_occ_vd_id] = .vd_adr[vs$vds_l_vd_id];
+		    INSQUE(.occ_adr,orb_ptr[vs$vds_a_vor_occ_ptr]);
+!
+! Now add this rectangle with the expanded occlusion list to this VD's occluded
+! rectangle list
+!
+		    IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_ptr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					del_rect))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+		    IF (NOT (status = vs$$vds_remove_rec_from_vor(
+						.vd_ptr,
+						.orb_ptr))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		  END;		!Of if rectangles intersect
+		orb_ptr = .next_orb;
+	      END;		!Of while occluded rectangles remain in VD
+!
+! Now for each virtual display visible rectangle, if there is an intersection,
+! the rectangle at the intersection must be removed from the virtual display's
+! visible rectangle list and placed on its occluded rectangle list with the
+! current virtual display ID as the occlusion indicator.
+!
+	    vrb_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+	    WHILE .vrb_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+		next_vrb = .vrb_ptr[vs$vds_a_vvr_next_ptr];
+		IF vs$$vds_vrec_intersect(.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					.rect_adr,del_rect) THEN
+		  BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+		    IF (NOT (status = vs$$vds_get_sub_rect(
+					.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					del_rect,nsubrect,subrect))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are still
+! visible to the VD. Add each of these new subrectangles to the VD's
+! visible rectangle list as the old rectangle is about to be deleted.
+!
+		    INCR count FROM 0 TO (.nsubrect - 1) DO
+		      BEGIN
+			rb = subrect + (.count * vs$vds_k_rec_length);
+			IF (NOT (status = vs$$vds_add_rec_to_vvr(
+							.vd_ptr,
+							.rb))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		      END;	!Of adding each new subrectangle
+!
+! The rectangle from the intersection must be added to this VD's occluded
+! rectangle list and removed from any windows that previously contained it.
+!
+		    local_occ[vs$vds_l_occ_vd_id] = .vd_adr[vs$vds_l_vd_id];
+		    local_occ[vs$vds_a_occ_next_ptr] = dummylh[0];
+!
+		    IF (NOT (status = vs$$vds_add_rec_to_vor(
+							.vd_ptr,
+							local_occ,
+							del_rect))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		    w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+		    WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+		      BEGIN
+			IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.w_ptr,
+						.vd_ptr[vs$vds_l_vd_id],
+						del_rect,
+						.pb_adr[vs$vds_l_pb_color]
+								))) THEN
+			  $return_error( vsta$_recnotadd,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+			w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+		      END;	!Of while windows remain for this pasteboard
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+		    IF (NOT (status = vs$$vds_remove_rec_from_vvr(
+							.vd_ptr,
+							.vrb_ptr))) THEN
+		      $return_error( vsta$_recnotadd,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Reset pointer to head of list so ACP doesn't enter infinite loop...
+!
+  			next_vrb = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+!                                          
+!
+		  END;		!Of if rectangles intersect
+		vrb_ptr = .next_vrb;
+	      END;		!Of while visible rectangles remain in VD
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;			!Of while virtual displays remain in PB
+!
+	RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_add_rec_to_pb
+
+
+%SBTTL 'vs$$vds_remove_rec_from_pb -- Remove Rectangle from Pasteboard'
+global ROUTINE vs$$vds_remove_rec_from_pb(
+			pb_adr:REF pb_block, !Address of pasteboard
+			vd_adr:REF vd_block, !Address of VD
+			rect_adr:REF rectangle_block     !Ptr to X,Y coordinates,
+			) =			   !height, and length of rect.
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing a rectangle (a block with X,Y
+! coordinates, height, and length) from a pasteboard. The rectangle is the
+! lowest form of an abstract and defines all the potentially visible regions
+! within a pasteboard.
+!	This routine removes this rectangle from the visible and/or occluded
+! rectangle lists of the virtual display indicated (by address), depending on
+! whether or not it was covered (completely or partially) by other virtual
+! displays. Any new visible rectangles determined by this operation are then
+! added to all window visible rectangle lists for windows whose boundaries
+! contain these rectangles (or portions of these rectangles). Naturally,
+! virtual space is allocated/deallocated as needed to add/remove rectangle
+! blocks from any virtual display or window visible rectangle lists.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ADR   : Address of pasteboard block
+!			(input parameter)
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	RECT_ADR : Address of rectangle block (X,Y coordinates, height,
+!		   and length of rectangle)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the contents of a user's viewport which is
+! mapped to a window that is effected by the removal of this new rectangle.
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!RTL return status value
+	found,					!"Boolean" search criteria
+	del_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+						!Storage for rect. to delete
+	nsubrect,				!Number of subrectangles
+	subrect: BLOCKVECTOR[4,vs$vds_k_rec_length,BYTE],
+						!Storage for subrectangles
+	rb: REF rectangle_block,			!Ptr to arbitrary rectangle
+	w_ptr: REF w_block,		!Ptr to arbitrary window
+	vd_ptr: REF vd_block,		!Ptr to arbitrary VD block
+	vrb_ptr: REF vvr_block,	!Ptr to arbitrary VVR block
+	next_vrb,				!Save ptr to next VVR block
+	orb_ptr: REF vor_block,	!Ptr to arbitrary VOR block
+	next_orb,				!Save ptr to next VOR block
+	last_occ: REF occ_block,	!Ptr to arbitrary OCC block
+	occ_ptr: REF occ_block,	!Ptr to arbitrary OCC block
+	next_occ;				!Save ptr to next OCC block
+
+!
+! We want to look for intersections between the rectangle passed as
+! a parameter and all the visible and occluded rectangles in every virtual
+! display from this virtual display down in this pasteboard...So loop for
+! each virtual display.
+!
+	vd_ptr = .vd_adr;
+	WHILE .vd_ptr NEQ pb_adr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+!
+! For each virtual display visible rectangle, if there is an intersection
+! between it and the rectangle passed as a parameter, then the rectangle
+! from the intersection must be removed from the virtual display's visible
+! rectangle list and from any windows that contain it.
+!
+	    vrb_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+	    WHILE .vrb_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+		next_vrb = .vrb_ptr[vs$vds_a_vvr_next_ptr];
+		IF vs$$vds_vrec_intersect(.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					.rect_adr,del_rect) THEN
+		  BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+		    IF (NOT (status = vs$$vds_get_sub_rect(
+					.vrb_ptr[vs$vds_l_vvr_r_x_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_y_coor],
+					.vrb_ptr[vs$vds_l_vvr_r_length],
+					.vrb_ptr[vs$vds_l_vvr_r_height],
+					del_rect,nsubrect,subrect))) THEN
+		      $return_error( vsta$_recnotdel,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are new
+! visible rectangles. Add each of these new subrectangles to the VD's
+! visible rectangle list as the original rectangle is about to be deleted.
+!
+		    INCR count FROM 0 TO (.nsubrect - 1) DO
+		      BEGIN
+			rb = subrect + (.count * vs$vds_k_rec_length);
+			IF (NOT (status = vs$$vds_add_rec_to_vvr(
+					.vd_ptr,
+					.rb))) THEN
+			  $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		      END;	!Of adding each new subrectangle
+!
+! Remove the rectangle at the intersection from any windows that previosly
+! contained it
+!
+		    w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+		    WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+		      BEGIN
+		        IF (NOT (status = vs$$vds_remove_rec_from_window(
+					.w_ptr,
+					.vd_ptr[vs$vds_l_vd_id],
+					del_rect,
+					.pb_adr[vs$vds_l_pb_color]))) THEN
+			  $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		        w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+		      END;
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+		    IF (NOT (status = vs$$vds_remove_rec_from_vvr(
+						.vd_ptr,
+						.vrb_ptr))) THEN
+		      $return_error( vsta$_recnotdel,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		  END;		!Of if rectangles intersect
+		vrb_ptr = .next_vrb;
+	      END;		!Of while visible rectangles remain in VD
+!
+! Now loop through every occluded rectangle in this virtual display. Any
+! intersection with the rectangle passed as a parameter causes the removal
+! of 1 level of occlusion from that rectangle (at the intersection). This
+! implies that it may become visible or just less occluded.
+!
+	    orb_ptr = .vd_ptr[vs$vds_a_vd_vor_ptr];
+	    WHILE .orb_ptr NEQ vd_ptr[vs$vds_a_vd_vor_ptr] DO
+	      BEGIN
+		next_orb = .orb_ptr[vs$vds_a_vor_next_ptr];
+		IF vs$$vds_vrec_intersect(.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					.rect_adr,del_rect) THEN
+		  BEGIN
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle. Compute the rectangles outside the rectangle at the
+! intersection.
+!
+		    IF (NOT (status = vs$$vds_get_sub_rect(
+					.orb_ptr[vs$vds_l_vor_r_x_coor],
+					.orb_ptr[vs$vds_l_vor_r_y_coor],
+					.orb_ptr[vs$vds_l_vor_r_length],
+					.orb_ptr[vs$vds_l_vor_r_height],
+					del_rect,nsubrect,subrect))) THEN
+		      $return_error( vsta$_recnotdel,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! These new subrectangles were outside the intersection and therefore are new
+! occluded rectangles. Add each of these new subrectangles to the VD's
+! occluded rectangle list as the original rectangle is about to be deleted.
+!
+		    INCR count FROM 0 TO (.nsubrect - 1) DO
+		      BEGIN
+			rb = subrect + (.count * vs$vds_k_rec_length);
+			IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_ptr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					.rb))) THEN
+			  $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		      END;	!Of adding each new subrectangle
+!
+! The rectangle from the intersection must have this VD's ID removed from its
+! occlusion list (which previously was the same as the original rectangle).
+!
+		    found = $false;
+		    occ_ptr = .orb_ptr[vs$vds_a_vor_occ_ptr];
+		    WHILE (.occ_ptr NEQ orb_ptr[vs$vds_a_vor_occ_ptr]) AND
+			  (NOT .found) DO
+		      BEGIN
+			next_occ = .occ_ptr[vs$vds_a_occ_next_ptr];
+			IF .occ_ptr[vs$vds_l_occ_vd_id] EQL 
+			   .vd_adr[vs$vds_l_vd_id] THEN
+			  BEGIN
+			    found = $true;
+			    REMQUE(.occ_ptr,occ_ptr);
+			    vs$$acp_free_vm(
+				UPLIT (vs$vds_k_occ_length),occ_ptr, 0);
+			  END
+			ELSE
+			  occ_ptr = .next_occ;
+		      END;
+!
+! We now have a new occlusion list for the rectangle at the intersection. If
+! its pointing to zero, the rectangle is no longer occluded and must be added
+! to this virtual display's visible rectangle list and to every window in the
+! pasteboard. Otherwise its just a less occluded rectangle that must be added
+! to the virtual display's occluded rectangle list.
+!
+		    IF (.orb_ptr[vs$vds_a_vor_occ_ptr] EQL
+			 orb_ptr[vs$vds_a_vor_occ_ptr]) AND (.found) THEN
+		      BEGIN
+!
+! Now all changes to the visible/occluded rectangle lists must be reflected
+! on the appropriate physical screens, one of which could be mapped to the
+! user's display device.
+!
+			IF (NOT (status = vs$$vds_add_rec_to_vvr(
+					.vd_ptr,
+					del_rect))) THEN
+			  $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+			w_ptr = .pb_adr[vs$vds_a_pb_wl_ptr];
+			WHILE .w_ptr NEQ pb_adr[vs$vds_a_pb_wl_ptr] DO
+			  BEGIN
+			    IF (NOT (status = vs$$vds_add_rec_to_window(
+					.w_ptr,
+					.vd_ptr,
+					del_rect,
+					$true))) THEN
+			      $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+			    w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+			  END;
+!
+		      END
+		    ELSE
+		      BEGIN
+!
+! Now add this rectangle with the reduced occlusion list to this VD's occluded
+! rectangle list (if this rectangle at the intersection didn't know that it
+! was occluded by this virtual display, it still won't know after this).
+!
+			IF .vd_adr NEQ .vd_ptr THEN
+			  IF (NOT (status = vs$$vds_add_rec_to_vor(
+					.vd_ptr,
+					.orb_ptr[vs$vds_a_vor_occ_ptr],
+					del_rect))) THEN
+			    $return_error( vsta$_recnotdel,
+					integer_type, .vd_adr[vs$vds_l_vd_id]);
+		      END;
+!
+! Now that the original rectangle has been dismembered, remove it completely.
+!
+		    IF (NOT (status = vs$$vds_remove_rec_from_vor(
+						.vd_ptr,
+						.orb_ptr))) THEN
+		      $return_error( vsta$_recnotdel,
+				    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+		  END;		!Of if rectangles intersect
+		orb_ptr = .next_orb;
+	      END;		!Of while occluded rectangles remain in VD
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;			!Of while VD's remain in pasteboard
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_remove_rec_from_pb
+
+
+%SBTTL 'vs$$vds_add_rec_to_vvr -- Add rectangle to visible rectangle list'
+ROUTINE vs$$vds_add_rec_to_vvr(
+			vd_adr:REF vd_block, !Address of VD
+			rect_adr:REF rectangle_block     !Ptr to X,Y coordinates,
+			) =			   !height, and length of rect.
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding a rectangle (a block with X,Y
+! coordinates, height, and length) to a virtual display's visible rectangle
+! list. The rectangle is the lowest form of an abstract and defines all the
+! potentially visible regions within a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	RECT_ADR : Address of rectangle block (X,Y coordinates, height,
+!		   and length of rectangle)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				  !RTL return status value
+	vvr: REF vvr_block, !Arbitrary VVR block
+	vrb: REF vvr_block;	  !New VVR block to allocate memory for
+!
+! First check to see if we can make an existing rectangle bigger instead of
+! adding a new one.
+!
+	vvr = .vd_adr[vs$vds_a_vd_vvr_ptr];
+	WHILE .vvr NEQ vd_adr[vs$vds_a_vd_vvr_ptr] DO
+	  BEGIN
+!
+! Check to the left of the visible rectangle
+!
+	    IF (.rect_adr[vs$vds_l_r_x_coor] +.rect_adr[vs$vds_l_r_length]) EQL
+		.vvr[vs$vds_l_vvr_r_x_coor] THEN
+	      IF (.vvr[vs$vds_l_vvr_r_y_coor] EQL .rect_adr[vs$vds_l_r_y_coor])
+	     AND (.vvr[vs$vds_l_vvr_r_height] EQL .rect_adr[vs$vds_l_r_height])
+	      THEN
+		BEGIN
+		  vvr[vs$vds_l_vvr_r_x_coor] = .rect_adr[vs$vds_l_r_x_coor];
+		  vvr[vs$vds_l_vvr_r_length] = .rect_adr[vs$vds_l_r_length] +
+						.vvr[vs$vds_l_vvr_r_length];
+		  vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		  RETURN SS$_NORMAL;
+		END;
+!
+! Check to the right of the visible rectangle
+!
+	    IF (.vvr[vs$vds_l_vvr_r_x_coor] + .vvr[vs$vds_l_vvr_r_length]) EQL
+		.rect_adr[vs$vds_l_r_x_coor] THEN
+	      IF (.vvr[vs$vds_l_vvr_r_y_coor] EQL .rect_adr[vs$vds_l_r_y_coor])
+	     AND (.vvr[vs$vds_l_vvr_r_height] EQL .rect_adr[vs$vds_l_r_height])
+	      THEN
+		BEGIN
+		  vvr[vs$vds_l_vvr_r_length] = .rect_adr[vs$vds_l_r_length] +
+						.vvr[vs$vds_l_vvr_r_length];
+		  vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		  RETURN SS$_NORMAL;
+		END;
+!
+! Check underneath the visible rectangle
+!
+	    IF (.rect_adr[vs$vds_l_r_y_coor] +.rect_adr[vs$vds_l_r_height]) EQL
+		.vvr[vs$vds_l_vvr_r_y_coor] THEN
+	      IF (.vvr[vs$vds_l_vvr_r_x_coor] EQL .rect_adr[vs$vds_l_r_x_coor])
+	     AND (.vvr[vs$vds_l_vvr_r_length] EQL .rect_adr[vs$vds_l_r_length])
+	      THEN
+		BEGIN
+		  vvr[vs$vds_l_vvr_r_y_coor] = .rect_adr[vs$vds_l_r_y_coor];
+		  vvr[vs$vds_l_vvr_r_height] = .rect_adr[vs$vds_l_r_height] +
+						.vvr[vs$vds_l_vvr_r_height];
+		  vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		  RETURN SS$_NORMAL;
+		END;
+!
+! Check on top of the visible rectangle
+!
+	    IF (.vvr[vs$vds_l_vvr_r_y_coor] + .vvr[vs$vds_l_vvr_r_height]) EQL
+		.rect_adr[vs$vds_l_r_y_coor] THEN
+	      IF (.vvr[vs$vds_l_vvr_r_x_coor] EQL .rect_adr[vs$vds_l_r_x_coor])
+	     AND (.vvr[vs$vds_l_vvr_r_length] EQL .rect_adr[vs$vds_l_r_length])
+	      THEN
+		BEGIN
+		  vvr[vs$vds_l_vvr_r_height] = .rect_adr[vs$vds_l_r_height] +
+						.vvr[vs$vds_l_vvr_r_height];
+		  vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		  RETURN SS$_NORMAL;
+		END;
+!
+	    vvr = .vvr[vs$vds_a_vvr_next_ptr];
+	  END;		!Of while visible rectangle blocks remain
+!
+! If could not compress, allocate memory for this new VD visible rectangle.
+!
+	IF (NOT (status=vs$$acp_get_vm(UPLIT (vs$vds_k_vvr_length),vrb, 0))) 
+	  THEN
+	    $return_error( vsta$_vvrnotadd,
+			  integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Initialize the coordinates and extent of this rectangle.
+!
+	vrb[vs$vds_w_vvr_size] = vs$vds_k_vvr_length;
+	vrb[vs$vds_w_vvr_type] = 0;
+	vrb[vs$vds_l_vvr_r_x_coor] = .rect_adr[vs$vds_l_r_x_coor];
+	vrb[vs$vds_l_vvr_r_y_coor] = .rect_adr[vs$vds_l_r_y_coor];
+	vrb[vs$vds_l_vvr_r_length] = .rect_adr[vs$vds_l_r_length];
+	vrb[vs$vds_l_vvr_r_height] = .rect_adr[vs$vds_l_r_height];
+!
+! Add it to the visible rectangle list for this virtual display
+!
+	INSQUE(.vrb,vd_adr[vs$vds_a_vd_vvr_ptr]);
+!
+	RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_add_rec_to_vvr
+
+
+%SBTTL 'vs$$vds_consolidate_vvr -- Consolidate VVR Rectangles'
+ROUTINE vs$$vds_consolidate_vvr(
+			vd_adr:REF vd_block, !Address of VD
+			vvr_adr:REF vvr_block      !Ptr to X,Y coordinates,
+			): NOVALUE =		       !height, and length of vvr
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for consolidating visible rectangles
+! (a block with X,Y coordinates, height, and length) in a virtual display's
+! visible rectangle list. The rectangle is the lowest form of an abstract and
+! defines all the potentially visible regions within a pasteboard. This routine
+! should be called as a result of a rectangle consolidation at a higher level
+! which resulted in a new rectangle which could potentially be consolidated to
+! some other existing rectangles.
+!	This routine will not return until it has the fewest posible visible
+! rectangles in a virtual display.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	VVR_ADR  : Address of visible rectangle block (X,Y coordinates, height,
+!		   and length of rectangle amoungst other things)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is deleted when a consolidation occurs which allows the
+! deletion of an obsolete rectangle. THIS ROUTINE IS RECURSIVE and might
+! disappear down a black hole for a while, depending on the number of
+! rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				  !RTL return status value
+	vvr: REF vvr_block;	  !Arbitrary VVR block
+!
+! Loop through all the visible rectangles of this virtual display.
+!
+	vvr = .vd_adr[vs$vds_a_vd_vvr_ptr];
+	WHILE .vvr NEQ vd_adr[vs$vds_a_vd_vvr_ptr] DO
+	  BEGIN
+!
+! To avoid some bounds checking, make sure these aren't the same visible
+! rectangle.
+!
+	    IF .vvr NEQ .vvr_adr THEN
+	      BEGIN
+!
+! Check to the left of the arbitrary visible rectangle
+!
+		IF (.vvr_adr[vs$vds_l_vvr_r_x_coor] +
+			.vvr_adr[vs$vds_l_vvr_r_length]) EQL
+		    .vvr[vs$vds_l_vvr_r_x_coor] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.vvr[vs$vds_l_vvr_r_y_coor] EQL
+				.vvr_adr[vs$vds_l_vvr_r_y_coor]) AND
+		     (.vvr[vs$vds_l_vvr_r_height] EQL
+				.vvr_adr[vs$vds_l_vvr_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      vvr[vs$vds_l_vvr_r_x_coor] =
+				.vvr_adr[vs$vds_l_vvr_r_x_coor];
+		      vvr[vs$vds_l_vvr_r_length] =
+				.vvr_adr[vs$vds_l_vvr_r_length] +
+						.vvr[vs$vds_l_vvr_r_length];
+		      vs$$vds_remove_rec_from_vvr(
+					.vd_adr,
+					.vvr_adr);
+		      vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		      RETURN;
+		    END;
+!
+! Check to the right of the arbitrary visible rectangle
+!
+		IF (.vvr[vs$vds_l_vvr_r_x_coor] +
+			.vvr[vs$vds_l_vvr_r_length]) EQL
+		    .vvr_adr[vs$vds_l_vvr_r_x_coor] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.vvr[vs$vds_l_vvr_r_y_coor] EQL
+				.vvr_adr[vs$vds_l_vvr_r_y_coor]) AND
+		     (.vvr[vs$vds_l_vvr_r_height] EQL
+				.vvr_adr[vs$vds_l_vvr_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      vvr[vs$vds_l_vvr_r_length] =
+				 .vvr_adr[vs$vds_l_vvr_r_length] +
+						.vvr[vs$vds_l_vvr_r_length];
+		      vs$$vds_remove_rec_from_vvr(
+					.vd_adr,
+					.vvr_adr);
+		      vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		      RETURN;
+		    END;
+!
+! Check underneath the arbitrary visible rectangle
+!
+		IF (.vvr_adr[vs$vds_l_vvr_r_y_coor] +
+				.vvr_adr[vs$vds_l_vvr_r_height]) EQL
+		    .vvr[vs$vds_l_vvr_r_y_coor] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.vvr[vs$vds_l_vvr_r_x_coor] EQL
+				.vvr_adr[vs$vds_l_vvr_r_x_coor]) AND
+		     (.vvr[vs$vds_l_vvr_r_length] EQL
+				.vvr_adr[vs$vds_l_vvr_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      vvr[vs$vds_l_vvr_r_y_coor] =
+				.vvr_adr[vs$vds_l_vvr_r_y_coor];
+		      vvr[vs$vds_l_vvr_r_height] =
+				.vvr_adr[vs$vds_l_vvr_r_height] +
+						.vvr[vs$vds_l_vvr_r_height];
+		      vs$$vds_remove_rec_from_vvr(
+					.vd_adr,
+					.vvr_adr);
+		      vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		      RETURN;
+		    END;
+!
+! Check on top of the arbitrary visible rectangle
+!
+		IF (.vvr[vs$vds_l_vvr_r_y_coor] +
+			.vvr[vs$vds_l_vvr_r_height]) EQL
+		    .vvr_adr[vs$vds_l_vvr_r_y_coor] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.vvr[vs$vds_l_vvr_r_x_coor] EQL
+				.vvr_adr[vs$vds_l_vvr_r_x_coor]) AND
+		     (.vvr[vs$vds_l_vvr_r_length] EQL
+				.vvr_adr[vs$vds_l_vvr_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      vvr[vs$vds_l_vvr_r_height] =
+				.vvr_adr[vs$vds_l_vvr_r_height] +
+						.vvr[vs$vds_l_vvr_r_height];
+		      vs$$vds_remove_rec_from_vvr(
+					.vd_adr,
+					.vvr_adr);
+		      vs$$vds_consolidate_vvr(
+					.vd_adr,
+					.vvr);
+		      RETURN;
+		    END;
+	      END;	!If not the same visible rectangle
+!
+	    vvr = .vvr[vs$vds_a_vvr_next_ptr];
+	  END;		!Of while visible rectangle blocks remain
+!
+	RETURN;
+    END;		! end of routine vs$$vds_consolidate_vvr
+
+
+%SBTTL 'vs$$vds_remove_rec_from_vvr -- Remove rec. from VVR list'
+ROUTINE vs$$vds_remove_rec_from_vvr(
+			vd_adr:REF vd_block, !Address of VD
+			vvr_adr:REF vvr_block      !Ptr to VVR block
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing a rectangle (a block with X,Y
+! coordinates, height, and length) from a virtual display's visible rectangle
+! list. The rectangle is the lowest form of an abstract and defines all the
+! potentially visible regions within a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	VVR_ADR  : Address of visible rectangle block (X,Y coordinates, height,
+!		   and length of rectangle, and pointer to next one in list)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status;					!RTL return status value
+!
+! First find this visible rectangle's postion in the linked list and remove
+! it.
+!
+	REMQUE(.vvr_adr,vvr_adr);
+!
+! This virtual display visible rectangle has been removed from the linked list.
+! Deallocate the memory occupied by it.
+!
+	vs$$acp_free_vm (UPLIT (vs$vds_k_vvr_length),vvr_adr, 0);
+!
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_remove_rec_from_vvr
+
+
+%SBTTL 'vs$$vds_add_rec_to_vor -- Add rectangle to occluded rectangle list'
+ROUTINE vs$$vds_add_rec_to_vor(
+			vd_adr:REF vd_block,  !Address of VD
+			occ_adr,			!Ptr to occlusion list
+			rect_adr:REF rectangle_block     !Ptr to X,Y coordinates,
+			) =			   !height, and length of rect.
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding a rectangle (a block with X,Y
+! coordinates, height, and length) to a virtual display's occluded rectangle
+! list. The rectangle is the lowest form of an abstract and defines all the
+! potentially visible regions within a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ADR     : Address of virtual display block
+!			(input parameter)
+!	OCC_ADR    : Address of occlusion block (occlusion flag, pointer)
+!			(input parameter)
+!	RECT_ADR   : Address of rectangle block (X,Y coordinates, height,
+!		     and length of rectangle)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				  !RTL return status value
+	occ_ptr: REF occ_block, !Arbitrary OCC block element
+	occ_blk: REF occ_block, !New OCC block element to add
+	orb: REF vor_block;	  !New VOR block to allocate memory for
+!
+! First allocate memory for this new occluded rectangle.
+!
+	IF (NOT (status=vs$$acp_get_vm(UPLIT (vs$vds_k_vor_length),orb, 0))) 
+	  THEN
+	    $return_error( vsta$_vornotadd,
+			  integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Initialize the coordinates and extent of this rectangle.
+!
+	orb[vs$vds_w_vor_size] = vs$vds_k_vor_length;
+	orb[vs$vds_w_vor_type] = 0;
+	orb[vs$vds_l_vor_r_x_coor] = .rect_adr[vs$vds_l_r_x_coor];
+	orb[vs$vds_l_vor_r_y_coor] = .rect_adr[vs$vds_l_r_y_coor];
+	orb[vs$vds_l_vor_r_length] = .rect_adr[vs$vds_l_r_length];
+	orb[vs$vds_l_vor_r_height] = .rect_adr[vs$vds_l_r_height];
+	orb[vs$vds_a_vor_occ_ptr]  = orb[vs$vds_a_vor_occ_ptr];
+	orb[vs$vds_a_vor_occ_tail] = orb[vs$vds_a_vor_occ_ptr];
+!
+! Now we must establish the occlusion list for this new occluded rectangle,
+! the address of which has been passed as a parameter. This list must be
+! recreated from scratch so as to allow the calling routine to destroy the
+! previosly allocated addresses for this list.
+!
+	occ_ptr = .occ_adr;
+	WHILE .occ_ptr[vs$vds_a_occ_next_ptr] NEQ .occ_adr DO
+	  BEGIN
+!
+! First allocate memory for this new occlusion block.
+!
+	    IF (NOT (status=vs$$acp_get_vm(UPLIT (vs$vds_k_occ_length),
+							occ_blk, 0))) THEN
+	      $return_error( vsta$_vornotadd,
+			    integer_type, .vd_adr[vs$vds_l_vd_id]);
+!
+! Initialize the occlusion virtual display ID and add it to the occlusion
+! list
+!
+	    occ_blk[vs$vds_w_occ_size] = vs$vds_k_occ_length;
+	    occ_blk[vs$vds_w_occ_type] = 0;
+	    occ_blk[vs$vds_l_occ_vd_id] = .occ_ptr[vs$vds_l_occ_vd_id];
+	    INSQUE(.occ_blk,orb[vs$vds_a_vor_occ_ptr]);
+!
+	    occ_ptr = .occ_ptr[vs$vds_a_occ_next_ptr];
+	  END;	!Of while occlusion blocks remain
+!
+! Add it to the occluded rectangle list for this virtual display
+!
+	INSQUE(.orb,vd_adr[vs$vds_a_vd_vor_ptr]);
+!
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_add_rec_to_vor
+
+
+%SBTTL 'vs$$vds_remove_rec_from_vor -- Remove rec. from VOR list'
+ROUTINE vs$$vds_remove_rec_from_vor(
+			vd_adr:REF vd_block, !Address of VD
+			vor_adr:REF vor_block      !Ptr to VOR block
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing a rectangle (a block with X,Y
+! coordinates, height, and length) from a virtual display's occluded rectangle
+! list. The rectangle is the lowest form of an abstract and defines all the
+! potentially visible regions within a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ADR   : Address of virtual display block
+!			(input parameter)
+!	VOR_ADR  : Address of an occluded rectangle block (X,Y coordinates,
+!		   height, and length of rectangle, occ pointer, next pointer)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!RTL return status value
+	next_occ,				!Save ptr to next OCC block
+	occ_ptr: REF occ_block;	!Ptr to arbitrary OCC block
+!
+! First deallocate the memory occupied by all the occlusion blocks for this
+! occluded rectangle
+!
+	occ_ptr = .vor_adr[vs$vds_a_vor_occ_ptr];
+	WHILE .occ_ptr NEQ vor_adr[vs$vds_a_vor_occ_ptr] DO
+	  BEGIN
+	    next_occ = .occ_ptr[vs$vds_a_occ_next_ptr];
+	    vs$$acp_free_vm (UPLIT (vs$vds_k_occ_length),occ_ptr, 0);
+	    occ_ptr = .next_occ;
+	  END;
+!
+! Now remove this rectangle from the linked list of occluded rectangles for
+! this virtual display
+!
+	REMQUE(.vor_adr,vor_adr);
+!
+! This virtual display occluded rectangle has been removed from the linked
+! list. Deallocate the memory occupied by it.
+!
+	vs$$acp_free_vm (UPLIT (vs$vds_k_vor_length),vor_adr, 0);
+!
+        RETURN SS$_NORMAL;
+    END;		! end of routine vs$$vds_remove_rec_from_vor
+
+
+%SBTTL 'vs$$vds_get_sub_rect -- Get all sub-rectangles not in intersection'
+GLOBAL ROUTINE vs$$vds_get_sub_rect(
+			x_coor,		!X-coordinate of block
+			y_coor,		!Y-coordinate of block
+			length,		!Length of block
+			height,		!Height of block
+			rect_ptr:REF rectangle_block,
+					!Ptr to input rectangle dimensions
+			nrect,		!Number of smaller rectangles produced
+			sub_rect_ptr:REF BLOCKVECTOR[0,vs$vds_k_rec_length,
+							BYTE]
+			    field (vs$vds_rectangle_block_fieldset)
+					!Ptr to vector of sub-rectangles
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating and computing the dimensions
+! of all rectangles outside the intersection of the rectangle and block passed
+! as parameters. Presumably, this block is a virtual display, window, viewport,
+! or physical screen and only the values of its X,Y coordinates, length,
+! and height need be passed. The address of the rectangle data structure
+! contains the same information but is generally available as a block structure
+! and is more easily passed by address. The dimensions of the rectangles
+! outside the intersection are returned in the same block format as the
+! rectangle passed as a parameter.
+!
+! FORMAL PARAMETERS:
+!
+!	X_COOR    : Longword X-coordinate of block structure (window, etc.)
+!			(Input parameter)
+!	Y_COOR    : Longword Y-coordinate of block structure (window, etc.)
+!			(Input parameter)
+!	LENGTH    : Longword length of block structure (window, viewport, etc.)
+!			(Input parameter)
+!	HEIGHT    : Longword height of block structure (window, viewport, etc.)
+!			(Input parameter)
+!	RECT_PTR  : Address of rectangle block data structure
+!			(Input parameter)
+!	NRECT     : Longword number of subrectangles outside intersection
+!			(Output parameter)
+!	SUB_RECT_PTR : Address of rectangle blockvector for 4 possible subrecs.
+!			(Output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful completion
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+    LOCAL
+	status;					!Return status value
+
+!
+! Assuming that the input rectangle block intersects with the block data
+! structure passed by coordinates and extent (presumably a window, virtual
+! display, pasteboard, etc.), calculate the coordinates of sub-rectangle 1.
+!
+	.nrect = 0;
+	sub_rect_ptr[..nrect,vs$vds_l_r_x_coor] = .x_coor;
+	sub_rect_ptr[..nrect,vs$vds_l_r_y_coor] =
+				.rect_ptr[vs$vds_l_r_y_coor];
+	sub_rect_ptr[..nrect,vs$vds_l_r_length] =
+				.rect_ptr[vs$vds_l_r_x_coor] - .x_coor;
+	sub_rect_ptr[..nrect,vs$vds_l_r_height] =
+				.rect_ptr[vs$vds_l_r_height];
+!
+! If this was a valid rectangle, increment block number for next possible
+! sub-rectangle. Else don't increment the block number and we'll overwrite
+! this block with the next valid subrectangle.
+!
+	IF (.sub_rect_ptr[..nrect,vs$vds_l_r_length] GTR 0) AND
+	   (.sub_rect_ptr[..nrect,vs$vds_l_r_height] GTR 0) THEN
+	  .nrect = ..nrect + 1;
+!
+! Whether or not sub-rectangle 1 checked out ok, calculate coordinates and
+! extent of sub-rectangle 2.
+!
+	sub_rect_ptr[..nrect,vs$vds_l_r_x_coor] =
+		.rect_ptr[vs$vds_l_r_x_coor] + .rect_ptr[vs$vds_l_r_length];
+	sub_rect_ptr[..nrect,vs$vds_l_r_y_coor] =
+		.rect_ptr[vs$vds_l_r_y_coor];
+	sub_rect_ptr[..nrect,vs$vds_l_r_length] =
+		(.x_coor +.length) - .sub_rect_ptr[..nrect,vs$vds_l_r_x_coor];
+	sub_rect_ptr[..nrect,vs$vds_l_r_height] =
+		.rect_ptr[vs$vds_l_r_height];
+!
+! If this was a valid rectangle, increment block number for next possible
+! sub-rectangle. Else don't increment the block number and we'll overwrite
+! this block with the next valid subrectangle.
+!
+	IF (.sub_rect_ptr[..nrect,vs$vds_l_r_length] GTR 0) AND
+	   (.sub_rect_ptr[..nrect,vs$vds_l_r_height] GTR 0) THEN
+	  .nrect = ..nrect + 1;
+!
+! Whether or not sub-rectangle 2 checked out ok, calculate coordinates and
+! extent of sub-rectangle 3.
+!
+	sub_rect_ptr[..nrect,vs$vds_l_r_x_coor] = .x_coor;
+	sub_rect_ptr[..nrect,vs$vds_l_r_y_coor] = .y_coor;
+	sub_rect_ptr[..nrect,vs$vds_l_r_length] = .length;
+	sub_rect_ptr[..nrect,vs$vds_l_r_height] =
+		.rect_ptr[vs$vds_l_r_y_coor] - .y_coor;
+!
+! If this was a valid rectangle, increment block number for next possible
+! sub-rectangle. Else don't increment the block number and we'll overwrite
+! this block with the next valid subrectangle.
+!
+	IF (.sub_rect_ptr[..nrect,vs$vds_l_r_length] GTR 0) AND
+	   (.sub_rect_ptr[..nrect,vs$vds_l_r_height] GTR 0) THEN
+	  .nrect = ..nrect + 1;
+!
+! Whether or not sub-rectangle 3 checked out ok, calculate coordinates and
+! extent of sub-rectangle 4.
+!
+	sub_rect_ptr[..nrect,vs$vds_l_r_x_coor] = .x_coor;
+	sub_rect_ptr[..nrect,vs$vds_l_r_y_coor] =
+		.rect_ptr[vs$vds_l_r_y_coor] + .rect_ptr[vs$vds_l_r_height];
+	sub_rect_ptr[..nrect,vs$vds_l_r_length] = .length;
+	sub_rect_ptr[..nrect,vs$vds_l_r_height] =
+		(.y_coor +.height) - .sub_rect_ptr[..nrect,vs$vds_l_r_y_coor];
+!
+! If this was a valid rectangle, increment block number so that a valid
+! indication of the number of subrectangles calculated is passed back to the
+! calling routine.
+!
+	IF (.sub_rect_ptr[..nrect,vs$vds_l_r_length] GTR 0) AND
+	   (.sub_rect_ptr[..nrect,vs$vds_l_r_height] GTR 0) THEN
+	  .nrect = ..nrect + 1;
+!
+! Return normal completion indication
+!
+	RETURN SS$_NORMAL;	! Return success status
+    END;			! Of routine vs$$vds_get_sub_rect
+
+
+
+%SBTTL 'vs$$vds_pb_found -- Find pasteboard by ID and return address of block'
+GLOBAL ROUTINE vs$$vds_pb_found(
+			pb_id,			!Unique PB ID
+			pb_address		!Address of PB found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating a pasteboard block in the
+! linked list of pasteboards given an ID and returning its address if found.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID       : Longword unique pasteboard ID
+!			(input parameter)
+!	PB_ADDRESS  : Address of pasteboard block found for ID
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global address pointer to first PB in linked list
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Pasteboard found, address in PB_ADR
+!	vsta$_nosuchpb		!Pasteboard NOT found
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_ptr: REF pb_block;	 !Ptr to current pasteboard block
+!
+! First find this pasteboard ID in the linked list of pasteboards
+!
+!
+	pb_ptr = .vs$vds_a_pb_lh_ptr[0];
+	WHILE (.pb_ptr NEQ vs$vds_a_pb_lh_ptr[0]) DO
+	  IF .pb_ptr[vs$vds_l_pb_id] EQL .pb_id THEN
+	    BEGIN
+	      .pb_address = .pb_ptr;
+	      RETURN $true;
+	    END
+	  ELSE
+	    pb_ptr = .pb_ptr[vs$vds_a_pb_next_ptr];
+!
+        RETURN (external literal vsta$_nosuchpb ; vsta$_nosuchpb);
+    END;			! end of routine vs$$vds_pb_found
+
+
+%SBTTL 'vs$$vds_vd_found -- Find Virtual Display by ID'
+GLOBAL ROUTINE vs$$vds_vd_found(
+			pb_id,			!Unique pasteboard ID
+			vd_id,			!Unique Virtual Display ID
+			pb_adr,			!Address of PB with VD
+			vd_adr			!Address of VD found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating a virtual display block in the
+! linked list of virtual displays for the given pasteboard (by ID) and
+! returning its address (and that of its pasteboard) if found.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID   : Longword unique pasteboard ID
+!			(input parameter)
+!	VD_ID   : Longword unique virtual display ID
+!			(input parameter)
+!	PB_ADR  : Address of pasteboard block containing Virtual Display
+!			(output parameter)
+!	VD_ADR  : Address of Virtual Display block found for ID
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Virtual Display found, address in VD_ADR
+!	$false (=0)		!Virtual Display NOT found
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	vd_ptr: REF vd_block,	 !Ptr to current virtual display block
+	pb_ptr: REF pb_block;	 !Ptr to current pasteboard block
+!
+! First find the pasteboard which supposedly contains the virtual display
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_ptr) THEN
+	  RETURN $false;
+	.pb_adr = .pb_ptr;
+!
+! Loop through every virtual display of this pasteboard looking for the
+! virtual display ID
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+	WHILE (.vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr]) DO
+	  IF .vd_ptr[vs$vds_l_vd_id] EQL .vd_id THEN
+	    BEGIN
+	      .vd_adr = .vd_ptr;
+	      RETURN $true;
+	    END
+	  ELSE
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+!
+        RETURN $false;
+    END;			! end of routine vs$$vds_vd_found
+
+END				! End of module
+ELUDOM

@@ -1,0 +1,3405 @@
+%title 'VS$VSS_VP  --  VAX Station Virtual Screen services : Viewport'
+module VS$VSS_VP ( 			! VSS routines for Viewports.
+		ident = '1-001',	! Version
+		addressing_mode (external = general, nonexternal=general)
+		 ) =
+begin
+
+
+!++
+! FACILITY:
+!	Workstation Virtual Screen Services
+!
+! ABSTRACT:
+!		This  module  allows  the  creation, maintainance,
+!		movement  and  deletion  of  Viewports.
+!
+!
+! ENVIRONMENT:
+!	Workstation SDAACP routines
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+library 'VSTA$LIBRARY:LIBMACROS';	! Symbols like $log_error_and_return
+library 'VSTA$LIBRARY:vssrvmacs';	! Symbols like $tell_opr
+library 'vsta$library:vsvdspb';		! symbols like "rectangle_block"
+library 'vsta$library:VSVSSVS';		! VAX Station data structures.
+library	'SYS$LIBRARY:STARLET';		! SS,RMS, etc. symbols
+!
+! PSECTS
+!
+$vsta_psect;
+
+global
+	VSS$_VP_QUEUE_HEADER: vector[2,long]	! Header for list of VP's.
+	initial(rep 2 of (VSS$_VP_QUEUE_HEADER[0])); !Null list for now.
+
+own
+	VP_NUMBER,			! Incremented w/each creation,
+					! becomes VP_ID.
+	vss$l_moving: initial(0),	! Mode indicator.
+	vss$l_moving_hi_vp_id,		! Holders for moving VP_ID's
+	vss$l_moving_user_vp_id;	! move.
+
+literal
+	vss$k_nowhere = -10000,		! This is far, far offscreen.
+	TRUE = 1,			! Make Boolean comparisions easier.
+	FALSE = 0;
+
+
+
+forward routine				! Routines defined in this module
+!
+!
+! GLOBAL ROUTINES:
+!
+VSTA$$VSS_GET_VP_PASTE_ORDER,
+VS$$VSS_CREATE_VP,
+VS$$VSS_DELETE_VP,
+VS$$VSS_DELETE_2_VPS,
+	VS$$VSS_GET_VP_CHAR,
+	VS$$VSS_SET_VP_CHAR,
+		VS$$VSS_POP_VP_TO_TOP_OF_VS,
+		VS$$VSS_POP_HI,			! Pop HI VP's to top.
+		VS$$VSS_CHANGE_DOC_PASTE,
+		VS$$VSS_MOVE_VP_IN_VS,	
+		VS$$VSS_MOVE_DOCUMENT,	
+		VS$$VSS_UNCOVER_FOR_MOVE,
+		VS$$VSS_REDISPLAY_FOR_MOVE,
+			VS$$VSS_ADD_REC_TO_VP,
+			VS$$VSS_REM_REC_FROM_VP,
+			VS$$VSS_DISPLAY_VD_IN_VP,
+
+
+! PRIVATE ROUTINES:
+
+VP_POINTER,			! For internal use only.
+ERASE_VP,			! Paint PS with VS_COLOR where needed only.
+VP_BACKGROUND,			! Cope with the VP background problem.
+LOOK_UP,			! Part of PERFORM_VP_OCCLUSION
+REVEAL_SEG,			! Part of PERFORM_VP_OCCLUSION
+PERFORM_VP_OCCLUSION,		! Updates VP segment lists. In progress.
+UNIFY_VP,			! Reset VP to one visible segment.
+FREE_VP,			! Release vp's memory
+ZERO_VP,			! Remove all segments and rectangles.
+INSERT_VP_VIS_SEG,		! Put new segments on VP's list.
+REBUILD_VP;			! Put the Rectangles back into a VP.
+
+
+!
+! EXTERNAL REFERENCES:
+!
+! Error codes:
+external
+
+	VSTA$_NOSUCHVP,		! Can't find VP
+	VSTA$_VPNOTCRE,		! Can't create VP
+	VSTA$_VPNOTDEL,		! Can't delete VP
+	VSTA$_CANT_TELL_VDS,	! Couldn't tell VDS that VP is gone.
+	VSTA$_NO_VP,
+	VSTA$_NO_VSVP,
+	VSTA$_NO_TARGET_VP,
+	VSTA$_NO_TARGET_VSVP,
+	VSTA$_CANT_PAINT_VP,
+	VSTA$_CANT_DO_OCC,
+	VSTA$_NO_VS,
+	VSTA$_CANT_RECOVER,
+	VSTA$_CANTGETWCHAR,
+	VSTA$_CANTGETPBCHAR,
+	VSTA$_VDNOTDISPVP,	! Can't display VD in VP
+
+! Other externals:
+	vs$gl_acp_pid,		! Our process id
+	vs$gw_vbchan: word,	! Channel to hardware VAXstation device.
+	VSTA$A_FRAME_BUFFER: VECTOR [0,LONG];
+
+external routine
+		VSTA$$ERROR,
+		VS$$ACP_GET_VM,			! Memory allocation
+		VS$$ACP_FREE_VM,		! Memory de-allocation
+		VS$$VDS_VREC_INTERSECT,		! Find intersections
+		VS$$VDS_GET_SUB_RECT,		! Return fragments
+		VS$$VDS_GET_WINDOW_CHAR,	! Get size info for VP.
+		VS$$VDS_MAP_WIN_TO_VP,		! VDS side window-vp mapping.
+		VS$$VDS_MAP_WIN_REC,		! VDS side window to VP_SEG.
+		VS$$VDS_VP_GONE,		! VDS side window-vp unmapping.
+		VS$$VDS_GET_PB_CHAR,		! Get color info.
+		VS$$VDS_REDISPLAY_VD,		! Put it back on the screen.
+		VS$$VDS_DISPLAY_VD_ON_TUBE,	!
+		VSTA$$SET_VP_HELP,		! Associate help action with vp
+		VSTA$$SRV_DISP_HELP_KWD,	! Open help document to a page.
+		VSTA$$DRIVE_BACKGROUND,		! Paints background for us.
+		VSTA$$VDS_PURGE_VD_RC_LISTS,
+		VSTA$$VDS_PURGE_ALL_VD_RC_LISTS,
+
+!
+! Split from original single module...
+!
+! The VS routines are now found in VSVSSVS.B32, module VSVSS_VS.
+
+VS$$VSS_CREATE_VS,
+VS$$VSS_DELETE_VS,
+	VS$$VSS_GET_VS_CHAR,
+	VS$$VSS_SET_VS_CHAR,
+		VS$$VSS_ADD_REC_TO_VS,
+		VS$$VSS_REM_REC_FROM_VS,
+		VS$$VSS_DISPLAY_VD_IN_VS,
+VS_POINTER,			! For internal use only.
+VS_VP_POINTER,			! For internal use only.
+VS_PS_POINTER,			! For internal use only.
+REM_SEG_VIS_R, 			! For internal use only.
+
+! These next routines are found in VSVSSPS.B32 module VSVSS_PS
+
+VS$$VSS_CREATE_PS,
+VS$$VSS_DELETE_PS,			! no screen update.
+	VS$$VSS_GET_PS_CHAR,
+	VS$$VSS_SET_PS_CHAR,
+		VS$$VSS_DISPLAY_PS,
+		VS$$VSS_CLEAR_PS, 
+		VS$$VSS_MOVE_PS_IN_VS,
+			VS$$VSS_ERASE_VP_ON_PS,	! Paint VS color where needed.
+			VS$$VSS_VP_BACKGROUND_ON_PS,	! Paint background.
+			VS$$VSS_DISPLAY_VD_IN_PS,
+PS_POINTER,
+FIND_INTERSECT;		! Insulate VSS from VDS argument passing.
+
+builtin					! MACRO instructions
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+
+global routine vsta$$vss_get_vp_paste_order
+!++
+! Functional description:
+!
+!	Given a viewport id, return the paste order for the viewport, assumed
+!	to be a positive number, the larger of which are on top of the smaller
+!	of which.
+!
+! Formal parameters:
+ (
+	vp_id,				! which viewport
+	paste_order			! adr into which to write paste order
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    VS_VP: ref VS_VP_BLOCK,
+	    s;
+!
+! Lookup the VS_VP block for Paste Order info
+!
+	if not (S=VS_VP_POINTER ((external srv_vs_id ; .srv_vs_id),
+				.vp_id,
+				VS_VP))
+	then return vsta$$error (VSTA$_NO_TARGET_VSVP);
+!
+! Tell caller the paste order.
+!
+	.paste_order = .VS_VP[VSS$l_VS_VP_PASTE_ORDER];
+
+	ss$_normal
+
+	end;
+
+%sbttl	'VS$$VSS_CREATE_VP  --  Create Viewport'
+global routine VS$$VSS_CREATE_VP(
+					WINDOW_ID,	! To attach to
+					VS_ID,		! Forms world for VP
+			    		VP_ID_ADDRESS,	! (return it here)
+					X_ORIGIN,	! VS coordinates
+					Y_ORIGIN,
+					TARGET_VP_ID,	! Stacking cue.
+					HELP_KEYWORD	! Adr of str descriptor
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Creates the Viewport data structure.  Which will contain 
+!	Flink & Blink, size, characteristics,  window id, etc.
+!	Creates the VS_VP data structure for VS specific info about
+!	location, Paste Order, etc.  (Should be merged with VP block,
+!	now that VP's only live on one VS.)
+!	Then call the VDS side to tell it what our VP_ID is, and get back
+!	the size of the window.
+!	
+! FORMAL PARAMETERS:
+!
+!			WINDOW_ID - Window to map this viewport onto.
+!			A VP is just the VSS side representation of a
+!			window.  In this release we will have no scaling.
+!
+!			VS_ID - VS to create the new VP on.
+!			X_ORIGIN, Y_ORIGIN - VS coordinates to create VP at.
+!
+!			VP_ID_ADDRESS -  address to return the uniquely
+!			created ID in.
+!
+!			TARGET_VP - If non-zero, this is the ID of a VP
+!			that we will place our new VP just above. (We will
+!			create a gap in the stacking order if nescessary.)
+!			IF zero then we will create the VP on top of the VS,
+!			where it will have the greatest Paste Order.
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+	external routine
+
+	    vsta$$update_mouse_info;
+
+    local
+
+	WINDOW_NAME_DESC: vector[2],	!For our call to GET_WINDOW_CHAR
+	WINDOW_NAME_STRING: vector[80,byte],	! GET_WINDOW_CHAR returns it.
+	VP: ref VP_BLOCK,		! Address of the created VP_BLOCK
+	HI_VP: ref VP_BLOCK,		! Pointer for use in HI stack shuffle.
+	PS_X,				! Computed offset into a PS.
+	PS_Y,				! Computed offset into a PS.
+	WINDOW_PB_ID: word,		! Not used, but passed back to us -
+	WINDOW_VP_ID: word,		! Had better be our VP_ID.
+	WINDOW_X_ORIGIN: word,		!
+	WINDOW_Y_ORIGIN: word,		! 
+	WINDOW_LENGTH: word,		! Becomes VP_LENGTH
+	WINDOW_HEIGHT: word,		! Becomes VP_HEIGHT
+	RECTANGLE: ref VIS_R_BLOCK,	! Becomes addr of full VP's visible R.
+	VS: ref VS_BLOCK,		! Will become address of VS(VS_ID)
+	VS_VP: ref VS_VP_BLOCK,		! Will become address of VS_VP block
+	HI_VS_VP: ref VS_VP_BLOCK,	! Will become address of VS_VP block
+	TARGET_VS_VP: ref VS_VP_BLOCK,	! Will become address of VS_VP block
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,! addr of VS_VP_VIS_SEG block
+	VD_ZERO,			! VD_0, the null vd for PB color R.
+	PB_COLOR: word,			! Holder for PB background color.
+	PB_LENGTH: word,		! Not used info from GET_PB_CHAR
+	PB_HEIGHT: word,		! Not used info from GET_PB_CHAR
+	PB_FLAGS,			! Not used info from GET_PB_CHAR
+	PB_PROT: word,			! Not used info from GET_PB_CHAR
+	TARGET_PASTE_ORDER,		! UStorage for paste order data.
+	STATUS,				! Holder for routine status.
+	STATUS_1, STATUS_2;		! More stati.
+
+VD_ZERO = 0;
+
+.VP_ID_ADDRESS = 0;	! In case of error returns from sub-routines.
+WINDOW_NAME_DESC[0] = 80;
+WINDOW_NAME_DESC[1] = WINDOW_NAME_STRING;
+
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))	! Lookup the VS
+	then return vsta$$error(.STATUS);	! Return SS$_code if not found.
+
+
+! Call VDS for the size of the window that we are to be mapped to.
+! For the present release this becomes our VP's size.
+if (not(STATUS=VS$$VDS_GET_WINDOW_CHAR(			! Call VDS
+			.WINDOW_ID,
+			WINDOW_NAME_DESC,
+			WINDOW_PB_ID,
+			WINDOW_VP_ID,
+			WINDOW_X_ORIGIN,
+			WINDOW_Y_ORIGIN,
+			WINDOW_LENGTH,
+			WINDOW_HEIGHT,
+			.vs$gl_acp_pid			! say it's US
+			)))
+then return vsta$$error(VSTA$_CANTGETWCHAR);
+
+
+if (not (STATUS=VS$$VDS_GET_PB_CHAR(
+				.WINDOW_PB_ID,
+				PB_COLOR,
+				PB_LENGTH,
+				PB_HEIGHT,
+				PB_FLAGS,
+				PB_PROT,
+				.vs$gl_acp_pid)))	! say WE'RE asking
+then return vsta$$error(VSTA$_CANTGETPBCHAR);
+
+
+!&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+!&	Now we must determine what paste order to give our newly
+!&	created VP.  If there was a base VP passed (ie, TARGET_VP_ID
+!&	was non-zero) then we must pull out it's Paste Order and
+!&	shuffle the VP stack to place our new VP at the correct level.
+!&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+if .TARGET_VP_ID neq 0 then
+begin
+! Try to look up the TARGET_VP, for stacking order cues.
+if not (STATUS=VS_VP_POINTER(.VS_ID, .TARGET_VP_ID, TARGET_VS_VP)) then
+TARGET_VP_ID = 0; ! If we can't find the target, act as if it wasn't passed.
+end;		  ! We will then create this VP on the top of the VS.
+
+if .TARGET_VP_ID neq 0 then
+begin	! TARGET_VP was specified, and was found in the list of VP's.
+
+! Remember the Paste Order using a variable
+target_paste_order=.TARGET_VS_VP[VSS$l_VS_VP_PASTE_ORDER]; 
+
+
+   HI_VP = .VSS$_VP_QUEUE_HEADER[0];		! Point to first VP in queue.
+   until HI_VP[VSS$A_VP_FL] eql VSS$_VP_QUEUE_HEADER[0] do ! For each VP
+	begin
+
+! Lookup the VS_VP block for Paste Oder info
+	if not (STATUS=VS_VP_POINTER(.VS_ID,
+				.HI_VP[VSS$l_VP_ID],
+				HI_VS_VP))
+	then return vsta$$error(VSTA$_NO_TARGET_VSVP);
+	! Inform caller of failure.
+
+
+! If it is above our target in Paste Order then move it up one to make room.
+	if .HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] gtr .TARGET_PASTE_ORDER
+		then HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] =
+			.HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] + 1;
+
+	HI_VP = .HI_VP[VSS$A_VP_FL];		! Point to next VP in queue
+	end; ! of for each VP
+
+end;	! of TARGET_VP was specified, and was found in the list of VP's.
+
+!&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+!
+!	Get memory to hold the new VP's VP_BLOCK
+!
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$s_VP_BLOCK), VP, 0) ) )
+then return vsta$$error(.STATUS);
+!	We got the memory, so proceed.
+!
+! Initialize entire block to 0, so that items (such as help
+! data !) that want to be 0 are so.
+!
+	ch$fill (0, vss$s_vp_block, vp[$base]);
+!
+!	Put non-0 values into the new VP_BLOCK.
+!
+VP[VSS$A_VP_FL] = VP[VSS$A_VP_FL];! Point to ourself for the nonce.
+VP[VSS$A_VP_BL] = VP[VSS$A_VP_BL];! Point to ourself for the nonce.
+VP[VSS$W_VP_SIZE] = VSS$s_VP_BLOCK; ! Blocksize for VMS use.
+VP[VSS$B_VP_TYPE] = VSS$K_VP_BLOCK_TYPE; ! Block type for VMS use.
+VP[VSS$L_VP_ID] = .VP_NUMBER+1;	! Put the VP_ID into the proper place.
+VP[VSS$L_VP_VS_ID] = .VS_ID;		! Put the VS_ID into place.
+VP[VSS$L_VP_WINDOW_ID] = .WINDOW_ID;	! Put in the window ID.
+VP[VSS$L_VP_COLOR] = .PB_COLOR;		! VP bckgrnd is PB bckgrnd color.
+VP[VSS$l_VP_LENGTH] = .WINDOW_LENGTH;	! Same dimensions as the window.
+VP[VSS$l_VP_HEIGHT] = .WINDOW_HEIGHT;	! Same dimensions as the window.
+
+!	Insert new VP into the list of VP's
+
+INSQUE(VP[VSS$A_VP_FL], VSS$_VP_QUEUE_HEADER[0]);
+!
+! If a help keyword has been supplied for this vp, set it up now.
+!
+	if $parameter_or_0 (help_keyword) neq 0
+	then
+	    if not (status = vsta$$set_vp_help (
+		.vp[vss$l_vp_id],	! this vp
+		vsta$$srv_disp_help_kwd,! this routine for putting up help
+		.help_keyword		! this page of document
+		))
+	    then $log_error_and_return (.status);
+
+! *** Point of no return.  We should not get an error beyond this point.
+
+VP_NUMBER=.VP_NUMBER+1;			! Having created a new VP, we
+					! increment to get a new ID number.
+
+.VP_ID_ADDRESS=.VP_NUMBER;		! Place the ID to be returned.
+
+
+! *** Make room at the top.
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 1;
+!
+! *** Get memory for a VS_VP block.
+!
+	if not (STATUS_1 = VS$$ACP_GET_VM (
+	    %ref(VSS$s_VS_VP_BLOCK),
+	    VS_VP,
+	    0))
+	then ! Try to deallocate memory and quit
+	    if (STATUS_2 = VS$$ACP_FREE_VM (
+		%ref(VSS$s_VP_BLOCK),
+		VP,
+		0))
+	    then return vsta$$error (.STATUS_1)	! only first vm failed
+	    else return vsta$$error (.STATUS_2);! both failed !
+
+if .TARGET_VP_ID neq 0
+then		! A target was passed.  Use target to base this VP.	
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .TARGET_PASTE_ORDER + 1
+else			! No target was passed.  Place this VP on top.
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .VS[VSS$l_VS_TOP];
+
+VS_VP[VSS$L_VS_VP_ID] = .VP_NUMBER;	! Put the ID into the block.
+!
+! Remember dimensions of viewport, so mouse movement code can get them.
+!
+VS_VP[VSS$L_VS_VP_WIDTH] = .WINDOW_LENGTH;
+VS_VP[VSS$L_VS_VP_HEIGHT] = .WINDOW_HEIGHT;
+VS_VP[VSS$l_VS_VP_X_ORIGIN] = .X_ORIGIN; ! Put the location in the VS_VP blk. 
+VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .Y_ORIGIN; ! Put the location in the VS_VP blk.
+
+! *** Set up subsidiary queues.
+
+VS_VP[VSS$A_VS_VP_VIS_SEG_QUEUE_FL] = VS_VP[VSS$A_VS_VP_VIS_SEG_QUEUE_FL];
+VS_VP[VSS$A_VS_VP_VIS_SEG_QUEUE_BL] = VS_VP[VSS$A_VS_VP_VIS_SEG_QUEUE_BL];
+
+! INSQUE the VS_VP block into the VS's queue of VS_VP blocks.
+
+VS_VP[VSS$a_VS_VP_BLOCK_FL] = VS_VP[VSS$a_VS_VP_BLOCK_FL];
+VS_VP[VSS$a_VS_VP_BLOCK_BL] = VS_VP[VSS$a_VS_VP_BLOCK_BL];
+
+INSQUE(VS_VP[VSS$A_VS_VP_BLOCK_FL], VS[VSS$A_VS_VP_QUEUE_FL]);
+
+!-----------------------------------------------------------------------
+! Create now a visible segment the full size of the VP for the occlusion
+! routine to work with.
+!-----------------------------------------------------------------------
+
+! Get memory for a VS_VP_VIS_SEG_BLK.
+
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+				VS_VP_VIS_SEG, 0) ) ) then
+if (not (STATUS=vs$$vss_delete_vp(.vp_number))) then
+				return vsta$$error(VSTA$_CANT_RECOVER);
+
+! Now fill in the values.  Our entire VP is visible, so use its dimensions.
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] = .X_ORIGIN;
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] = .Y_ORIGIN;
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] = .VP[VSS$l_VP_LENGTH];
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] = .VP[VSS$l_VP_HEIGHT];
+! Set up null queues, so that INSQUE will work properly.
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL];
+
+
+! INSQUE the visible segment onto the (empty) VS_VP Visible segment list.
+
+INSQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL],
+	 VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL]);
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! Do Occlusion here !!!
+
+if (not (STATUS=PERFORM_VP_OCCLUSION(.VP,.VS,.VS_VP,
+				 vss$k_nowhere,
+				vss$k_nowhere,
+				0,0))) then
+
+if (not (STATUS=vs$$vss_delete_vp(.vp_number))) then
+				return vsta$$error(VSTA$_CANT_RECOVER);
+
+
+
+! Put VD_ZERO rectangles into all the segments, and call the VDS
+! to get the VD rectangles sent to us.
+! *** The "1" passed to REBUILD_VP is a flag to tell it to display
+! the rebuilt VP.
+
+if (not (STATUS=REBUILD_VP(.VP,.VS,.VS_VP, 1))) then
+if (not (STATUS=vs$$vss_delete_vp(.vp_number))) then
+				return vsta$$error(VSTA$_CANT_RECOVER);
+				! E_HANDLER
+!
+! If this viewport contains a region coincident with the mouse, for instance
+! if the viewport is showing a menu, then we want to light up the region.  Or
+! If this viewport is occluding a viewport that contains a boxed region, we
+! want to unbox that region if the mouse is no longer on it (i.e. the mouse is
+! now on the new viewport).  Or if this viewport is occluding a pop-up
+! pasteboard such that the mouse is now on this new viewport and no longer on
+! the pop-up pasteboard, then we want to vanish the pasteboard.  So do it.
+!
+	vsta$$update_mouse_info ();
+
+return (SS$_NORMAL);
+end;					! End of VS$$VSS_CREATE_VP
+
+%sbttl	'VP_POINTER  --  Return VP address given VP_ID'
+global routine VP_POINTER (
+				VP_ID,		! ID of requested VP
+				VP_ADDRESS		! Addr for return
+				) :  =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns the address of the VP having ID# VP_ID.
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword VP_ID assigned by VS$$VSS_CREATE_VP
+!	VP_ADDRESS	Address where VP_BLOCK address will be returned
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!		SS$_NOSUCHDEV		the VP_ID could not be found in the
+!						queue of VP_BLOCKs
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    local
+	VP:ref VP_BLOCK,
+	JUNK,					! Dummy address for REMQUE
+ 	STATUS;					! Holder for routine values.
+
+   VP = .VSS$_VP_QUEUE_HEADER[0];		! Point to first VS in queue.
+   until VP[VSS$A_VP_FL] eql VSS$_VP_QUEUE_HEADER[0] do
+	begin
+	if .VP[VSS$L_VP_ID] eql .VP_ID		! ID=Passed ID ?
+	then
+
+	  begin					! Found it 
+	  .VP_ADDRESS = VP[VSS$A_VP_FL];	! Place it to be returned.
+	  if VP neq .VSS$_VP_QUEUE_HEADER[0] then	! If not first in queue
+		begin				! Not first.
+		REMQUE(VP[VSS$a_VP_FL], JUNK);	! Unlink then relink at head.
+		INSQUE(VP[VSS$A_VP_FL], VSS$_VP_QUEUE_HEADER[0]);
+		end;				! Not first.
+	  return (SS$_NORMAL);	! Return Status is success.
+	  end;					! End of Found it.
+
+	VP = .VP[VSS$A_VP_FL];			! Point to next VP in queue
+	end;
+
+    return VSTA$_NOSUCHVP;			! If we get here, we've 
+						! exhausted the queue
+
+    end;			!End of VP_POINTER
+
+%sbttl	'LOOK_UP  --  Add Rectangle to Virtual Screen.'
+global routine LOOK_UP (
+					PASSED_VP: ref VP_BLOCK, ! Addr of VP
+					VS: ref VS_BLOCK,	! Addr of VS
+					PASSED_VS_VP: ref VS_VP_BLOCK
+					) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This is a captive routine for local use only.  It is used by
+!	CREATE_VP, DELETE_VP and MOVE_VP_IN_VS for occlusion effects.
+!
+!	It is assumed that the PASSED_VD is in a ZEROed state.
+!	
+!	Each VP below the PASSED_VD must be zeroed, if it is to be fragmented.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	JUNK,				! Holder for block addresses in REMQUE.
+	FORWARD_LINK,			! Save pointer in case of REMQUE
+	intersect : rectangle_block,	! "INTERSECT_" varibles come back from
+					! the intersect routine.
+	clipped : rectangle_block,	! "CLIPPED_" variables are the clipped
+					! size for the current segment.
+	FLAG,				! True if FIND_INTERSECT did find one.
+	NUMBER_OF_FR,			! Number of fragments formed.
+	subrect : blockvector [4, vs$vds_k_rec_length, BYTE]
+	    field (vs$vds_rectangle_block_fieldset),
+					! Fragments.
+	PB_COLOR,
+	PASSED_VP_ID,			! Holder for easy reference.
+	PASTE_ORDER,			! Stacking level on the VS.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK, ! Address of segment block
+	PASSED_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK, ! For a PASSED vs_vp_vis R
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+PASSED_VP_ID = .PASSED_VP[VSS$l_VP_ID];
+
+PASTE_ORDER = .PASSED_VS_VP[VSS$l_VS_VP_PASTE_ORDER];
+
+!==============================================================================
+! First, for all VP's that are on top of the passed VP.
+
+
+! *** If we are on top we needn't bother checking through the list.
+if .PASSED_VS_VP[VSS$l_VS_VP_PASTE_ORDER] neq .VS[VSS$l_VS_TOP] then
+begin	! This VP is *not* on top.
+
+
+! *** For each VP in VS's VP list
+VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+until VS_VP[VSS$a_VS_VP_BLOCK_FL] eql VS[VSS$a_VS_VP_QUEUE_FL] do
+begin						! Main Loop. For each VP
+
+if .PASTE_ORDER lss .VS_VP[VSS$l_VS_VP_PASTE_ORDER] then
+begin						! Current VP is above us.
+
+! *** *** Check to see if any segment of our PASSED_VP is OCCLUDED by this
+! VP.  If so then fragment it, and occlude the
+! intersection with CURR_VP_ID.
+
+! We are currently positioned at a VP that is above us.
+! We must check each of our vis and occ segments against it.
+! *** *** First clip it to our VP.
+
+		if vs$$vds_vrec_intersect(
+				.PASSED_VS_VP[VSS$l_VS_VP_X_origin],
+				.PASSED_VS_VP[VSS$l_VS_VP_Y_origin],
+				.PASSED_VP[VSS$l_VP_LENGTH],
+				.PASSED_VP[VSS$l_VP_HEIGHT],
+				VS_VP[VSS$l_VS_VP_X_ORIGIN],
+				clipped[$base]
+) then
+begin					! This VP does cover part of us.
+
+! First we will do the visible segments.
+PASSED_VIS_SEG = .PASSED_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until PASSED_VIS_SEG[VSS$A_VS_VP_VIS_SEG_FL] eql 
+			PASSED_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin						! For each PASSED_VIS_SEG.
+FORWARD_LINK = .PASSED_VIS_SEG[VSS$A_VS_VP_VIS_SEG_FL]; ! Save the FLINK.
+
+!*** *** First clip the current segment to our passed segment.
+
+	if (not(STATUS=FIND_INTERSECT(
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT],
+				clipped[$base],
+				intersect[$base],
+				FLAG,
+				NUMBER_OF_FR,
+				subrect[0, $base]
+				)))
+					then return vsta$$error(.STATUS);
+if .FLAG eql TRUE then
+begin					! FLAG is TRUE, (Intersection!)
+
+
+! Remove (delete) this segment of the PASSED_VP.
+! Add the fragments as visible segments.
+
+	REMQUE(PASSED_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL], JUNK);
+
+	!	Free the Visible Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+
+	! Insert each fragment that remains visible.
+	incr i from 0 to .number_of_fr - 1 do
+	if (not(STATUS=INSERT_VP_VIS_SEG(
+					.PASSED_VS_VP,		!
+				.subrect[.i, vs$vds_l_r_X_coor],
+				.subrect[.i, vs$vds_l_r_Y_coor],
+				.subrect[.i, vs$vds_l_r_LENGTH],
+				.subrect[.i, vs$vds_l_r_HEIGHT]
+					)))
+					then return vsta$$error(.STATUS);
+end;					! FLAG is TRUE, (Intersection!)
+					! if FLAG was false we skipped this.
+
+PASSED_VIS_SEG = .FORWARD_LINK;		! Point to the next PASSED_VIS_SEG
+end;					! For each PASSED_VIS_SEG
+
+
+end;					! This VP does cover part of us.
+
+end;						! Current VP is above us.
+
+VS_VP = .VS_VP[VSS$A_VS_VP_BLOCK_FL];		! Point to the next VS_VP.
+end;						! Main Loop. For each VP
+end;						! This VP is *NOT* on top.
+return (SS$_NORMAL);
+end;			! End of LOOK_UP
+
+%sbttl	'REVEAL_SEG  --  Add Rectangle to Virtual Screen.'
+global routine REVEAL_SEG (
+					PASSED_VP: ref VP_BLOCK, ! Addr of VP
+					VS: ref VS_BLOCK,	! Addr of VS
+					PASSED_VS_VP: ref VS_VP_BLOCK,
+					MOVING_VP: ref VP_BLOCK,
+					OLD_X,
+					OLD_Y
+					) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This is a captive routine for local use only.  It is used by
+!	CREATE_VP, DELETE_VP and MOVE_VP_IN_VS for occlusion effects.
+!
+!	It is assumed that the PASSED_VD is in a ZEROed state.
+!	
+!	Each VP below the PASSED_VD must be zeroed, if it is to be fragmented.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	PASSED_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,
+	FORWARD_LINK,
+	old_rec : rectangle_block,
+	intersect : rectangle_block,	! "INTERSECT_" varibles come back from
+					! the intersect routine.
+	clipped : rectangle_block,	! "CLIPPED_" variables are the clipped
+					! size for the current segment.
+	STATUS;
+
+
+PASSED_VIS_SEG = .PASSED_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until PASSED_VIS_SEG[VSS$A_VS_VP_VIS_SEG_FL] eql 
+			PASSED_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin						! For each PASSED_VIS_SEG.
+FORWARD_LINK = .PASSED_VIS_SEG[VSS$A_VS_VP_VIS_SEG_FL]; ! Save the FLINK.
+
+old_rec[vs$vds_l_r_X_coor] = .OLD_X;
+old_rec[vs$vds_l_r_Y_coor] = .OLD_Y;
+old_rec[vs$vds_l_r_LENGTH] = .MOVING_VP[VSS$l_VP_LENGTH];
+old_rec[vs$vds_l_r_HEIGHT] = .MOVING_VP[VSS$l_VP_HEIGHT];
+	if vs$$vds_vrec_intersect (
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH],
+				.PASSED_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT],
+				old_rec[$base],
+				clipped[$base]
+				)
+ then
+begin					! This VP did uncover part of us.
+
+if (not(STATUS=VS$$VSS_ADD_REC_TO_VS (	! Call the VS add routine.
+					.PASSED_VP[VSS$l_VP_VS_ID],
+					.PASSED_VP[VSS$l_VP_ID],
+					0,	! VD ID
+					.clipped[vs$vds_l_r_X_coor],
+					.clipped[vs$vds_l_r_Y_coor],
+					.clipped[vs$vds_l_r_LENGTH],
+					.clipped[vs$vds_l_r_HEIGHT],
+					0	! assume no consolidation
+					)))
+					then return vsta$$error(.STATUS);
+
+if (not (STATUS=VS$$VDS_MAP_WIN_REC(.PASSED_VP[VSS$l_VP_WINDOW_ID],
+	.clipped[vs$vds_l_r_X_coor] - .PASSED_VS_VP[VSS$l_VS_VP_X_ORIGIN],
+	.clipped[vs$vds_l_r_Y_coor] - .PASSED_VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+	.clipped[vs$vds_l_r_LENGTH],
+	.clipped[vs$vds_l_r_HEIGHT],
+	0	! assume no consolidation necessary
+	)))
+				then return vsta$$error(.STATUS); ! E_HANDLER
+
+
+if (not (STATUS=VP_BACKGROUND(.PASSED_VP,
+				.VS,
+				.PASSED_VS_VP,
+				.clipped[vs$vds_l_r_X_coor],
+				.clipped[vs$vds_l_r_Y_coor],
+				.clipped[vs$vds_l_r_LENGTH],
+				.clipped[vs$vds_l_r_HEIGHT],
+				.PASSED_VP[VSS$l_VP_COLOR])))
+				then return vsta$$error(.STATUS);
+
+end;	! This VP did uncover part of us.
+
+PASSED_VIS_SEG = .FORWARD_LINK;		! Point to the next PASSED_VIS_SEG
+end;					! For each PASSED_VIS_SEG
+return (SS$_NORMAL);
+end;			! End of REVEAL_SEG
+
+%sbttl	'PERFORM_VP_OCCLUSION  --  Add Rectangle to Virtual Screen.'
+global routine PERFORM_VP_OCCLUSION (
+					PASSED_VP: ref VP_BLOCK, ! Addr of VP
+					VS: ref VS_BLOCK,	! Addr of VS
+					PASSED_VS_VP: ref VS_VP_BLOCK,
+					OLD_X,	! Old origin if moving,
+					OLD_Y,	! pass -10000 otherwise.
+					IGNORE_VP_ID, ! Don't process this one.
+					OLD_PASTE_ORDER
+					) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This is a captive routine for local use only.  It is used by
+!	CREATE_VP, DELETE_VP and MOVE_VP_IN_VS for occlusion effects.
+!
+!	It is assumed that the PASSED_VD is in a ZEROed state.
+!	
+!	Each VP below the PASSED_VD must be zeroed, if it is to be fragmented.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	OLD_INTERSECTS,			! Flag for partial redisplay.
+	PASSED_VP_ID,			! Holder for easy reference.
+	X_ORIGIN,			! VP's coordinates.
+	Y_ORIGIN,
+	LENGTH,				! VP's size.
+	HEIGHT,
+	PASTE_ORDER,			! Stacking level on the VS.
+	CURRENT_VP: ref VP_BLOCK,	! Pointer to what we check against.
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+PASSED_VP_ID = .PASSED_VP[VSS$l_VP_ID];
+LENGTH = .PASSED_VP[VSS$l_VP_LENGTH];
+HEIGHT = .PASSED_VP[VSS$l_VP_HEIGHT];
+
+PASTE_ORDER = .PASSED_VS_VP[VSS$l_VS_VP_PASTE_ORDER];
+X_ORIGIN = .PASSED_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+Y_ORIGIN = .PASSED_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+if .PASTE_ORDER lss .VS[VSS$l_VS_TOP] then
+	if (not (STATUS=LOOK_UP(
+				.PASSED_VP,
+				.VS,	! Addr of VS
+				.PASSED_VS_VP
+				))) then return vsta$$error(.STATUS);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Now look down from the paste order of the passed VP_ID.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+
+until VS_VP[VSS$a_VS_VP_BLOCK_FL] eql VS[VSS$a_VS_VP_QUEUE_FL] do
+begin						! Main Loop. For each VP
+
+if ((.VS_VP[VSS$l_VS_VP_ID] neq .PASSED_VP_ID)	! If not current,
+ and (.VS_VP[VSS$l_VS_VP_ID] neq .IGNORE_VP_ID))! and not to be ignored...
+
+and ((.VS_VP[VSS$L_VS_VP_PASTE_ORDER] lss .PASTE_ORDER)! And it's below us,
+     or  ( (.OLD_PASTE_ORDER gtr .VS_VP[VSS$L_VS_VP_PASTE_ORDER])
+	and (.VS_VP[VSS$L_VS_VP_PASTE_ORDER] gtr .PASTE_ORDER)))
+							! or it's popping.
+then
+
+begin						! This VP needs checking.
+
+! see if this VP either USED TO intersect or NOW intersects passed VP...
+
+if
+	begin 
+	if	
+	(max (.VS_VP[VSS$l_VS_VP_X_ORIGIN], .OLD_X) lss
+	min (.VS_VP[VSS$l_VS_VP_X_ORIGIN] + .VS_VP[VSS$L_VS_VP_WIDTH],
+		.OLD_X + .LENGTH) )
+	and
+	(max (.VS_VP[VSS$l_VS_VP_Y_ORIGIN], .OLD_Y) lss
+	min (.VS_VP[VSS$l_VS_VP_Y_ORIGIN] + .VS_VP[VSS$L_VS_VP_HEIGHT],
+		.OLD_Y + .HEIGHT) )
+	then OLD_INTERSECTS = TRUE else OLD_INTERSECTS = FALSE 
+	end
+or
+	begin 
+	(max (.VS_VP[VSS$l_VS_VP_X_ORIGIN], .X_ORIGIN) lss
+	min (.VS_VP[VSS$l_VS_VP_X_ORIGIN] + .VS_VP[VSS$L_VS_VP_WIDTH],
+		.X_ORIGIN + .LENGTH) )
+	and
+	(max (.VS_VP[VSS$l_VS_VP_Y_ORIGIN], .Y_ORIGIN) lss
+	min (.VS_VP[VSS$l_VS_VP_Y_ORIGIN] + .VS_VP[VSS$L_VS_VP_HEIGHT],
+		.Y_ORIGIN + .HEIGHT) )
+	end
+
+then
+
+begin 
+
+if (not (STATUS=VP_POINTER(.VS_VP[VSS$l_VS_VP_ID], CURRENT_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+! *** Get this VP into a state where it has one visible segment.
+if (not (STATUS=UNIFY_VP(.CURRENT_VP,.VS_VP)))
+		then return vsta$$error(.STATUS);
+
+! *** Rebuild the proper segment list for this VP.
+if (not (STATUS=LOOK_UP(
+			.CURRENT_VP,
+			.VS,	! Addr of VS
+			.VS_VP
+			))) then return vsta$$error(.STATUS);
+
+if .OLD_INTERSECTS eql TRUE then
+! *** Display anything that has been revealed
+if (not (STATUS=REVEAL_SEG(
+			.CURRENT_VP,
+			.VS,	! Addr of VS
+			.VS_VP,
+			.PASSED_VP,
+			.OLD_X,
+			.OLD_Y
+			))) then return vsta$$error(.STATUS);
+
+! Rebuild this VP.  (Put back it's rectangles.)
+if (not(STATUS=REBUILD_VP(.CURRENT_VP,.VS,.VS_VP,0)))
+			then return vsta$$error(.STATUS);
+! *** The "0" passed to REBUILD_VP is the DISPLAY_FLAG request.
+
+
+end; ! This vp intersects where we were or where we are
+end;						! This VP needs checking.
+
+VS_VP = .VS_VP[VSS$A_VS_VP_BLOCK_FL];		! Point to the next VS_VP.
+end;						! Main Loop. For each VP
+
+return (SS$_NORMAL);
+end;			! End of PERFORM_VP_OCCLUSION
+
+%sbttl	'INSERT_VP_VIS_SEG  --  Add Rectangle to Virtual Screen.'
+global routine INSERT_VP_VIS_SEG (
+					VS_VP: ref VS_VP_BLOCK,
+					X_ORIGIN,
+					Y_ORIGIN,
+					LENGTH,
+					HEIGHT
+						) =
+
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This is a captive routine for local use only.  It is used by
+!		PERFORM_VP_OCCLUSION to re-create VP segment lists.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	SEG_FLINK,			! Used by merge loop.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK;	! For a current vs_vp_vis R
+
+local
+	STATUS;
+
+
+VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+SEG_FLINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK
+
+! Check to see if passed seg can be added to left side of this seg.
+
+if (.X_ORIGIN + .LENGTH eql .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] )
+then
+	if (.Y_ORIGIN eql .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] )
+	AND (.HEIGHT eql  .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] )
+	then
+	begin
+	VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] = .X_ORIGIN;
+	VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] = .LENGTH +
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH];
+	! *** We have done all we need to so return.
+	return (SS$_NORMAL);
+	end;
+
+! Check to see if passed seg can be added to right side of this seg.
+
+if (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] +
+.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH]) eql .X_ORIGIN then
+if (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] eql .Y_ORIGIN)
+and (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] eql .HEIGHT) then
+
+begin
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] = .LENGTH +
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH];
+! *** We have done all that we need to so return.
+return (SS$_NORMAL);
+end;
+
+
+
+! Check to see if passed seg can be added to bottom of this seg.
+
+if (.Y_ORIGIN + .HEIGHT eql .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN]) then
+if (.X_ORIGIN eql .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN])
+and (.LENGTH eql .VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH]) then
+begin
+	VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] = .Y_ORIGIN;
+	VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] = .HEIGHT +
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT];
+
+! *** We have done it, so return.
+	return (SS$_NORMAL);
+end;
+
+! Check to see if passed seg can be added to top of this seg.
+
+if (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] + 
+		.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT]) eql .Y_ORIGIN then
+if (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] eql .X_ORIGIN) 
+and (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] eql .LENGTH) then
+begin
+	VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] = .HEIGHT +	
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT];
+
+! *** We have done it, so return.
+	return SS$_NORMAL;
+end;
+
+VS_VP_VIS_SEG = .SEG_FLINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+! ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### ### #
+
+! Get memory for a VS_VP_VIS_SEG_BLK.
+!
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+				VS_VP_VIS_SEG, 0) ) )
+then return vsta$$error(.STATUS);
+
+! Now fill in the values.  Our entire VP is visible, so use its dimensions.
+
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] = .X_ORIGIN;
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] = .Y_ORIGIN;
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] = .LENGTH;
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] = .HEIGHT;
+! Set up null queues, so that INSQUE will work properly.
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL];
+
+
+! INSQUE the visible segment onto the (empty) VS_VP Visible segment list.
+
+INSQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL],
+	 VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL]);
+
+return SS$_NORMAL;
+end;			! End of INSERT_VP_VIS_SEG
+
+%sbttl	'VS$$VSS_DELETE_VP  --  DELETE Viewport'
+global routine VS$$VSS_DELETE_VP(
+					VP_ID	! Viewport ID to be deleted.
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the Viewport data structure, the VS_VP block, the
+!	Visible and Occluded Segment lists and their rectangles.
+!	First all of the PS's must be updated.
+!
+! FORMAL PARAMETERS:
+!			VP_ID
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	PS_ID,				! PS_ID of a given PS
+	OLD_X_HOLDER,			! Holder for the origin
+	OLD_Y_HOLDER,			! Holder for the origin
+	VP: ref VP_BLOCK,		! Becomes Address of the VP_BLOCK.
+	VS_ID,				! VS_ID of VS that this VP is on.
+	VS: ref VS_BLOCK,		! Becomes Address of the VS_BLOCK.
+	FORWARD_LINK: ref VIS_R_BLOCK	,! Becomes Address of a R block.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	JUNK,				! Holder for address in REMQUE
+	STATUS;
+
+! *** Look up the VP.  Not finding it means it never existed or is gone.
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(VSTA$_NO_VP);	! VP not found.
+
+VS_ID = .VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.  If we found the VP then we should be ok.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(VSTA$_NO_VS);	! VS not found.
+
+! *** Look up the VS_VP block.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(VSTA$_NO_VSVP);
+						! Found no VS_VP ??? Severe!!!
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! *** Tell the VDS side of things that this VP is GONE.
+if (not (STATUS=VS$$VDS_VP_GONE(.VP[VSS$l_VP_WINDOW_ID])))
+	then return vsta$$error(VSTA$_CANT_TELL_VDS);
+						! Failing here is severe!!!
+						! VDS would get errors calling
+						! us.
+
+
+
+! VS_VP[VSS$l_VS_VP_PASTE_ORDER] = 0;
+
+if (not (STATUS=ERASE_VP(.VP,.VS)))
+		then return vsta$$error(.STATUS);
+
+OLD_X_HOLDER = .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+OLD_Y_HOLDER = .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+VS_VP[VSS$l_VS_VP_X_ORIGIN] = vss$k_nowhere;
+VS_VP[VSS$l_VS_VP_Y_ORIGIN] = vss$k_nowhere;
+
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.VP,.VS_VP))) then return vsta$$error(.STATUS);
+
+! *** Now that we are a ghost, make visible anything that we have uncovered.
+if (not (STATUS=PERFORM_VP_OCCLUSION(.VP,.VS,.VS_VP,
+		.OLD_X_HOLDER,.OLD_Y_HOLDER,0,0)))
+		then return vsta$$error(VSTA$_CANT_DO_OCC);
+
+! *** Now that we have uncovered things, we can just delete the data structure.
+! *** Next we remove the segment blocks; this is OK because the rectangles
+! 	have been REMQUED and deallocated.
+
+!========================================================
+VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+FORWARD_LINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK
+
+	REMQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL], JUNK);
+
+	!	Free the Visible Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+VS_VP_VIS_SEG = .FORWARD_LINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+! *** Next we must pull ourselves off of the VS.
+! So, let's remove the VS_VP block.
+
+	REMQUE(VS_VP[VSS$a_VS_VP_BLOCK_FL], JUNK);
+
+	!	Free the VS_VP block's memory.
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$s_VS_VP_BLOCK),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+!
+! Now remove the VP block itself.
+!
+	if not (status = free_vp (vp[$base]))
+	then return vsta$$error (.status);
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_DELETE_VP,
+
+%sbttl	'VS$$VSS_DELETE_2_VPS  --  DELETE Viewports'
+global routine VS$$VSS_DELETE_2_VPS(
+					HI_VP_ID,
+					USER_VP_ID
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the Viewport data structure, the VS_VP block, the
+!	Visible and Occluded Segment lists and their rectangles.
+!	First all of the PS's must be updated.
+!
+! FORMAL PARAMETERS:
+!			VP_ID
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	PS_ID,				! PS_ID of a given PS
+	OLD_X_HOLDER,			! Holder for the origin
+	OLD_Y_HOLDER,			! Holder for the origin
+	HI_VP: ref VP_BLOCK,		! Becomes Address of the VP_BLOCK.
+	USER_VP: ref VP_BLOCK,		! Becomes Address of the VP_BLOCK.
+	VS_ID,				! VS_ID of VS that this VP is on.
+	VS: ref VS_BLOCK,		! Becomes Address of the VS_BLOCK.
+	FORWARD_LINK: ref VIS_R_BLOCK	,! Becomes Address of a R block.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	USER_VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	HI_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	JUNK,				! Holder for address in REMQUE
+	STATUS;
+
+
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.HI_VP_ID, HI_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+if (not (STATUS=VP_POINTER(.USER_VP_ID, USER_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .HI_VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .HI_VP_ID, HI_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .USER_VP_ID, USER_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! *** Tell the VDS side of things that this VP is GONE.
+if (not (STATUS=VS$$VDS_VP_GONE(.HI_VP[VSS$l_VP_WINDOW_ID])))
+	then return vsta$$error(VSTA$_CANT_TELL_VDS);
+						! Failing here is severe!!!
+						! VDS would get errors calling
+ 						! us.
+
+! *** Tell the VDS side of things that this VP is GONE.
+if (not (STATUS=VS$$VDS_VP_GONE(.USER_VP[VSS$l_VP_WINDOW_ID])))
+	then return vsta$$error(VSTA$_CANT_TELL_VDS);
+						! Failing here is severe!!!
+						! VDS would get errors calling
+						! us.
+
+
+
+!!!HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] = -1;
+!!!USER_VS_VP[VSS$l_VS_VP_PASTE_ORDER] = 0;
+
+if (not (STATUS=ERASE_VP(.HI_VP,.VS)))
+		then return vsta$$error(.STATUS);
+! *** Now cleanup any remaining PS rectangles for this VP.
+if (not (STATUS=ERASE_VP(.USER_VP,.VS)))
+		then return vsta$$error(.STATUS);
+
+OLD_X_HOLDER = .HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+OLD_Y_HOLDER = .HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] = vss$k_nowhere;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = vss$k_nowhere;
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] = vss$k_nowhere;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = vss$k_nowhere;
+
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+
+if (not (STATUS=UNIFY_VP(.HI_VP,.HI_VS_VP)))
+				then return vsta$$error(.STATUS);
+if (not (STATUS=UNIFY_VP(.USER_VP,.USER_VS_VP)))
+				then return vsta$$error(.STATUS);
+
+! *** Now that we are a ghost, make visible anything that we have uncovered.
+if (not (STATUS=PERFORM_VP_OCCLUSION(.HI_VP,.VS,.HI_VS_VP,
+		.OLD_X_HOLDER,.OLD_Y_HOLDER,.USER_VP_ID,0)))
+		then return vsta$$error(VSTA$_CANT_DO_OCC);
+
+! *** Now that we have uncovered things, we can just delete the data structure.
+! *** Next we remove the segment blocks; this is OK because the rectangles
+! 	have been REMQUED and deallocated.
+
+!========================================================
+VS_VP_VIS_SEG = .HI_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql HI_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+FORWARD_LINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK
+
+	REMQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL], JUNK);
+
+	!	Free the Visible Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+VS_VP_VIS_SEG = .FORWARD_LINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+VS_VP_VIS_SEG = .USER_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql USER_VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+FORWARD_LINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK
+
+	REMQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL], JUNK);
+
+	!	Free the Visible Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+VS_VP_VIS_SEG = .FORWARD_LINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+! *** Next we must pull ourselves off of the VS.
+! So, let's remove the VS_VP block.
+
+	REMQUE(HI_VS_VP[VSS$a_VS_VP_BLOCK_FL], JUNK);
+
+	!	Free the VS_VP block's memory.
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$s_VS_VP_BLOCK),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+
+	REMQUE(USER_VS_VP[VSS$a_VS_VP_BLOCK_FL], JUNK);
+
+
+	!	Free the VS_VP block's memory.
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$s_VS_VP_BLOCK),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+!
+! Now remove the VP blocks.
+!
+	if not (status = free_vp (HI_VP[VSS$a_VP_FL]))
+	then return vsta$$error(.STATUS);
+
+	if not (status = free_vp (user_VP[VSS$a_VP_FL]))
+	then return vsta$$error(.STATUS);
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_DELETE_2_VPS,
+
+routine free_vp
+!++
+! Functional description:
+!
+!	As the last step in releasing a viewport, get rid of popped up
+!	vp on it if it exists, plus release the memory taken up by the viewport
+!	block.  In general, all things that need to be done by both delete-vp
+!	and delete-2-vps should be put here in free_vp, rather than repeated
+!	bug for bug in the two routines !
+!
+! Formal parameters:
+ (
+	vp : ref vp_block		! block to be released
+ ) =
+!
+!--
+	begin
+
+	external routine
+
+	    maybe_vanish_pb_on_region,
+	    vsta$$update_mouse_info;
+
+	local
+
+	    status,
+	    junk;
+!
+! If the viewport has a popup pasteboard associated with it, pop it DOWN
+! now in case it's up.  Such would be the case if the user pulls up a border
+! menu for a terminal, and then logs the terminal out with the keyboard while
+! the menu is still up.
+!
+	if .vp[vss$l_vp_popup_pb] neq 0
+	then
+	    if not (status = maybe_vanish_pb_on_region (
+		.vp[vss$l_vp_popup_pb]
+		))
+	    then $log_error_and_return (.status)
+	    else vp[vss$l_vp_popup_pb] = 0;
+!
+! If the deleted viewport reveals a selectable region, we want to make sure
+! the region gets a box drawn around it.  Also, the deleted viewport might
+! reveal a pasteboard that has boundary interrupts enabled, in which case
+! we want to deliver an interrupt.  So we do it now.
+!
+	vsta$$update_mouse_info ();
+
+	REMQUE(VP[VSS$a_VP_FL], JUNK);
+
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$s_VP_BLOCK),
+	JUNK, 0) ) )
+	then return .STATUS;
+
+	ss$_normal
+
+	end;
+
+%sbttl	'ZERO_VP  --  ZERO Viewport'
+global routine ZERO_VP(
+			VS_VP: ref VS_VP_BLOCK	! Address of VS_VP block.
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	ZEROs the Viewport data structure, the VS_VP block, the
+!	Visible and Occluded Segment lists and their rectangles.
+!	First all of the PS's must be updated.
+!
+! FORMAL PARAMETERS:
+!			VP_ID
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	V_RECTANGLE: ref VIS_R_BLOCK,	! Becomes Address of a R block.
+	FORWARD_LINK: ref block[0,byte],! Becomes Address of a R block.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	VS_VP_OCC_SEG: ref VS_VP_OCC_SEG_BLOCK,	! For a current vs_vp_OCC R
+	V_SEG_FLINK: ref VS_VP_VIS_SEG_BLOCK;	! Address holder (deletions
+
+local
+	JUNK,				! Holder for address in REMQUE
+	STATUS;
+!)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+
+! Hunt down the list...
+VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+
+
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+V_SEG_FLINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK first.
+
+V_RECTANGLE = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+until V_RECTANGLE[VSS$a_VIS_R_FL] eql VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] do
+begin	! inner LOOP: For this segment's visible R list.
+FORWARD_LINK = .V_RECTANGLE[VSS$a_VIS_R_FL];	! Save the FLINK first thing.
+
+		REMQUE(V_RECTANGLE[VSS$a_VIS_R_FL], JUNK);
+
+		!	Free a rectangle block's memory
+		if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VIS_R_BLK_LEN),
+		JUNK, 0) ) )
+		then return vsta$$error(.STATUS);
+		!	We freed the memory, so proceed.
+
+V_RECTANGLE = .FORWARD_LINK;
+
+end;	! inner LOOP: For this segment's visible R list.
+
+!*** *** We have unlinked and deallocated all rectangles, now we will
+! 	 remove the entire visible segment from all PS's on this VS.
+
+!=============================================================================
+
+VS_VP_VIS_SEG = .V_SEG_FLINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+
+return SS$_NORMAL;
+end;			! End of ZERO_VP,
+
+%sbttl	'UNIFY_VP  --  Reduce segment list to one fully visible segment.'
+global routine UNIFY_VP (
+				VP: ref VP_BLOCK,	! Address of VP
+				VS_VP: ref VS_VP_BLOCK	! Address of VS_VP
+				) =		! the VP after moving it.
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Delete all segments, then create one
+!	full-sized visible segment.
+!
+!
+! FORMAL PARAMETERS:
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or any error code returned by routines called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	JUNK,				! Address holder for REMQUE.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	SEG_FLINK: ref block[0,byte];		! Used to hold pointers.
+local
+	STATUS;
+
+
+! Decompose this VP
+if (not (STATUS=ZERO_VP(.VS_VP))) then return vsta$$error(.STATUS);
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! *** Test for one full-sized segment and exit if true.
+!!VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+!!if ((.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] eql .VP[VSS$l_VP_LENGTH])
+!!and (.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] eql .VP[VSS$l_VP_HEIGHT]))
+!!then return SS$_NORMAL;
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+begin	! Outer LOOP: For this VP's visible segment list do
+SEG_FLINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];	! Save the FLINK
+
+
+	REMQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL], JUNK);
+
+	!	Free the Visible Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+	JUNK, 0) ) )
+	then return vsta$$error(.STATUS);
+	!	We freed the memory, so proceed.
+
+VS_VP_VIS_SEG = .SEG_FLINK; ! Point to next Seg.
+end;	! Outer LOOP: For this VP's visible segment list do.
+
+!*** Now give us one visible segment to occlude against/with.
+!		We do not need ( and cannot accept) a rectangle in it.
+
+! Get memory for a VS_VP_VIS_SEG_BLK.
+!
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$K_VS_VP_VIS_SEG_BLK_LEN),
+				VS_VP_VIS_SEG, 0) ) )
+then return vsta$$error(.STATUS);
+
+! Now fill in the values.  Our entire VP is visible, so use its dimensions.
+
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN] = .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN] = .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH] = .VP[VSS$l_VP_LENGTH];
+VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT] = .VP[VSS$l_VP_HEIGHT];
+! Set up null queues, so that INSQUE will work properly.
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL] = VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_R_Q_BL];
+
+
+! INSQUE the visible segment onto the (empty) VS_VP Visible segment list.
+
+INSQUE(VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL],
+	 VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL]);
+
+
+	return SS$_NORMAL;
+    end;			! End of UNIFY_VP
+
+%sbttl	'REBUILD_VP  --  REBUILD Viewport'
+global routine REBUILD_VP(
+					VP: ref VP_BLOCK,	! Address of VP
+					VS: REF VS_BLOCK,
+					VS_VP: ref VS_VP_BLOCK,
+					DISPLAY_FLAG
+					) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine *ASSUMES* that the VP has been ZEROed.
+!	Calls VS$$VDS_MAP_WIN_TO_VP to cause the VDS to send the VD
+!		rectangles in calls to VS$$VSS_ADD_REC_TO_VP.
+!
+! FORMAL PARAMETERS:
+!	VS_VP block.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	STATUS;
+
+! This call must ripple up through to each PS so that there will
+! be PS rectangles of VP_ID = this VP and VD_ID = 0 to be found
+! by the VP_BACKGROUND routines that paint in the Pasteboard color.
+
+if (not(STATUS=VS$$VSS_ADD_REC_TO_VS (	! Call the VS add routine.
+					.VP[VSS$L_VP_VS_ID],
+					.VP[VSS$L_VP_ID],
+					0,	! VD ID
+					.VS_VP[VSS$l_VS_VP_X_ORIGIN],
+					.VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+					.VP[VSS$l_VP_LENGTH],
+					.VP[VSS$l_VP_HEIGHT],
+					0	! no consolidation
+					)))
+					then return vsta$$error(.STATUS);
+
+
+! Here we call the VDS side and tell what we want to do.
+if (not(STATUS=VS$$VDS_MAP_WIN_TO_VP(
+			.VP[VSS$L_VP_WINDOW_ID],	! ID from VP block
+			.VP[VSS$L_VP_ID],		! This VP's ID.
+			.DISPLAY_FLAG,			! Request Display ?
+			0				! no consolidation
+				))) then return vsta$$error(.STATUS);
+
+
+if .DISPLAY_FLAG eql TRUE then
+begin				! Paint background into vis segs.
+
+! *** Paint PB_COLOR background into the VP.
+if (not (STATUS=VP_BACKGROUND(.VP,
+				.VS,
+				.VS_VP,
+				.VS_VP[VSS$l_VS_VP_X_ORIGIN],
+				.VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+				.VP[VSS$l_VP_LENGTH],
+				.VP[VSS$l_VP_HEIGHT],
+				.VP[VSS$l_VP_COLOR])))
+				then return vsta$$error(.STATUS);
+end;				! Paint background into vis segs.
+
+return SS$_NORMAL;
+end;			! End of REBUILD_VP,
+
+%sbttl	'VS$$VSS_GET_VP_CHAR  --  Return Viewport Characteristics'
+global routine VS$$VSS_GET_VP_CHAR (
+				VP_ID,		! Longword Viewport ID
+				VP_CHAR		! Longword VP Characteristics
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 			Returns the Requested VP's characteristics in
+!			VP_CHAR
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!	VP_CHAR		Longword of VP characteristics (Returned)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin
+
+own
+	VP: ref VP_BLOCK;		! Address of VP(VP_ID)
+
+local
+	STATUS;				! Holder for routine completion value
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+.VP_CHAR=.VP[VSS$L_VP_CHAR];		! Put data into location for return.
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_GET_VP_CHAR
+
+%sbttl	'VS$$VSS_SET_VP_CHAR  --  Set Viewport Characteristics'
+global routine VS$$VSS_SET_VP_CHAR (
+				VP_ID,		! Longword Viewport ID
+				VP_CHAR		! Longword VP Characteristics
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 			Sets the Requested VP's characteristics to those
+!			specified in VP_CHAR
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!	VP_CHAR		Longword of VP characteristics (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+own
+	VP: ref VP_BLOCK;		! Address of VP(VP_ID)
+
+local
+	STATUS;				! Holder for routine completion value
+
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VP[VSS$L_VP_CHAR]=.VP_CHAR;		! Put the passed parameter into place
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_GET_VP_CHAR
+
+%sbttl	'VS$$VSS_SET_VP_COLOR  --  Set Viewport Characteristics'
+global routine VS$$VSS_SET_VP_COLOR (
+				VP_ID,		! Longword Viewport ID
+				VP_COLOR	! Longword VP Color
+					) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 			Sets the Requested VP's color to that
+!			specified in VP_COLOR, then updates all
+!			effected PS's.
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!	VP_COLOR	Longword of VP characteristics (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+local
+	VP: ref VP_BLOCK,		! Address of VP(VP_ID)
+	VS: ref VS_BLOCK,		! Address of VS(VS_ID)
+	VS_VP: ref VP_BLOCK,		! Address of VS_VP block
+	STATUS;				! Holder for routine completion value
+
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+if (not (STATUS=VS_POINTER(.VP[VSS$L_VP_VS_ID], VS)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+if (not (STATUS=VS_VP_POINTER(.VP[VSS$L_VP_VS_ID], .VP_ID, VS_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VP[VSS$l_VP_COLOR]=.VP_COLOR;		! Put the passed parameter into place
+
+! Rebuild this VP. (We don't have the code to simply repaint the background.)
+if (not(STATUS=REBUILD_VP(.VP,.VS,.VS_VP,1))) then return vsta$$error(.STATUS);
+! *** The "1" passed to REBUILD_VP is the DISPLAY_FLAG request.
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_SET_VP_COLOR
+
+%sbttl	'VS$$VSS_POP_VP_TO_TOP_OF_VS  --  Pop Viewport to top of VS'
+global routine VS$$VSS_POP_VP_TO_TOP_OF_VS (
+				VP_ID		! Longword Viewport ID
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!				Make the Viewport assuredly visible, by
+!			making it the top one.
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or VAXstation SDA error codes as returned from routines
+!		called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin						! Entire routine
+local
+	VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! addr of VS_VP_VIS_SEG block
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	VP: ref VP_BLOCK,			! Becomes address of VP block.
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+! *** Look up the VS_VP.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+then return vsta$$error(.STATUS);	! Not found is Severe Internal Error!!!
+
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! *** Make room at the top.
+
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 1;
+
+! *** Tell our VP that it is on top.  On-topness is defined as
+! having the largest PASTE-ORDER.
+
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .VS[VSS$l_VS_TOP];
+
+
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.VP,.VS_VP))) then return vsta$$error(.STATUS);
+
+
+! *** Now recreate the VP's list of segments by performing occlusion
+! based on our new location.  ((VP's X,Y have already been changed))
+
+if (not (STATUS=PERFORM_VP_OCCLUSION(.VP,.VS,.VS_VP,
+					.VS_VP[VSS$l_VS_VP_X_ORIGIN],
+					.VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+					0,
+					.VS_VP[VSS$l_VS_VP_PASTE_ORDER]
+					)))
+					then return vsta$$error(.STATUS);
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.VP,.VS,.VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+! *** The "1" is a request for the VP to be displayed.
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_POP_VP_TO_TOP_OF_VS
+
+%sbttl	'VS$$VSS_CHANGE_VP_PASTE  --  Change Paste order of a Viewport.'
+global routine VS$$VSS_CHANGE_VP_PASTE (
+				VP_ID,
+				TARGET_VP_ID	! Longword Viewport IDs
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	VP_IDs		Longword IDs of the requested VPs (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or VAXstation SDA error codes as returned from routines
+!		called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin						! Entire routine
+
+local
+	TARGET_VS_VP: ref VS_VP_BLOCK,		! VS_VP block of target_vp
+	TARGET_PASTE_ORDER,			! Just that indeed.
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	VP: ref VP_BLOCK,			! Becomes address of VP block.
+	VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	HI_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	HI_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+! *** Look up the VS
+if (not (STATUS=VS_POINTER(.VP[VSS$l_VP_VS_ID], VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+
+! *** Look up the VS_VP.
+if (not (STATUS=VS_VP_POINTER(.VP[VSS$l_VP_VS_ID], .VP_ID, VS_VP)))
+then return vsta$$error(.STATUS);	! Not found is Severe Internal Error!!!
+
+! Do the lookup for the target's VS_VP
+if not (STATUS=VS_VP_POINTER(.VP[VSS$l_VP_VS_ID],
+		 .TARGET_VP_ID, TARGET_VS_VP)) then
+return vsta$$error(VSTA$_NO_TARGET_VP); ! Inform caller of failure.
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+! Remember the target's Paste Order using a variable
+TARGET_PASTE_ORDER = .TARGET_VS_VP[VSS$l_VS_VP_PASTE_ORDER];
+
+
+! *** Make room at the top.
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 1;
+
+! *** Elevate all VP's above target in order to create a gap.
+HI_VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+until HI_VS_VP[VSS$a_VS_VP_BLOCK_FL] eql VS[VSS$a_VS_VP_QUEUE_FL] do
+begin						! Main Loop. For each VP
+! If it is above our target in Paste Order then move it up one to make room.
+	if .HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] gtr .TARGET_PASTE_ORDER
+		then HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] =
+			.HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] + 1;
+HI_VS_VP = .HI_VS_VP[VSS$A_VS_VP_BLOCK_FL];	! Point to the next VS_VP.
+end;						! Main Loop. For each VP
+
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .TARGET_PASTE_ORDER + 1;
+
+!  The VP will be ZEROed, and have all of it's segments deleted.
+!  Occlusion will be performed (This VP is on top, it may occlude something.)
+!  A visible segement and VD_ZERO rectangle the full size of the VD will be
+! 	added to it.
+!  The VP's VD rectangles will be re-added by REBUILD_VP
+
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.VP,.VS_VP))) then return vsta$$error(.STATUS);
+
+
+! *** Now recreate the VP's list of segments by performing occlusion
+! based on our new location.  ((VP's X,Y have already been changed))
+if (not (STATUS=PERFORM_VP_OCCLUSION(.VP,.VS,.VS_VP,
+					.VS_VP[VSS$l_VS_VP_X_ORIGIN],
+					.VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+					0,
+					.VS_VP[VSS$l_VS_VP_PASTE_ORDER]
+					)))
+					then return vsta$$error(.STATUS);
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.VP,.VS,.VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+! *** The "1" is a request for the VP to be displayed.
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_CHANGE_VP_PASTE
+
+%sbttl	'VS$$VSS_CHANGE_DOC_PASTE  --  Change Paste order of a Viewport.'
+global routine VS$$VSS_CHANGE_DOC_PASTE (
+				HI_VP_ID,
+				USER_VP_ID,
+				TARGET_VP_ID
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	VP_IDs		Longword IDs of the requested VPs (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or VAXstation SDA error codes as returned from routines
+!		called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin						! Entire routine
+
+local
+	LOOP_VS_VP: ref VS_VP_BLOCK,		! VS_VP pointer for loop.
+	TARGET_VS_VP: ref VS_VP_BLOCK,		! VS_VP block of target_vp
+	TARGET_PASTE_ORDER,			! Just that indeed.
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	HI_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	HI_VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	USER_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	USER_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.HI_VP_ID, HI_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+if (not (STATUS=VP_POINTER(.USER_VP_ID, USER_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .HI_VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .HI_VP_ID, HI_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .USER_VP_ID, USER_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+! Do the lookup for the target's VS_VP
+if not (STATUS=VS_VP_POINTER(.VS_ID,
+		 .TARGET_VP_ID, TARGET_VS_VP)) then
+return vsta$$error(VSTA$_NO_TARGET_VP); ! Inform caller of failure.
+
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! Remember the target's Paste Order using a variable
+TARGET_PASTE_ORDER = .TARGET_VS_VP[VSS$l_VS_VP_PASTE_ORDER];
+
+
+
+! *** Make room at the top.
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 2;
+! *** Elevate all VP's above target in order to create a gap.
+LOOP_VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+until LOOP_VS_VP[VSS$a_VS_VP_BLOCK_FL] eql VS[VSS$a_VS_VP_QUEUE_FL] do
+begin						! Main Loop. For each VP
+! If it is above our target in Paste Order then move it up one to make room.
+	if .LOOP_VS_VP[VSS$l_VS_VP_PASTE_ORDER] gtr .TARGET_PASTE_ORDER
+		then LOOP_VS_VP[VSS$l_VS_VP_PASTE_ORDER] =
+			.LOOP_VS_VP[VSS$l_VS_VP_PASTE_ORDER] + 2;
+LOOP_VS_VP = .LOOP_VS_VP[VSS$A_VS_VP_BLOCK_FL];	! Point to the next VS_VP.
+end;						! Main Loop. For each VP
+
+HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .TARGET_PASTE_ORDER + 1;
+USER_VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .TARGET_PASTE_ORDER + 2;
+
+! *** Simplify the VP next.
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.HI_VP,.HI_VS_VP))) then return vsta$$error(.STATUS);
+if (not (STATUS=UNIFY_VP(.USER_VP,.USER_VS_VP)))
+		then return vsta$$error(.STATUS);
+
+! *** Now recreate the VP's list of segments by performing occlusion
+! based on our new location.  ((VP's X,Y have already been changed))
+!
+if (not (STATUS=PERFORM_VP_OCCLUSION(.HI_VP,
+				.VS,.HI_VS_VP,
+				.HI_VS_VP[VSS$l_VS_VP_X_ORIGIN],
+				.HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN],
+				.USER_VP_ID,
+				.HI_VS_VP[VSS$l_VS_VP_PASTE_ORDER]
+				)))
+		then return vsta$$error(.STATUS);
+
+! *** Not all functionality of perform occlusion is needed here.
+! all VP's below this document have already been occlusion checked by
+! perform_occlusion of the HI_VP.  We must only reform the visible segment
+! list of the USER_VP because there could be a menu that is on top of it.
+if (not (STATUS=LOOK_UP(.USER_VP,
+			.VS,
+			.USER_VS_VP
+				)))
+		then return vsta$$error(.STATUS);
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.USER_VP,.VS,.USER_VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+if (not (STATUS=REBUILD_VP(.HI_VP,.VS,.HI_VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+! *** The "1" is a request for the VP to be displayed.
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_CHANGE_DOC_PASTE
+
+%sbttl	'VS$$VSS_POP_HI  --  Pop HI Viewports to top of VS'
+global routine VS$$VSS_POP_HI =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or VAXstation SDA error codes as returned from routines
+!		called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin						! Entire routine
+
+external
+	VSTA$GL_SYMBOL_VP_ID,			! Symbol VP_ID
+	VSTA$GL_FOOTER_VP_ID;			! Footer VP_ID
+
+local
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	VP: ref VP_BLOCK,		! Becomes address of VP block.
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! First let's take care of the symbol display.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+if .VSTA$GL_SYMBOL_VP_ID neq 0 then
+begin	! This HI VP already exists
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.VSTA$GL_SYMBOL_VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+! *** Look up the VS_VP.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VSTA$GL_SYMBOL_VP_ID, VS_VP)))
+then return vsta$$error(.STATUS);	! Not found is Severe Internal Error!!!
+
+! *** Make room at the top.
+
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 1;
+
+! *** Tell our VP that it is on top.  On-topness is defined as
+! having the largest PASTE-ORDER.
+
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .VS[VSS$l_VS_TOP];
+
+end;	! This HI VP already exists...
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Next let's do this for the Workstation Utility Area (Footer)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+if .VSTA$GL_FOOTER_VP_ID neq 0 then
+begin	! This HI VP already exists
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.VSTA$GL_FOOTER_VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+! *** Look up the VS_VP.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VSTA$GL_FOOTER_VP_ID, VS_VP)))
+then return vsta$$error(.STATUS);	! Not found is Severe Internal Error!!!
+
+
+! *** Make room at the top.
+
+VS[VSS$l_VS_TOP] = .VS[VSS$l_VS_TOP] + 1;
+
+! *** Tell our VP that it is on top.  On-topness is defined as
+! having the largest PASTE-ORDER.
+
+VS_VP[VSS$l_VS_VP_PASTE_ORDER] = .VS[VSS$l_VS_TOP];
+
+end;	! This HI VP already exists...
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_POP_HI
+
+%sbttl	'VS$$VSS_MOVE_VP_IN_VS  --  Slide a Viewport in a VS'
+global routine VS$$VSS_MOVE_VP_IN_VS (
+				VP_ID,		! Longword Viewport ID
+				NEW_X,
+				NEW_Y
+				) =		! the VP after moving it.
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!				Move the Viewport to a new location on
+!			the Virtual Screen.
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!	NEW_X,		Cartesian coordinates to move the VP to.
+!	NEW_Y		
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or any error code returned by routines called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	JUNK,				! Address holder for REMQUE.
+	OLD_X,				! Holders for changing coords.
+	OLD_Y,				!    "
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	VP: ref VP_BLOCK,			! Becomes address of VP block.
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+local
+	STATUS;
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! *** Save the old origin away.
+OLD_X = .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+OLD_Y = .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+! *** Change the VP origin to its new one.
+VS_VP[VSS$l_VS_VP_X_ORIGIN] =  .NEW_X;
+VS_VP[VSS$l_VS_VP_Y_ORIGIN] =  .NEW_Y;
+
+! *** Simplify the VP next.
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.VP,.VS_VP))) then return vsta$$error(.STATUS);
+
+
+! *** Now recreate the VP's list of segments by performing occlusion
+! based on our new location.  ((VP's X,Y have already been changed))
+if (not (STATUS=PERFORM_VP_OCCLUSION(.VP,.VS,.VS_VP,.OLD_X,.OLD_Y,0,0)))
+		then return vsta$$error(.STATUS);
+
+! *** Now cleanup any remaining PS rectangles for this VP.
+if (not (STATUS=ERASE_VP(.VP,.VS)))
+		then return vsta$$error(.STATUS);
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.VP,.VS,.VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+! *** The "1" is a request for the VP to be displayed.
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_MOVE_VP_IN_VS
+
+%sbttl	'VS$$VSS_MOVE_DOCUMENT  --  Slide a Viewport in a VS'
+global routine VS$$VSS_MOVE_DOCUMENT (
+				HI_VP_ID,		! Longword Viewport ID
+				USER_VP_ID,
+				NEW_X,
+				NEW_Y
+				) =		! the VP after moving it.
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!				Move the Viewport to a new location on
+!			the Virtual Screen.
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!	NEW_X,		Cartesian coordinates to move the VP to.
+!	NEW_Y		
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or any error code returned by routines called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	JUNK,				! Address holder for REMQUE.
+	HI_OLD_X,				! Holders for changing coords.
+	HI_OLD_Y,				!    "
+	USER_VP_X_OFFSET,
+	USER_VP_Y_OFFSET,
+	USER_OLD_X,				! Holders for changing coords.
+	USER_OLD_Y,				!    "
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	HI_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	HI_VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	USER_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	USER_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+local
+	STATUS;
+
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.HI_VP_ID, HI_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+if (not (STATUS=VP_POINTER(.USER_VP_ID, USER_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .HI_VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .HI_VP_ID, HI_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .USER_VP_ID, USER_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+USER_VP_X_OFFSET = .USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] -
+			.HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+USER_VP_Y_OFFSET = .USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] -
+			.HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+! *** Change the VP origin to its new one.
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] =  .NEW_X;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] =  .NEW_Y;
+
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] =  .NEW_X + .USER_VP_X_OFFSET;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] =  .NEW_Y + .USER_VP_Y_OFFSET;
+
+! *** Simplify the VP next.
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.HI_VP,.HI_VS_VP))) then return vsta$$error(.STATUS);
+if (not (STATUS=UNIFY_VP(.USER_VP,.USER_VS_VP)))
+		then return vsta$$error(.STATUS);
+
+
+! *** Now recreate the VP's list of segments by performing occlusion
+! based on our new location.  ((VP's X,Y have already been changed))
+
+
+! *** Stuff this info into these variables for the call below.
+HI_OLD_X = .HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+HI_OLD_Y = .HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+USER_OLD_X = .USER_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+USER_OLD_Y = .USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+! *** Not all functionality of perform occlusion is needed here.
+! all VP's below this document have already been occlusion checked by
+! perform_occlusion of the HI_VP.  We must only reform the visible segment
+! list of the USER_VP.
+if (not (STATUS=LOOK_UP(.USER_VP,
+			.VS,
+			.USER_VS_VP
+				)))
+		then return vsta$$error(.STATUS);
+
+
+if (not (STATUS=PERFORM_VP_OCCLUSION(.HI_VP,.VS,.HI_VS_VP,
+					.HI_OLD_X,.HI_OLD_Y,.USER_VP_ID,
+					.VS[VSS$l_VS_TOP]+100))) ! Old paste...
+		then return vsta$$error(.STATUS);
+
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.USER_VP,.VS,.USER_VS_VP, 0)))
+   then return vsta$$error(.STATUS);
+if (not (STATUS=REBUILD_VP(.HI_VP,.VS,.HI_VS_VP, 0)))
+   then return vsta$$error(.STATUS);
+! *** The "0" is a request for the VP not to be displayed.
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_MOVE_DOCUMENT
+
+%sbttl	'VS$$VSS_UNCOVER_FOR_MOVE  --  Redisplay PS beneath moving VP''s'
+global routine VS$$VSS_UNCOVER_FOR_MOVE (
+				HI_VP_ID,		! Longword Viewport IDs
+				USER_VP_ID
+				) = 
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or any error code returned by routines called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	HI_SAVED_X,			! Holders for saving coordinates.
+	USER_SAVED_X,			!    "
+	HI_SAVED_Y,			!    "
+	USER_SAVED_Y,			!    "
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	HI_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	HI_VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	USER_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	USER_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+local
+	STATUS;
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.HI_VP_ID, HI_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+if (not (STATUS=VP_POINTER(.USER_VP_ID, USER_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .HI_VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .HI_VP_ID, HI_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .USER_VP_ID, USER_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+
+HI_SAVED_X = .HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+HI_SAVED_Y = .HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+USER_SAVED_X = .USER_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+USER_SAVED_Y = .USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+! Erase old locations...
+!
+if (not (STATUS=ERASE_VP(.HI_VP,.VS)))
+   then return vsta$$error(.STATUS);
+
+if (not (STATUS=ERASE_VP(.USER_VP,.VS)))
+   then return vsta$$error(.STATUS);
+
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] = vss$k_nowhere;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = vss$k_nowhere;
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] = vss$k_nowhere;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = vss$k_nowhere;
+
+! *** Simplify these VP's next.
+! 	Get each VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.HI_VP,.HI_VS_VP))) then return vsta$$error(.STATUS);
+if (not (STATUS=UNIFY_VP(.USER_VP,.USER_VS_VP)))
+		then return vsta$$error(.STATUS);
+
+if (not (STATUS=PERFORM_VP_OCCLUSION(.HI_VP, .VS, .HI_VS_VP,
+				.HI_SAVED_X,
+				.HI_SAVED_Y,
+				.USER_VP_ID, FALSE)))
+				then return vsta$$error(.STATUS);
+! The FALSE is the CHANGE_PASTE_FLAG
+
+
+! *** Not all functionality of perform occlusion is needed here.
+! all VP's below this document have already been occlusion checked by
+! perform_occlusion of the HI_VP.  We must only reform the visible segment
+! list of the USER_VP because there could be a menu that is on top of it.
+if (not (STATUS=LOOK_UP(.USER_VP,
+			.VS,
+			.USER_VS_VP
+				)))
+		then return vsta$$error(.STATUS);
+
+
+! *** Restore the document to its original coordinates.
+
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] = .HI_SAVED_X;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .HI_SAVED_Y;
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] = .USER_SAVED_X;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .USER_SAVED_Y;
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_UNCOVER_FOR_MOVE
+
+%sbttl	'VS$$VSS_REDISPLAY_FOR_MOVE  --  Slide a Viewport in a VS'
+global routine VS$$VSS_REDISPLAY_FOR_MOVE (
+				HI_VP_ID,		! Longword Viewport IDs
+				USER_VP_ID
+				) = 
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		or any error code returned by routines called herein.
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	HI_SAVED_X,				! Holders for changing coords.
+	HI_SAVED_Y,				!    "
+	USER_VP_X_OFFSET,
+	USER_VP_Y_OFFSET,
+	VS: ref VS_BLOCK,			! Becomes address of VS block.
+	VS_ID,					! Holder for VS's ID.
+	HI_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	HI_VS_VP: ref VS_VP_BLOCK,	! Becomes address of VS_VP block.
+	USER_VP: ref VP_BLOCK,			! Becomes address of VP block.
+	USER_VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+local
+	STATUS;
+
+
+vss$l_moving_hi_vp_id = .HI_VP_ID;		! Holders for moving VP_ID's
+vss$l_moving_user_vp_id = .USER_VP_ID;
+vss$l_moving = 1;
+
+!
+! Tell the vds that their rectangle lists are no longer
+! valid.
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+
+! *** Look up the VP
+if (not (STATUS=VP_POINTER(.HI_VP_ID, HI_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+if (not (STATUS=VP_POINTER(.USER_VP_ID, USER_VP)))
+	then return vsta$$error(.STATUS);	! VP not found.
+
+VS_ID = .HI_VP[VSS$l_VP_VS_ID];
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! VS not found.
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .HI_VP_ID, HI_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .USER_VP_ID, USER_VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+USER_VP_X_OFFSET = .USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] -
+			.HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+USER_VP_Y_OFFSET = .USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] -
+			.HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+! *** Copy the original location into temporary storage.
+HI_SAVED_X = .HI_VS_VP[VSS$l_VS_VP_X_ORIGIN];
+HI_SAVED_Y = .HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+! *** Change the VP origin to be at the origin of the PS, for the fast mover's
+! redisplay needs.
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] =  0;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] =  0;
+
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] = .USER_VP_X_OFFSET;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .USER_VP_Y_OFFSET;
+
+! *** Simplify the VP next.
+! 	Get this VP into a state where it has one visible segment.
+!	Simplify must be called *AFTER* the origin has been changed.
+if (not (STATUS=UNIFY_VP(.HI_VP,.HI_VS_VP))) then return vsta$$error(.STATUS);
+if (not (STATUS=UNIFY_VP(.USER_VP,.USER_VS_VP)))
+		then return vsta$$error(.STATUS);
+
+! *** Now tell the VDS to re-add the rectangles, *after*
+! painting PB_COLOR into the visble segments.
+if (not (STATUS=REBUILD_VP(.HI_VP,.VS,.HI_VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+if (not (STATUS=REBUILD_VP(.USER_VP,.VS,.USER_VS_VP, 1)))
+   then return vsta$$error(.STATUS);
+! *** The "1" is a request for the VP to be displayed.
+
+! *** Restore the document to its original position.  Note that since
+! UNIFY_VP has not been called, our visible segment list is invalid.
+
+HI_VS_VP[VSS$l_VS_VP_X_ORIGIN] = .HI_SAVED_X;
+HI_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .HI_SAVED_Y;
+USER_VS_VP[VSS$l_VS_VP_X_ORIGIN] = .HI_SAVED_X + .USER_VP_X_OFFSET;
+USER_VS_VP[VSS$l_VS_VP_Y_ORIGIN] = .HI_SAVED_Y + .USER_VP_Y_OFFSET;
+
+
+vss$l_moving = 0;
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_REDISPLAY_FOR_MOVE
+
+%sbttl	'VP_BACKGROUND  --  Update the PS with backgound color'
+global routine VP_BACKGROUND (
+			VP: ref VP_BLOCK,	! Address of VP block.
+			VS: ref VS_BLOCK,	! Address of VS block.
+			VS_VP: ref VS_VP_BLOCK,	! Address of VS_VP block.
+			X_ORIGIN,
+			Y_ORIGIN,
+			LENGTH,
+			HEIGHT,
+			COLOR		! Desired color.
+			) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Paints .COLOR into the visible segments of this VP on each PS
+!		that falls over it.
+!
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	VS_PS: ref VS_PS_BLOCK;	! Becomes address of VS_PS block.
+
+local
+	STATUS;
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+	begin
+
+if (not(STATUS=VS$$VSS_VP_BACKGROUND_ON_PS(
+		.VS_PS[VSS$l_VS_PS_ID],	! PS ID
+		.VP[VSS$l_VP_ID], ! for clipping.
+		.X_ORIGIN - .VS_PS[VSS$l_VS_PS_X_ORIGIN],
+		.Y_ORIGIN - .VS_PS[VSS$l_VS_PS_Y_ORIGIN],
+		.LENGTH,
+		.HEIGHT,
+		.COLOR
+		))) then return vsta$$error(.STATUS);
+
+	VS_PS = .VS_PS[VSS$A_VS_PS_BLOCK_FL];		! Point to the next.
+	end;						! For each VS_PS block
+
+
+	return SS$_NORMAL;
+    end;			! End of VP_BACKGROUND
+
+%sbttl	'ERASE_VP  --  Update the PS with backgound color'
+global routine ERASE_VP (
+				VP: ref VP_BLOCK,
+				VS: ref VS_BLOCK
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine assumes that the VP is being moved or deleted,
+!	and that PERFORM_VP_OCCUSION has already been called.
+!
+!	Perform_VP_OCCLUSION will have redisplayed any VP's uncovered
+!	by removing this VP.  Now all we need to do is to paint VS_COLOR
+!	into the remaining PS rectangles that belong to this VP.
+!	
+!
+!
+! FORMAL PARAMETERS:
+!	VP_ID		Longword ID of the requested VP (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	VS_PS: ref VS_PS_BLOCK;		! Becomes address of VS_PS block.
+local
+	STATUS;
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+	begin	! For each PS
+	if not (STATUS=VS$$VSS_ERASE_VP_ON_PS(
+					.VS_PS[VSS$l_VS_PS_ID],	! PS_ID of PS
+					.VP[VSS$l_VP_ID],	! VP_ID of VP
+					.VS[VSS$l_VS_CHAR]))	! VS_COLOR
+	then return VSTA$$ERROR(.STATUS);
+	VS_PS = .VS_PS[VSS$A_VS_PS_BLOCK_FL];		! Point to the next.
+	end;						! For each VS_PS block
+
+	return SS$_NORMAL;
+    end;			! End of ERASE_VP
+
+%sbttl	'VS$$VSS_ADD_REC_TO_VP  --  Add Rectangle to Viewport.'
+global routine VS$$VSS_ADD_REC_TO_VP (
+				VP_ID,		! Longword VP ID
+				VD_ID,		! Longword VD ID
+				X_ORIGIN,	!
+				Y_ORIGIN,	!
+				LENGTH,		!
+				HEIGHT,		! 
+				consolidate_flag! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!		For each VS in VP's VS list do
+!			Fetch VP's X,Y offsets in VS.
+!			Add these offsets to the rectangle's X,Y to get
+!					the rectangle's offset in the VS.
+!			Add rectangle to VS,(THIS_VD, VD_ID ,RECTANGLE)
+!
+! FORMAL PARAMETERS:
+!	VD_ID, VS_ID	Longword ID #s
+!	HEIGHT, LENGTH	The obvious size information about the new rectangle.
+!	X_ORIGIN,	Specify the Cartesian origin of the new rectangle.
+!	Y_ORIGIN
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin					! Code for this module.
+
+local
+	VS_X,				! R's calculated offset in a VS
+	VS_Y,				! R's calculated offset in a VS
+	VS_ID,				! Holder for VS_ID from VP_BLOCK.
+	VP: ref VP_BLOCK,		! Will become address of VP(VP_ID)
+	VS: ref VS_BLOCK,		! Will become address of VS(VS_ID)
+	VS_VP: ref VS_VP_BLOCK;	! Becomes addr of VS's VP blok(this VP)
+
+local
+	STATUS;				! Holder for routine completion value
+
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))	! Lookup the VP
+	then return vsta$$error(.STATUS);	! VP not found.
+
+	VS_ID = .VP[VSS$L_VP_VS_ID];	! Extract the VS_ID.
+
+!*** Look up the VS_VP block that contains the VP's offset in the VS ***
+
+	if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(.STATUS);	! Found no VS_VP ??? Severe!!!
+
+! *** Convert the origin from VP coordinates to VS coordinates. ***
+
+	VS_X = .X_ORIGIN + .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+	VS_Y = .Y_ORIGIN + .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+if (not(STATUS=VS$$VSS_ADD_REC_TO_VS (	! Call the VS add routine.
+					.VS_ID,
+					.VP_ID,
+					.VD_ID,
+					.VS_X,
+					.VS_Y,
+					.LENGTH,
+					.HEIGHT,
+					.consolidate_flag
+					)))
+					then return vsta$$error(.STATUS);
+						! add rectangle to VS.
+
+	return SS$_NORMAL;
+    end;				! End of VS$$VSS_ADD_REC_TO_VP
+
+%sbttl	'VS$$VSS_REM_REC_FROM_VP -- Remove Rectangle from Viewport.'
+global routine VS$$VSS_REM_REC_FROM_VP (
+				VP_ID,		! Longword VP ID
+				VD_ID,		! Longword VD ID
+				X_ORIGIN,
+				Y_ORIGIN,
+				LENGTH,
+				HEIGHT,
+				PB_COLOR,	! This in case we expose PB
+				consolidate_flag! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!				For each VS in VP's VS list do
+!			Fetch VP's X,Y offsets in VS.
+!			Add these offsets to the rectangle's X,Y to get
+!					the rectangle's offset in the VS.
+!			rem rectangle from VS(THIS_VS, VD_ID, RECTANGLE)
+! FORMAL PARAMETERS:
+!	VP_ID,VD_ID,	Longword ID #'s
+!	HEIGHT, LENGTH	The obvious size information about the new rectangle.
+!	X_ORIGIN,	Specify the Cartesian origin of the new rectangle.
+!	Y_ORIGIN
+!	PB_COLOR	Needed because we might expose some of the PB,
+!			which may have changed color.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Code for this module.
+
+own
+	VS_X,				! R's calculated offset in a VS
+	VS_Y,				! R's calculated offset in a VS
+	VP: ref VP_BLOCK,		! Will become address of VP(VP_ID)
+	VS: ref VS_BLOCK,		! Will become address of VS(VS_ID)
+	VS_VP: ref VS_VP_BLOCK;	! Becomes addr of VS's VP blok(this VP)
+
+local
+	VS_ID,				! Temporary value holder.
+	STATUS;				! Holder for routine completion value
+
+
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))	! Lookup the VP
+	then return vsta$$error(.STATUS);	! VP not found.
+
+
+	VS_ID = .VP[VSS$L_VP_VS_ID];	! Extract the VS_ID.
+
+!*** Look up the VS_VP block that contains the VP's offset in the VS ***
+
+	if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+		then return vsta$$error(.STATUS);	! VS not found.
+
+! *** Convert the origin from VP coordinates to VS coordinates. ***
+
+	VS_X = .X_ORIGIN + .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+	VS_Y = .Y_ORIGIN + .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+ if (not(STATUS=VS$$VSS_REM_REC_FROM_VS (	! Call the VS remove routine.
+					.VS_ID, !
+					.VP_ID,	!
+					.VD_ID,	!
+					.VS_X,
+					.VS_Y,
+					.LENGTH,	!
+					.HEIGHT,
+					.PB_COLOR,
+					.consolidate_flag
+					))) then return vsta$$error(.status);
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_REM_REC_FROM_VP
+
+%sbttl	'VS$$VSS_DISPLAY_VD_IN_VP  --  Display VD in Viewport'
+global routine VS$$VSS_DISPLAY_VD_IN_VP (
+				VP_ID,		! Longword  ID #
+				VD_ID,		! Longword  ID #
+				X_OFFSET,	! Signed Longword
+				Y_OFFSET	! Signed Longword
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	call DISPLAY_VD_IN_VS(.VS_ID, .VD_ID, .X_OFFSET, .Y_OFFSET)
+!
+!
+! FORMAL PARAMETERS:
+!	VD_ID
+!	VP_ID
+!	X, Y offsets. These are so that the driver will know the coordinates of
+!			the VD's on the PS.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin					! Code for this module.
+
+local
+	VS_ID,				! Temporary value holder.
+	VS_X_OFFSET,			! Computed offsets into the VS.
+	VS_Y_OFFSET,
+	VS_VP: ref VS_VP_BLOCK,	! Address of VS_VP block for this VP.
+	VP: ref VP_BLOCK,		! Will become address of VP(VP_ID)
+	STATUS;				! Holder for routine completion value
+
+!((((((((((((((((((((((((((((((
+if .vss$l_moving then					! If in move mode then
+	if ((.vp_id neq .vss$l_moving_hi_vp_id)	! If not HI, or USER
+	and (.vp_id neq .vss$l_moving_user_vp_id))	
+	then return SS$_NORMAL;		! Then return without doing a thing.
+!))))))))))))))))))))))))))))))
+
+if (not (STATUS=VP_POINTER(.VP_ID, VP)))	! Lookup the VP
+	then return vsta$$error(VSTA$_VDNOTDISPVP);	! VP not found.
+
+	VS_ID = .VP[VSS$L_VP_VS_ID];		! Extract the VS_ID.
+
+!*** Look up the VS_VP block that contains the VP's offset in the VS ***
+
+	if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(VSTA$_VDNOTDISPVP);
+						! Found no VS_VP ??? Severe!!!
+
+! *** Convert the origin from VP coordinates to VS coordinates. ***
+
+	VS_X_OFFSET = .X_OFFSET + .VS_VP[VSS$l_VS_VP_X_ORIGIN];
+	VS_Y_OFFSET = .Y_OFFSET + .VS_VP[VSS$l_VS_VP_Y_ORIGIN];
+
+
+!###########################
+if (not(STATUS=VS$$VSS_DISPLAY_VD_IN_VS(	! Call next level of SDA.
+				.VS_ID,		! Longword ID's
+				.VD_ID,		!
+				.VP_ID,
+				.VS_X_OFFSET,	! Unsigned Longword's for  PS
+				.VS_Y_OFFSET	! offset calculation.
+				)))
+then return vsta$$error(VSTA$_VDNOTDISPVP);		! Report error.
+
+
+	return SS$_NORMAL;
+    end;			!End of VS$$VSS_DISPLAY_VD_IN_VP
+
+end				! End of module VS$VSS_VP
+eludom

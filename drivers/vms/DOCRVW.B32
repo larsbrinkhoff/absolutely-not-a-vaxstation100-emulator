@@ -1,0 +1,296 @@
+MODULE DOC$RVW (
+		IDENT = 'VSTADOC Utility REVIEW file routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module generates the REVIEW file from the
+!	internal data structures.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$do_review_file,	!Write the file
+    write_rvw_page,		!Write out one page
+    do_irb,			!Handle an IRB
+    finish_line;		!Finish out this line
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$open_rvw,		!open the file
+    doc$$close_rvw,		!Close the file
+    doc$$append_rvw_line,	!Append text to RVW file
+    doc$$put_rvw_line,		!do $PUT of RVW line
+    doc$$rewind_line_file,	!Start reading lines file from beginning
+    doc$$rewind_toc_line_file,	!Start reading TOC lines file from beg.
+    doc$$get_line_file,		!Get next record from line file
+    doc$$error,			!Report an error
+    doc$$type_line;		!Type out a line on TTY
+
+EXTERNAL
+    doc$gl_page_q: VECTOR [2],	!Page queue
+    doc$gl_rvw_desc,		!Resultant name string
+    doc$gl_num_toc_pages,	!Number of TOC pages
+    doc$gl_toc_pageb,		!PAGEB for 1st TOC page
+    doc$gl_num_index_pages,	!Number of IDX pages
+    doc$gl_num_body_pages,	!Number of body pages
+    doc$gl_line_buf;		!Line file record
+!
+OWN
+    clineb: REF txt_line_block,	!Pointer to line block
+    did_page_flag,		!=1 if a page written yet
+    cpos;			!Current position on line
+
+MACRO
+    $catch_up =
+	BEGIN
+	IF (.str_desc [0] GTR 0)
+	  THEN
+	    BEGIN
+	    str_desc [1] = doc$gl_line_buf + .cpos;
+	    IF NOT (status =
+		doc$$append_rvw_line (str_desc)
+		    )
+	      THEN RETURN .status;
+	    cpos = .cpos + .str_desc [0];
+	    END;
+	END %;
+
+GLOBAL ROUTINE doc$$do_review_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attempts to generate REVIEW file from the internal data structures.
+! FORMAL PARAMETERS:
+	(file_desc
+	) =
+!--
+BEGIN
+LOCAL
+    cpageb: REF page_block,
+    status;
+
+IF NOT (status =
+    doc$$open_rvw (.file_desc)
+	)
+  THEN RETURN .status;
+
+!
+! Do it..
+!
+did_page_flag = 0;			!Didn't put out a page yet
+IF (.doc$gl_num_toc_pages NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$rewind_toc_line_file ()
+	    )
+      THEN RETURN .status;
+    cpageb = .doc$gl_toc_pageb;		!Point to first TOC page
+    INCR i FROM 1 TO .doc$gl_num_toc_pages DO
+	BEGIN
+	IF NOT (status =
+	    write_rvw_page (.cpageb)
+		)
+	  THEN RETURN .status;
+	cpageb = .cpageb [pgb$a_flink];	!Point to next TOC page
+	END;
+    END;		!If There is a TOC
+!
+! Write the rest of the pages
+!
+IF NOT (status =
+    doc$$rewind_line_file ()
+	)
+  THEN RETURN .status;
+
+cpageb = .doc$gl_page_q [0];		!Point to first page
+INCR i FROM 1 TO (.doc$gl_num_body_pages + .doc$gl_num_index_pages) DO
+    BEGIN
+    IF NOT (status =
+	write_rvw_page (.cpageb)
+	    )
+      THEN RETURN .status;
+    cpageb = .cpageb [pgb$a_flink];	!Go to next page
+    END;
+!
+! Normal end, we can close the file
+!
+doc$$close_rvw ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_rvw_page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes a page of the review file
+! FORMAL PARAMETERS:
+	(cpageb: REF page_block
+	) =
+!--
+BEGIN
+OWN
+    ff_char: INITIAL (%O'14'),		!A form feed character
+    ff_desc: VECTOR [2]
+	INITIAL (1, ff_char);
+LOCAL
+    irb_hdr: REF ir_hdr,
+    line_len,
+    status;
+
+cpos = 0;		!Page always starts with line at char pos 0
+!
+! Separate from last page with a FF record
+!
+IF (.did_page_flag)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$append_rvw_line (ff_desc)
+	    )
+      THEN RETURN .status;
+    IF NOT (status =
+	doc$$put_rvw_line ()
+	    )
+      THEN RETURN .status;
+    END;
+
+clineb = .cpageb [pgb$a_line_q_hdr_fl];
+WHILE (.clineb NEQ cpageb [pgb$a_line_q_hdr_fl]) DO
+    BEGIN
+    IF NOT (status =
+ 	doc$$get_line_file (line_len)
+	    )
+      THEN RETURN .status;
+  !
+  ! Make sure line length is what we think it is..
+  !
+    IF (.line_len NEQ .clineb [lin$w_cidx])
+      THEN
+	BEGIN
+	$typeline ('?Lines file reclen is different from what I remember!');
+	RETURN SS$_BADPARAM
+	END;
+
+    irb_hdr = .clineb [lin$a_rcal_list];
+    WHILE (.irb_hdr NEQ 0) DO
+	BEGIN
+	IF NOT (status =
+	    do_irb (.irb_hdr [irb$w_type], .irb_hdr + irb$S_ir_hdr)
+		)
+	  THEN RETURN .status;
+	irb_hdr = .irb_hdr [irb$a_flink];
+	END;
+    IF NOT (status =
+	finish_line ()
+	    )
+      THEN RETURN .status;
+  !
+  ! Write out the line (note: it may be blank)
+  !
+    IF NOT (status =
+	doc$$put_rvw_line ()
+	    )
+      THEN RETURN .status;
+    clineb = .clineb [lin$a_flink];	!Go on to next line
+    cpos = 0;
+    END;
+
+did_page_flag = 1;			!Remember we did a page
+RETURN SS$_NORMAL
+END;
+
+ROUTINE do_irb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Process an IRB for RVW file generation.
+! FORMAL PARAMETERS:
+	(type			!Type code of IRB
+	,addr			!Address of IRB
+	) =
+! IMPLICIT INPUTS:
+!	cpos - current position on line
+!	clineb - current line block
+!--
+BEGIN
+OWN
+    star_char: INITIAL (%C'*'),
+    star_desc: VECTOR [2]
+		INITIAL (1, star_char);
+LOCAL
+    str_desc: VECTOR [2],
+    irsel: REF ir_sel,
+    irtf: REF ir_settf,
+    irts: REF ir_setts,
+    irr: REF ir_setrend,
+    status;
+
+(SELECTONE (.type) OF
+    SET
+    [doc_rcal$K_set_selectable]:
+	BEGIN
+	irsel = .addr;
+	str_desc [0] = .irsel [irb$w_sel_cidx] - .cpos;
+	$catch_up;
+    !
+    ! Mark beginning of SELECT string with "*"
+    !
+	IF NOT (status =
+	    doc$$append_rvw_line (star_desc)
+		)
+	  THEN RETURN .status;
+    !
+    ! Write the SELECT string itself
+    !
+	str_desc [0] = .irsel [irb$w_sel_len];
+	$catch_up;
+    !
+    ! Mark end of SELECT string with "*"
+    !
+	IF NOT (status =
+	    doc$$append_rvw_line (star_desc)
+		)
+	  THEN RETURN .status;
+	END;
+    TES
+);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE finish_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finish the line
+! IMPLICIT INPUTS:
+!	cpos - current position on line
+!	clineb - current line block
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    status;
+
+str_desc [0] = .clineb [lin$w_cidx] - .cpos;
+$catch_up;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

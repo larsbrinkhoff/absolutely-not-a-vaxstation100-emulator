@@ -1,0 +1,241 @@
+MODULE DOC$OVL (
+		IDENT = 'VSTADOC Utility OVERLAY routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides graphics overlays on top of the
+!	text VD for documents.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$gen_overlay,		!OVERLAY filespec at (x,y)
+    do_ovl_vd_stuff;		! Do the calls once we have a vd to use.
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';		!Various internal data structures
+					! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';		!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';		!Macros
+
+EXTERNAL ROUTINE
+    doc$$error,			!Report an error
+    doc$$gen_error,		!Report a generate error.
+    doc$$type_line,		!Type out a line on TTY
+    doc$$type_sts,		!Type text and status on TTY
+    doc$$get_doc_vd,		!get virtual display to play with.
+    doc$$delete_vd,		!delete virtual display
+    doc$$define_font,		!Define a font.
+    doc$$set_typeface,		!Set typeface
+    doc$$measure_text,		!Measure the picture character
+    lib$get_vm,			!Get VM
+    lib$free_vm;		!Free VM
+
+EXTERNAL
+    pageb: REF page_block,	!Current page-block
+    last_pagex,			!Width of page
+    last_pagey,			!Height of page
+    doc$gl_cur_space_width,	!Params to be saved/restored over
+    doc$gl_cur_space_height,	! calls to "SET TYPEFACE"
+    fatal_error,
+    num_user_errors;		!Number of user errors processed
+
+BUILTIN
+    INSQUE;
+
+
+GLOBAL ROUTINE doc$$gen_overlay
+!++
+! FUNCTIONAL DESCRIPTION:
+!	OVERLAY <filespec> at (x,y)
+!	Where <filespec> is the name of a font file, character
+!	index 0 is the picture.
+! FORMAL PARAMETERS:
+	(file_spec_desc
+	,x
+	,y
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    status1,		!Status from calling do_ovl_vd_stuff
+    status;
+!
+! We'll just try this ourselves. Create a VD, define a font, measure text
+! to get height and width, and make sure it will fit on this page positioned
+! at (x,y). If ok, pass the info along.
+!
+IF NOT (status =
+    doc$$get_doc_vd		!Get a VD
+		(10		!Width
+		,10		!Height
+		,1		!# of text lines
+		,10		!Line size
+		,vd_id		!Addr of returned vd-id
+		)
+	)
+  THEN RETURN .status;
+
+status1 = do_ovl_vd_stuff (.file_spec_desc, .x, .y, .vd_id);
+
+IF NOT (status =
+    doc$$delete_vd (.vd_id)
+	)
+  THEN RETURN .status;
+
+RETURN .status1;
+END;
+
+ROUTINE do_ovl_vd_stuff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do calls to do the overlay command.
+! FORMAL PARAMETERS:
+	(file_spec_desc: REF VECTOR [2]
+	,x
+	,y
+	,vd_id
+	) =
+!--
+BEGIN
+LOCAL
+    picture_size_x,
+    picture_size_y,
+    pichdr: REF VECTOR [2],	!flink, blink
+    picb: REF picture_entry,	!(defined in DOCFILE.SDL)
+    cur_space_width,
+    cur_space_height,
+    status;
+
+cur_space_width = .doc$gl_cur_space_width;	!Remember these so we can
+cur_space_height = .doc$gl_cur_space_height;	! restore them.
+
+IF NOT (status =
+    doc$$define_font
+		(.vd_id		!VD-id
+		,.file_spec_desc	!Filename
+		,%ASCID 'vstadoc_test'	!Typeface
+		,0		!Typesize
+		,0		!Rendition
+		)
+	)
+  THEN RETURN .status;
+
+!
+! Set typeface. Note this has a side effect of smashing
+! cur_space_width and height, so we have to then restore them.
+!
+IF NOT (status =
+    doc$$set_typeface
+		(.vd_id		!Vd-id
+		,%ASCID 'vstadoc_test'	!Typeface
+		)
+	)
+  THEN RETURN .status;
+
+doc$gl_cur_space_width = .cur_space_width;	!Restore variables
+doc$gl_cur_space_height = .cur_space_height;
+
+IF NOT (status =
+    doc$$measure_text
+		(.vd_id		!vd-id
+		,1		!length (bytes)
+		,UPLIT (0)	!String (character 0)
+		,picture_size_x	!Returned x size
+		,picture_size_y	!Returned y size
+		)
+	)
+  THEN RETURN .status;
+!
+! Make sure this picture will fit on the VD.
+!
+IF (((.x + .picture_size_x) GTR .last_pagex)
+		OR
+   ((.y + .picture_size_y) GTR .last_pagey))
+  THEN
+    BEGIN
+    LOCAL
+	picture_big_x,
+	picture_big_y,
+	fao_desc: VECTOR [2],
+	fao_real_len: WORD,
+	fao_str: VECTOR [128,BYTE];
+
+    picture_big_x = .x + .picture_size_x - .last_pagex;
+    picture_big_y = .y + .picture_size_y - .last_pagey;
+    fao_desc [1] = fao_str;
+    IF (.picture_big_x GTR 0)
+      THEN
+	BEGIN
+	fao_desc [0] = 128;
+	$fao	(%ASCID '%ERR: Picture too wide by !SL pixels'
+		,fao_real_len
+		,fao_desc
+		,.picture_big_x		!P1
+		);
+	fao_desc [0] = .fao_real_len;
+	doc$$gen_error (fao_desc);
+	END;
+    IF (.picture_big_y GTR 0)
+      THEN
+	BEGIN
+	fao_desc [0] = 128;
+	$fao	(%ASCID '%ERR: Picture too high by !SL pixels'
+		,fao_real_len
+		,fao_desc
+		,.picture_big_y		!P1
+		);
+	fao_desc [0] = .fao_real_len;
+	doc$$gen_error (fao_desc);
+	END;
+
+    RETURN SS$_BADPARAM
+    END;
+!
+! Write a picture entry for this page.
+!
+IF NOT (status =
+    lib$get_vm (%REF (8 + pic$S_picture_entry), pichdr)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '? Can''t get memory for pic block: ',.status);
+    RETURN .status
+    END;
+
+picb = .pichdr + 8;		!Can ref this now.
+picb [pic$l_file_name_len] = .file_spec_desc [0];
+CH$MOVE	(.file_spec_desc [0]
+	,.file_spec_desc [1]
+	,picb [pic$b_file_str_str]
+	);
+picb [pic$w_x_origin] = .x;
+picb [pic$w_y_origin] = .y;
+picb [pic$w_x_size] = .picture_size_x;
+picb [pic$w_y_size] = .picture_size_y;
+picb [pic$l_vd_id] = 0;		!Initialize for VSACP
+
+!
+! Link it into the queue (at the end)
+!
+INSQUE (.pichdr, .pageb [pgb$a_ovl_q_hdr_bl]);
+pageb [pgb$w_num_ovls] = .pageb [pgb$w_num_ovls] + 1;
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

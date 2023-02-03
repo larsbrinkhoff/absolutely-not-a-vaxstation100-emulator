@@ -1,0 +1,59 @@
+MODULE VSTA$OUTPUT_DRIVER;
+
+/*
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/* Define some constants
+/*
+    CONSTANT
+	us EQUALS 31;				/*To mark last control char.
+/*
+/* Special character indicators
+/*
+    AGGREGATE spchar_bits STRUCTURE PREFIX vsta$;
+	special_char	 BITFIELD	MASK;	/*Control characters
+	lower_case	 BITFIELD	MASK;	/*Lowercase characters
+	extra_bits	 BITFIELD LENGTH 6;	/*For future DEC use
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END spchar_bits;
+/*
+/* VAXstation Output Driver Data Base Block
+/*
+    AGGREGATE odrv STRUCTURE PREFIX vs$odrv_;
+	flink		 ADDRESS;		/*Ptr to next device data base
+	blink		 ADDRESS;		/*Ptr to previous device data
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	vd_id		 LONGWORD UNSIGNED;	/*Virtual display ID
+	column		 BYTE UNSIGNED;		/*Current column position
+	line		 BYTE UNSIGNED;		/*Current line number
+	last_char	 BYTE UNSIGNED;		/*Last character processed
+	state_field	 UNION;
+	  state		 LONGWORD UNSIGNED;	/*Output device state
+	  state_bits	 STRUCTURE;
+	    control_o	 BITFIELD	MASK;	/*Control-O toggle bit
+	    doing_esc	 BITFIELD	MASK;	/*ESC sequence in progress
+	    mbx_enable	 BITFIELD	MASK;	/*MBX data enable bit
+	    skip_lf	 BITFIELD	MASK;	/*Skip leading <LF> indicator
+	    wrapped	 BITFIELD	MASK;	/*Wrapped indication
+	    extra	 BITFIELD LENGTH 3 MASK;/*For future DEC abuse
+	  END state_bits;
+	END state_field;
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END odrv;
+/*
+/* End of module VSTA$OUTPUT_DRIVER
+/*
+    end_module;

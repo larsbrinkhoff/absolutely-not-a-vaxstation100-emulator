@@ -1,0 +1,113 @@
+! VSGICX.BLI	VaxStation GIdis Coordinate TRANSformer
+!
+MODULE VSTA$GID_cx(
+    IDENT = 'GIDIS coordinate transformer',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This module knows the way to transform coordinates from the
+!	Gidis virtual address space to the physical dimensions of the
+!	virtual display in use. It contains
+!		GID$$CX_screen_addressing - The Gidis screen addressing
+!	instruction, that sets up the factors for coordinate mapping.
+!		GID$$CX_map_coordinate - turns a virtual Gidis
+!	coordinate into pixel coordinats for the VD.
+!		GID$$CX_Unmap_coordinate - turns a pixel coordinate for
+!	the VD into a virtual Gidis coordinate.
+!
+!	The mapping and unmapping functions are implemented as Bliss
+!	macros in the corresponding file VSGICX.REQ.
+!
+! Environment:
+!
+!	The link environment must provide the virtual display services
+!	and the Gidis state fetcher.
+!
+GLOBAL LITERAL GID$$CX_Edit_level = 2;
+!--
+LIBRARY 'VSTA$LIBRARY:vsging';	! Native graphcs and VD control declarations
+LIBRARY 'VSTA$LIBRARY:vsgisf';	! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgias';	! Appearance selector, clipping region control
+LIBRARY 'VSTA$LIBRARY:libmacros';
+
+library_file_crock;
+
+$vsta_psect;
+
+
+!+
+GLOBAL ROUTINE GID$$CX_Screen_addressing(	! Screen addressing opcode
+    x_boundary,				! Largest desired X coordinate
+    y_boundary				! Largest desired Y coordinate
+    ) =
+! Routine value:
+!	Success status code
+! Implicit inputs:
+! Implicit outputs:
+!	The state variables 
+!		sf[ physical_extent]
+!		sf[ logical_extent]
+!	are set to the correct values needed to perform the coordinate
+!	mapping.
+! Function:
+!		Defines the logical coordinate space where images
+!		can be drawn.  The logical coordinate space has
+!		[0,0] at the upper-left corner of the logical
+!		display area, and extends to X horizontally and
+!		down to Y vertically.  Gidis will use the largest
+!		rectangle that it can fit in the available
+!		display area while maintaining a square
+!		coordinate aspect ratio.  The clipping region is
+!		set to be coincident with the screen addressing
+!		region.  X and Y must be positive or 0.  If not, the
+!		absolute value is used.
+! Algorithm:
+!	Decide which dimension can be fully used, and then assign the
+!	factors of physical_extent and logical_extent to correspond.
+! Side effects:
+!	The clipping region and the clipping region limits are set to
+!	be the rectangle [0,0] [x_boundary, y_boundary].
+!-
+    BEGIN
+    LOCAL
+	VD_width,		! Actual size of the VD in pixels.
+	VD_height,
+	VD_depth;
+
+    VS$$VDS_get_vd_char(
+	.sf[ display_id],	! vdid of virt. display
+	0,			! owner's uic
+	VD_height,		!
+	VD_width,		! in pixels
+	VD_depth,		!
+	0,			! intensity of background
+	0,			! intensity of foreground
+	0,			! emulated or normal text mode
+	0,			! Permanence, Shareability
+	0);			! UIC protection
+
+    IF .x_boundary LSS 0 THEN x_boundary = -.x_boundary;
+    IF .y_boundary LSS 0 THEN y_boundary = -.y_boundary;
+    IF ((.x_boundary+1) * .VD_height) GTR ((.y_boundary+1) * .VD_width)
+    THEN ! Display fits in X, use X axis values for transformation
+	BEGIN
+	sf[ physical_extent] = .VD_width;
+	sf[ logical_extent] = .x_boundary+1;
+	END
+    ELSE ! Display fits in Y, use Y axis values for transformation
+	BEGIN
+	sf[ physical_extent] = .VD_height;
+	sf[ logical_extent] = .y_boundary+1;
+	END;
+    GID$$AS_define_usable_space( 0, 0, .x_boundary, .y_boundary);
+    GID$$AS_set_clipping_region( 0, 0, .x_boundary, .y_boundary)
+    END;
+
+END
+ELUDOM

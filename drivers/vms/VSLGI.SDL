@@ -1,0 +1,156 @@
+module vs$lgi;
+
+/*;
+/*;	VSAUTOLOG data structure definitions
+/*;
+/*; IDENT	V01-000
+/*;
+/*
+/*
+/*;
+/*;****************************************************************************
+/*;*									    *
+/*;*  COPYRIGHT (c) 1978, 1980, 1982, 1986 BY				    *
+/*;*  DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASSACHUSETTS.		    *
+/*;*  ALL RIGHTS RESERVED.						    *
+/*;* 									    *
+/*;*  THIS SOFTWARE IS FURNISHED UNDER A LICENSE AND MAY BE USED AND COPIED   *
+/*;*  ONLY IN  ACCORDANCE WITH  THE  TERMS  OF  SUCH  LICENSE  AND WITH THE   *
+/*;*  INCLUSION OF THE ABOVE COPYRIGHT NOTICE. THIS SOFTWARE OR  ANY  OTHER   *
+/*;*  COPIES THEREOF MAY NOT BE PROVIDED OR OTHERWISE MADE AVAILABLE TO ANY   *
+/*;*  OTHER PERSON.  NO TITLE TO AND OWNERSHIP OF  THE  SOFTWARE IS  HEREBY   *
+/*;*  TRANSFERRED.							    *
+/*;* 									    *
+/*;*  THE INFORMATION IN THIS SOFTWARE IS  SUBJECT TO CHANGE WITHOUT NOTICE   *
+/*;*  AND  SHOULD  NOT  BE  CONSTRUED AS  A COMMITMENT BY DIGITAL EQUIPMENT   *
+/*;*  CORPORATION.							    *
+/*;* 									    *
+/*;*  DIGITAL ASSUMES NO RESPONSIBILITY FOR THE USE  OR  RELIABILITY OF ITS   *
+/*;*  SOFTWARE ON EQUIPMENT WHICH IS NOT SUPPLIED BY DIGITAL.		    *
+/*;* 									    *
+/*;*									    *
+/*;****************************************************************************
+/*;
+/*
+/*;++
+/*; FACILITY:  VSACP Human Interface: Automatic Login
+/*;
+/*; ABSTRACT:
+/*;
+/*;	These are the structure definitions needed to interface LOGINOUT
+/*;	to DCL.  It is an SDL version of the system's PPDDEF.MDL and
+/*;	LGIDEF.MDL.
+/*;
+/*; ENVIRONMENT:
+/*;
+/*;	VSACP VAXstation ACP
+/*;
+/*; AUTHOR:  Claude Sigel		5-Jul-1983
+/*;
+/*;--
+/*
+/*;
+/*; Define LOGIN -> LOGOUT communication region
+/*;
+/*; This structure is used as process permanent own storage for cells which
+/*; must be remembered from LOGIN to LOGOUT.  This structure may not be used
+/*; by any facility other than LOGINOUT, and thus, may be changed at any time
+/*; (unlike PPD, which must remain constant forever).
+/*;
+
+   aggregate LGIBLOCK structure prefix VS$;
+
+	LGI_ORIGUIC	longword unsigned;	/* Original UIC at job creation time
+	LGI_OUTFNM	longword unsigned;	/* For batch, file name/type of output
+	LGI_s1	longword unsigned;	/* for spooling log file in batch jobs
+	LGI_s2	longword unsigned;	/* 20 bytes long
+	LGI_s3	longword unsigned;
+	LGI_s4	longword unsigned;
+   constant LGI_LENGTH equals .;
+
+   end LGIBLOCK ;
+
+
+
+/*
+/*;
+/*; Define LOGIN <--> CLI <--> LOGOUT communication region
+/*;
+/*; This structure is based at CTL$AG_CLIDATA.  It contains all cells
+/*; which are used by both LOGINOUT and the CLI.
+/*;
+/*; Do NOT define LOGINOUT private storage here.  Any cells which are
+/*; strictly local to LOGIN and LOGOUT are defined in LGI.
+/*;
+/*; These cells MUST be maintained constant from release to release,
+/*; or else all CLIs will have to be re-assembled.
+/*;
+/*; In addition to the following data items, the following logical names
+/*; are also passed from LOGIN to the CLI initialization code:
+/*;
+/*;	PROC1-8				; Procedures to initially execute
+/*;	P1-8				; Initial parameters for batch jobs
+/*;	SYS$INPUT			; Primary input stream (PPF)
+/*;	SYS$OUTPUT			; Primary output stream (PPF)
+/*;	SYS$ERROR			; Primary error stream (PPF)
+/*;	SYS$COMMAND			; Command terminal (PPF)
+/*;
+
+   aggregate PPDBLOCK structure prefix VS$;
+
+	PPD_SIZE	word;		/* Actual size of structure
+	FLAGFIELD	union;
+	    PPD_FLAGS	word;		/* Flags
+	    FLAGBITS	structure prefix VS$;
+		PPD_NOCTLY bitfield mask;	/* Initially disable CTRL/Y in CLI
+		PPD_MODE bitfield mask;		/* 1 if network, batch, or detached
+						/* 0 if subprocess or interactive
+	    end FLAGBITS;
+	end FLAGFIELD;
+
+	PPD_PDS		union;
+	    PPD_CLIREG	quadword;	/* Descriptor of CLI private data storage
+					/* (approximately 2-3 pages or so)
+	    PPD_PDS_FIELDS structure prefix VS$;
+		PPD_PRC_SIZE longword;
+		PPD_PRC	address;	/* Address of CLI private data storage
+	    end PPD_PDS_FIELDS;
+	end PPD_PDS;
+
+	PPD_CLISYMTBL	quadword;	/* Descriptor of symbol table storage
+					/* (size from SYSGEN param CLISYMTBL)
+	PPD_LGI		longword unsigned; /* Address of LOGINOUT private storage
+	PPD_LSTSTATUS	longword unsigned; /* Final status code from CLI to LOGOUT
+	PPD_NPROCS	byte unsigned;	/* Number of procedures to initially
+					/* execute (names in lognames PROC1-N)
+	PPD_s1		byte;
+	PPD_INPCHAN	word unsigned;	/* Channel to SYS$INPUT (used to $CANCEL
+					/* outstanding I/O)
+	PPD_INPIFI	word unsigned;	/* SYS$INPUT IFI
+	PPD_INPISI	word unsigned;	/* SYS$INPUT ISI
+	PPD_OUTIFI	word unsigned;	/* SYS$OUTPUT IFI
+	PPD_OUTISI	word unsigned;	/* SYS$OUTPUT ISI
+constant PPD_DVIFID equals 28;		/* Length of DVI/DID/FID block
+	PPD_INPDVI	quadword;	/* SYS$INPUT ASCIC device name
+	PPD_INPDVI2	quadword;	/* 16 bytes
+	PPD_INPDID	word ;		/* SYS$INPUT directory file id
+	PPD_INPDID2	word ;		/* SYS$INPUT directory file id
+	PPD_INPDID3	word ;		/* SYS$INPUT directory file id
+	PPD_INPFID	word ;		/* SYS$INPUT file id
+	PPD_INPFID2	word ;		/* SYS$INPUT file id
+	PPD_INPFID3	word ;		/* SYS$INPUT file id
+	PPD_INPDEV	longword unsigned; /* SYS$INPUT device characteristics
+	PPD_OUTDVI	quadword;	/* SYS$OUTPUT ASCIC device name
+	PPD_OUTDVI2	quadword;	/* 16 bytes
+	PPD_OUTDID	word ;		/* SYS$OUTPUT directory file id
+	PPD_OUTDID2	word ;		/* SYS$OUTPUT directory file id
+	PPD_OUTDID3	word ;		/* SYS$OUTPUT directory file id
+	PPD_OUTFID	word ;		/* SYS$OUTPUT file id
+	PPD_OUTFID2	word ;		/* SYS$OUTPUT file id
+	PPD_OUTFID3	word ;		/* SYS$OUTPUT file id
+	PPD_OUTDEV	longword unsigned; /* SYS$OUTPUT device characteristics
+constant PPD_LENGTH equals .;		/* Length of fixed portion
+
+   end PPDBLOCK;
+
+end_module vs$lgi;

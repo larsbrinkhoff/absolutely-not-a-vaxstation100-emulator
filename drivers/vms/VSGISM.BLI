@@ -1,0 +1,251 @@
+! VSGISM.BLI - VaxStation GIdis State Manager, Bliss source
+!
+MODULE VSTA$GID_vsgism(
+    IDENT = 'GIDIS state manager',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!	1.2 - State Maintainer - The state maintainer allocates and
+!	deallocates space for storing information that is specific
+!	to each virtual display. The state maintainer must keep all
+!	this information seperate.
+!
+!
+GLOBAL LITERAL GID$$SM_Edit_level = 9;
+!
+!--
+LIBRARY 'SYS$LIBRARY:STARLET';	! Define system services for virtual memory
+LIBRARY 'VSTA$LIBRARY:vsgisf';	! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgiops';	! Gidis opcode list (for init sequence)
+LIBRARY 'VSTA$LIBRARY:vsgiod';	! Gidis opcode decoder
+LIBRARY 'VSTA$LIBRARY:vsgirm';	! Report manager, handles report buffers
+LIBRARY 'VSTA$LIBRARY:vsging';	! Get VSTA$K_vaxmem constant
+LIBRARY 'VSTA$LIBRARY:vsgipa';	! Pathed operations module
+LIBRARY 'VSTA$LIBRARY:vsgial';	! Alphabet memory manager
+LIBRARY 'VSTA$LIBRARY:libmacros';
+LIBRARY 'vsta$library:vstasyms';
+
+EXTERNAL ROUTINE		! System library routines
+    VSTA$$Error,
+    VS$$acp_Get_vm,
+    VS$$acp_Free_vm;
+
+library_file_crock;
+
+$vsta_psect;
+
+EXTERNAL LITERAL		! Error codes
+    VSTA$_nosuchvd;
+
+! Built-in MACRO instructions for queue operations:
+
+BUILTIN
+    insque,		!Insert into queue
+    remque;		!Remove from queue
+
+OWN
+    state_instance_queue: VECTOR [ 2, LONG] !	This is a queue header. Each
+				    !	queue entry is a block of memory which
+				    !   contains a Gidis state instance
+		  INITIAL (REP 2 OF ( state_instance_queue) );
+				    !	Initially empty queue - header points
+				    !   to itself.
+
+GLOBAL
+    GID$$state_file: REF state_instance FIELD( state_instance_fields);
+
+
+!+
+GLOBAL ROUTINE GID$$SM_Get_state_instance( ! Get a Gidis state instance
+    Virtual_display_tag		! VDtag to associate state information to
+    ) =				! Success code
+! Routine value:
+!	TRUE (1) if the state instance was correctly loaded,
+!	FALSE (VSTA$_nosuchvd) if no state instance exists for this VDTAG
+! Implicit inputs:
+! Implicit outputs:
+!	GID$$State_file: If successful, this is updated to point to the
+!	correct state instance, otherwise it is set to 0.
+! Function:
+!	Assiciate the VDtag with a state instance, and make that state
+!	available to the state fetcher.
+! Algorithm:
+!	Traverse a linked list of pointers to dynamic regions unil a
+!	match to the VDtag is made.
+! Side effects:
+!-
+    BEGIN
+    GID$$State_file = .state_instance_queue[ 0]; ! Start with first entry
+    WHILE .GID$$State_file NEQ state_instance_queue DO
+	BEGIN ! Loop until queue wraps around
+	IF .sf[ display_id] EQL .Virtual_display_tag
+	THEN RETURN( 1) ! Return TRUE, since this is the correct state instance
+	ELSE GID$$State_file = .sf[ Queue_links, 0];
+	END;
+    GID$$State_file = 0;
+    VSTA$_nosuchvd	! Return FALSE, since queue wrapped around without
+			! finding tag
+    END;
+
+
+!+
+GLOBAL ROUTINE VSTA$$gid_dispose(	! Eradicate a state instance
+    Virtual_Display_tag
+    ) =
+! Routine value:
+!	Hopefully, SS$NORMAL.  If free_vm fails, then return status from free.
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+
+    ROUTINE dis_completion_routine( pattern_state) =
+!   Used to free the old pattern state at the right time, after all pending
+!   operations are done with it.
+	BEGIN
+	IF .pattern_state NEQ 0
+	THEN VS$$ACP_Free_vm( %ref(4), pattern_state)
+	ELSE 1
+	END;
+
+    LOCAL
+	status;
+
+    status = GID$$SM_Get_State_instance( .Virtual_Display_tag);
+    IF .status
+    THEN ! This state instance exists, remove it from the queue and free it
+	BEGIN
+
+!	Complete any pending pathed operations
+
+	status = GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+	IF NOT .status THEN VSTA$$Error( .status);
+
+!	Arrange for old pattern state to be freed in a completion routine
+
+	IF .sf[ pattern_state] NEQ 0
+	THEN status = $VstaNoop(    ! A NOP hardware function that causes the done
+				    ! routine to execute at the right time
+	    ASTADR = dis_completion_routine,
+	    ASTPRM = .sf[ pattern_state]);
+	IF NOT .status THEN VSTA$$Error( .status);
+
+!	Dereference the font associated with the current alphabet, if any
+
+	IF .sf[ tx_font_instance] NEQ 0 ! A font exists, dereference it
+	THEN GID$$AL_Dereference_font( .sf[ tx_font_instance]);
+
+!	Delete each alphabet except the build-in one
+
+	INCR i FROM 1 TO GID$K_number_alphabets-1
+	DO GID$$AL_delete_alphabet( .i);
+
+!	Remove this entry from the queue
+
+	remque( GID$$State_file[ queue_links, 0], GID$$State_file);
+
+!	Deallocate the dynamic entries in the structure
+
+	GID$$RM_dispose_buffers();
+
+!	Deallocate the structure itself
+
+	status = vs$$acp_Free_vm( %ref( sf_table_size), GID$$state_file);
+	END;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE VSTA$$gid_Create(
+    Virtual_Display_tag
+    ) =	
+! Routine value:
+!	SS$_NORMAL or return status of failing system service.
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Currently only reinits the static state instance, rather than create
+!	a new one.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;		! Return code from system calls
+
+!	Check for existing state instance, and if not there
+!	Create a state instance for this VDtag, otherwise just use it.
+
+    IF NOT GID$$SM_Get_State_instance( .Virtual_display_tag)
+    THEN ! No state instance for this display, create one
+    	BEGIN
+	status = vs$$acp_Get_vm( %ref( sf_table_size), GID$$state_file);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	insque(
+	    GID$$State_file[ queue_links, 0],
+	    state_instance_queue[ 0]);
+	END;
+
+!	Initial entire state vector, except the queue pointers, to 0
+
+    INCR i FROM 8 TO sf_table_size-1 DO sf[ .i, 1, 1, 0 ] = 0;
+
+!	Enter the default font typeface
+
+    sf[ alph_addresses, 0] = UPLIT BYTE( 'KILTER');
+    sf[ alph_namlengs, 0] = 6;	! Length of 'KILTER'
+    sf[ alph_types, 0] = GID$K_named;
+
+!	Initialize various control information
+ 
+    sf[ display_id] = .virtual_display_tag;
+    sf[ number_of_colors] = 2;
+    VSTA$$gid_Sync( .virtual_display_tag);
+
+!	Initialize area texture bitmap descriptors
+
+    sf[ at_bitmap_address] = sf[ at_bitmap_space];
+    sf[ at_width] = 16;
+    sf[ at_height] = 16;
+    sf[ at_depth] = 1;
+    sf[ at_locate] = VSTA$K_vaxmem;
+
+    sf[ s_at_bitmap_address] = sf[ s_at_bitmap_space];
+    sf[ s_at_width] = 16;
+    sf[ s_at_height] = 16;
+    sf[ s_at_depth] = 1;
+    sf[ s_at_locate] = VSTA$K_vaxmem;
+
+!	Initialize drawing parameters with a stream of Gidis opcodes
+
+    VSTA$$gid_Process( .virtual_display_tag, UPLIT WORD(
+!	Gidis init sequence...Don't forget to adjust the length (below) if you
+!	edit it.
+	    gidi_initialize_op,
+	    gidi_screen_addressing_op, 767, 479,	! S(A[0,0][767,479]
+	    gidi_set_number_colors_op, 4,		! VT125 compatible
+	    gidi_select_writing_color_op, 3,		! W(I3)	    
+	    gidi_line_texture_op, 1, 1, 1,		! S(P1)
+	    gidi_area_texture_op, 0, 0, 1, 1,		! 
+	    gidi_set_writing_mode_op, 4,		! W(R) {Replace}
+	    gidi_set_pixel_size_op, 1, 1,
+	    gidi_select_alphabet_op, 0,			! T(A0)
+	    gidi_cell_cursor_movement_op, 9, 0,		! T[ 9,0]
+	    gidi_cell_unit_size_op, 8, 20,		! T(U[8,20])
+	    gidi_cell_display_size_op, 9, 20,		! T(S[9,20])
+	    gidi_save_state_op, -1,			! Save initial state
+	0),
+!	Length, in words, of the Gidis init sequence
+	35, 0, 0)
+    END;
+
+END
+ELUDOM

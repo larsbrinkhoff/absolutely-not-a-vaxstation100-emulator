@@ -1,0 +1,284 @@
+module STOPACP (	! Stops a single ACP Process
+		ident = 'VSTA V1.2-01',
+		main = STOP_ACP
+		) =
+begin
+
+
+!++
+! Facility:
+!
+!	VAXstation display system software
+!
+! Abstract:
+!
+!
+! Environment:
+!
+!--
+
+
+library 'SYS$LIBRARY:LIB.L32';
+library 'VSTA$LIBRARY:LINKAGE.L32';
+
+builtin
+
+    MTPR;
+
+forward routine
+
+    STOP_ACP: novalue,
+    FIND_ACP,
+    CVT_EPID,
+    STOP;
+
+macro
+
+    SETIPL(LEVEL) = MTPR(%ref(LEVEL),PR$_IPL) %;
+
+
+own
+
+    CONTROLLER,
+    VD_CHAN: word,
+    ACP_PID,
+    STATUS,
+    NAM:vector [5,byte] initial (byte ('VDA0:')),
+    NAMD:vector [2,long] initial (5,NAM),
+    AQB: ref block[0,byte],
+    VCB: ref block[0,byte],
+    CCB: ref block[0,byte],
+    UCB: ref block[0,byte];
+
+!
+! External references:
+!
+
+external routine
+
+    GETSTOP,		! Inputs Controller ID
+    EXE$IPID_TO_EPID: 	EXECVTPID addressing_mode(absolute),
+    IOC$VERIFYCHAN:	VERIFYCHAN addressing_mode(absolute);
+
+
+routine STOP_ACP :novalue =
+!++
+! Functional description:
+!
+!	This is the main routine which determines the VD template device
+! name, tries to assign a channel to it, locates the PID of the ACP to
+! stop, and then forces that ACP to exit. 
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+    begin
+
+    GETSTOP ( CONTROLLER );		! Get the controller letter
+    NAM[2] = .CONTROLLER ;		! Define our device name
+
+    if not (STATUS =$ASSIGN(
+			CHAN=VD_CHAN,
+			DEVNAM=NAMD))
+	then $EXIT( CODE = .STATUS );
+
+    if not (STATUS = $CMKRNL( ROUTIN = FIND_ACP ))
+	then $EXIT( CODE = .STATUS );
+
+    if not (STATUS = STOP())
+	then $EXIT( CODE = .STATUS );
+
+    return SS$_NORMAL;
+    end; ! routine STOP_ACP
+
+
+routine FIND_ACP =
+
+!++
+! Functional description:
+!
+!	This routine looks for the CCB and in it for the UCB and in it for
+! the VCB and in it for the AQB and in it for the ACP's PID. If it doesn't
+! find it, an error status is returned.
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	ACP_PID : Address for ACP's PID if found
+!
+! Implicit outputs:
+!
+!	ACP_PID : Address for ACP's PID if found
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	Gotta be called in kernel mode.
+!
+!--
+
+    begin
+
+!
+! If we can't find the channel control block for this template VD device,
+! then don't continue
+!
+    ACP_PID = 0;
+    if not (STATUS = IOC$VERIFYCHAN(.VD_CHAN;CCB))
+	then return .STATUS;
+!
+! If the template device (UCB) isn't mounted, then everything is already
+! set up for an ACP restart
+!
+    UCB = .CCB[CCB$L_UCB];
+    if (.UCB[UCB$L_DEVCHAR] and DEV$M_MNT) eql 0
+	then return SS$_DEVNOTMOUNT;
+!
+! Look through the VCB and AQB (if they are still around) to find the PID
+! of the ACP and return it if found
+!
+    if (VCB = .UCB [UCB$L_VCB]) neq 0 then
+      if (AQB = .VCB [VCB$L_AQB]) neq 0 then
+	begin
+	  ACP_PID = CVT_EPID(.AQB [AQB$L_ACPPID]);
+	  return SS$_NORMAL;
+	end;
+!
+! Some of the data structures were absent. Not much we can do.
+!
+    return SS$_DEVNOTMOUNT;
+
+    end; ! routine FIND_ACP
+
+
+ROUTINE CVT_EPID (PID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Convert a PID to EPID form (External PID) form.  If it does not
+!	convert, then return the input parameter.
+!
+! FORMAL PARAMETERS:
+!
+!	PID passed by value
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	PID in EPID form or parameter value specified
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	EPID
+	;
+
+    IF (EPID = EXE$IPID_TO_EPID( .PID )) NEQ 0
+    THEN
+	RETURN .EPID
+    ELSE
+	RETURN .PID
+
+    END;
+
+
+routine STOP =
+
+!++
+! Functional description:
+!
+!	This routine merely forces the process designated by ACP_PID to
+! exit.
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	ACP_PID : Address for ACP's PID if found
+!
+! Implicit outputs:
+!
+!	ACP_PID : Address for ACP's PID if found
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+    begin
+!
+! The old way of "stopping" the ACP was to ask it to kill itself.
+! Unfortunately, this routine is often used to stop an ACP which is running
+! amuck (in a tight infinite loop). In that case, this request would never be
+! serviced and this would only result in another hung process on the system.
+!
+!    UCB[UCB$L_DEVCHAR] = .UCB[UCB$L_DEVCHAR] or DEV$M_DMT;
+!
+!    STATUS = $QIOW(
+!		CHAN=.VD_CHAN,
+!		FUNC=IO$_MOUNT or IO$M_DELETE);
+!
+! The new way to stop the ACP will be to kill it from here using VMS. This
+! should succeed even if the ACP is in a funny state. Even if we don't succeed
+! in really killing the ACP, we at least won't hang the process that's trying
+! to kill it.
+!
+    return $FORCEX(
+		PIDADR = ACP_PID,
+		CODE   = SS$_ABORT );
+!
+
+    end; ! routine STOP
+
+end ! module STOPACP
+eludom

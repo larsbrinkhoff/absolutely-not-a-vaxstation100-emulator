@@ -1,0 +1,1368 @@
+%TITLE 'vsta$kbrd -- VAXSTATION KEYBOARD (LK201) MANIPULATION'
+MODULE vsta$kbrd (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the routines and data relevent to dealing with
+!   the VAXstation physical keyboard in the context of a VAX workstation
+!   running the associated workstation display software; an implementation of
+!   the System Display Architecture.
+!
+!   Operations have been provided to allow access to LK201 specific modes,
+!   states, and peripheral devices.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+!		Public routines
+!
+!
+! Keyboard manipulation procedures
+!
+	vsta$$kbrd_xmit_inhibit,	!Inhibit keyboard transmission
+	vsta$$kbrd_xmit_resume,		!Resume keyboard transmission
+!
+	vsta$$kbrd_leds_on,		!Turn specified LEDs on
+	vsta$$kbrd_leds_off,		!Turn specified LEDs off
+!
+	vsta$$kbrd_keyclick_enable,	!Enable keyclick
+	vsta$$kbrd_keyclick_disable,	!Disable keyclick
+	vsta$$kbrd_sound_keyclick,	!Make a keyclick sound
+!
+	vsta$$kbrd_bell_enable,		!Enable bell
+	vsta$$kbrd_bell_disable,	!Disable bell 
+	vsta$$kbrd_sound_bell,		!Make a bell sound
+!
+	vsta$$kbrd_autorepeat_enable,	!Enable autorepeat
+	vsta$$kbrd_autorepeat_disable,	!Disable autorepeat
+	vsta$$kbrd_autorepeat_rate,	!Set autorepeat rates
+!
+	vsta$$kbrd_change_mode,		!Change keyboard division mode
+	vsta$$kbrd_identify,		!Keyboard: Identify yourself!
+	vsta$$kbrd_reinitiate,		!Reinitiate keyboard
+	vsta$$kbrd_init_defaults,	!Reinstate keyboard default settings
+	vsta$$kbrd_test_mode,		!Put keyboard into test mode
+!
+!		Private routines
+!
+	vsta$$kbrd_cmd_sent_ast,	!Keyboard command completion AST
+	vsta$$kbrd_send_command;	!Send command to VAXstation keyboard
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+!
+	lib$get_ef,			!Allocate an event flag to use
+!	vsta$$error_logger,		!Log error from driver/firmware
+	vs$$acp_get_vm,			!Allocate memory
+	vs$$acp_free_vm,		!Deallocate memory
+	vsta$$drive_move_object;	!WGA move object function
+!
+! EXTERNAL DATA
+!
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error symbol definitions
+LIBRARY 'VSTA$LIBRARY:VSTAKBRD';	! VAXstation keyboard commands
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECT Definitions
+!
+	$VSTA_PSECT;
+!
+!
+! MACROS for internal use
+!
+MACRO
+!
+! Macro to be used by $send_kbrd_command to fill in the keyboard command
+! buffer with any parameters and to set the high bit in the last parameter
+! (which informs the keyboard that it IS the last parameter).
+!
+    $fill_kbrd_params(params)[] =
+	%if %null(%remaining) %then
+	  command_adr[%count + 2] = params OR %X'80';
+	%else
+	  command_adr[%count + 2] = params;
+	  $fill_kbrd_params(%remaining)
+	%fi
+	%,
+!
+! Macro to build a VAXstation keyboard command buffer from the command and
+! parameters (if any) specified and send it off to the keyboard. Any parameter
+! checking must be done at a higher level. The LK201 command buffer is a
+! word-aligned byte vector resembling the following:
+!
+!				Command without parameters
+!
+!		  7      6    5    4    3       2      1       0
+!		----------------------------------------------------
+!		|             Number of bytes in command	   |
+!		----------------------------------------------------
+!		| 1 |   Keyboard Command   | Mode or on/off | Type |
+!		----------------------------------------------------
+!
+!				Command with parameters
+!
+!		  7      6    5    4    3       2      1       0
+!		----------------------------------------------------
+!		|             Number of bytes in command	   |
+!		----------------------------------------------------
+!		| 0 |   Keyboard Command   | Mode or on/off | Type |
+!		----------------------------------------------------
+!		| 1 |                    Data                      |
+!		----------------------------------------------------
+!		|    Byte of padding for VS100 UBW word transfers  |
+!		----------------------------------------------------
+!
+    $send_kbrd_command(chan,cmd)[] = (
+	BIND
+	  command_size = %length - 1;
+	LOCAL
+	  command_adr: VECTOR[command_size + 2,BYTE];
+
+	command_adr[0] = command_size;
+	%if %null(%remaining) %then
+	  command_adr[1] = cmd OR %X'80';
+	%else
+	  command_adr[1] = cmd;
+	  $fill_kbrd_params(%remaining)
+	%fi
+	%if (command_size) %then
+	  RETURN vsta$$kbrd_send_command(
+			chan,
+			command_adr,
+			1 + command_size))
+	%else
+	  RETURN vsta$$kbrd_send_command(
+			chan,
+			command_adr,
+			2 + command_size))
+	%fi
+	%;
+!
+! Module-wide data
+!
+LITERAL
+	true = 1,
+	false = 0;
+OWN
+	bell_enabled: INITIAL(true),			   !"Boolean" indicator
+	click_enabled: INITIAL(true),			   !"Boolean" indicator
+	bell_volume: INITIAL(vsta$k_kbrd_default_volume),  !Current setting
+	click_volume: INITIAL(vsta$k_kbrd_default_volume); !Current setting
+
+
+
+%SBTTL 'vsta$$kbrd_xmit_inhibit -- Inhibit Keyboard Transmission'
+GLOBAL ROUTINE vsta$$kbrd_xmit_inhibit(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for inhibiting keyboard transmission
+! of any keystrokes until further notification. When keyboard transmission
+! is reenabled and if any keystrokes were missed, an error code will be
+! transmitted by the keyboard to indicate this.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,xmit_inhibit);
+!
+    END;			! end of routine vsta$$kbrd_xmit_inhibit
+
+
+%SBTTL 'vsta$$kbrd_xmit_resume -- Resume Keyboard Transmission'
+GLOBAL ROUTINE vsta$$kbrd_xmit_resume(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for resuming keyboard transmission.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,xmit_resume);
+!
+    END;			! end of routine vsta$$kbrd_xmit_resume
+
+
+%SBTTL 'vsta$$kbrd_leds_on -- Light Specified Keyboard LEDs'
+GLOBAL ROUTINE vsta$$kbrd_leds_on(
+			vb_chan: WORD,		!Channel to VAXstation
+			mask			!Mask of LEDs to light
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for lighting the specified LEDs on
+! the designated keyboard. The LED mask is as follows:
+!
+!	-----------------------------------------------------------------
+!	|   0   |   0   |   0   |   0   | LED 4 | LED 3 | LED 2 | LED 1 |
+!	-----------------------------------------------------------------
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	MASK	 : Mask of LEDs to light
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	mask = .mask AND %X'f';		!There are only 4 LEDs
+!
+	$send_kbrd_command(.vb_chan,leds_on,.mask);
+!
+    END;			! end of routine vsta$$kbrd_leds_on
+
+
+%SBTTL 'vsta$$kbrd_leds_off -- Turn Off Specified LEDs'
+GLOBAL ROUTINE vsta$$kbrd_leds_off(
+			vb_chan: WORD,		!Channel to VAXstation
+			mask			!Mask of LEDs to turn off
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for turning off the specified LEDs.
+! The LED mask is as follows:
+!
+!	-----------------------------------------------------------------
+!	|   0   |   0   |   0   |   0   | LED 4 | LED 3 | LED 2 | LED 1 |
+!	-----------------------------------------------------------------
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	MASK	 : Mask of LEDs to be turned off
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	mask = .mask AND %X'f';		!There are only 4 LEDs
+!
+	$send_kbrd_command(.vb_chan,leds_off,.mask);
+!
+    END;			! end of routine vsta$$kbrd_leds_off
+
+
+%SBTTL 'vsta$$kbrd_keyclick_enable -- Enable Keyclick'
+GLOBAL ROUTINE vsta$$kbrd_keyclick_enable(
+			vb_chan: WORD,		!Channel to VAXstation
+			volume: BYTE		!Keyclick volume
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for enabling keyclick on the keyboard
+! at the specified volume. If no volume parameter is passed or some strange
+! volume, the default LK201 volume setting of 2 will be used. Volumes range
+! from 7 => 0, where 7 is the lowest volume and 0 is the highest.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	VOLUME	 : Keyclick volume number
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;
+
+!
+! Formulate and send off appropriate command stream
+!
+	IF actualcount() LSS 2 THEN
+	  click_volume = vsta$k_kbrd_default_volume
+	ELSE
+	  IF .volume GTR max_kbrd_volume THEN
+	    click_volume = vsta$k_kbrd_default_volume
+	  ELSE
+	    click_volume = .volume;
+!
+	click_enabled = true;
+!
+	$send_kbrd_command(.vb_chan,keyclick_enable,.click_volume);
+!
+    END;			! end of routine vsta$$kbrd_keyclick_enable
+
+
+%SBTTL 'vsta$$kbrd_keyclick_disable -- Disable Keyclick'
+GLOBAL ROUTINE vsta$$kbrd_keyclick_disable(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for disabling keyclick on the keyboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	click_enabled = false;
+!
+	$send_kbrd_command(.vb_chan,keyclick_disable);
+!
+    END;			! end of routine vsta$$kbrd_keyclick_disable
+
+
+%SBTTL 'vsta$$kbrd_sound_keyclick -- Make a Keyclick Sound'
+GLOBAL ROUTINE vsta$$kbrd_sound_keyclick(
+			vb_chan: WORD,		!Channel to VAXstation
+			volume: BYTE		!Optional keyclick volume
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for making the keyboard utter a keyclick
+! sound at whatever the current volume setting is or at the optionally
+! specified volume.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	VOLUME	 : Optional volume number
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;
+!
+! If keyclick is disabled, don't bother
+!
+	IF NOT .click_enabled THEN
+	  RETURN SS$_NORMAL;
+!
+! If the caller didn't specify a volume, then use the current keyboard
+! keyclick volume
+!
+	IF actualcount() EQL 1 THEN
+	  $send_kbrd_command(.vb_chan,sound_keyclick);
+!
+! If the caller specified some weird volume or the current volume, then use
+! the current keyboard keyclick volume
+!
+	IF (.volume GTR max_kbrd_volume) OR
+	   (.volume EQL .click_volume) THEN
+	  $send_kbrd_command(.vb_chan,sound_keyclick);
+!
+! Send down commands to set the keyboard volume, sound a keyclick at the
+! specified volume, and set it back to the original volume
+!
+	$send_kbrd_command(.vb_chan,
+			keyclick_enable,.volume OR %X'80',
+			sound_keyclick,
+			keyclick_enable,.click_volume);
+!
+    END;			! end of routine vsta$$kbrd_sound_keyclick
+
+
+%SBTTL 'vsta$$kbrd_bell_enable -- Enable Bell Ringing'
+GLOBAL ROUTINE vsta$$kbrd_bell_enable(
+			vb_chan: WORD,		!Channel to VAXstation
+			volume: BYTE		!Bell volume
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for enabling keyboard bell transmission
+! at the specified volume. If no volume parameter is passed or some strange
+! volume, the default LK201 volume setting of 2 will be used. Volumes range
+! from 7 => 0, where 7 is the lowest volume and 0 is the highest.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	VOLUME	 : Bell volume number
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;
+
+!
+! Formulate and send off appropriate command stream
+!
+	IF actualcount() LSS 2 THEN
+	  bell_volume = vsta$k_kbrd_default_volume
+	ELSE
+	  IF .volume GTR max_kbrd_volume THEN
+	    bell_volume = vsta$k_kbrd_default_volume
+	  ELSE
+	    bell_volume = .volume;
+!
+	bell_enabled = true;
+!
+	$send_kbrd_command(.vb_chan,bell_enable,.bell_volume);
+!
+    END;			! end of routine vsta$$kbrd_bell_enable
+
+
+%SBTTL 'vsta$$kbrd_bell_disable -- Disable Keyboard Bell'
+GLOBAL ROUTINE vsta$$kbrd_bell_disable(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for disabling keyboard transmission
+! of the bell sound.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	bell_enabled = false;
+!
+	$send_kbrd_command(.vb_chan,bell_disable);
+!
+    END;			! end of routine vsta$$kbrd_bell_disable
+
+
+%SBTTL 'vsta$$kbrd_sound_bell -- Sound the Keyboard Bell'
+GLOBAL ROUTINE vsta$$kbrd_sound_bell(
+			vb_chan: WORD,		!Channel to VAXstation
+			volume: BYTE		!Optional volume
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for making the keyboard utter the bell
+! sound at whatever the current volume setting is.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!	VOLUME	 : Optional volume number
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;
+!
+! If the bell is disabled, don't bother
+!
+	IF NOT .bell_enabled THEN
+	  RETURN SS$_NORMAL;
+!
+! If the caller didn't specify a volume, then use the current keyboard
+! bell volume
+!
+	IF actualcount() EQL 1 THEN
+	  $send_kbrd_command(.vb_chan,sound_bell);
+!
+! If the caller specified some weird volume or the current volume, then use
+! the current keyboard bell volume
+!
+	IF (.volume GTR max_kbrd_volume) OR
+	   (.volume EQL .bell_volume) THEN
+	  $send_kbrd_command(.vb_chan,sound_bell);
+!
+! Send down commands to set the keyboard volume, sound the bell at the
+! specified volume, and set it back to the original volume
+!
+	$send_kbrd_command(.vb_chan,
+			bell_enable,.volume OR %X'80',
+			sound_bell,
+			bell_enable,.bell_volume);
+!
+    END;			! end of routine vsta$$kbrd_sound_bell
+
+
+%SBTTL 'vsta$$kbrd_autorepeat_enable -- Enable Autorepeat'
+GLOBAL ROUTINE vsta$$kbrd_autorepeat_enable(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for enabling keyboard autorepeat
+! transmission without affecting autorepeat timing or division settings.
+! Naturally, only those keyboard divisions in autorepeat-down mode (if any)
+! can autorepeat.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,autorepeat_enable);
+!
+    END;			! end of routine vsta$$kbrd_autorepeat_enable
+
+
+%SBTTL 'vsta$$kbrd_autorepeat_disable -- Disable Autorepeat'
+GLOBAL ROUTINE vsta$$kbrd_autorepeat_disable(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for disabling keyboard autorepeat
+! without affecting autorepeat timing or division settings. Naturally,
+! only those keyboard divisions in autorepeat-down mode (if any) are
+! affected.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,autorepeat_disable);
+!
+    END;			! end of routine vsta$$kbrd_autorepeat_disable
+
+
+%SBTTL 'vsta$$kbrd_autorepeat_rate -- Set Autorepeat Rates'
+GLOBAL ROUTINE vsta$$kbrd_autorepeat_rate(
+			vb_chan: WORD,		!Channel to VAXstation
+			buffer_number: BYTE,	!Buffer to effect
+			timeout: BYTE,		!Timeout to start autorepeat
+			interval: BYTE		!Metronome interval
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing autorepeat rates for the
+! VAXstation keyboard. You are able to change the timeout time for how long
+! a key need be held down before starting to generate metronome characters.
+! You may also change the delta time interval for frequency of metronome
+! character generation. These independent rates are settable for each of the
+! four keyboard autorepeat buffers (different keyboard divisions may use
+! different autorepeat rate buffers). If the timeout and interval parameters
+! are invalid or not specified, the LK201 default settings will be used.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN	      : Word channel number to VAXstation device
+!			 	(input parameter)
+!	BUFFER_NUMBER : Buffer number to effect for autorepeat rate change
+!			 	(input parameter)
+!	TIMEOUT	      : Timeout to beginning of metronome generation
+!			(Number of 5 ms. tics)
+!			 	(input parameter)
+!	INTERVAL      : Metronome generation interval (Characters per second)
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	nullparameter;
+
+!
+! Validate the parameters
+!
+	IF .buffer_number GTR max_kbrd_buffer THEN
+	  RETURN SS$_BADPARAM;
+!
+	IF nullparameter(3) THEN
+	  CASE .buffer_number FROM 0 TO max_kbrd_buffer OF
+	    SET
+	      [0] : timeout = vsta$k_kbrd_buf0_timeout;
+	      [1] : timeout = vsta$k_kbrd_buf1_timeout;
+	      [2] : timeout = vsta$k_kbrd_buf2_timeout;
+	      [3] : timeout = vsta$k_kbrd_buf3_timeout;
+	    TES
+	ELSE
+	  IF .timeout GTR max_autorepeat_timeout THEN
+	    CASE .buffer_number FROM 0 TO max_kbrd_buffer OF
+	      SET
+		[0] : timeout = vsta$k_kbrd_buf0_timeout;
+		[1] : timeout = vsta$k_kbrd_buf1_timeout;
+		[2] : timeout = vsta$k_kbrd_buf2_timeout;
+		[3] : timeout = vsta$k_kbrd_buf3_timeout;
+	      TES;
+!
+	IF nullparameter(4) THEN
+	  CASE .buffer_number FROM 0 TO max_kbrd_buffer OF
+	    SET
+	      [0] : interval = vsta$k_kbrd_buf0_interval;
+	      [1] : interval = vsta$k_kbrd_buf1_interval;
+	      [2] : interval = vsta$k_kbrd_buf2_interval;
+	      [3] : interval = vsta$k_kbrd_buf3_interval;
+	    TES
+	ELSE
+	  IF .interval GTR max_autorepeat_interval THEN
+	    CASE .buffer_number FROM 0 TO max_kbrd_buffer OF
+	      SET
+		[0] : interval = vsta$k_kbrd_buf0_interval;
+		[1] : interval = vsta$k_kbrd_buf1_interval;
+		[2] : interval = vsta$k_kbrd_buf2_interval;
+		[3] : interval = vsta$k_kbrd_buf3_interval;
+	      TES;
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(
+		.vb_chan,
+		autorepeat_rate OR (.buffer_number^1),
+		.timeout,
+		.interval);
+!
+    END;			! end of routine vsta$$kbrd_autorepeat_rate
+
+
+%SBTTL 'vsta$$kbrd_change_mode -- Change Keyboard Division Mode'
+GLOBAL ROUTINE vsta$$kbrd_change_mode(
+			vb_chan: WORD,		!Channel to VAXstation
+			division: BYTE,		!Keyboard division
+			mode: BYTE,		!Mode to be put into
+			rate_buffer: BYTE	!Optional rate buffer assoc.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the specified keyboard
+! division into the specified mode and if that mode is autorepeat-down,
+! associating the specified autorepeat rate buffer (if any). Refer to the
+! LK201 Functional Spec. for a description of the 14 keyboard divisions. The
+! possible mode settings are down-only (0), autorepeat-down (1), and
+! up-down (3).
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;
+
+    LOCAL
+	kbrd_cmd: BYTE;			! To build keyboard command
+!
+! Validate the input parameters
+!
+	IF .division GTR max_division THEN
+	  RETURN SS$_BADPARAM;
+!
+	IF (.mode GTR 3) OR
+	   (.mode EQL 2) THEN
+	  RETURN SS$_BADPARAM;
+!
+! Formulate and send off appropriate command stream
+!
+	kbrd_cmd = (.division^3) + (.mode^1);
+!
+	IF .mode EQL vsta$k_kbrd_auto_down THEN
+	  IF actualcount() GEQ 4 THEN
+	    IF .rate_buffer LEQ max_kbrd_buffer THEN
+	      $send_kbrd_command(.vb_chan,.kbrd_cmd,.rate_buffer);
+!
+	$send_kbrd_command(.vb_chan,.kbrd_cmd);
+!
+    END;			! end of routine vsta$$kbrd_change_mode
+
+
+%SBTTL 'vsta$$kbrd_identify -- Request Keyboard Identification'
+GLOBAL ROUTINE vsta$$kbrd_identify(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for making the keyboard identify itself
+! with its two-byte identifier to be included in the input stream.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,identify);
+!
+    END;			! end of routine vsta$$kbrd_identify
+
+
+%SBTTL 'vsta$$kbrd_reinitiate -- Reinitiate Keyboard'
+GLOBAL ROUTINE vsta$$kbrd_reinitiate(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for making the keyboard reinitiate itself.
+! The keyboard will jump to its powerup routine and reinitiate all states.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,reinitiate);
+!
+    END;			! end of routine vsta$$kbrd_reinitiate
+
+
+%SBTTL 'vsta$$kbrd_init_defaults -- Reinitialize Keyboard Defaults'
+GLOBAL ROUTINE vsta$$kbrd_init_defaults(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for causing the keyboard to reinitialize
+! its powerup default settings of the following:
+!		Division mode settings,
+!		Autorepeat interval and timeout rates,
+!		Autorepeat buffer selections,
+!		Audio volumes, and
+!		Control key keyclick
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,init_defaults);
+!
+    END;			! end of routine vsta$$kbrd_init_defaults
+
+
+%SBTTL 'vsta$$kbrd_test_mode -- Put Keyboard Into Production Test Mode'
+GLOBAL ROUTINE vsta$$kbrd_test_mode(
+			vb_chan: WORD		!Channel to VAXstation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for causing the keyboard to go into
+! its production test mode.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN  : Word channel number to VAXstation device
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Formulate and send off appropriate command stream
+!
+	$send_kbrd_command(.vb_chan,test_mode);
+!
+    END;			! end of routine vsta$$kbrd_test_mode
+
+
+%SBTTL 'vsta$$kbrd_cmd_sent_ast -- Command to Keyboard Sent AST'
+ROUTINE vsta$$kbrd_cmd_sent_ast(
+		keyboard_buffer: REF BLOCK[0,BYTE], !Address of keyboard buffer
+		driver_status			    !Returned status
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cleanup after a keyboard command has
+! been completed. This involves logging any detected errors and deallocating
+! the temporary buffer.
+!
+! FORMAL PARAMETERS:
+!
+!	KEYBOARD_BUFFER : Address of the keyboard command buffer
+!			 	(input parameter)
+!	DRIVER_STATUS   : Longword driver/firmware return status value
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! If the operation completed unsuccessfully, log the error
+!
+! *** COMMENTED OUT UNTIL INTEGRATED WITH ACP ***
+!
+!	IF NOT .driver_status THEN
+!	  vsta$$error_logger(.driver_status);
+!
+! Deallocate the buffer for the command packet and IOSB
+!
+	vs$$acp_free_vm(
+			%REF(.keyboard_buffer[vs$kbrd_w_size]),
+			keyboard_buffer,0);
+!
+	RETURN SS$_NORMAL;	! Return successful
+    END;			! end of routine vsta$$kbrd_cmd_send_ast
+
+
+%SBTTL 'vsta$$kbrd_send_command -- Send Command to VAXstation Keyboard'
+ROUTINE vsta$$kbrd_send_command(
+			vb_chan: WORD,		!Channel to VAXstation
+			command_adr,		!Address of keyboard command
+			command_size		!Size of command in bytes
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for sending the specified command string
+! to the VAXstation keyboard. The WGA implementation of this is a "move object"
+! with a source-type and destination that only indicate that its to the
+! keyboard USART. The driver merely transmits the buffer and signals the
+! firmware which establishes the protocol and transmits the command byte
+! stream to the keyboard.
+!
+! FORMAL PARAMETERS:
+!
+!	VB_CHAN      : Word channel number to VAXstation device
+!			 	(input parameter)
+!	COMMAND_ADR  : Address of the keyboard command string
+!			 	(input parameter)
+!	COMMAND_SIZE : Longword size of the keyboard command string
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	Driver/firmware status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	command_buffer: REF BLOCK[0,BYTE],	!Allocated buffer address
+	status;					!Return status value
+!
+! Allocate a buffer for the command packet and IOSB
+!
+	IF NOT (status = vs$$acp_get_vm(
+				%REF(12 + .command_size),
+				command_buffer,0)) THEN
+	  RETURN .status;
+!
+! Fill in the size so we know how much to deallocate on the other end
+! and move in the keyboard command packet
+!
+	command_buffer[vs$kbrd_w_size] = 12 + .command_size;
+	command_buffer[vs$kbrd_w_type] = 0;
+	CH$MOVE(
+		.command_size,
+		.command_adr,
+		command_buffer[vs$kbrd_b_cmd_buffer]);
+!
+! Send the command packet to the LK201 keyboard via the WGA move_object
+! function (and don't bother waiting around for a response)
+!
+	RETURN vsta$$drive_move_object(
+				.vb_chan,
+				vsta$k_kbrd_object_type,
+				command_buffer[vs$kbrd_b_cmd_buffer],
+				vsta$k_kbrd_device_dest,
+				.command_size,
+				0,
+				vsta$$kbrd_cmd_sent_ast,
+				.command_buffer);
+!
+    END;			! end of routine vsta$$kbrd_send_command
+
+
+END					!End of module
+ELUDOM

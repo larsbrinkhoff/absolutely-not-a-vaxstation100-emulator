@@ -1,0 +1,110 @@
+! Macros for terminal diagnostics
+
+
+macro
+
+typeCarriageReturn(a) =
+	begin
+	external routine tcr;
+	tcr()
+	end
+	% ,
+
+type(mess) [] =
+    %if %count eql 0
+    %then
+	begin
+	external routine doTyping;
+	doTyping (0,
+    %fi
+
+    %if %isstring(mess)
+    %then
+	p_shwdes, %ascid mess
+    %else
+	mess
+    %fi
+
+    %if %null(%remaining)
+    %then
+	)
+	end
+    %else
+	,
+    %fi
+
+    type (%remaining)
+    %,
+
+typePart(mess) [] =
+    %if %count eql 0
+    %then
+	begin
+	external routine doTyping;
+	doTyping (2,
+    %fi
+
+    %if %isstring(mess)
+    %then
+	p_shwdes, %ascid mess
+    %else
+	mess
+    %fi
+
+    %if %null(%remaining)
+    %then
+	)
+	end
+    %else
+	, typePart (%remaining)
+    %fi
+    %,
+
+error(mess)[] =
+    %if %count eql 0
+    %then
+	begin
+	external routine doTyping;
+	doTyping (1,
+    %fi
+
+    %if %isstring(mess)
+    %then
+	p_shwdes, %ascid mess
+    %else
+	mess
+    %fi
+
+    %if %null(%remaining)
+    %then
+	)
+	end
+    %else
+	,
+    %fi
+
+    error (%remaining)
+    % ,
+
+    ! Macros used in TYPE and ERROR macro calls.
+    !
+    ! Example of usage:
+    !
+    !	type ('He is ', decimal(.dif), ' years older than she');
+    !
+    decimal(val) = p_decimal, (val) % ,		! print value in decimal
+    hex(val) = p_hex, (val) % ,			! print value in hex
+    shwerr(val) = p_shwerr, (val) % ,		! print error string for value
+    shwdes(val) = p_shwdes, (val) % ,		! print string, given designator
+    $vsta_err (val) = p_vstaerr, (val) % ;	! print VAXstation error
+
+literal
+	p_decimal = 1,			! literals for typing messages
+	p_hex = 2,
+	p_shwerr = 3,
+	p_shwdes = 4,
+	p_vstaerr = 5,			! show VAXstation error
+
+	carriageReturn = %o'15',
+	lineFeed = %o'12';
+

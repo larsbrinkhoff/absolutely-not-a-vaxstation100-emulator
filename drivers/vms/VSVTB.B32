@@ -1,0 +1,2678 @@
+%TITLE 'vs$vtb -- VAXSTATION VIRTUAL TABLET DRIVER'
+MODULE vs$vtb(
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the routines and data structures relevent to
+!   dealing with the VAXstation virtual tablet as an entity in the context of
+!   a VAX workstation running the associated workstation display software;
+!   an implementation of the System Display Architecture.
+!
+!   Operations have been provided to allow creation, deletion, reads,
+!   movement ASTs, and associations of virtual tablets to the physical tablet.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+!
+! INCLUDE FILES:
+!
+REQUIRE 'VSTA$LIBRARY:VSVTB.R32';	! Virtual Tablet data structures
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error definitions
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! Things like irp_block
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	! VSACP definitions
+LIBRARY 'VSTA$LIBRARY:VSTADEF';		! VBDRIVER function codes + modifiers
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';		! Pasteboard data structures
+LIBRARY 'SYS$LIBRARY:LIB';		! Get access to VMS system routines
+
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Public routines (public to the VAXstation ACP only)
+!
+	vs$$create_vtb,			!To create a virtual tablet device
+	vs$$delete_vtb,			!To delete a virtual tablet device
+	vs$$get_vtb_info,		!To get the ptr position and buttons
+	vs$$set_vtb_ptr_move_ast,	!To set up ptr move ast on tablet
+	vs$$set_vtb_button_ast,		!To set up button ast on tablet
+	vs$$vtb_cancel_asts,		!To cancel AST delivery for a VTB
+	vs$$activate_vtb,		!To activate a virtual tablet
+	vs$$deactivate_vtb,		!To deactivate a virtual tablet (by ID)
+	vs$$vtb_cancel_ast_state,	!Cancel outstanding AST state for tablet
+!
+! Private routines
+!
+	vs$$deactivate_current_vtb: NOVALUE, !Deactivate current VTB on PTB
+	vs$$vtb_deactivate,		!Deactivate a virtual tablet (by adr)
+	vs$$vtb_cancel_ptb,		!Cancel all physical tablet I/O
+	vs$$vtb_satisfy_moves,		!Try to satisfy VTB move AST requests
+	vs$$vtb_satisfy_buttons,	!Try to satisfy VTB button AST requests
+	vs$$vtb_ptr_action_ast,		!VBDRIVER pointer action AST
+	vs$$vtb_ptr_moved,		!VBDRIVER pointer action routine
+	vs$$vtb_button_action_ast,	!VBDRIVER button action AST
+	vs$$vtb_button_pressed,		!VBDRIVER button action routine
+	vs$$vtb_timeout_ast,		!VTB operation timeout AST
+	vs$$vtb_timeout_handler,	!VTB operation timeout handler
+	vs$$vtb_deliver_all_asts,	!Post-process all VTB I/O requests
+	vs$$vtb_initiate_asts,		!Initiate AST delivery on tablet action
+	vs$$vtb_get_button_efns,	!Allocate tablet button event flags
+	vs$$vtb_establish_ptr_ast,	!Establish ptr movement AST routine
+	vs$$vtb_cancel_ptr_ast,		!Cancel ptr movement AST routine
+	vs$$vtb_establish_button_ast,	!Establish button action AST routine
+	vs$$vtb_cancel_button_ast,	!Cancel button action AST routine
+	vs$$vtb_get_tablet_info,	!Get physical tablet info block
+	vs$$vtb_establish_timeout,	!Establish VTB I/O request timeout
+	vs$$free_vtb: NOVALUE,		!Free memory occupied by a VTB
+	vs$$vtb_irp_found,		!To find a VTB I/O request by IRP
+	vs$$vtb_found;			!To find a vtb data block by ID
+!
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	mth$sqrt,			!RTL square root function
+	vsta$$get_ef,			!RTL event flag allocation
+	lib$free_ef,			!RTL event flag deallocation
+	vsta$$ptr_done_io,		!VTB I/O completion processing routine
+	vsta$$ptr_build_rb,		!Build VTB I/O request block
+	vsta$$ptr_fill_info_buffer,	!Fill in user buffer with tablet info
+	vs$$acp_done_io,		!ACP I/O completion routine
+	vsta$$error,			!ACP error return handler
+	vsta$$acp_check_read_access,	!Check read access of requestor
+	vsta$$acp_check_pb_read_access,	!Check read access to PB of requestor
+	vs$$vds_pb_found,		!Get pasteboard data block by ID
+	vs$$post_ast_request,		!Queue up for non-AST level processing
+	vs$$acp_get_vm,			!RTL memory allocation routine
+	vs$$acp_free_vm;		!RTL memory deallocation routine
+!
+! EXTERNAL DATA
+!
+EXTERNAL
+	vs$gw_vbchan: WORD,		!Channel to physical tablet device
+	vs$gl_pid,			!PID of current IRP initiator
+	vs$a_irp: REF irp_block;	!Current acp I/O request packet
+!
+! MACROS:
+!
+MACRO
+    $DISTANCE_MOVED(x1,y1,x2,y2) = (
+	REGISTER
+	    int_sqrt,
+	    float_x,
+	    float_y;
+	LOCAL
+	    float_n;
+	CVTIF(%REF(ABS(x1-x2)),float_x);
+	MULF(float_x,float_x,float_x);
+	CVTIF(%REF(ABS(y1-y2)),float_y);
+	MULF(float_y,float_y,float_y);
+	ADDF(float_x,float_y,float_n);
+	float_n = mth$sqrt(float_n);
+	CVTFI(float_n,int_sqrt);
+	.int_sqrt
+				)%;
+!
+! BLISS-32 BUILT-IN MACHINE INSTRUCTIONS
+!
+BUILTIN
+	CVTIF,				! Convert integer to floating point
+	CVTFI,				! Convert floating point to integer
+	MULF,				! Multiply f_floating
+	ADDF,				! Add f_floating
+	EMUL,				! Extended multiply instruction
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+!
+! OWN STORAGE:
+!
+LITERAL
+	no_of_buttons = 5,
+	most_buttons = 16,
+	down_transition = 1,
+	up_transition = 0,
+	true = 1,
+	false = 0;
+
+OWN
+	button_mask: WORD INITIAL(WORD(0)), !Tablet button state mask
+	first_time: INITIAL(true),	  !"Boolean" indicator
+	position_ef: INITIAL(0),	  !Event flag for position requests
+	move_ef: INITIAL(0),		  !Event flag for move AST requests
+	button_ef: 			  !Event flags for button AST requests
+	  BLOCKVECTOR[most_buttons,2,BYTE] 
+	  INITIAL(BYTE(REP (2 * most_buttons) OF (0))),
+	active_vtb: REF BLOCK[0,BYTE]	  !Address of "active" virtual tablet
+	  INITIAL(0),
+	move_ast_out: INITIAL(false),	  !Move AST outstanding?
+	button_ast_out: 		  !Button ASTs outstanding?
+	  BITVECTOR[2 * most_buttons]
+	  INITIAL(0),
+	vs$vtb_list: VECTOR[2] INITIAL (REP 2 OF (vs$vtb_list[0]));
+					  !Virtual tablet List
+					    
+!
+!
+
+
+%SBTTL 'vs$$create_vtb -- Create a Virtual Tablet'
+GLOBAL ROUTINE vs$$create_vtb(
+				pb_id,		!Pasteboard ID of vtb
+				pid,		!Process ID of owner
+				ptb_chan	!Physical Tablet channel no.
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for any setup operations necessary to
+! create a virtual tablet device.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID       : Longword pasteboard ID of virtual tablet
+!			(input parameter)
+!	PID         : Longword process ID of virtual tablet owner
+!			(input parameter)
+!	PTB_CHAN    : Longword physical tablet channel number
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vtb_list  : Queue head pointer to known virtual tablets
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "VSTA$_VTBNOTCRE" if insufficient resources available
+! Returns "VSTA$_VTALRALLOC" if device with specified ID already exists
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	pb_adr: REF BLOCK[0,BYTE],		!Pasteboard Block address
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet Block address
+	status;					!To contain return status value
+
+!
+! If we already have a VTB with this ID then return an error indication
+!
+	IF vs$$vtb_found(.pb_id,vtb_adr) THEN
+	  $return_error(vsta$_vtbalralloc);
+!
+! Make sure there is a pasteboard with this ID
+!
+	IF NOT vs$$vds_pb_found(.pb_id,pb_adr) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! Allocate memory for the virtual tablet data block
+!
+	IF (NOT (status = vs$$acp_get_vm (UPLIT (vs$vtb_k_block_size),
+					vtb_adr,0))) THEN
+	  $return_error(vsta$_vtbnotcre);
+!
+! Initialize the virtual tablet block
+!
+	vtb_adr[vs$vtb_w_size] = vs$vtb_k_block_size;
+	vtb_adr[vs$vtb_w_type] = 0;
+	vtb_adr[vs$vtb_l_id] = .pb_id;
+	vtb_adr[vs$vtb_l_owner] = .pid;
+	vtb_adr[vs$vtb_w_ptb_chan] = .vs$gw_vbchan;
+	vtb_adr[vs$vtb_l_state] = 0;
+	vtb_adr[vs$vtb_l_x] = 0;
+	vtb_adr[vs$vtb_l_y] = 0;
+	vtb_adr[vs$vtb_l_button_mask] = 0;
+	vtb_adr[vs$vtb_a_pm_head] = vtb_adr[vs$vtb_a_pm_head];
+	vtb_adr[vs$vtb_a_pm_tail] = vtb_adr[vs$vtb_a_pm_head];
+	vtb_adr[vs$vtb_a_tb_head] = vtb_adr[vs$vtb_a_tb_head];
+	vtb_adr[vs$vtb_a_tb_tail] = vtb_adr[vs$vtb_a_tb_head];
+!
+! Insert this virtual tablet block into the queue of known virtual tablets
+!
+	INSQUE(.vtb_adr,vs$vtb_list[0]);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$create_vtb
+
+
+%SBTTL 'vs$$delete_vtb -- Delete a Virtual Tablet'
+GLOBAL ROUTINE vs$$delete_vtb(
+				vtb_id,		!Virtual tablet ID to delete
+				requestor_pid	!PID of operation requestor
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for any clean-up operations necessary to
+! delete a virtual tablet device.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID	      : Longword virtual tablet ID to be deleted
+!			(input parameter)
+!	REQUESTOR_PID : Longword process ID requesting operation
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	VS$VTB_LIST : Queue head of known virtual tablet devices
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! VSTA$_NOSUCHVTB if the virtual tablet block is not found.
+! VSTA$_NOTVTBOWN if the virtual tablet not owned by the requestor
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	request_ptr: REF BLOCK[0,BYTE],		!Ptr to VTB request queues
+	next_request,				!Save ptr to next request
+	pb_adr: REF pb_block,			!Pasteboard data block address
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet Block address
+	status;					!To contain return status value
+
+!
+! See if the virtual tablet to be deleted is known
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  $return_error(vsta$_nosuchvtb);
+!
+! If the PID of the requestor is zero, then we are being deleted internally
+! as a result of someone deleting the pasteboard (so delete access to the
+! pasteboard has already been confirmed). Otherwise, if the requestor does not
+! have read access to the pasteboard, disallow deletion.
+!
+! Note that we only require read access rather than delete access, since
+! only read access was required to create it, so it would be weird to allow
+! someone to create something they can't then get rid of.  Also, vt100
+! pasteboards are read-only, to prevent even their owners from deleting the
+! pasteboard, so in order to allow deletion associated with such pasteboards,
+! we need to not be too strict about required access for deletion.
+!
+	IF .requestor_pid NEQ 0 THEN
+	  BEGIN
+	    IF NOT vs$$vds_pb_found(.vtb_id,pb_adr) THEN
+	      $return_error(vsta$_nosuchpb);
+!
+	    IF NOT vsta$$acp_check_pb_read_access(
+				.requestor_pid,
+				.pb_adr[vs$vds_l_pb_uic],
+				.pb_adr[vs$vds_w_pb_prot],
+				pb_adr[$base]) THEN
+	      $return_error(vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Tablet',
+			integer_type, .vtb_id);
+	  END;
+!
+! Deactivate this VTB if its active and remove it from the list of
+! known virtual tablets
+!
+	REMQUE(.vtb_adr,vtb_adr);
+	vs$$vtb_deactivate(.vtb_adr);
+!
+! Terminate any I/O operations on this virtual tablet on behalf of any
+! application programs
+!
+	vs$$vtb_deliver_all_asts(
+			.vtb_adr,
+			0,			!Means for everybody
+			SS$_NOSUCHDEV);
+!
+! Free the memory occupied by its data structure
+!
+	vs$$free_vtb(.vtb_adr);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$delete_vtb
+
+
+%SBTTL 'vs$$get_vtb_info -- Get Virtual Tablet Pointer Position and Buttons'
+GLOBAL ROUTINE vs$$get_vtb_info(
+			vtb_id			!ID of vtb
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning the current VTB pointer
+! coordinates to the caller. If the tablet in question is not currently
+! "active", the last known information will be returned. If the virtual tablet
+! is active, the (x,y) coordinates of the up-to-date tablet pointer will be
+! returned.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID          : Longword ID of virtual tablet
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$A_IRP  : Current I/O request packet being serviced by the ACP
+!	VS$GL_PID : PID of process making request
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "VSTA$_NOSUCHVTB" if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+EXTERNAL
+	vsta$_nosuchpb,				!No such pasteboard
+	vsta$_pb_unavailable,			!No read access to tablet
+	vsta$_nosuchvtb;			!No such virtual tablet
+
+LOCAL
+	ast_status,				!ASTs currently on or off
+	arg_list: VECTOR[5],			!$CMKRNL argument block
+	pb_adr: REF pb_block,			!Pasteboard data block address
+	vtb_adr: REF BLOCK[0,BYTE];		!Virtual tablet Block address
+
+!
+! First make sure that this virtual tablet exists
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  BEGIN
+	    $error (vsta$_nosuchvtb);
+	    $toperr (vsta$_gettab);
+	    return vs$$acp_done_io(vsta$_nosuchvtb,0,.vs$a_irp)
+	  END;
+!
+! If the requestor does not have read access to the pasteboard, return
+! error.
+!
+	IF NOT vs$$vds_pb_found(.vtb_id,pb_adr) THEN
+	  BEGIN
+	    $error(vsta$_nosuchpb);
+	    $toperr (vsta$_gettab);
+	    return vs$$acp_done_io(vsta$_nosuchpb,0,.vs$a_irp)
+	  END;
+!
+	IF NOT vsta$$acp_check_pb_read_access(
+				.vs$gl_pid,
+				.pb_adr[vs$vds_l_pb_uic],
+				.pb_adr[vs$vds_w_pb_prot],
+				pb_adr[$base]) THEN
+	  BEGIN
+	    $error(vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Tablet',
+			integer_type, .vtb_id);
+	    $toperr (vsta$_gettab);
+	    return vs$$acp_done_io(vsta$_pb_unavailable,0,.vs$a_irp)
+	  END;
+!
+! Return the information to the caller.
+!
+	arg_list[0] = 4;
+	arg_list[1] = .vs$a_irp;
+	arg_list[2] = .vtb_adr[vs$vtb_l_x];
+	arg_list[3] = .vtb_adr[vs$vtb_l_y];
+	arg_list[4] = .vtb_adr[vs$vtb_l_button_mask];
+!
+	$CMKRNL(
+		ROUTIN = vsta$$ptr_fill_info_buffer,
+		ARGLST = arg_list[0]);
+!
+! Do the I/O post-processing on behalf of the user
+!
+	vs$$acp_done_io(SS$_NORMAL,0,.vs$a_irp);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$get_vtb_info
+
+
+%SBTTL 'vs$$set_vtb_ptr_move_ast -- Set Virtual Tablet Move AST'
+GLOBAL ROUTINE vs$$set_vtb_ptr_move_ast(
+			vtb_id,			!ID of vtb
+			last_known_x,		!User last known X-coordinate
+			last_known_y,		!User last known Y-coordinate
+			distance,		!Minimum required distance
+			timeout			!Timeout time
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting up virtual tablet pointer
+! movement ASTs. When the tablet pointer has moved the specified distance
+! based on the user's last known X and Y coordinates and its current position
+! and the virtual tablet is "active", the AST will be delivered. A distance
+! of zero implies that the user wishes to known when the pointer has moved
+! at all.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID          : Longword ID of virtual tablet
+!				(input parameter)
+!	LAST_KNOWN_X	: Longword user last known X-coordinate
+!				(input parameter)
+!	LAST_KNOWN_Y	: Longword user last known Y-coordinate
+!				(input parameter)
+!	DISTANCE	: Longword user minimum required distance to move
+!				(input parameter)
+!	TIMEOUT		: Longword operation timeout time (seconds)
+!				(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GL_PID : PID of process making request
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "VSTA$_NOSUCHVTB" if not found
+! Returns "VSTA$_BLDRBFAIL" if failure building VTB I/O request block
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+EXTERNAL
+	vsta$_nosuchvtb,			!No such virtual tablet
+	vsta$_nosuchpb,				!No such pasteboard
+	vsta$_pb_unavailable,			!No read access to tablet
+	vsta$_bldrbfail;			!I/O request block build failed
+
+LOCAL
+	ast_status,				!ASTs currently on or off
+	request_adr: REF BLOCK[0,BYTE],		!VTB I/O request block address
+	pb_adr: REF pb_block,			!Pasteboard data block address
+	vtb_adr: REF BLOCK[0,BYTE];		!Virtual tablet Block address
+
+!
+! First make sure that this virtual tablet exists
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_nosuchvtb,0,.vs$a_irp);
+	    $return_error(vsta$_nosuchvtb);
+	  END;
+!
+! If the requestor does not have read access to the pasteboard, return
+! error.
+!
+	IF NOT vs$$vds_pb_found(.vtb_id,pb_adr) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_nosuchpb,0,.vs$a_irp);
+	    $return_error(vsta$_nosuchpb);
+	  END;
+!
+	IF NOT vsta$$acp_check_pb_read_access(
+				.vs$gl_pid,
+				.pb_adr[vs$vds_l_pb_uic],
+				.pb_adr[vs$vds_w_pb_prot],
+				pb_adr[$base]
+				) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_pb_unavailable,0,.vs$a_irp);
+	    $return_error(vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Tablet',
+			integer_type, .vtb_id);
+	  END;
+!
+! Build a request block and add it to the pointer movement request queue.
+!
+	IF NOT (vsta$$ptr_build_rb(
+				request_adr,
+				.last_known_x,
+				.last_known_y,
+				ABS(.distance),
+				0,0, .vs$a_irp)) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_bldrbfail,0,.vs$a_irp);
+	    $return_error(vsta$_bldrbfail);
+	  END;
+!
+	INSQUE(.request_adr,vtb_adr[vs$vtb_a_pm_head]);
+!
+! Set the timer if this operation has an associated timeout
+!
+	vs$$vtb_establish_timeout(.timeout);
+!
+! See if this move request can be satisfied now (i.e. it is already the
+! specified distance away from the coordinates specified).
+!
+	vs$$vtb_satisfy_moves(
+			.vtb_adr[vs$vtb_l_id],
+			.vtb_adr[vs$vtb_l_x],
+			.vtb_adr[vs$vtb_l_y]);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$set_vtb_ptr_move_ast
+
+
+%SBTTL 'vs$$set_vtb_button_ast -- Set Virtual Tablet Button AST'
+GLOBAL ROUTINE vs$$set_vtb_button_ast(
+			vtb_id,			!ID of vtb
+			user_up_mask,		!User button up mask
+			user_down_mask,		!User button down mask
+			timeout			!Timeout time
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting up tablet button ASTs.
+! When the specified button up_mask and button down_mask are true and the
+! virtual tablet is "active", the AST will be delivered.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID          : Longword ID of virtual tablet
+!				(input parameter)
+!	USER_UP_MASK	: Longword user button up mask
+!				(input parameter)
+!	USER_DOWN_MASK	: Longword user button down mask
+!				(input parameter)
+!	TIMEOUT		: Longword timeout time (seconds)
+!				(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GL_PID : PID of process making request
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "VSTA$_NOSUCHVTB" if not found
+! Returns "VSTA$_BLDRBFAIL" if failure building VTB I/O request block
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+EXTERNAL
+	vsta$_nosuchvtb,			!No such virtual tablet
+	vsta$_nosuchpb,				!No such pasteboard
+	vsta$_pb_unavailable,			!No read access to tablet
+	vsta$_bldrbfail;			!I/O request block build failed
+
+LOCAL
+	ast_status,				!ASTs currently on or off
+	request_adr: REF BLOCK[0,BYTE],		!VTB I/O request block adr.
+	pb_adr: REF pb_block,			!Pasteboard data block address
+	vtb_adr: REF BLOCK[0,BYTE];		!Virtual tablet Block address
+
+!
+! First make sure that this virtual tablet exists
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_nosuchvtb,0,.vs$a_irp);
+	    $return_error(vsta$_nosuchvtb);
+	  END;
+!
+! If the requestor does not have read access to the pasteboard, report error.
+!
+	IF NOT vs$$vds_pb_found(.vtb_id,pb_adr) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_nosuchpb,0,.vs$a_irp);
+	    $return_error(vsta$_nosuchpb);
+	  END;
+!
+	IF NOT vsta$$acp_check_pb_read_access(
+				.vs$gl_pid,
+				.pb_adr[vs$vds_l_pb_uic],
+				.pb_adr[vs$vds_w_pb_prot],
+				pb_adr[$base]) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_pb_unavailable,0,.vs$a_irp);
+	    $return_error(vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Tablet',
+			integer_type, .vtb_id);
+	  END;
+!
+! If both button masks defaulted, any button action at all will do
+!
+	IF (.user_up_mask EQL 0) AND
+	   (.user_down_mask EQL 0) THEN
+	  BEGIN
+	    user_up_mask = -1;
+	    user_down_mask = -1;
+	  END;
+!
+! Build a request block and add it to the button action request queue.
+!
+	IF NOT (vsta$$ptr_build_rb(
+				request_adr,
+				0,0,0,
+				.user_up_mask,
+				.user_down_mask, .vs$a_irp)) THEN
+	  BEGIN
+	    vs$$acp_done_io(vsta$_bldrbfail,0,.vs$a_irp);
+	    $return_error(vsta$_bldrbfail);
+	  END;
+!
+	INSQUE(.request_adr,vtb_adr[vs$vtb_a_tb_head]);
+!
+! Set the timer if this operation has an associated timeout
+!
+	vs$$vtb_establish_timeout(.timeout);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$set_vtb_button_ast
+
+
+%SBTTL 'vs$$vtb_cancel_asts -- Cancel the AST Delivery on a VTB'
+GLOBAL ROUTINE vs$$vtb_cancel_asts(
+			pid			!Process ID, or 0 for all
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for canceling the current ASTs on any
+! vtbs with the specified owner process ID by doing any I/O postprocessing with
+! a return status of SS$_CANCEL.
+!
+! FORMAL PARAMETERS:
+!
+!	PID          : Longword process ID to cancel, or 0 to cancel all processes
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vtb_list : Queue header for known virtual tablets
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_adr: REF BLOCK[0,BYTE];		!Virtual tablet Block address
+
+!
+! For each virtual tablet in the list, if the process ID corresponds
+! to the one passed as a parameter cancel all the ASTs on that VTB
+!
+	vtb_adr = .vs$vtb_list[0];
+	WHILE .vtb_adr NEQ vs$vtb_list[0] DO
+	  BEGIN
+	    vs$$vtb_deliver_all_asts(
+				.vtb_adr,
+				.pid,		!For this process, or 0 for all
+				SS$_CANCEL);
+	    vtb_adr = .vtb_adr[vs$vtb_a_flink];
+	  END;
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$vtb_cancel_asts
+
+
+%SBTTL 'vs$$activate_vtb -- Attach a Virtual tablet to the Physical tablet'
+GLOBAL ROUTINE vs$$activate_vtb(
+				vtb_id		!Virtual tablet ID
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for associating a virtual tablet to
+! the physical tablet device. This involves making this vtb the "current"
+! vtb and if VBDRIVER is busy, issuing a read request to this vtb, else
+! issuing the request to VBDRIVER.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID : Longword virtual tablet ID (same as pasteboard ID)
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!
+! IMPLICIT OUTPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!
+! ROUTINE VALUE
+! Returns "SS$_NORMAL" if successful,
+! or VSTA$_NOSUCHVTB if device not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet Block address
+	ast_status,				!ASTs currently on or off
+	status;					!To contain return status value
+
+!
+! Make sure that this is a known virtual tablet and if so, make it the
+! "active" virtual tablet
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  $return_error(vsta$_nosuchvtb);
+!
+! If we are currently not getting ASTs from the physical tablet, then
+! initiate their delivery (this also serves the purpose of allocating
+! event flags to be used by all future $QIOs so must come before call
+! to satisfy position requests)
+!
+	IF .active_vtb EQL 0 THEN
+	  BEGIN
+	    IF NOT vs$$vtb_initiate_asts() THEN
+	      $return_error(vsta$_vtbactfail);
+	  END
+	ELSE
+!
+! If this vtb is already the active one, we're done. Otherwise, "deactivate"
+! the currently active one
+!
+	  IF .vtb_adr EQL .active_vtb THEN
+	    RETURN SS$_NORMAL
+	  ELSE
+	    active_vtb[vs$vtb_v_active] = false;
+!
+! Now update the current state, and then make this one active.
+!
+	vs$$vtb_get_tablet_info(
+				vtb_adr[vs$vtb_l_x],
+				vtb_adr[vs$vtb_l_y],
+				vtb_adr[vs$vtb_l_button_mask]);
+!
+	vtb_adr[vs$vtb_v_active] = true;
+	active_vtb = .vtb_adr;
+!
+! Now that we have a new active virtual tablet, see if we can satisfy any
+! requests which have been queued for this one.
+!
+	vs$$vtb_satisfy_moves(
+			.vtb_adr[vs$vtb_l_id],
+			.vtb_adr[vs$vtb_l_x],
+			.vtb_adr[vs$vtb_l_y]);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$activate_vtb
+
+
+%SBTTL 'vs$$deactivate_vtb -- Detach a Virtual tablet from Physical tablet'
+GLOBAL ROUTINE vs$$deactivate_vtb(
+				vtb_id		!Virtual tablet ID
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for disassociating a virtual tablet from
+! the physical tablet device. This involves making the null vtb the "current"
+! vtb.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID : Longword virtual tablet ID (same as pasteboard ID)
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! Returns "SS$_NORMAL" if successful,
+! or VSTA$_NOSUCHVTB if device not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	All future action at the physical tablet will be lost
+! until another virtual tablet is activated.
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet Block address
+	status;					!To contain return status value
+
+!
+! Make sure that this is a known virtual tablet and if so, deactivate it
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  $return_error(vsta$_nosuchvtb);
+!
+! Stop tablet action ASTs from being delivered to the ACP until we get one
+! activated again.
+!
+	vs$$vtb_deactivate(.vtb_adr);
+!
+	RETURN SS$_NORMAL;
+END;				! of routine vs$$deactivate_vtb
+
+
+%SBTTL 'vs$$vtb_deliver_all_asts -- Deliver all ASTs for a VTB'
+ROUTINE vs$$vtb_deliver_all_asts(
+			vtb_adr: REF BLOCK[0,BYTE],	!Virtual Tablet adr
+			pid,				!For this PID or 0 for all
+			status				!Status to deliver with
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for delivering all outstanding ASTs on the
+! specified VTB with the specified status as the reason for termination.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ADR : Address of virtual tablet data block
+!				(input parameter)
+!	PID	: Longword PID whose ASTs are to be delivered or 0 for all ASTs
+!				(input parameter)
+!	STATUS  : Longword I/O completion status
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	ast_status,				!ASTs currently on or off
+	next_request,				!Save ptr to next VTB request
+	request_ptr: REF BLOCK[0,BYTE];		!VTB request block ptr
+
+!
+! Terminate those waiting for tablet pointer movement info
+!
+	request_ptr = .vtb_adr[vs$vtb_a_pm_head];
+	WHILE .request_ptr NEQ vtb_adr[vs$vtb_a_pm_head] DO
+	  BEGIN
+	    next_request = .request_ptr[vs$rb_a_flink];
+	    IF (.pid EQL 0) OR (.pid EQL .request_ptr[vs$rb_l_pid]) THEN
+	      vsta$$ptr_done_io(
+			vtb_adr[vs$vtb_l_x],
+			.request_ptr,
+			.status);
+	    request_ptr = .next_request;
+	  END;
+!
+! Terminate those waiting for tablet button info
+!
+	request_ptr = .vtb_adr[vs$vtb_a_tb_head];
+	WHILE .request_ptr NEQ vtb_adr[vs$vtb_a_tb_head] DO
+	  BEGIN
+	    next_request = .request_ptr[vs$rb_a_flink];
+	    IF (.pid EQL 0) OR (.pid EQL .request_ptr[vs$rb_l_pid]) THEN
+	      vsta$$ptr_done_io(
+			vtb_adr[vs$vtb_l_x],
+			.request_ptr,
+			.status);
+	    request_ptr = .next_request;
+	  END;
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$vtb_deliver_all_asts
+
+
+%SBTTL 'vs$$vtb_initiate_asts -- Initiate Tablet AST Delivery'
+ROUTINE vs$$vtb_initiate_asts =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for initiating AST delivery to the ACP
+! from the physical tablet on action by the pointer and/or buttons. This
+! routine would presumably only be called once: on the first activation of
+! a virtual tablet device. This routine also serves the dual purpose of
+! allocating event flags to be used by all future $QIOs when dealing with
+! the tablet driver.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "LIB$_xxx" if unsuccessful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	index: BYTE INITIAL(BYTE(0)),		!Loop index for button count
+	iosb: VECTOR[4,WORD],			!I/O status block
+	status;					!Return status value
+!
+! See if the tablet device is really out there and return an error if not
+!
+!
+! Try to allocate 2+ event flags, one for each type of interface to the
+! tablet driver via $QIO: getting the information block, setting a pointer
+! move ast, and setting button transition asts. If any one allocation fails,
+! then the ACP would run the risk of race conditions if tablet operations
+! were allowed to proceed.
+!
+	IF .first_time THEN
+	  BEGIN
+	    IF NOT vsta$$get_ef( position_ef ) THEN
+	      $return_error(vsta$_geteffail);
+!
+	    IF NOT vsta$$get_ef( move_ef ) THEN
+	      BEGIN
+		lib$free_ef( position_ef );
+		$return_error(vsta$_geteffail);
+	      END;
+!
+	    IF NOT vs$$vtb_get_button_efns() THEN
+	      BEGIN
+		lib$free_ef( position_ef );
+		lib$free_ef( move_ef );
+		$return_error(vsta$_geteffail);
+	      END;
+!
+	    first_time = false;
+	  END;
+!
+! Enable tablet event reporting
+!
+	IF NOT (status = $QIOW(
+			EFN  = .position_ef,
+			CHAN = .vs$gw_vbchan,
+			FUNC = IO$_SETEVENT,
+			IOSB = iosb,
+			P1   = -1)) THEN
+	  RETURN vsta$$error(.status);
+!
+	IF NOT .iosb[0] THEN
+	  RETURN vsta$$error(.iosb[0]);
+!
+! Establish pointer movement and button action AST delivery
+!
+	status = vs$$vtb_establish_ptr_ast();
+	WHILE (.status) AND (.index LSS no_of_buttons) DO
+	  BEGIN
+	    IF (status = vs$$vtb_establish_button_ast(
+					.index,
+					down_transition)) THEN
+	      status = vs$$vtb_establish_button_ast(
+					.index,
+					up_transition);
+	    index = .index + 1;
+	  END;
+!
+	RETURN .status;		!return success
+END;				! of routine vs$$vtb_initiate_asts
+
+
+%SBTTL 'vs$$vtb_get_button_efns -- Allocate Event Flags for Button Transitions'
+ROUTINE vs$$vtb_get_button_efns =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for allocating event flags to be used for
+! all tablet button transitions. This will lessen the possibility that we will
+! miss a transition as we will have $QIOs outstanding for each possible
+! transition.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+! Returns "LIB$_xxx" if unsuccessful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	status,					!Return status value
+	button_count: BYTE INITIAL(BYTE(0)),	!Count the buttons
+	willing_and_able: INITIAL(true);	!"Boolean" success indicator
+!
+! Try to allocate event flags for each possible button transition.
+!
+	WHILE (.button_count LSS no_of_buttons) AND (.willing_and_able) DO
+	  BEGIN
+	    IF NOT (status = vsta$$get_ef(
+				button_ef[.button_count,vs$vtb_b_down_efn]
+					 )) THEN
+	      willing_and_able = false
+	    ELSE
+	      IF NOT (status = vsta$$get_ef(
+				button_ef[.button_count,vs$vtb_b_up_efn]
+					)) THEN
+		BEGIN
+		  willing_and_able = false;
+		  lib$free_ef( button_ef[.button_count,vs$vtb_b_down_efn]);
+		END;
+	    button_count = .button_count + 1;
+	  END;
+!
+! If we failed to allocate all of them, deallocate the successful ones so
+! that somebody else can use them.
+!
+	IF NOT .willing_and_able THEN
+	  IF .button_count GTR 1 THEN
+	    INCR index FROM 0 TO (.button_count - 2) DO
+	      BEGIN
+		lib$free_ef( button_ef[.index,vs$vtb_b_down_efn] );
+		lib$free_ef( button_ef[.index,vs$vtb_b_up_efn] );
+	      END;
+!
+	RETURN .status;		! return status
+END;				! of routine vs$$vtb_get_button_efns
+
+
+%SBTTL 'vs$$vtb_establish_ptr_ast -- Establish Ptr Movement AST Delivery'
+ROUTINE vs$$vtb_establish_ptr_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for initiating AST delivery to the ACP
+! from the physical tablet on the movement by the tablet pointing device.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!	MOVE_EF      : Address of longword event flag for move AST requests
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	iosb: VECTOR[4,WORD],			!I/O status block
+	status;					!Return status value
+!
+! If we've already got a move AST outstanding, then don't pay any attention
+! to this
+!
+	IF .move_ast_out THEN
+	  RETURN SS$_NORMAL;
+!
+! Indicate that the movement AST is currently outstanding
+!
+	move_ast_out = true;
+!
+! Establish pointer movement AST delivery
+!
+	IF NOT (status = $QIOW(
+		EFN  = .move_ef,
+		CHAN = .vs$gw_vbchan,
+		FUNC = IO$_VB_MOVE+IO$M_VB_TABLET+IO$M_VB_RET_POS,
+		IOSB = iosb,
+		P3   = vs$$vtb_ptr_action_ast,
+		P4   = 0)) THEN
+	  BEGIN
+	    move_ast_out = false;
+	    RETURN .status;
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  BEGIN
+	    move_ast_out = false;
+	    RETURN .iosb[0];
+	  END;
+!
+	RETURN SS$_NORMAL;
+END;				! of routine vs$$vtb_establish_ptr_ast
+
+
+%SBTTL 'vs$$vtb_cancel_ptr_ast -- Cancel Ptr Movement AST Delivery'
+ROUTINE vs$$vtb_cancel_ptr_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cancelling AST delivery to the ACP
+! from the physical tablet on the movement by the tablet pointing device.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!	MOVE_EF      : Address of longword event flag for move AST requests
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	iosb: VECTOR[4,WORD],			!I/O status block
+	status;					!Return status value
+!
+! Cancel pointer movement AST delivery
+!
+	IF NOT (status = $QIOW(
+		EFN  = .move_ef,
+		CHAN = .vs$gw_vbchan,
+		FUNC = IO$_VB_MOVE+IO$M_VB_TABLET+IO$M_VB_CANCEL,
+		IOSB = iosb)) THEN
+	  RETURN .status;
+!
+	move_ast_out = false;
+!
+	RETURN .iosb[0];
+END;				! of routine vs$$vtb_cancel_ptr_ast
+
+
+%SBTTL 'vs$$vtb_establish_button_ast -- Establish Button Action AST Delivery'
+ROUTINE vs$$vtb_establish_button_ast(
+			button_number: WORD,		!Which button
+			transition: WORD		!Up/down transition
+			): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for initiating AST delivery to the ACP
+! from the physical tablet on the specified button transition by the physical
+! tablet buttons.
+!
+! FORMAL PARAMETERS:
+!
+!	BUTTON_NUMBER : Word tablet button number (minus 1)
+!				(Input parameter)
+!	TRANSITION    : Word tablet button transition of interest
+!				(Input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!	button_ef    : Address of event flag blockvector for button ASTs
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	efn: BYTE,			!Event flag to use
+	iosb: VECTOR[4,WORD],		!I/O status block
+	down_mask: INITIAL(0),		!Button down transition mask
+	up_mask: INITIAL(0),		!Button up transition mask
+	status;				!Return status value
+!
+! If we've already got this particular button AST outstanding, then don't pay
+! any attention to this one
+!
+	IF .button_ast_out[.transition + (.button_number ^ 1)] THEN
+	  RETURN SS$_NORMAL;
+!
+! Initialize the up/down transition masks for the specified button transition
+!
+	IF .transition EQL up_transition THEN
+	  BEGIN
+	    up_mask = 1 ^ .button_number;
+	    efn = .button_ef[.button_number,vs$vtb_b_up_efn];
+	  END
+	ELSE
+	  BEGIN
+	    down_mask = 1 ^ .button_number;
+	    efn = .button_ef[.button_number,vs$vtb_b_down_efn];
+	  END;
+!
+! Indicate that this button transition AST is now outstanding
+!
+	button_ast_out[.transition + (.button_number ^ 1)] = true;
+!
+! Establish button action AST delivery (on every button event)
+!
+	IF NOT (status = $QIOW(
+			EFN  = .efn,
+			CHAN = .vs$gw_vbchan,
+			FUNC = IO$_VB_BUTTON + IO$M_VB_TABLET,
+			IOSB = iosb,
+			P1   = .down_mask,
+			P2   = .up_mask,
+			P3   = vs$$vtb_button_action_ast,
+			P4   = (.transition ^ 16) + .button_number
+		)) THEN
+	  BEGIN
+	    button_ast_out[.transition + (.button_number ^ 1)] = false;
+	    RETURN .status;
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  BEGIN
+	    button_ast_out[.transition + (.button_number ^ 1)] = false;
+	    RETURN .iosb[0];
+	  END;
+!
+	RETURN SS$_NORMAL;
+END;				! of routine vs$$vtb_establish_button_ast
+
+
+%SBTTL 'vs$$vtb_cancel_button_ast -- Cancel Button Action AST Delivery'
+ROUTINE vs$$vtb_cancel_button_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cancelling AST delivery to the ACP
+! from the physical tablet on all button transitions by the physical
+! tablet buttons.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!	button_ef    : Address of event flag blockvector for button ASTs
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	iosb: VECTOR[4,WORD],		!I/O status block
+	status;				!Return status value
+!
+! Cancel button action AST delivery (on every button event)
+!
+	IF NOT (status = $QIOW(
+			EFN  = .button_ef[0,vs$vtb_b_down_efn],
+			CHAN = .vs$gw_vbchan,
+			FUNC = IO$_VB_BUTTON + IO$M_VB_TABLET + IO$M_VB_CANCEL,
+			IOSB = iosb,
+			P1   = -1,
+			P2   = -1
+		)) THEN
+	  RETURN .status;
+!
+	INCR bit_no FROM 0 TO ((most_buttons * 2) - 1) DO
+	  button_ast_out[.bit_no] = false;
+!
+	RETURN .iosb[0];
+END;				! of routine vs$$vtb_cancel_button_ast
+
+
+%SBTTL 'vs$$vtb_get_tablet_info -- Get the Physical Tablet Info Block'
+ROUTINE vs$$vtb_get_tablet_info(
+			ptr_x_coor,		!Current ptr X-coordinate
+			ptr_y_coor,		!Current ptr Y-coordinate
+			button_mask		!Current button mask
+				) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the current state of the
+! tablet (pointer position and button mask) from the tablet driver and
+! returning that information to the caller.
+!
+! FORMAL PARAMETERS:
+!
+!	PTR_X_COOR  : Address for current tablet pointer X-coordinate
+!			(output parameter)
+!	PTR_Y_COOR  : Address for current tablet pointer Y-coordinate
+!			(output parameter)
+!	BUTTON_MASK : Address for current tablet button mask
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$GW_VBCHAN : Address of word channel to VAXstation device
+!	position_ef  : Address of longword event flag for position requests
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	status,						!Return status value
+	info_buffer: VECTOR[3],				!X,Y,buttons
+	iosb: VECTOR[4,WORD];				!I/O status block
+!
+! Get the tablet information block from the driver
+!
+	IF (NOT (status = $QIOW(
+			EFN  = .position_ef,
+			CHAN = .vs$gw_vbchan,
+			FUNC = IO$_VB_GETPOS + IO$M_VB_TABLET,
+			IOSB = iosb[0],
+			P1   = info_buffer,
+			P2   = 12
+				))) THEN
+	  RETURN .status;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Fill in only those parameters that the caller is asking for
+!
+	IF .ptr_x_coor NEQ 0 THEN
+	  .ptr_x_coor = .info_buffer[0];
+	IF .ptr_y_coor NEQ 0 THEN
+	  .ptr_y_coor = .info_buffer[1];
+	IF .button_mask NEQ 0 THEN
+	  .button_mask = .info_buffer[2];
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$vtb_get_tablet_info
+
+
+%SBTTL 'vs$$vtb_satisfy_moves -- Try to Satisfy Move AST Requests'
+ROUTINE vs$$vtb_satisfy_moves(
+			vtb_id,			!Virtual tablet ID
+			ptb_x,			!Current ptr X-coordinate
+			ptb_y			!Current ptr Y-coordinate
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for trying to satisfy any virtual
+! tablet pointer movement AST requests for the specified virtual tablet
+! based on the latest action which caused the movement AST to be activated.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID  : Longword virtual tablet ID
+!			(input parameter)
+!	PTB_X   : Longword current tablet pointer X-coordinate
+!			(input parameter)
+!	PTB_Y   : Longword current tablet pointer Y-coordinate
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL : Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	next_request,				!Save ptr to next I/O request
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet adr.
+	request_adr: REF BLOCK[0,BYTE],		!VTB I/O request block address
+	status;					!To contain return status value
+
+!
+! Make sure that this is a known virtual tablet and if not, just return
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+! For each VTB request block, if we have satisfied any pointer movement
+! requests, do post-processing on them.
+!
+	vtb_adr[vs$vtb_l_x] = .ptb_x;
+	vtb_adr[vs$vtb_l_y] = .ptb_y;
+!
+	request_adr = .vtb_adr[vs$vtb_a_pm_head];
+	WHILE .request_adr NEQ vtb_adr[vs$vtb_a_pm_head] DO
+	  BEGIN
+	    next_request = .request_adr[vs$rb_a_flink];
+	    IF $distance_moved(
+			.ptb_x,
+			.ptb_y,
+			.request_adr[vs$rb_l_user_last_x],
+			.request_adr[vs$rb_l_user_last_y])
+	      GEQ .request_adr[vs$rb_l_distance] THEN
+		BEGIN
+		  vsta$$ptr_done_io(
+				vtb_adr[vs$vtb_l_x],
+				.request_adr,
+				SS$_NORMAL);
+		END;
+	    request_adr = .next_request;
+	  END;
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_satisfy_moves
+
+
+%SBTTL 'vs$$vtb_satisfy_buttons -- Try to Satisfy Button AST Requests'
+ROUTINE vs$$vtb_satisfy_buttons(
+			vtb_id,				!Virtual tablet ID
+			ptb_buttons			!Current button mask
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for trying to satisfy any virtual
+! tablet button pressing AST requests for the specified virtual tablet
+! based on the latest action which caused the button AST to be activated.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID      : Longword virtual tablet ID
+!			(input parameter)
+!	PTB_BUTTONS : Longword mask of current tablet button states
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL : Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	changed_buttons,			!Buttons which changed state
+	new_down_buttons,			!Buttons just pressed down
+	new_up_buttons,				!Buttons just lifted up
+	next_request,				!Save ptr to next I/O request
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet adr.
+	request_adr: REF BLOCK[0,BYTE],		!VTB I/O request block address
+	status;					!To contain return status value
+
+!
+! Make sure that this is a known virtual tablet and if not, just return
+!
+	IF NOT vs$$vtb_found(.vtb_id,vtb_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+! Determine from the previous buttons state and the new button state which
+! buttons have changed and in what direction. Then save the new button state.
+!
+	changed_buttons  = .ptb_buttons XOR .vtb_adr[vs$vtb_l_button_mask];
+	new_down_buttons = .changed_buttons AND .ptb_buttons;
+	new_up_buttons   = .changed_buttons AND (NOT .ptb_buttons);
+	vtb_adr[vs$vtb_l_button_mask] = .ptb_buttons;
+!
+! For each VTB request block, if we have satisfied any button action
+! requests, do post-processing on them.
+!
+	request_adr = .vtb_adr[vs$vtb_a_tb_head];
+	WHILE .request_adr NEQ vtb_adr[vs$vtb_a_tb_head] DO
+	  BEGIN
+	    next_request = .request_adr[vs$rb_a_flink];
+!
+! Find the button transitions since the last AST and satisfy those requests
+! looking for that transition (or some subset of it).
+!
+	    IF (.request_adr[vs$rb_l_user_up_mask] AND .new_up_buttons) NEQ 0
+	    OR (.request_adr[vs$rb_l_user_down_mask] AND .new_down_buttons) NEQ 0
+	      THEN
+		BEGIN
+		  vsta$$ptr_done_io(
+				vtb_adr[vs$vtb_l_x],
+				.request_adr,
+				SS$_NORMAL);
+		END;
+	    request_adr = .next_request;
+	  END;
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_satisfy_buttons
+
+
+%SBTTL 'vs$$vtb_ptr_action_ast -- Tablet Ptr Action AST from VBDRIVER'
+ROUTINE vs$$vtb_ptr_action_ast(
+			position			!Current X,Y
+		): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for action due to movement by the
+! tablet pointer. This involves delivering any ASTs for I/O operations
+! satisfied by the specified motion on activated virtual tablets. This
+! routine only causes the routine which performs the actual processing to
+! get executed at non-AST level.
+!
+! FORMAL PARAMETERS:
+!
+!	POSITION : Longword specifying new X,Y coordinates =>
+!			(Input parameter)
+!
+!			-------------------------------
+!			| Y-coordinate | X-coordinate |
+!			-------------------------------
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL : Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! Indicate that this AST has been received and that none are outstanding
+!
+	move_ast_out = false;
+!
+! Queue up request to perform "real" ptr movement processing at non-AST level
+!
+	vs$$post_ast_request(
+			vs$$vtb_ptr_moved,
+			.position);
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_ptr_action_ast
+
+
+%SBTTL 'vs$$vtb_ptr_moved -- Tablet Ptr Movement Processor'
+ROUTINE vs$$vtb_ptr_moved(
+			position: VECTOR[2,WORD]	!Current X,Y
+		): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for action due to movement by the
+! tablet pointer. This involves delivering any ASTs for I/O operations
+! satisfied by the specified motion on activated virtual tablets.
+!
+! FORMAL PARAMETERS:
+!
+!	POSITION : Longword specifying new X,Y coordinates =>
+!			(Input parameter)
+!
+!			-------------------------------
+!			| Y-coordinate | X-coordinate |
+!			-------------------------------
+!
+! IMPLICIT INPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL : Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! If no virtual tablet is "active" then there's no point to letting our ASTs
+! dangle around like nobody owns them
+!
+	IF .active_vtb EQL 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! See what virtual tablet I/O requests can be satisfied for the active VTB
+! based on the current action.
+!
+	vs$$vtb_satisfy_moves(
+			.active_vtb[vs$vtb_l_id],
+			.position[0],
+			.position[1]);
+!
+! Make sure we get an AST on the next tablet pointer movement
+!
+	vs$$vtb_establish_ptr_ast();
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_ptr_moved
+
+
+%SBTTL 'vs$$vtb_button_action_ast -- Tablet Button Action AST from VBDRIVER'
+ROUTINE vs$$vtb_button_action_ast(
+			button_info		!Button no.& transition
+		): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for action due to a change in button
+! state by the tablet. This involves delivering any ASTs for I/O operations
+! satisfied by the specified button action. This routine only sets up for
+! the button action routine to execute at non-AST level.
+!
+! FORMAL PARAMETERS:
+!
+!	BUTTON_INFO : Longword button information =>
+!			(Input parameter)
+!
+!				31	   16 15	     0
+!				------------------------------
+!				| Transition | Button Number |
+!				------------------------------
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! Indicate that this AST has been received and that none are outstanding
+!
+	BEGIN
+	  MAP button_info : VECTOR[2,WORD];
+	  button_ast_out[.button_info[1] + (.button_info[0] ^ 1)] = false;
+	END;
+!
+! See what virtual tablet I/O requests can be satisfied for the active VTB(s)
+! based on the current action.
+!
+	vs$$post_ast_request(
+			vs$$vtb_button_pressed,
+			.button_info);
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_button_action_ast
+
+
+%SBTTL 'vs$$vtb_button_pressed -- Tablet Button Pressed Action'
+ROUTINE vs$$vtb_button_pressed(
+			button_info: VECTOR[2,WORD]	!Button no.& transition
+		): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for action due to a change in button
+! state by the tablet. This involves delivering any ASTs for I/O operations
+! satisfied by the specified button action.
+!
+! FORMAL PARAMETERS:
+!
+!	BUTTON_INFO : Longword button information =>
+!			(Input parameter)
+!
+!				31	   16 15	     0
+!				------------------------------
+!				| Transition | Button Number |
+!				------------------------------
+!
+! IMPLICIT INPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!	button_mask	 : Tablet button state mask
+!
+! IMPLICIT OUTPUTS:
+!
+!	button_mask : Tablet button state mask
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! Adjust our physical tablet button state mask with this transition
+!
+	IF .button_info[1] EQL up_transition THEN
+	  button_mask = .button_mask AND (NOT (1 ^ .button_info[0]))
+	ELSE
+	  button_mask = .button_mask OR (1 ^ .button_info[0]);
+!
+! If no virtual tablet is "active" then don't bother dangling this AST
+!
+	IF .active_vtb EQL 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! See what virtual tablet I/O requests can be satisfied for the active VTB(s)
+! based on the current action.
+!
+	vs$$vtb_satisfy_buttons(
+			.active_vtb[vs$vtb_l_id],
+			.button_mask);
+!
+! Make sure we get an AST on the next tablet button action
+!
+	vs$$vtb_establish_button_ast(.button_info[0],.button_info[1]);
+!
+	RETURN SS$_NORMAL;	!return status
+END;				! of routine vs$$vtb_button_pressed
+
+
+%SBTTL 'vs$$vtb_timeout_ast -- Tablet Operation Timeout AST'
+ROUTINE vs$$vtb_timeout_ast(
+			irp_adr			!IRP which timed out
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is invoked as a result of a virtual tablet operation
+! timeout. To avoid possible race conditions, this routine will queue up
+! the routine which does the actual I/O post-processing at non-AST level.
+!
+! FORMAL PARAMETERS:
+!
+!	IRP_ADR : Address of I/O request packet which has timed out
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL	: Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! Queue up the routine which does the real work at non-AST level
+!
+	vs$$post_ast_request(
+			vs$$vtb_timeout_handler,
+			.irp_adr);
+!
+	RETURN SS$_NORMAL;	! return status
+END;				! of routine vs$$vtb_timeout_ast
+
+
+%SBTTL 'vs$$vtb_timeout_handler -- Tablet Operation Timeout Handler'
+ROUTINE vs$$vtb_timeout_handler(
+			irp_adr			!IRP which timed out
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for virtual tablet operation timeouts.
+! This involves doing the I/O post-processing on the specified I/O request
+! packet with a return status of SS$_TIMEOUT if it still exists.
+!
+! FORMAL PARAMETERS:
+!
+!	IRP_ADR : Address of I/O request packet which has timed out
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!  SS$_NORMAL	: Normal successful completion
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_adr: REF BLOCK[0,BYTE],		!Virtual tablet Block address
+	request_adr: REF BLOCK[0,BYTE];		!VTB I/O request block address
+!
+! See if we still have a VTB I/O request around with this IRP
+!
+	IF NOT vs$$vtb_irp_found(
+				vtb_adr,
+				request_adr,
+				.irp_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+! Yup. Still around...Do the post-processing with a SS$_TIMEOUT
+!
+	vsta$$ptr_done_io(
+			vtb_adr[vs$vtb_l_x],
+			.request_adr,
+			SS$_TIMEOUT);
+!
+	RETURN SS$_NORMAL;	! return status
+END;				! of routine vs$$vtb_timeout_handler
+
+
+%SBTTL 'vs$$deactivate_current_vtb -- Deactivate Virtual tablet'
+ROUTINE vs$$deactivate_current_vtb(
+			ptb_chan		!Channel to physical tablet
+					): NOVALUE =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the virtual tablet
+! which is active or current on the physical tablet specified by channel
+! (if any) and deactivating it.
+!
+! FORMAL PARAMETERS:
+!
+!	PTB_CHAN : Word Physical tablet channel number
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vtb_list : Queue head pointer to known virtual tablets
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_ptr: REF BLOCK[0,BYTE];		!Ptr to arbitrary vtb
+
+!
+! Search through the list of known virtual tablets for the physical tablet
+! channel number passed as a parameter and clear the "current" bit in its
+! state if current.
+!
+	vtb_ptr = .vs$vtb_list[0];
+	WHILE (.vtb_ptr NEQ vs$vtb_list[0]) DO
+	  BEGIN
+	    IF .vtb_ptr[vs$vtb_w_ptb_chan] EQL .ptb_chan THEN
+	      IF .vtb_ptr[vs$vtb_v_active] THEN
+		BEGIN
+		  vtb_ptr[vs$vtb_v_active] = false;
+		  RETURN;
+		END;
+	    vtb_ptr = .vtb_ptr[vs$vtb_a_flink];
+	  END;
+!
+	RETURN;			!return
+END;				! of routine vs$$deactivate_current_vtb
+
+
+%SBTTL 'vs$$vtb_deactivate -- Detach a Virtual tablet from Physical tablet'
+ROUTINE vs$$vtb_deactivate(
+			vtb_adr: REF BLOCK[0,BYTE]	!Virtual tablet adr.
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for disassociating a virtual tablet from
+! the physical tablet device. This implies that further action on the physical
+! tablet will be ignored (and to make sure that its ignored, AST delivery to
+! the ACP will be discontinued until another virtual tablet is activated).
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ADR : Address of virtual tablet data block
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!
+! IMPLICIT OUTPUTS:
+!
+!	ACTIVE_VTB	 : Address of current "active" virtual tablet block
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	All future action at the physical tablet will be lost
+! until another virtual tablet is activated.
+!
+!--
+BEGIN
+
+LOCAL
+	iosb: VECTOR[4,WORD],		!I/O status block
+	status;				!Return status value
+!
+! Deactivate it and disable ASTs from the driver
+!
+	IF NOT .vtb_adr[vs$vtb_v_active] THEN
+	  RETURN SS$_NORMAL;
+!
+	active_vtb = 0;
+	vtb_adr[vs$vtb_v_active] = false;
+!***	vs$$vtb_cancel_ptb();
+!
+! Disable tablet event reporting
+!
+	IF NOT (status = $QIOW(
+				EFN  = .position_ef,
+				CHAN = .vs$gw_vbchan,
+				FUNC = IO$_SETEVENT,
+				IOSB = iosb,
+				P1   = 1)) THEN
+	  RETURN .status;
+!
+	RETURN .iosb[0];
+END;				! of routine vs$$vtb_deactivate
+
+
+%SBTTL 'vs$$vtb_cancel_ptb -- Cancel ASTs from Physical tablet'
+ROUTINE vs$$vtb_cancel_ptb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for discontinuing AST delivery to the ACP
+! for any and all tablet action. All outstanding I/O regarding tablet ASTs
+! will be canceled until explicitly reenabled.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	All future action at the physical tablet will be lost
+! until another virtual tablet is activated.
+!
+!--
+BEGIN
+
+!
+! Cancel all tablet related I/O requests (movement and buttons)
+!
+	vs$$vtb_cancel_ptr_ast();
+	vs$$vtb_cancel_button_ast();
+!
+	RETURN SS$_NORMAL;
+END;				! of routine vs$$vtb_cancel_ptb
+
+
+%SBTTL 'vs$$vtb_cancel_ast_state -- Clear Physical Tablet AST State'
+GLOBAL ROUTINE vs$$vtb_cancel_ast_state =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for clearing out the outstanding AST
+! state for any and all outstanding ASTs. This routine must be called
+! whenever those ASTs are flushed outside the context of this module (as
+! in an end-session). Until this routine is called, its possible that I
+! think certain ASTs are still outstanding and will NOT be reenabled.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	The next time a virtual tablet is activated, all the ASTs will be
+! explicitly reenabled.
+!
+!--
+BEGIN
+
+!
+! Clear all movement and button outstanding AST indicators
+!
+	move_ast_out = false;
+!
+	INCR bit_no FROM 0 TO ((most_buttons * 2) - 1) DO
+	  button_ast_out[.bit_no] = false;
+!
+	RETURN SS$_NORMAL;
+END;				! of routine vs$$vtb_cancel_ast_state
+
+
+%SBTTL 'vs$$vtb_irp_found -- Find a VTB I/O Request by IRP'
+ROUTINE vs$$vtb_irp_found(
+			vtb_adr,			!Virtual tablet Address
+			request_adr,			!VTB I/O request Addr.
+			irp_adr				!I/O request Address
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the virtual tablet data
+! block and its I/O request which corresponds to the I/O request packet
+! address specified. If found, both addresses will be returned to the caller.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ADR	    : Address to contain address of vtb data block
+!			(output parameter)
+!	REQUEST_ADR : Address to contain address of VTB request data block
+!			(output parameter)
+!	IRP_ADR	    : Address of I/O request packet address to search for
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vtb_list : Queue head pointer to known virtual tablets
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	request_ptr: REF BLOCK[0,BYTE],		!Ptr to arbitrary VTB RB
+	vtb_ptr: REF BLOCK[0,BYTE];		!Ptr to arbitrary vtb
+
+!
+! Search through the list of known virtual tablets (forward through the
+! list of VTBs since we are more than likely dealing with a newer one but
+! backwards through the request lists since we are more likely timing out
+! an older request).
+!
+	vtb_ptr = .vs$vtb_list[0];
+	WHILE .vtb_ptr NEQ vs$vtb_list[0] DO
+	  BEGIN
+!
+! Search through all pointer movement request blocks
+!
+	    request_ptr = .vtb_ptr[vs$vtb_a_pm_tail];
+	    WHILE .request_ptr NEQ vtb_ptr[vs$vtb_a_pm_head] DO
+	      BEGIN
+		IF .request_ptr[vs$rb_a_irp] EQL .irp_adr THEN
+		  BEGIN
+		    .vtb_adr = .vtb_ptr;
+		    .request_adr = .request_ptr;
+		    RETURN true;
+		  END;
+		request_ptr = .request_ptr[vs$rb_a_blink];
+	      END;
+!
+! Search through all button action request blocks
+!
+	    request_ptr = .vtb_ptr[vs$vtb_a_tb_tail];
+	    WHILE .request_ptr NEQ vtb_ptr[vs$vtb_a_tb_head] DO
+	      BEGIN
+		IF .request_ptr[vs$rb_a_irp] EQL .irp_adr THEN
+		  BEGIN
+		    .vtb_adr = .vtb_ptr;
+		    .request_adr = .request_ptr;
+		    RETURN true;
+		  END;
+		request_ptr = .request_ptr[vs$rb_a_blink];
+	      END;
+!
+! Still haven't found it - Look at next virtual tablet
+!
+	    vtb_ptr = .vtb_ptr[vs$vtb_a_flink];
+	  END;
+!
+	RETURN false;		!return not found
+END;				! of routine vs$$vtb_irp_found
+
+
+%SBTTL 'vs$$vtb_found -- Find a Virtual tablet by ID'
+ROUTINE vs$$vtb_found(
+			vtb_id,			!Virtual tablet ID
+			vtb_adr			!Virtual tablet Address
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the virtual tablet data
+! block by ID and returning its address if found.
+!
+! FORMAL PARAMETERS:
+!
+!	VTB_ID  : Longword virtual tablet ID (same as a pasteboard ID)
+!			(input parameter)
+!	VTB_ADR : Address to contain address of vtb data block
+!			(output parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vtb_list : Queue head pointer to known virtual tablets
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	vtb_ptr: REF BLOCK[0,BYTE];		!Ptr to arbitrary vtb
+
+!
+! Search through the list of known virtual tablets for the virtual tablet
+! (or pasteboard ID) passed as a parameter and return its address if found.
+!
+	vtb_ptr = .vs$vtb_list[0];
+	WHILE (.vtb_ptr NEQ vs$vtb_list[0]) DO
+	  IF .vtb_ptr[vs$vtb_l_id] EQL .vtb_id THEN
+	    BEGIN
+	      .vtb_adr = .vtb_ptr;
+	      RETURN true;
+	    END
+	  ELSE
+	    vtb_ptr = .vtb_ptr[vs$vtb_a_flink];
+!
+	RETURN false;		!return whether or not vtb was found
+END;				! of routine vs$$vtb_found
+
+
+%SBTTL 'vs$$vtb_establish_timeout -- Establish Timeout on Request'
+ROUTINE vs$$vtb_establish_timeout(
+			timeout			!Specified timeout (seconds)
+				) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing a virtual tablet I/O
+! request timeout. It assumes that the global variable VS$A_IRP points to
+! the current, valid I/O request packet which corresponds to the current
+! Virtual Tablet I/O request. It will be that IRP which times out if I/O
+! post-processing hasn't already been completed on it.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT	: Longword user specified operation timeout (seconds)
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$A_IRP : Address of current ACP I/O request packet
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successful completion
+!	VSTA$_xxx  : Error status returned by acp_get_vm
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	system_timeout: VECTOR[2];		!System delta timeout time
+
+!
+! Set the timer if this operation has an associated timeout > 0
+!
+	IF .timeout GTR 0 THEN
+	  BEGIN
+	    EMUL(
+		%REF(-10000000),
+		timeout,
+		%REF(0),
+		system_timeout[0]);
+!
+	    RETURN $SETIMR(
+			DAYTIM = system_timeout[0],
+			ASTADR = vs$$vtb_timeout_ast,
+			REQIDT = .vs$a_irp);
+	  END;
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$vtb_establish_timeout
+
+
+%SBTTL 'vs$$free_vtb -- Free Memory of a Virtual tablet'
+ROUTINE vs$$free_vtb(
+		vtb_adr: REF BLOCK[0,BYTE]	!Virtual tablet block address
+					): NOVALUE =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for freeing all the memory (heap store and
+! non-paged pool) occupied by a virtual tablet block.
+!
+! FORMAL PARAMETERS:
+!
+!	vtb_ADR : Address of a virtual tablet block being deleted
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	next_request,				!Save ptr to next request block
+	request_ptr: REF BLOCK[0,BYTE];		!VTB I/O request pointer
+
+!
+! Free up the heap store occupied by the virtual tablet request blocks
+! and then the vtb itself.
+!
+! Terminate those waiting for tablet pointer movement info
+!
+	request_ptr = .vtb_adr[vs$vtb_a_pm_head];
+	WHILE .request_ptr NEQ vtb_adr[vs$vtb_a_pm_head] DO
+	  BEGIN
+	    next_request = .request_ptr[vs$rb_a_flink];
+	    REMQUE(.request_ptr,request_ptr);
+	    vs$$acp_free_vm (UPLIT (vs$rb_k_block_size),
+					request_ptr,0);
+	    request_ptr = .next_request;
+	  END;
+!
+! Terminate those waiting for tablet button info
+!
+	request_ptr = .vtb_adr[vs$vtb_a_tb_head];
+	WHILE .request_ptr NEQ vtb_adr[vs$vtb_a_tb_head] DO
+	  BEGIN
+	    next_request = .request_ptr[vs$rb_a_flink];
+	    REMQUE(.request_ptr,request_ptr);
+	    vs$$acp_free_vm (UPLIT (vs$rb_k_block_size),
+					request_ptr,0);
+	    request_ptr = .next_request;
+	  END;
+!
+	vs$$acp_free_vm (UPLIT (vs$vtb_k_block_size),
+				vtb_adr,0);
+!
+	RETURN;			!return success
+END;				! of routine vs$$free_vtb
+
+END
+ELUDOM

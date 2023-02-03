@@ -1,0 +1,206 @@
+module vstairp (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! For the acp that normally talks to another process via
+! an irp that was created via the $qio facility, sometimes fake irps
+! are desired in order that the acp be able to talk to itself in a similar
+! manner.  This module contains code that deal with the internals of such
+! fake irps.
+
+forward routine!s . . .
+
+	vsta$$irp_create_int_irp,	! Create an internal irp
+	vsta$$irp_delete_int_irp,	! Delete an internal irp
+	vsta$$irp_int_done_io;		! Complete io on internal irp
+
+library 'sys$library:lib';		! symbols like irp$l_ast
+require 'vsta$library:vsacpdef';	! symbols like vs$k_tty_data
+library 'vsta$library:libmacros';	! symbols like $base
+
+$vsta_psect;				! Define PSECTs
+
+
+global routine vsta$$irp_create_int_irp
+!++
+! Functional description:
+!
+!	Given various parameters that qio normally stuffs into an irp,
+!	create an internal irp and store the parameters in it.
+!
+! Formal parameters: 
+ (
+	irp_adr,		! address to be filled in with irp base
+	obuflen,		! bytes to allocate for output buffer
+	obufadr : ref vector [,byte],	! address of output buffer
+	iosb,			! address of iosb
+	astadr,			! ast address to be stored in irp
+	astprm			! parameter to be passed when ast routine called
+ ) =
+!
+! Side effects:
+!
+!	The RTL is employed to allocate memory for the irp and its buffers.
+!
+!--
+
+	begin
+
+	external routine
+
+	    vs$$acp_get_vm;
+
+	local
+
+	    s;
+
+	bind
+!
+! Get address which will receive irp base.
+!
+	    irp = .irp_adr : ref irp_block,
+!
+! Calculate space needed for irp.
+!
+	    irp_bytes =
+!
+! Space for the static elements . . .
+!
+		irp$c_length;
+!
+! Allocate the local irp.
+!
+	if not (s = vs$$acp_get_vm (
+	    %ref (irp_bytes),
+	    irp,
+	    0
+	    ))
+	then return .s;
+!
+! Fill in ast routine.
+!
+	irp[irp$l_ast] = .astadr;
+!
+! Fill in ast parameter.
+!
+	irp[irp$l_astprm] = .astprm;
+!
+! Fill in the iosb address.
+!
+	irp[irp$l_iosb] = .iosb;
+!
+! Set address of output buffer such that an external reference that tries
+! to look beyond the header info will get the specified data address.
+!
+	irp[irp$l_svapte] = .obufadr - vs$k_tty_data;
+!
+! Remember how many bytes of space are in the output buffer.
+!
+	irp[irp$w_bcnt] = .obuflen;
+!
+! All done.
+!
+	ss$_normal
+
+end;
+
+global routine vsta$$irp_delete_int_irp
+!++
+! Functional description:
+!
+!	Delete an internal irp.
+!
+! Formal parameters:
+ (
+	irp : ref irp_block		! address of internal irp
+ ) =
+!
+! Side effects:
+!
+!	The RTL is employed to deallocate the irp and its buffers.
+!
+!--
+
+	begin
+
+	external routine
+
+	    vs$$acp_free_vm;
+
+!
+! Relinquish the memory used by the irp.
+!
+	vs$$acp_free_vm (
+	    %ref (irp$c_length),
+	    irp,
+	    0
+	    );
+!
+! Done.
+!
+	ss$_normal
+
+	end;
+
+global routine vsta$$irp_int_done_io
+!++
+! Functional description:
+!
+!	Simulate the io completion of an internal irp.
+!
+! Formal parameters: (modeled after the routine vs$$acp_done_io
+ (
+	status,			! Status, stuffed into first iosb longword
+	iosb_data,		! data for second iosb longword
+	irp : ref irp_block	! irp to complete io on
+ ) =
+!
+! Side effects:
+!
+!	The iosb is filled in, the irp's ast routine is called if it's non-0.
+!
+!--
+
+	begin
+
+	bind routine
+!
+! Establish address of ast routine.
+!
+	    ast_routine = .irp[irp$l_ast];
+
+	bind
+!
+! Establish address of iosb.
+!
+	    iosb = .irp[irp$l_iosb] : vector;
+!
+! Fill in the iosb if there is one.
+!
+	if iosb[0] neq 0
+	then
+	    begin
+	    iosb[0] = .status;
+	    iosb[1] = .iosb_data
+	    end;
+!
+! Call ast routine if there is one.
+!
+	if ast_routine neq 0
+	then ast_routine (.irp[irp$l_astprm]);
+!
+! Delete the irp.
+!
+	vsta$$irp_delete_int_irp (irp[$base]);
+!
+! All done.
+!
+	ss$_normal
+
+	end;
+
+end
+eludom

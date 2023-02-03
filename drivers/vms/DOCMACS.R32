@@ -1,0 +1,64 @@
+!
+!
+! Macros useful for VSTADOC utility
+!
+
+MACRO $gen_error (text) =
+	BEGIN
+	EXTERNAL ROUTINE doc$$gen_error;
+	doc$$gen_error (%ASCID text);
+	END %;
+
+MACRO $typeline (text) =
+	doc$$type_line (%ASCID text) %;
+
+MACRO $typests (status) =
+	doc$$type_sts	(%ASCID ' ', status) %;
+
+MACRO $setpos (line, char) =
+	IF NOT (status =
+	    vt100$$_setpos (line, char)
+		)
+	  THEN
+		BEGIN
+		EXTERNAL doc$_setpos;
+		doc$$error (doc$_setpos);
+		RETURN doc$$error (.status)
+		END
+%;
+
+MACRO $writestring (string) =
+	IF NOT (status =
+	    vt100$$_writestring (string)
+		)
+	  THEN
+		BEGIN
+		EXTERNAL doc$_writestr;
+		doc$$error (doc$_writestr);
+		RETURN doc$$error (.status)
+		END
+%;
+
+MACRO $getpos (line, char) =
+	IF NOT (status =
+	    vt100$$_getpos (line, char)
+		)
+	  THEN
+		BEGIN
+		EXTERNAL doc$_getpos;
+		doc$$error (doc$_getpos);
+		RETURN doc$$error (.status)
+		END
+%;
+
+MACRO $writecrlfs (n) =
+	IF NOT (status =
+	    vt100$$_write_crlfs (n)
+		)
+	  THEN
+		BEGIN
+		EXTERNAL doc$_writecrlf;
+		doc$$error (doc$_writecrlf);
+		RETURN doc$$error (.status)
+		END
+%;

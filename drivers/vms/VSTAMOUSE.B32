@@ -1,0 +1,487 @@
+%TITLE 'vsta$mouse -- VAXSTATION MOUSE LIBRARY'
+MODULE vsta$mouse (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the sharable library routines and data relevent to
+!   dealing with the VAXstation entities in the context of a VAX workstation
+!   running the associated workstation display software; an implementation of
+!   the System Display Architecture.
+!
+!   Operations have been provided to allow the access of VAXstation mouse
+!   by the application program.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! VSTA specific error symbols
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+!		Private routines
+!
+FORWARD ROUTINE
+!
+! Mouse manipulation procedures
+!
+	vsta$set_mouse_boundary_ast,	!Set up AST on mouse crossing pb boundary
+	vsta$set_mouse_move_ast,	!Set up AST on mouse movement
+	vsta$set_mouse_button_ast,	!Set up AST on mouse button pressing
+	vsta$get_mouse_info;		!Get the current mouse info
+
+!
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+!
+	vsta$$build_local_msgvec,	!Build VSTALIB local error msg vector
+	vsta$$get_template_chan;	!Get channel to template VD device
+!
+! EXTERNAL DATA
+!
+EXTERNAL
+	vsta$gl_local_error;		!Local error indicator
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+
+!
+
+%SBTTL 'vsta$set_mouse_move_ast -- Set Mouse move AST'
+GLOBAL ROUTINE vsta$set_mouse_move_ast(
+	pb_id,			!Pasteboard ID
+	buflen,			!Number of longwords to return
+	bufadr,			!Address of result (to be filled in
+				!with x, y, buttons if buflen's adr contains
+				!at least 3).
+	wait_flag,		! 1 if routine should wait for action
+	efn,			! event flag for synchronization
+	iosb: ref VECTOR[4,WORD],		!$QIO I/O status block
+	astadr,			!AST routine address
+	astprm,			!AST routine parameter
+	timeout			!Maximum time to wait
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing an AST routine to be
+! called when the mouse moves within the specified pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	ASTADR		  : AST routine address
+!		 		(input parameter)
+!	ASTPRM		  : AST routine parameter
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETMSM		!Set mouse move AST failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+	
+	bind
+
+	    event_flag = parameter_value (efn);
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	status;				!To hold return status value
+!
+! Clear the library local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmsm);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate mouse
+! function codes but don't wait for response
+!
+	IF (NOT (status = $QIO (
+			EFN = event_flag,
+			CHAN = .dummy_chan,
+			FUNC = IO$_VSTAPTR + IO$M_MOVE_AST + IO$M_MOUSE,
+			IOSB = parameter_address (iosb),
+			ASTADR   = parameter_address (astadr),
+			ASTPRM   = parameter_value (astprm),
+			P1 = parameter_address (bufadr),
+			P2 = parameter_value (buflen) * 4,
+			P3   = parameter_value (pb_id),
+			P6   = parameter_value (timeout)
+
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmsm);
+	  END;
+
+!
+! If caller wants to wait for operation to complete, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = event_flag );
+!
+	RETURN SS$_NORMAL;
+    END;			! end of routine vsta$set_mouse_move_ast
+
+
+%SBTTL 'vsta$set_mouse_boundary_ast -- Set Mouse boundary AST'
+GLOBAL ROUTINE vsta$set_mouse_boundary_ast(
+	pb_id,					!Pasteboard ID
+	buflen,			!Number of longwords to return
+	bufadr,			!Address of result (to be filled in
+				!with x, y, buttons, entered_flag
+				!if buflen's adr contains at least 4).
+	wait_flag,		! 1 if routine should wait for action
+	efn,			! event flag for synchronization
+	iosb: ref VECTOR[4,WORD],		!$QIO I/O status block
+	astadr,			!AST routine address
+	astprm,			!AST routine parameter
+	timeout			!Maximum time to wait
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing an AST routine to be
+! called when the mouse crosses the pasteboard boundary.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	ASTADR		  : AST routine address
+!		 		(input parameter)
+!	ASTPRM		  : AST routine parameter
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETMSO		!Set mouse boundary AST failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+	
+	bind
+
+	    event_flag = parameter_value (efn);
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	status;				!To hold return status value
+!
+! Clear the library local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmso);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate mouse
+! function codes but don't wait for response
+!
+	IF (NOT (status = $QIO (
+			EFN = event_flag,
+			CHAN = .dummy_chan,
+			FUNC = IO$_VSTAPTR + IO$M_BOUNDARY_AST + IO$M_MOUSE,
+			IOSB = parameter_address (iosb),
+			ASTADR   = parameter_address (astadr),
+			ASTPRM   = parameter_value (astprm),
+			P1 = parameter_address (bufadr),
+			P2 = parameter_value (buflen) * 4,
+			P3   = parameter_value (pb_id),
+			P6   = parameter_value (timeout)
+
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmso);
+	  END;
+
+!
+! If caller wants to wait for operation to complete, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = event_flag );
+!
+	RETURN SS$_NORMAL;
+    END;			! end of routine vsta$set_mouse_boundary_ast
+
+
+%SBTTL 'vsta$set_mouse_button_ast -- Set Mouse Button AST'
+GLOBAL ROUTINE vsta$set_mouse_button_ast(
+	pb_id,					!Pasteboard ID
+	buflen,			!Number of longwords to return
+	bufadr,			!Address of result (to be filled in
+				!with x, y, buttons if buflen's adr
+				!contains at least 3).
+	wait_flag,		! 1 if routine should wait for action
+	efn,			! event flag for synchronization
+	iosb: ref VECTOR[4,WORD],		!$QIO I/O status block
+	astadr,			!AST routine address
+	astprm,			!AST routine parameter
+	timeout,		!Maximum time to wait
+	up_mask,		!Button up mask
+	down_mask		!Button down mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing an AST routine to be
+! called when the specified mask of mouse buttons has been activated.
+!	NOTE: The mouse buttons may be referred to as follows:
+!
+!			---------------------
+!			! ----- ----- ----- !
+!			! ! 3 ! ! 2 ! ! 1 ! !
+!			! ----- ----- ----- !
+!			---------------------
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	UP_MASK		  : Address of longword button-up mask
+!		 		(input parameter)
+!	DOWN_MASK	  : Address of longword button-down mask
+!		 		(input parameter)
+!	ASTADR		  : AST routine address
+!		 		(input parameter)
+!	ASTPRM		  : AST routine parameter
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETMSU		!Set mouse button AST failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+	
+	bind
+
+	    event_flag = parameter_value (efn);
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	status;				!To hold return status value
+!
+! Clear the library local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmsu);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate mouse
+! function codes but don't wait for response
+!
+	IF (NOT (status = $QIO (
+			EFN = event_flag,
+			CHAN = .dummy_chan,
+			FUNC = IO$_VSTAPTR + IO$M_BUTTON_AST + IO$M_MOUSE,
+			IOSB = parameter_address (iosb),
+			ASTADR   = parameter_address (astadr),
+			ASTPRM   = parameter_value (astprm),
+			P1 = parameter_address (bufadr),
+			P2 = parameter_value (buflen) * 4,
+			P3   = parameter_value (pb_id),
+			P4   = parameter_value (up_mask),
+			P5   = parameter_value (down_mask),
+			P6   = parameter_value (timeout)
+
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setmsu);
+	  END;
+
+!
+! If caller wants to wait for operation to complete, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = event_flag );
+!
+	RETURN .status;
+    END;			! end of routine vsta$set_mouse_button_ast
+
+
+%SBTTL 'vsta$get_mouse_info -- Get Mouse Info'
+GLOBAL ROUTINE vsta$get_mouse_info(
+		pb_id,				!Pasteboard ID
+		buflen,			!Number of longwords to return
+		bufadr			!Address of result (to be filled in
+					!with x, y, buttons if buflen's adr
+					!contains at least 3).
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the current X,Y coordinates
+! of the mouse within the pasteboard specified. If the mouse is not within
+! the specified pasteboard, the return status will so indicate.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	BUFLEN		  : Address containing number of longwords to return
+!
+!	BUFADR		  : Address of buffer in which to return info, namely
+!				x, y, buttons
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETMOS		!Get mouse information failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	iosb: VECTOR[2],		!$QIO I/O status block
+	status;				!To hold return status value
+!
+! Clear the library local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getmos);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate mouse
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_VSTAPTR + IO$M_PTR_INFO + IO$M_MOUSE,
+			IOSB = iosb,
+			P1 = parameter_address (bufadr),
+			P2 = parameter_value (buflen) * 4,
+			P3   = parameter_value (pb_id)
+
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getmos);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$get_mouse_info
+
+END					!End of module
+ELUDOM

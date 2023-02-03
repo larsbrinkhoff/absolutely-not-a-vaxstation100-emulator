@@ -1,0 +1,767 @@
+module vxsfont (
+		addressing_mode (external = general,nonexternal = general)
+		) =
+begin
+
+forward routine!s . . .
+
+	vsta$define_font,		!Defines a font
+	vsta$measure_text,		!Measure how much room text will use
+	vsta$define_system_font,	!Defines a system-wide font
+	vsta$delete_font,		!Delete a font
+	vsta$delete_system_font,	!Delete a system-wide font
+	vsta$inquire_font		!Gets the font
+	;
+
+external routine!s . . .
+
+	 lib$free_vm			! Release memory.
+	,lib$get_vm			! Allocate memory.
+	,vsta$$build_local_msgvec	! Build local error message vector
+	,vsta$$channel_found		! Interpret channel.
+	,vsta$$get_template_chan	! Get channel to template VD device
+	,vsta$$translate_file_spec	! Melt logical names into real ones.
+	,vsta$obsolete			! Indicate that routine is obsolete
+	,vsta$$send_generic_block	! Send packed text block procedure
+	,vsta$$create_packed_block	! Creates packed text block
+	,vsta$$delete_packed_block	! Deletes packed block
+	;
+!
+! EXTERNAL DATA
+!
+EXTERNAL
+	vsta$gl_local_error;		! Local error indicator
+!
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error symbols
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB constant data declarations
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';		! Color lookup table data declarations
+library 'vsta$library:vstagbl';		! Symbols like "vsta$k_none"
+LIBRARY 'VSTA$LIBRARY:VSVDSVD';		! Virtual terminal definitions
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+LIBRARY 'VSTA$LIBRARY:TXTCODES';	! TEXT specific $QIO codes
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+
+
+
+%SBTTL 'vsta$define_font -- Define Font'
+GLOBAL ROUTINE vsta$define_font(
+			tty_chan,		!Device channel number
+			font_spec: REF BLOCK[0,BYTE],
+						!New font file name desc.
+			type_desc: REF BLOCK[0,BYTE],
+						!Its typeface name desc.
+			char_size,		!Character size (in points)
+			rendition		!Rendition mask to turn on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the font to be used for the
+! "current" terminal. This font stays in effect until the next call to this
+! routine, but only applies to terminal text and has no effect on the graphic
+! text of native displays. This may be a Digital-supplied or user-supplied
+! font.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Address of Longword channel number to device
+!			(input parameter)
+!	FONT_SPEC : Address of font file name ascii descriptor
+!			(input parameter)
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(input parameter)
+!	CHAR_SIZE : Address of character size (in points) of this font
+!			(input parameter)
+!	RENDITION : Address of typeface rendition mask
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DEFFNT		!Define font failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	font_spec_length,		 !Font specification string size
+	font_string: VECTOR[vsta$k_font_name_length,BYTE],
+					 !Font specification buffer
+	font_desc: BLOCK[8,BYTE],	 !Font specification ascii descriptor
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status,				 !To contain return status value
+	block_address,
+	block_size;
+!
+! Clear the local error indicator before starting
+!
+	VSTACALL_INIT();
+!
+! Translate the font file specification passed into an actual file spec.
+!
+	font_desc[vsta$ad_w_size] = vsta$k_font_name_length;
+	font_desc[vsta$ad_a_string] = font_string;
+	IF (NOT (status = vsta$$translate_file_spec(
+		parameter_address(font_spec),
+		font_desc,
+		font_spec_length))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deffnt);
+	  END;
+	font_desc[vsta$ad_w_size] = .font_spec_length;
+!
+! Make sure the font filespec length is within acceptable limits
+!
+	IF .font_desc[vsta$ad_w_size] GTR vsta$k_font_name_length THEN
+	  BEGIN
+	    lib_add_err(SS$_BADFILENAME);
+	    lib_ret_err(vsta$_deffnt);
+	  END;
+
+	! Send the request to the acp.
+	!
+	! 
+	! check tty_chan to be greater than 0 user not allowed to used default
+	! terminal
+	!
+	IF parameter_value(tty_chan) LSS 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_deffnt);
+	  END;
+
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			 integer_type, parameter_rank(type_desc));
+	    lib_ret_err(vsta$_deffnt);
+	  END;
+
+	IF NOT (status =
+	vsta$$create_packed_block(
+	    block_address,
+	    block_size,
+	    .font_desc[vsta$ad_w_size],	! Size of font filespec.
+	    .font_desc[vsta$ad_a_string],! Address of font filespec.
+	    .type_desc[vsta$ad_w_size],	! Size of typeface string.
+	    .type_desc[vsta$ad_a_string],! Address of typeface string.
+	    4,				! typesize is given in a fullword.
+	    parameter_address(char_size),
+					! Address of typesize.
+	    4,				! Rendition is given in a fullword.
+	    parameter_address(rendition)
+					! Address of rendition bits.
+	    )) 
+	THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deffnt);
+	  END;
+
+	status = 
+	vsta$$send_generic_block(
+		.tty_chan			! ADDRESS OF Channel information.
+		,IO$_WRITE_VD+IO$M_TEXT		! what qio function to use
+		,iosb[0]			! Address into which to write iosb.
+		,.block_address			! P1
+		,.block_size			! P2
+		,txt$_set_font			! P3
+		,0,0,0);			! P4-P6 NOT USED
+
+	vsta$$delete_packed_block(
+		 .block_address
+		,.block_size
+				 );
+	IF NOT .status THEN return .status;
+!
+	RETURN SS$_NORMAL;
+    END;		! End of routine vsta$define_font
+
+
+%SBTTL 'vsta$define_system_font -- Define System-Wide Font'
+GLOBAL ROUTINE vsta$define_system_font(
+			font_spec: REF BLOCK[0,BYTE],
+						!New font file name desc.
+			type_desc: REF BLOCK[0,BYTE],
+						!Its typeface name desc.
+			char_size,		!Character size (in points)
+			rendition		!Rendition mask to turn on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for defining a font to be used for the
+! all terminals. This font stays in effect until the next call to this
+! routine, but only applies to terminal text and has no effect on the graphic
+! text of native displays. This may be a Digital-supplied or user-supplied
+! font. This is a privileged routine.
+!
+! FORMAL PARAMETERS:
+!
+!	FONT_SPEC : Address of font file name ascii descriptor
+!			(input parameter)
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(input parameter)
+!	CHAR_SIZE : Address of character size (in points) of this font
+!			(input parameter)
+!	RENDITION : Address of typeface rendition mask
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DEFSYF		!Define system-wide font failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	font_spec_length,		 !Font specification string size
+	font_string: VECTOR[vsta$k_font_name_length,BYTE],
+					 !Font specification buffer
+	font_desc: BLOCK[8,BYTE],	 !Font specification ascii descriptor
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	block_address,			 !address of the packed block
+	block_size,			 !size of the packed block
+	status;				 !To contain return status value
+
+!
+! Clear the local error indicator before starting
+!
+	VSTACALL_INIT();
+!
+! Translate the font file specification passed into an actual file spec.
+!
+	font_desc[vsta$ad_w_size] = vsta$k_font_name_length;
+	font_desc[vsta$ad_a_string] = font_string;
+	IF (NOT (status = vsta$$translate_file_spec(
+		parameter_address(font_spec),
+		font_desc,
+		font_spec_length))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_defsyf);
+	  END;
+	font_desc[vsta$ad_w_size] = .font_spec_length;
+!
+! Make sure the font filespec length is within acceptable limits
+!
+	IF .font_desc[vsta$ad_w_size] GTR vsta$k_font_name_length THEN
+	  BEGIN
+	    lib_add_err(SS$_BADFILENAME);
+	    lib_ret_err(vsta$_defsyf);
+	  END;
+
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			 integer_type, parameter_rank(type_desc));
+	    lib_ret_err(vsta$_defsyf);
+	  END;
+
+	! Send the request to the acp.
+	!
+	IF NOT (status = 
+	vsta$$create_packed_block (
+	    block_address,
+	    block_size,
+	    .font_desc[vsta$ad_w_size],	! Size of font filespec.
+	    .font_desc[vsta$ad_a_string],! Address of font filespec.
+	    .type_desc[vsta$ad_w_size],	! Size of typeface string.
+	    .type_desc[vsta$ad_a_string],! Address of typeface string.
+	    4,				! typesize is given in a fullword.
+	    parameter_address(char_size),
+					! Address of typesize.
+	    4,				! Rendition is given in a fullword.
+	    parameter_address(rendition)
+					! Address of rendition bits.
+	    ))
+	THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_defsyf);
+	  END;
+
+	status = 
+	vsta$$send_generic_block(
+		 %ref (vsta$k_none)		! no vd channel
+		,IO$_WRITE_VD+IO$M_TEXT		! what qio function to use
+		,iosb[0]			! Address into which to write iosb.
+		,.block_address			! P1
+		,.block_size			! P2
+		,txt$_set_system_font		! Say what we're doing. P3
+		,0,0,0);			! P4-P6 NOT USED
+
+	vsta$$delete_packed_block(
+			 .block_address
+			,.block_size
+					 );
+
+	IF NOT .status THEN return .status;
+!
+	RETURN SS$_NORMAL;
+    END;		! End of routine vsta$define_system_font
+
+
+global routine vsta$measure_text
+!++
+! Functional description:
+!
+!	Return the height and width in pixels that a particular string would
+!	take up if printed in a particular font.  The string is given in the
+!	call, and optionally the font.  Parts of the font may be defaulted,
+!	which cause the current values for these parts to be used.  However,
+!	if no particular virtual display is specified, the string is measured
+!	with the font that would be used if the string were printed on a new
+!	virtual display for which no specific current values have been set up
+!	yet.
+!
+! Formal parameters:
+ (
+	vd_chan_adr_or_0,	! vd channel, or vsta$k_none for hypothetical
+				! channel (i.e. how large WOULD text be if I
+				! created a display and printed it !), passed
+				! by REFERENCE.  Defaults to currently
+				! selected display.
+	desc : ref block[0,byte],
+				! Address of descriptor of string being measured.
+	typeface_adr_or_0 : ref $string_descriptor,
+				! Typeface descriptor, or vsta$k_none passed
+				! by reference for measuring in current
+				! typeface, defaults to current.
+	typesize_adr_or_0,	! typesize, or vsta$k_none for current typesize
+				! , passed by reference, defaults to 0.
+	rendition_adr_or_0,	! rendition mask, or vsta$k_none for current,
+				! passed by reference, defaults to 0.
+	width_adr,		! Address into which to write string width.
+	height_adr		! Address into which to write string height.
+ ) =
+!
+! Implicit outputs:
+!
+!	width_adr, height_adr
+!
+! Completion codes:
+!
+!	SS$_NORMAL			!Normal successful completion
+!	VSTA$_MEATXT			!Measure text failed
+!
+!	An error status results if:
+!	
+!	o	No channel given AND no system fonts are defined.
+!
+!--
+
+	begin
+
+	literal
+
+	    ! Number of parameters to be passed to qio.
+	    n_params = 5;
+
+	local
+
+	    iosb : vector [4, word],
+	    defaults_mask : bitVector [32] initial (0),
+	    block_address,		! address of packed block
+	    block_size,			! size of packed block
+	    local_typesize,
+	    local_rendition,
+	    status
+	    ;
+
+	!
+	! Clear the local error indicator before starting
+	!
+	VSTACALL_INIT();
+!
+! Cause current typeface to be used if one is not specified.
+!
+	defaults_mask[2] = parameter_address (typeface_adr_or_0) eql 0 or
+	    parameter_value (typeface_adr_or_0) eql vsta$k_none;
+!
+! Cause current type size to be used only in the case of an explicit request.
+! This allows 0 to be passed for type size, which means 0.
+!
+	if parameter_value (typesize_adr_or_0) eql vsta$k_none
+	then defaults_mask[3] = 1
+	else local_typesize = parameter_value (typesize_adr_or_0);
+!
+! Similarly for rendition  (and even more importantly than for type size), use
+! current rendition only if rendition explicitly not supplied.  If 0 supplied,
+! use normal rendition.
+!
+	if parameter_value (rendition_adr_or_0) eql vsta$k_none
+	then defaults_mask[4] = 1
+	else local_rendition = parameter_value (rendition_adr_or_0);
+!
+! Pack up block and ship it off to qio.
+!
+	if not (status = vsta$$create_packed_block (
+	    block_address,
+	    block_size,
+	    .desc[vsta$ad_w_size],	! Length of string.
+	    .desc[vsta$ad_a_string],	! Address of string.
+	    
+	    if .defaults_mask[2] then 0 else .typeface_adr_or_0[sd$w_len],
+				! typeface length or 0
+	    if .defaults_mask[2] then 0 else .typeface_adr_or_0[sd$a_adr],
+				! typeface string address or 0
+	    if .defaults_mask[3] then 0 else 4,
+				! 4 if fullword typesize supplied, 0 if defaulting it
+	    local_typesize,	! typesize address or irrelevant.
+	    if .defaults_mask[4] then 0 else 4,
+				! 4 if rendition mask supplied, 0 for default.
+	    local_rendition	! Rendition mask address or irrelevant.
+	    ))
+	then
+	  begin
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_meatxt);
+	  end;
+
+	
+	status = 
+	vsta$$send_generic_block(
+		.vd_chan_adr_or_0		! address of channel or zero.
+		,IO$_WRITE_VD+IO$M_TEXT		! what qio function to use
+		,iosb[0]			! Address into which to write iosb.
+		,.block_address			! P1
+		,.block_size			! P2
+		,txt$_measure_text		! qio modifier. ---> QIO P3 PARAMETER
+		,0,0,0);			! P4-P6 NOT USED
+
+	vsta$$delete_packed_block(
+		 .block_address
+		,.block_size
+				 );
+
+	IF NOT .status THEN return .status;
+
+	! For now, the width and height are communicated via the iosb.
+	IF parameter_address(width_adr) NEQ 0 THEN
+	  .width_adr = .iosb[2];
+	IF parameter_address(height_adr) NEQ 0 THEN
+	  .height_adr = .iosb[3];
+
+	SS$_NORMAL
+
+	end;
+
+%SBTTL 'vsta$delete_font -- Delete a Font'
+GLOBAL ROUTINE vsta$delete_font(
+			tty_chan,		!Device channel number
+			type_desc: REF BLOCK[0,BYTE],
+						!Its typeface name desc.
+			char_size,		!Character size (in points)
+			rendition		!Rendition mask to turn on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting a font being used for the
+! specified terminal. This may be a Digital-supplied or user-supplied
+! font.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Address of Longword channel number to device
+!			(input parameter)
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(input parameter)
+!	CHAR_SIZE : Address of character size (in points) of this font
+!			(input parameter)
+!	RENDITION : Address of typeface rendition mask
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELFNT		!Delete font failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	index,				 !Loop index for bytes being copied
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator before starting
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_delfnt);
+	  end;
+!
+! Verify that a typeface descriptor was passed by caller
+!
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			 integer_type, parameter_rank(type_desc));
+	    lib_ret_err(vsta$_delfnt);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vsta$k_generic_mode THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_delfnt);
+	  END;
+!
+! Make sure the typeface name length is within acceptable limits
+!
+	IF .type_desc[vsta$ad_w_size] GTR vsta$k_type_name_length THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_typnamlng);
+	    lib_ret_err(vsta$_delfnt);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = .type_desc[vsta$ad_a_string],
+			P2   = .type_desc[vsta$ad_w_size],
+			P3   = TXT$_DELETE_FONT,
+			P5   = parameter_value(char_size),
+			P6   = parameter_value(rendition)
+			)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delfnt);
+	  END;
+!
+	RETURN .iosb[0];
+    END;		! End of routine vsta$delete_font
+
+
+%SBTTL 'vsta$delete_system_font -- Delete a System-Wide Font'
+GLOBAL ROUTINE vsta$delete_system_font(
+			type_desc: REF BLOCK[0,BYTE],
+						!Its typeface name desc.
+			char_size,		!Character size (in points)
+			rendition		!Rendition mask to turn on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting a font being used for
+! all terminals. This may be a Digital-supplied or user-supplied
+! font. This is a privileged routine.
+!
+! FORMAL PARAMETERS:
+!
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(input parameter)
+!	CHAR_SIZE : Address of character size (in points) of this font
+!			(input parameter)
+!	RENDITION : Address of typeface rendition mask
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELSYF		!Delete system-wide font failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Dummy channel number to get to VSACP
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator before starting
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delsyf);
+	  END;
+!
+! Make sure the typeface name length is within acceptable limits
+!
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			 integer_type, parameter_rank(type_desc));
+	    lib_ret_err(vsta$_delsyf);
+	  END;
+!
+	IF .type_desc[vsta$ad_w_size] GTR vsta$k_type_name_length THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_typnamlng);
+	    lib_ret_err(vsta$_delsyf);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = .type_desc[vsta$ad_a_string],
+			P2   = .type_desc[vsta$ad_w_size],
+			P3   = TXT$_DELETE_SYSTEM_FONT,
+			P5   = parameter_value(char_size),
+			P6   = parameter_value(rendition)
+			)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delsyf);
+	  END;
+!
+! Native display has been successfully created
+!
+	RETURN .iosb[0];
+    END;		! End of routine vsta$delete_system_font
+
+
+%SBTTL 'vsta$inquire_font -- Inquire Font'
+GLOBAL ROUTINE vsta$inquire_font(
+			tty_chan,			!Device channel number
+			type_desc: REF VECTOR,		!Typeface name desc.
+			rendition,			!Typeface rendition
+			char_size,			!Character size
+			font_desc: REF VECTOR		!Font file name desc.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the font name being used for
+! a given typeface. This font stays in effect until the next call to
+! vsta$set_font, but only applies to terminal text on native display devices.
+! This may be a Digital-supplied or user-supplied font.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Address of Longword channel number to device
+!			(input parameter)
+!	TYPE_DESC : Address of the typeface name ascii descriptor of interest
+!			(input parameter)
+!	RENDITION : Address of the typeface rendition mask
+!			(input parameter)
+!	CHAR_SIZE : Address of the typeface character size
+!			(input parameter)
+!	FONT_DESC : Address of font name ascii descriptor to contain font.
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently not implemeted
+!
+	RETURN vsta$obsolete(vsta$inquire_font);
+!
+    END;		! End of routine vsta$inquire_font
+
+end
+eludom

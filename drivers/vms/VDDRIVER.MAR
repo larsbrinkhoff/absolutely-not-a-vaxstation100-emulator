@@ -1,0 +1,5350 @@
+	.TITLE	VDDRIVER - Virtual Display (Pseudo Device) Driver
+	.IDENT	'VSTA V1.2 - 01'
+;
+	.LIBRARY /VSTA$LIBRARY:VSMACROS/	; VSTA symbol definitions
+	.LIBRARY /SYS$LIBRARY:VSTAMAC/		; Common VSTA symbol definitions
+	.LIBRARY /SYS$LIBRARY:LIB/		; System symbol definitions
+;
+;****************************************************************************
+;
+;++
+;
+; FACILITY:
+;
+;	VAX/VMS Workstation Virtual Display Driver
+;
+; ABSTRACT:
+;
+;	This module contains the VD driver routines.  This driver
+;	is used by the application process side of the operation.  In other
+;	words, it receives the QIO requests from the process that does not
+;	have access to the VAXStation monitor.
+;
+;	This driver's primary function is to receive QIO system service
+;	requests, repackage the QIO arguments, and hand the new package to
+;	the Workstation ACP (VSACP) for delivery to the Workstation
+;	device driver, which has direct access to the hardware. This driver
+;	also doubles as a terminal port driver and provides an interface
+;	layer between the VMS terminal class driver and the workstation
+;	virtual devices.
+;
+;--
+
+	.SBTTL	External and local symbol definitions
+
+	.ENABLE SUPPRESSION
+	.NOSHOW EXPANSIONS
+;
+; External symbols
+;
+
+	$ACBDEF				; AST control block
+	$AQBDEF				; ACP queue block
+;	$BRDDEF				; Broadcast Descriptor BRD
+	$BRKTDEF			; Breakthru write definitions
+	$CANDEF				; Cancel interface codes
+	$CRBDEF				; Channel request block
+	$DCDEF				; Device classes and types
+	$DDBDEF				; Device data block
+	$DDTDEF				; Driver dispatch table
+	$DEVDEF				; Device characteristics
+	$DYNDEF				; Buffer type codes
+	$FKBDEF				; Fork Block 
+	$IDBDEF				; Interrupt data block
+	$IODEF				; I/O function codes
+	$IPLDEF				; Hardware IPL definitions
+	$IRPDEF				; I/O request packet
+	$IRPEDEF			; Extended I/O request packet
+	$JIBDEF				; Job Information block
+	$MSGDEF				; Mailbox message types
+	$ORBDEF				; Object's rights block definitions
+	$PCBDEF				; Process control block
+	$PRDEF				; Processor registers
+	$PRVDEF				; Privilege bits
+	$PSLDEF				; Processor status longword
+	$RBFDEF				; remote Device Buffer definitions
+	$RDPDEF				; remote device packet
+	$RSNDEF				; Resource number definitions
+	$SSDEF				; System status codes
+	$TASTDEF			; Out-of-band char.handling definitions
+	$TTDEF				; Terminal definitions
+	$TT2DEF				; More definitions
+	$TTYDEF				; Terminal driver definitions
+	$TTYDEFS			; MORE Terminal driver definitions
+	$TTYMACS			; Terminal driver macros
+	$TTYRBDEF			; TTY RB definitions
+	$UCBDEF				; Unit control block
+	$VCBDEF				; Volume control block
+	$VADEF				; Virtual address defs
+	$VECDEF				; Interrupt vector block
+	$VSACPDEF			; General constants
+	$VSTAGBL			; Common VSTA constant definitions
+
+;
+; Macros
+;
+;
+; This macro is functionally equivalent to the FUNCTAB macro for generating
+; a dummy, VD-specific FDT
+;
+	.MACRO	$VD_FUNCTAB ACTION,CODES
+MASKL	= 0
+MASKH	= 0
+	.IF NOT_DEFINED VD_FUNCTAB_LEN
+VD_FUNCTAB_LEN = 0
+	.ENDC
+
+	.IRP	X,<CODES>
+	.IF	GT	<IO$_'X&IO$_VIRTUAL>-31
+MASKH	= MASKH!<1@<<IO$_'X&IO$_VIRTUAL>-32>>
+	.IFF
+MASKL	= MASKL!<1@<IO$_'X&IO$_VIRTUAL>>
+	.ENDC
+	.ENDM
+	.LONG	MASKL,MASKH
+	VD_FUNCTAB_LEN = VD_FUNCTAB_LEN + 8
+	.IF NB ACTION
+	GENRADDR ACTION,<.+8>
+	VD_FUNCTAB_LEN = VD_FUNCTAB_LEN + 4
+	.ENDC
+	.ENDM
+;
+; This macro will cause a breakpoint in the source code
+;
+	.MACRO	BREAK_POINT
+	JSB	G^INI$BRK
+	.ENDM
+;
+; Local symbols
+;
+
+;
+; Argument list (AP) offsets for device-dependent QIO parameters
+;
+
+P1	= 0				; First QIO parameter
+P2	= 4				; Second QIO parameter
+P3	= 8				; Third QIO parameter
+P4	= 12				; Fourth QIO parameter
+P5	= 16				; Fifth QIO parameter
+P6	= 20				; Sixth QIO parameter
+
+
+
+;
+; Other constants
+;
+
+VD$K_FIPL = IPL$_SYNCH			; IPL for VDDRIVER fork processing
+VD$K_DIPL = IPL$_SYNCH			; IPL for VDDRIVER device handling
+
+.IF NDF DC$_WORKSTATION			; Define workstation device class
+DC$_WORKSTATION = 70			; if not already defined by VMS
+.ENDC					;
+.IF NDF DT$_VD				; Define virtual display device type
+DT$_VD = 4				; if not already defined by VMS
+.ENDC					;
+
+
+	.SBTTL	Standard tables
+	.PSECT	$$$105_PROLOGUE
+;
+; Driver prologue table
+;
+VD$DPT::
+	DPTAB	-				; DPT-creation macro
+		END=VD_END,-			; End of driver label
+		ADAPTER=NULL,-			; Adapter type
+;***		FLAGS=DPT$M_NOUNLOAD,-		; Not nice to unload VD
+		UNLOAD=VD_UNLOAD,-		; Driver unload procedure
+		UCBSIZE=<UCB$K_VD_LEN>,-	; Length of UCB
+		VECTOR=VD_VECTOR,-		; Port driver vector table
+		NAME=VDDRIVER			; Driver name
+						; initialization table
+	DPT_STORE INIT				; Start of load
+	DPT_STORE DDB,DDB$L_ACPD,L,<^A\VS\> 	; Default ACP name
+	DPT_STORE DDB,DDB$L_ACPD+3,B,3		; ACP class
+	DPT_STORE UCB,UCB$B_FIPL,B,VD$K_FIPL	; Device fork IPL
+	DPT_STORE UCB,UCB$B_DIPL,B,VD$K_DIPL	; Device interrupt IPL
+	DPT_STORE UCB,UCB$L_DEVCHAR,L,<-	; Device characteristics
+		DEV$M_SHR!-			;   shareable device
+		DEV$M_REC!-			;   record device
+		DEV$M_AVL!-			;   available
+		DEV$M_IDV!-			;   input device
+		DEV$M_ODV!-			;   output device
+		DEV$M_TRM!-			;   terminal device
+		DEV$M_CCL>			;   carriage control device
+	DPT_STORE UCB,UCB$B_DEVCLASS,B,DC$_WORKSTATION	; Workstation device
+	DPT_STORE UCB,UCB$B_DEVTYPE,B,DT$_VD	; Virtual display type
+	DPT_STORE UCB,UCB$W_DEVBUFSIZ,@W,TTY$GW_DEFBUF ; Default buffer size
+	DPT_STORE UCB,UCB$L_DEVDEPEND,@L,TTY$GL_DEFCHAR ; Default characteristics
+	DPT_STORE UCB,UCB$L_DEVDEPND2,@L,TTY$GL_DEFCHAR2 ; Default characteristics
+	DPT_STORE UCB,UCB$B_TT_DETYPE,B,DT$_VD	; Virtual display default type
+	DPT_STORE UCB,UCB$W_TT_DESIZE,@W,TTY$GW_DEFBUF	; Buffer size
+	DPT_STORE UCB,UCB$L_TT_DECHAR,@L,TTY$GL_DEFCHAR	; Default characters
+	DPT_STORE UCB,UCB$L_TT_DECHA1,@L,TTY$GL_DEFCHAR2; Default characters
+	DPT_STORE UCB,UCB$W_TT_DESPEE,@B,TTY$GB_DEFSPEED; Default speed
+	DPT_STORE UCB,UCB$W_TT_DESPEE+1,@B,TTY$GB_RSPEED; Default rspeed
+	DPT_STORE UCB,UCB$B_TT_DEPARI,@B,TTY$GB_PARITY	; Default parity
+;**	DPT_STORE UCB,UCB$B_TT_PARITY,@B,TTY$GB_PARITY	; Default parity
+	DPT_STORE UCB,UCB$W_TT_SPEED,@B,TTY$GB_DEFSPEED	; Default speed
+	DPT_STORE UCB,UCB$W_TT_SPEED+1,@B,TTY$GB_RSPEED	; Default rspeed
+	DPT_STORE UCB,UCB$L_TT_WFLINK,L,0	; Zero write queue flink
+	DPT_STORE UCB,UCB$L_TT_WBLINK,L,0	; Zero write queue blink
+	DPT_STORE UCB,UCB$L_TT_RTIMOU,L,0	; Zero write queue
+	DPT_STORE ORB,ORB$B_FLAGS,B,-		; Default object rights flags
+			<ORB$M_PROT_16>		; SOGW word protection
+	DPT_STORE ORB,ORB$W_PROT,@W,TTY$GW_PROT	; Default allocation protection
+	DPT_STORE ORB,ORB$L_OWNER,@L,TTY$GL_OWNUIC ; Default owner UIC
+
+	DPT_STORE REINIT			; Start of reload
+	DPT_STORE DDB,DDB$L_DDT,D,VD$DDT	; Address of DDT
+	DPT_STORE CRB,-				; Address of controller
+		CRB$L_INTD+VEC$L_INITIAL,-	;     initialization
+		D,VD_CTRL_INIT			;     routine.
+	DPT_STORE CRB,-				; Address of device unit
+		CRB$L_INTD+VEC$L_UNITINIT,-	;     initialization
+		D,VD_UNIT_INIT			;     routine.
+
+	DPT_STORE END				; End of initialization
+						; tables
+
+;
+; Driver dispatch table (Note that certain dispatch routines point to the
+; VDDRIVER routines. These will be TTDRIVER driver entry points which
+; must be initialized at run-time in the controller init routine if the
+; TTDRIVER exists at that point).
+;
+VD_DDT:
+	DDTAB	-				; DDT-creation macro
+		DEVNAM=VD,-			; Name of device
+		START=VD_NULL,-			; Class driver start I/O
+		UNSOLIC=VD_INPUT_HANDLER,-	; Input handler from VB
+		FUNCTB=VD_FUNCTABLE,-		; FDT address
+		ALTSTART=VD_BROADCAST,-		; Broadcast start I/O routine
+		CANCEL=VD_CANCEL		; Cancel I/O routine
+
+;
+; VDDRIVER function dispatch table
+;
+VD_FUNCTABLE:					; FDT for driver
+	FUNCTAB	,-				; Valid I/O functions
+		<READ_VKB,-			; Read from virtual keyboard
+		WRITE_GRAPHICS,-		; Write graphics package
+		WRITE_VD,-			; Write to virtual display
+		CREATE_MENU,-			; Create menu
+		CREATE,-			; Create SDA objects
+		DELETE,-			; Delete SDA objects
+		ACCESS,-			; Sense object characs
+		MODIFY,-			; Set object characteristics
+		MOUNT,-				; Mount or dismount the ACP
+		ACTIVATE,-			; Activates a pointer or VKB
+		DEACTIVATE,-			; Deactivates pointer or VKB
+		VSTAHI,-			; Human interface functions
+		VSTAPTR,-			; Perform pointer functions
+		DIAGNOSE,-			; UETP/tuning functions
+		ACPCONTROL>			; Manipulate SDA objects
+
+	FUNCTAB	,-				; Buffered I/O functions
+		<READ_VKB,-			; Read from virtual keyboard
+;***		WRITE_GRAPHICS,-		; Write graphics package -- DIO
+		WRITE_VD,-			; Write to virtual display
+		CREATE_MENU,-			; Create menu
+		CREATE,-			; Create SDA objects
+		DELETE,-			; Delete SDA objects
+;***		ACCESS,-			; 	DIRECT I/O
+;***		MODIFY,-			; 	DIRECT I/O
+		MOUNT,-				; Mount or dismount the ACP
+		ACTIVATE,-			; Activates a pointer or VKB
+		DEACTIVATE,-			; Deactivates pointer or VKB
+		VSTAHI,-			; Human interface functions
+		VSTAPTR,-			; Perform pointer functions
+		DIAGNOSE,-			; UETP/tuning functions
+		ACPCONTROL>			; Manipulate SDA objects
+;
+; Define those functions handled here in VDDRIVER FDT routines
+;
+	FUNCTAB	VD_READ,-			; FDT read routine for
+		<READ_VKB>			; Read from virtual keyboard
+	FUNCTAB	VD_WRITE_GRAPHICS,-		; FDT for Direct I/O
+		<WRITE_GRAPHICS>		; graphics output
+	FUNCTAB	VD_WRITE,-			; FDT write routine for
+		<WRITE_VD>			; output to virtual display
+	FUNCTAB CREATE_MENU,-			; Create menu.
+		<CREATE_MENU>
+	FUNCTAB VD_CREATE,-			; FDT creation,deletion 
+		<CREATE,-			;   routine for SDA objects
+		DELETE>
+	FUNCTAB VD_ACCESS,-			; FDT routine for sensing
+		<ACCESS>			;   SDA object chars
+	FUNCTAB VD_MODIFY,-			; FDT routine for setting
+		<MODIFY>			;   SDA object chars
+	FUNCTAB	VD_CONTROL,-			; FDT routine manipulates
+		<ACPCONTROL>			;   SDA objects
+	FUNCTAB	VD_POINTER,-			; FDT routine for using
+		<ACTIVATE, -			;   the mouse or the tablet
+		DEACTIVATE>			;   as a pointing device
+	FUNCTAB	VD_VSTAHI, -			; FDT routine for requesting
+		<VSTAHI>			;   VSTA human interface fncts
+	FUNCTAB	VD_VSTAPTR, -			; FDT routine for requesting
+		<VSTAPTR>			;   VSTA pointer functions
+	FUNCTAB VD_UETP, -			; FDT routine for UETP/tuning
+		<DIAGNOSE>			;   functions
+	FUNCTAB VD_MOUNT,-
+		<MOUNT>				; Mount and Dismount ACP
+;
+; Build in some FDT padding for terminal driver functions
+;
+REAL_FUNCTAB_LEN=.-VD_FUNCTABLE			; Remember the real size
+
+FUNCTAB_PADDING:
+	.REPEAT	VS$K_VD_DUMMY_FDTS
+	FUNCTAB VD_NULL,-			; Ye ol' null routine
+		<NOP>				; and ye ol' IO$_NOP
+	.ENDR
+FUNCTAB_PADDING_LEN=.-FUNCTAB_PADDING		; Save padding size
+TOTAL_FUNCTAB_LEN=.-VD_FUNCTABLE		; Remember the total size
+NO_FDT_RTNS=<<TOTAL_FUNCTAB_LEN-16>/12>		; Total no. FDT routines
+;
+; Build a fake terminal driver FDT. This will be a fallback in case the
+; terminal driver doesn't exist at VDDRIVER load time. These FDT routines
+; behave according to VMS V3 terminal driver behavior. The I/O function codes
+; are known to be the current valid ones. The same tests will be performed on
+; these as with the real terminal driver function codes before including them
+; in VDDRIVER's FDT at run-time.
+;
+VD_TT_FUNCTABLE:
+	$VD_FUNCTAB ,-				; Valid I/O functions
+		<READVBLK,-			; Read virtual
+		READLBLK,-			; Read logical
+		READPBLK,-			; Read physical
+		READPROMPT,-			; Read with prompt
+		TTYREADALL,-			; Read passall
+		TTYREADPALL,-			; Read with prompt passall
+		WRITEVBLK,-			; Write virtual
+		WRITELBLK,-			; Write logical
+		WRITEPBLK,-			; Write physical
+		SENSEMODE,-			; Sense device mode
+		SENSECHAR,-			; Sense device characteristics
+		SETMODE,-			; Set device mode
+		SETCHAR>			; Set device characteristics
+	$VD_FUNCTAB ,-				; Buffered I/O functions
+		<READVBLK,-			; Read virtual
+		READLBLK,-			; Read logical
+		READPBLK,-			; Read physical
+		READPROMPT,-			; Read with prompt
+		TTYREADALL,-			; Read passall
+		TTYREADPALL,-			; Read with prompt passall
+		WRITEVBLK,-			; Write virtual
+		WRITELBLK,-			; Write logical
+		WRITEPBLK>			; Write physical
+;***		SENSEMODE,-			; Sense device mode (direct)
+;***		SENSECHAR,-			; Sense device char. (direct)
+;***		SETMODE,-			; Set device mode (direct)
+;***		SETCHAR>			; Set device char. (direct)
+	$VD_FUNCTAB VD_READ,-			; FDT read routine for
+		<READVBLK,-			; read virtual,
+		READLBLK,-			; read logical,
+		READPBLK,-			; read physical,
+		READPROMPT,-			; read with prompt
+		TTYREADALL,-			; read passall,
+		TTYREADPALL>			; and read with prompt passall
+	$VD_FUNCTAB VD_WRITE,-			; FDT write routine for
+		<WRITEVBLK,-			; write virtual,
+		WRITELBLK,-			; write logical,
+		WRITEPBLK>			; and write physical.
+	$VD_FUNCTAB VD_SETMODE,-			; FDT set mode routine
+		<SETMODE>			; for set mode.
+	$VD_FUNCTAB VD_SETCHAR,-			; FDT set char routine
+		<SETCHAR>			; for set characteristics
+	$VD_FUNCTAB VD_SENSEMODE,-		; FDT sense mode routine
+		<SENSEMODE>			; for sense mode.
+	$VD_FUNCTAB VD_SENSECHAR,-		; FDT sense char routine
+		<SENSECHAR>			; for sense characteristics
+;
+; Port vector table
+;
+	.PSECT	$$$115_DRIVER,LONG
+	.ALIGN	LONG
+VD_VECTOR:
+	$VECINI	VD,VD_NULL
+	$VEC	STARTIO,VD_STARTIO		; Start new output on unit
+	$VEC	DISCONNECT,VD_DISCONNECT	; Hangup port
+	$VEC	STOP,VD_STOP			; Stop current output
+	$VEC	ABORT,VD_ABORT			; Abort current output
+	$VEC	RESUME,VD_RESUME		; Resume current output
+	$VEC	XON,VD_XON			; Perform XON
+	$VEC	XOFF,VD_XOFF			; Perform XOFF
+	$VEC	FORKRET,UNENCODED_TO_CLASS	; Data to terminal class driver
+	$VEC	SET_LINE,VD_LINE_CHANGE		; Change line characteristics
+	$VEC	DS_SET,VD_DS_SET		; Dataset transitions
+	$VECEND
+;
+VD_NULL:
+	RSB
+
+
+	.SBTTL	Local Storage
+
+DRV_INIT:
+	.BYTE	0			; Driver initialization flag
+
+VD_DEF_TERMINATORS:			; Default read termination mask
+	.LONG	^XFFFFE0FF
+	.LONG	0,0,^X80000000
+	.LONG	^XFFFFE0FF
+	.LONG	0,0,^X80000000
+
+RELOC_DDT_TABLE: ; All these offsets in the DDT must be relocated
+	.BYTE	DDT$L_START
+	.BYTE	DDT$L_UNSOLINT
+	.BYTE	DDT$L_FDT
+	.BYTE	DDT$L_CANCEL
+	.BYTE	DDT$L_REGDUMP
+	.BYTE	DDT$L_UNITINIT
+	.BYTE	DDT$L_ALTSTART
+	.BYTE	DDT$L_MNTVER
+	.BYTE	DDT$L_CLONEDUCB
+	.BYTE	DDT$L_MNTV_SSSC
+	.BYTE	DDT$L_MNTV_FOR
+	.BYTE	DDT$L_MNTV_SQD
+	.BYTE	-1			; End of table
+
+REAL_WRITE_FDT:				; Saved write FDT routine address
+	.LONG	0
+
+VD_CTRL:
+	.REPEAT	VS$K_VB_MAX		; For each possible physical device
+	.REPEAT CTRL$K_LEN		; maintain a data structure full
+	.BYTE	0			; of zeroes
+	.ENDR				;
+	.ENDR				;
+
+VD_MAX_IRPCNT:
+	.LONG	VS$K_MAX_IRP_CNT	; Max. internal IRP count default
+
+
+	.SBTTL	*** Virtual Device Terminal Port Driver Section ***
+	.SHOW EXPANSIONS,BINARY
+	.SBTTL	VD_CTRL_INIT - Controller initialization routine
+
+;++
+; VD_CTRL_INIT, Readies controller for I/O
+;
+; FUNCTIONAL DESCRIPTION:
+;	Called:
+;		at system startup
+;		during driver loading
+;		during recovery from a power failure
+;
+; INPUTS:
+;
+;	R4	address of the CSR (Controller Status Register)
+;	R5	address of the IDB (Interrupt dispatch Block)
+;	R6	address of the DDB (Device data block)
+;	R8	address of the CRB (Channel request block)
+;
+; IMPLICIT INPUTS:
+;
+;	IPL = IPL$_POWER
+;
+; OUTPUTS:
+;
+;	The routine must preserve all registers except R0-R3
+;
+;--
+
+VD_CTRL_INIT:					; Initialize controller
+	PUSHR	#^M<R4,R5>			; Save volatile registers
+	CLASS_CTRL_INIT VD$DPT,VD_VECTOR	; Relocate class/port vectors
+;
+; Check the flag to see if we must do driver initialization. If so, we must
+; find the terminal class driver and alter our DDT to vector into it instead
+; of us. Then build a new FDT which is a combination of those function codes
+; supported by VDDRIVER FDT routines and those supported by the terminal
+; class driver.
+;
+25$:
+	TSTB	DRV_INIT			; Driver load init. needed?
+	BEQL	29$				; Yup. First call here.
+	BRW	66$				; Nope. Already did it.
+;
+; Find TTDRIVER's DDB
+;
+29$:	MOVL	G^IOC$GL_DEVLIST,R1		; Point to first DDB
+	MOVL	DDB$L_DDT(R6),R0		; Get our DDT base address
+	TSTL	DDT$L_START(R0)			; Need to relocate DDT/FDT?
+	BLSS	30$				; Nope. Already done
+	BSBW	VD_DDTFDT			; Go relocate DDT/FDT
+30$:	TSTL	R1				; Any more DDB's?
+	BEQL	35$				; NO??!! Oh oh. No TTDRIVER.
+	CMPW	DDB$T_NAME+1(R1),#^A/OP/	; Is this OPx0:'s DDB?
+	BEQL	40$				; Yup. Found it.
+	MOVL	DDB$L_LINK(R1),R1		; Try next entry in list.
+	BRB	30$				; and go back for more
+;
+; No TTDRIVER means that we use our fallback VMS V3 terminal driver support.
+; The DDT should be set up correctly for this, but we will use our fake
+; terminal driver FDT in extending the current FDT.
+;
+35$:	MOVAL	VD_TT_FUNCTABLE,R2		; Get fake FDT address
+	MOVL	#VD_FUNCTAB_LEN,R3		; and size
+	BRB	50$				; Go join common code
+;
+; Initialize those entries in the DDT which point off to TTDRIVER routines
+;
+40$:	MOVL	DDB$L_DDT(R1),R1		; Get TTDRIVER's DDT address
+	MOVL	DDT$L_START(R1),DDT$L_START(R0)	; TTDRIVER's STARTIO routine
+	MOVL	DDT$L_ALTSTART(R1),-		; TTDRIVER's BRKTHRU routine
+		DDT$L_ALTSTART(R0)
+	MOVL	DDT$L_CANCEL(R1),-		; TTDRIVER's CANCELIO routine
+		DDT$L_CANCEL(R0)
+	MOVL	DDT$L_FDT(R1),R2		; Get TTDRIVER's FDT address
+	MOVZWL	DDT$W_FDTSIZE(R1),R3		; and size
+;
+; We now need to extend VDDRIVER's FDT to include terminal driver I/O
+; functions. These functins will either be handled here (if no TTDRIVER exists)
+; or in the terminal driver FDT routines. Regardless, the valid function bits
+; will be checked against the current FDT to prevent overlapping I/O codes.
+;		R0 = VDDRIVER's DDT address
+;		R2 = FDT base address
+;		R3 = FDT size
+;
+50$:	PUSHL	R9				; Save scratch register
+	SUBL3	#16,R3,R9			; Ignore FDT header size
+	CMPL	R9,#FUNCTAB_PADDING_LEN		; Do we have enough room?
+	BLEQ	55$				; Yup. Continue.
+	BUG_CHECK FATALEXCPT,FATAL		; No, crash.
+55$:	MOVL	DDT$L_FDT(R0),R1		; VDDRIVER's FDT base address
+	BITL	(R2),(R1)			; Any I/O code duplications?
+	BEQL	60$				; Nope. So far so good.
+	BUG_CHECK FATALEXCPT,FATAL		; Yup. Can't continue.
+60$:	BITL	4(R2),4(R1)			; Any I/O code duplications?
+	BEQL	61$				; Nope. So far so good.
+	BUG_CHECK FATALEXCPT,FATAL		; Yup. Can't continue.
+61$:	BISL2	(R2),(R1)			; Add new I/O codes to FDT
+	BISL2	4(R2),4(R1)			; Add new I/O codes to FDT
+	BISL2	8(R2),8(R1)			; Add new buffered I/O codes
+	BISL2	12(R2),12(R1)			; Add new buffered I/O codes
+	PUSHL	R1				; Save FDT address
+	MOVC3	R9,16(R2),REAL_FUNCTAB_LEN(R1)	; Move in the rest of FDT
+	POPL	R1				; Restore FDT address
+;
+; To trap broadcast/breakthru messages, it is necessary (unfortunately) to
+; put a front-end on the WRITE FDT routine. So find that routine address,
+; save it, and replace it with our front-end routine. 
+;
+	MOVAB	TOTAL_FUNCTAB_LEN(R1),R9	; Look beyond FDT
+	ADDL2	#4,R1				; Starting point in FDT
+63$:	ADDL2	#12,R1				; Point to next FDT mask
+	CMPL	R1,R9				; Past end of FDT?
+	BGEQ	65$				; ..didn't find it
+	.IF GE	31-IO$_WRITEVBLK		; If IO$_WRITEVBLK LEQ 31
+	BBC	#IO$_WRITEVBLK,(R1),63$		; Check bit in 1st longword
+	.ENDC
+	.IF GE	IO$_WRITEVBLK-32		; If IO$_WRITEVBLK GTR 31
+	BBC	#<IO$_WRITEVBLK-32>,4(R1),63$	; Check bit in 2nd longword
+	.ENDC
+	MOVL	8(R1),REAL_WRITE_FDT		; Save WRITE FDT address
+	MOVAL	VD_WRITE_FRONT,8(R1)		; and replace with front-end
+;
+; Initialize the VD controller block for this controller
+;
+65$:	POPL	R9			; and restore scratch register
+	MOVB	#1,DRV_INIT		; Flag that driver init. complete
+66$:	MOVAB	DDB$T_NAME(R6),R0	; Pull out generic device name
+	MOVZBL	3(R0),R0		; and then the controller letter
+	SUBL2	#^A/A/,R0		; Turn it into a table index
+	CMPL	R0,#VS$K_VB_MAX		; Is it too big?
+	BLSS	67$			; Still okay if less
+	BUG_CHECK FATALEXCPT,FATAL	; Oops! Can't continue.
+67$:	MULL2	#CTRL$K_LEN,R0		; Compute offset from base address
+	MOVAL	VD_CTRL,R1		; Get base address of table
+	ADDL2	R1,R0			; And compute controller database adr.
+	MOVL	#VSTA$K_TT_UNENCODED,-	; Set default translation table
+		CTRL$L_TTABLE(R0)	; for this controller
+	MOVL	DDB$L_UCB(R6),R5	; Is there a unit already here?
+	BGEQ	70$			; Nope. Done for now
+	PUSHR	#^M<R2,R3>		; Save regs to be trashed
+	BSBB	VD_UNIT_INIT		; Reinit. template device
+	POPR	#^M<R2,R3>		; Restore those regs
+;
+; This would be a good time to find the VB (physical) device which corresponds
+; to this virtual device controller. We will need access to certain VBDRIVER
+; routines along the way...
+;
+70$:	POPR	#^M<R4,R5>			; Restore registers
+	RSB					; Return
+
+
+	.SBTTL	VD_UNIT_INIT - Unit initialization routine
+
+;++
+; VD_UNIT_INIT, Readies unit for I/O
+;
+; FUNCTIONAL DESCRIPTION:
+;	Called:
+;		at system startup
+;		during driver loading
+;		during recovery from a power failure
+;
+; INPUTS:
+;
+;	R4	address of the CSR (Controller Status Register)
+;	R5	address of the UCB (Unit Control Block)
+;
+; OUTPUTS:
+;
+;	The routine must preserve all registers except R0-R3
+;
+;--
+
+VD_UNIT_INIT:				; Initialize unit
+;
+; Because we need VDDRIVER's DDT address to be in both the DDB and UCB, we
+; cannot use the class driver macro below directly. However, the rest of that
+; macro has been expanded below. If this macro changes, this code must also
+; reflect that change.
+;
+;***	CLASS_UNIT_INIT			; Initialize class driver unit stuff
+	MOVL	G^TTY$GL_DPT,R1		; TTDRIVER prologue table address
+	MOVZWL	DPT$W_VECTOR(R1),R2	; Get driver vector table address
+	ADDL2	R2,R1			; Relocate vector
+	MOVL	R1,UCB$L_TT_CLASS(R5)	; and store it as class vector in UCB
+	MOVAL	VD$VEC,UCB$L_TT_PORT(R5); as well as the port vector
+	MOVL	CLASS_GETNXT(R1),-	; Get next character routine address
+		UCB$L_TT_GETNXT(R5)	; into the UCB
+	MOVL	CLASS_PUTNXT(R1),-	; Put next character routine address
+		UCB$L_TT_PUTNXT(R5)	; into the UCB
+	BBS	#UCB$V_POWER,-		; If we had a powerfail, don't bother
+		UCB$W_STS(R5),3$	; to setup parity in UCB
+	MOVB	G^TTY$GB_PARITY,-	; Setup parity
+		UCB$B_TT_PARITY(R5)	;
+	MOVB	G^TTY$GB_PARITY,-	; Setup parity
+		UCB$B_TT_DEPARI(R5)	;
+3$:	BISW2	#UCB$M_ONLINE,-
+		UCB$W_STS(R5)		; Set unit online
+	TSTW	UCB$W_UNIT(R5)		; Is this the template VD?
+	BNEQ	6$			; Yup. Do special setup.
+	BISL2	#TT$M_NOBRDCST,-	; No-Broadcast is the default case
+		UCB$L_DEVDEPEND(R5)
+	BISL2	#TT$M_REMOTE,-		; Remote is the default case
+		UCB$L_TT_DECHAR(R5)
+	BICL2	#TT2$M_AUTOBAUD,-	; We don't do autobaud
+		UCB$L_TT_DECHA1(R5)
+	BISL2	#TT2$M_HANGUP,-	   	; But we do hangup
+		UCB$L_TT_DECHA1(R5)
+	BISW2	#TTY$M_PC_NOTIME,-	; No timer services required
+		UCB$W_TT_PRTCTL(R5)
+	CLRL	UCB$B_VD_TYPAHD(R5)	; Zero typeahead buffer head/tail
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Clear out the output data counter
+	PUSHR	#^M<R0,R1>		; Save R0,R1
+	MOVL	UCB$L_DDB(R5),R0	; Get device DDB
+	MOVAB	DDB$T_NAME(R0),R0	; Pull out generic device name
+	MOVZBL	3(R0),R0		; and then the controller letter
+	SUBL2	#^A/A/,R0		; Turn it into a table index
+	CMPL	R0,#VS$K_VB_MAX		; Is it too big?
+	BGEQ	4$			; Yup. Won't fit...
+	MULL2	#CTRL$K_LEN,R0		; Compute offset from base address
+	MOVAL	VD_CTRL,R1		; Get controller base address
+	ADDL3	R0,R1,-			; Get controller address for this unit
+		UCB$A_VD_CTRL(R5)	; and store in the UCB
+4$:	POPR	#^M<R0,R1>		; Restore R0,R1
+	BRB	8$			; Go reinit UCB if needed.
+6$:	BICW2	#UCB$M_TEMPLATE,-	; Nope. Clear the template indicator.
+		UCB$W_STS(R5)
+8$:	TSTW	UCB$W_REFC(R5)		; Any channels assigned?
+	BNEQ	10$			; Yup. Don't reinitialize the UCB
+	CLRL	UCB$L_TT_WFLINK(R5)	; Clear to force queue head reinit.
+	MOVL	UCB$L_TT_CLASS(R5),R1	; Address class vector table
+	JSB	@CLASS_SETUP_UCB(R1)	; Initialize UCB fields for terminal
+	TSTW	UCB$W_UNIT(R5)		; Is this the template VD?
+	BNEQ	10$			; Yup. Do special setup.
+	MOVB	#DT$_VD,UCB$B_DEVTYPE(R5) ; Reinit. the device type field
+10$:	CLRW	UCB$W_TT_OUTLEN(R5)	; No data to process
+20$:	MOVL	UCB$L_CRB(R5),R0	; Get address of CRB
+	MOVL	CRB$L_INTD+VEC$L_IDB(R0),R0 ; Get address of IDB
+	MOVL	R5,IDB$L_OWNER(R0)	; Set address of device UCB
+	BBC	#UCB$V_POWER,-		; If a powerfail occured
+		UCB$W_STS(R5),30$
+	MOVL	UCB$L_TT_CLASS(R5),R0	; Get the class vector table address
+	JMP	@CLASS_POWERFAIL(R0)	; and go execute its powerfail code
+30$:	RSB				; Return
+
+
+	.SBTTL	VD_UNLOAD - Driver Unload routine
+;++
+; VD_UNLOAD, Prepares driver for reloading
+;
+; FUNCTIONAL DESCRIPTION:
+;	Called:
+;		during driver reloading
+;
+; INPUTS:
+;
+;
+; OUTPUTS:
+;
+;	The routine preserves all registers except R0-R1
+;
+;--
+
+VD_UNLOAD:					; Unload VDDRIVER
+;
+; Only permit unload if ALL template VD devices not mounted (no ACPs running)
+;
+	MOVL	G^IOC$GL_DEVLIST,R1		; Point to first DDB
+5$:	TSTL	R1				; Any more DDB's?
+	BEQL	25$				; Nope. Okay to unload.
+	CMPW	DDB$T_NAME+1(R1),#^A/VD/	; Is this a VD DDB?
+	BNEQ	15$				; Nope. Go look at next one.
+	MOVL	DDB$L_UCB(R1),R0		; Look at template UCB
+	BBS	#DEV$V_MNT,UCB$L_DEVCHAR(R0),20$; Can't reload if still mounted
+15$:	MOVL	DDB$L_LINK(R1),R1		; Try next entry in list.
+	BRB	5$				; and go back for more
+20$:	CLRL	R0				; Return unload error code
+	BRB	40$				; Return error to prevent unload
+;
+; All template VDs not mounted (i.e. all ACPs have been stopped preventing
+; activity on all VAXstations on the system). Clean up data structures
+; maintained for each VAXstation, deallocating any nonpaged pool which we
+; are about to lose the pointers to.
+;
+25$:	PUSHR	#^M<R8,R9>			; Save scratch registers
+	MOVAL	VD_CTRL,R8			; Get controller base address
+	MOVL	#VS$K_VB_MAX,R9			; Set no. controller entries
+31$:	MOVL	CTRL$A_TTABLE(R8),R0		; Trans. table to deallocate?
+	BGEQ	32$				; Nope. Try symbol table
+	SUBL2	#12,R0				; Adjust pointer to block start
+	JSB	G^EXE$DEANONPAGED		; Deallocate
+32$:	MOVL	CTRL$A_SYMBOL_TABLE(R8),R0	; Symbol table to deallocate?
+	BGEQ	33$				; Nope. Try symbol table
+	SUBL2	#12,R0				; Adjust pointer to block start
+	JSB	G^EXE$DEANONPAGED		; Deallocate
+33$:	MOVL	CTRL$A_NRC_TABLE(R8),R0		; NRC table to deallocate?
+	BGEQ	34$				; Nope. Try next controller
+	SUBL2	#12,R0				; Adjust pointer to block start
+	JSB	G^EXE$DEANONPAGED		; Deallocate
+34$:	ADDL2	#CTRL$K_LEN,R8			; Point to next controller.
+	SOBGTR	R9,31$				; Go until none remain
+	POPR	#^M<R8,R9>			; Restore scratch registers
+	CLRB	DRV_INIT			; Force driver reinitialization
+	MOVZWL	#SS$_NORMAL,R0			; Okay to reload driver
+40$:	RSB					; Return
+
+	.SBTTL	VD_STARTIO - Start I/O on Unit
+
+;++
+; VD_STARTIO, Starts I/O on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is invoked by the terminal class driver when there is
+; data available for output and the unit is not busy. The class driver manages
+; the busy state and this routine must do something with the data (like ship
+; it off to the appropriate virtual terminal emulator).
+;
+; INPUTS:
+;
+;	R3 = Character	and cc = plus
+;	R3 = Address	and cc = minus and R2 = Byte count
+;	R5 = UCB address
+;		UCB$B_TT_OUTYPE(R5) = 0 (no data to output)
+;				    > 0 (single character to output in R3)
+;				    < 0 (burst output as specified below)
+;		UCB$W_TT_OUTLEN(R5) = Burst output length
+;		UCB$L_TT_OUTADR(R5) = Burst output buffer address
+;
+; SIDE EFFECTS:
+;
+;	R5 is preserved
+;
+;--
+VD_STARTIO:				; Start I/O on unit
+	BSBW	PROCESS_OUTPUT		; Take care of output data (if any)
+VD_GETNXT:				; Entry point if data avail.not known
+	BBS	#UCB$V_VD_FORK_ACT,-	; If fork has been requested, then
+		UCB$W_VD_STATUS(R5),10$	; don't ask for more data
+	CMPL	UCB$L_VD_IRP_CNT(R5),-	; If we have a lot of IRPs already
+		VD_MAX_IRPCNT		; outstanding, don't ask for more data.
+	BGEQ	10$			; Jump out of the loop for now.
+	JSB	@UCB$L_TT_GETNXT(R5)	; Call back to class driver for data
+	BNEQ	VD_STARTIO		; and go see what we got (if anything).
+10$:	BBCC	#UCB$V_VD_DATA_AVAIL,-	; If no data has accumulated in the
+		UCB$W_VD_STATUS(R5),20$	; output buffer, we're done
+	PUSHR	#^M<R6,R7>		; Save scratch registers
+	MOVAB	UCB$B_VD_OUTDAT(R5),R7	; Get output buffer address
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6	; Retrieve number of bytes in buffer
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Then clear out the counter
+	BSBW	SEND_VTEM_DATA		; Send output data to emulator
+	POPR	#^M<R6,R7>		; Restore scratch registers
+20$:
+30$:	RSB				; Return
+
+
+	.SBTTL	VD_DISCONNECT - Hangup port routine
+
+;++
+; VD_DISCONNECT, performs "hangup" function on port
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine gets invoked when the last channel has been deassigned
+; on the specifed unit (reference count = 0). So, if appropriate, this UCB
+; will be marked for deletion. If this is a template UCB, then the ACP will
+; be told to delete all temporary SDA objects created by the responsible
+; process.
+;
+; INPUTS:
+;
+;	R0 - Flags =>
+;			LBC => Delete this UCB
+;			LBS => Do NOT delete this UCB
+;	R5 - UCB address
+;
+; OUTPUTS:
+;
+;--
+VD_DISCONNECT:				; Disconnect or hangup port
+	PUSHR	#^M<R2,R3,R4>		; Save some volitile registers
+	BLBS	R0,20$			; Not supposed to delete this UCB
+	BBS	#UCB$V_DELMBX,-		; If this is a mailbox marked for
+		UCB$W_DEVSTS(R5),20$	; delete, VMS will delete UCB for us.
+	CLRL	R4			; Zero out "PCB" field so not used
+	TSTW	UCB$W_UNIT(R5)		; Is this a template VD?
+	BEQL	10$			; If so, cancel any requests on it
+	BSBW	VD_ALLOC_CANCEL_IRP	; Get an IRP for the ACP 
+	BLBC	R0,20$			; If no IRP, quit
+	MOVW	#IO$_STOP!IO$M_VD, -	; Delete this VD only if it is 
+		IRP$W_FUNC(R3)		;	temporary (ACP decides)
+	MOVL	UCB$L_PID(R5),-		; Current device owner is making this
+		IRP$L_PID(R3)		; delete request
+	BSBW	VD_SEND_ACP		; Send IRP to ACP and return
+	BLBS	R0,20$			; Go to success return
+	MOVL	R3,R0			; Failure => We get the IRP address
+	JSB	G^EXE$DEANONPAGED	; and deallocate it.
+;
+; If we failed to get this "delete VD" request to the ACP, then assume that
+; it must be deleted. (It shouldn't matter whether its temporary or permanent
+; here. If ACP is gone, this UCB must be deleted by us or nobody will do it.
+;
+	MOVAB	UCB$L_FQFL(R5),-	; IOC$DELMBX makes amusing assumptions
+		UCB$L_FQFL(R5)		; about FQFL and FQBL if not
+	MOVAB	UCB$L_FQFL(R5),-	; reinitialized to indicate an empty
+		UCB$L_FQBL(R5)		; queue.
+	BISL2	#UCB$M_DELETEUCB,-	; Mark UCB for delete
+		UCB$L_STS(R5)		;
+	BICW2	#UCB$M_ONLINE,-		; Turn offline to prevent further I/O
+		UCB$L_STS(R5)		;
+	BICL2	#<DEV$M_AVL!DEV$M_TRM!DEV$M_MNT>,-; Its not terminal or mounted
+		UCB$L_DEVCHAR(R5)	;
+	JSB	G^IOC$DELETE_UCB	; Fry it
+	BRB	20$			; Return to caller
+10$:	BSBW	VD_ALLOC_CANCEL_IRP	; Get an IRP for the ACP
+	BLBC	R0,20$			; If no IRP, quit
+	MOVW	#IO$_STOP!IO$M_PB, -	; Delete all this process's TEMPORARY
+		IRP$W_FUNC(R3)		;	PBs
+	MOVL	UCB$L_PID(R5),-		; Current device owner is making this
+		IRP$L_PID(R3)		; delete request
+	BSBW	VD_SEND_ACP		; Send IRP to ACP and return
+	BLBS	R0,20$			; Go to success return
+	MOVL	R3,R0			; Failure => We get the IRP address
+	JSB	G^EXE$DEANONPAGED	; and deallocate it.
+20$:	POPR	#^M<R2,R3,R4>		; Restore saved registers
+	RSB				; Return to caller
+
+
+	.SBTTL	VD_STOP - Stop output on unit routine
+
+;++
+; VD_STOP, Stops I/O on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for stopping the current output (if any)
+; on the specified unit. This is usually done for input flow control, but as
+; far as I'm concerned, it looks just like an XOFF. So that's how it will be
+; treated.
+;
+; INPUTS:
+;
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;	R5 = UCB address
+;--
+
+VD_STOP:				; Stop output to port
+	PUSHR	#^M<R4,R8>		; Save scratch registers
+	MOVL	#1,R4			; Turn on the "HOLD" indicator
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_HOLD>,R8 ; Indicate HOLD change
+	BSBW	FLAG_HUMAN_INTERFACE	; and send it away to human interface
+	POPR	#^M<R4,R8>		; Restore scratch registers
+;
+;	PUSHL	R3			; Save contents of R3
+;	CLRL	R3			; Flow control character for XOFF
+;	BSBW	VD_XOFF			; Go do an XOFF
+;	POPL	R3			; Restore R3
+	RSB				; Return
+
+
+	.SBTTL	VD_ABORT - Abort Current output routine
+
+;++
+; VD_ABORT, Aborts current I/O on unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine gets called by the terminal class driver to abort the
+; current output in progress (if any).
+;
+; INPUTS:
+;
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;	R5 = UCB address
+;--
+
+VD_ABORT:				; Abort current I/O to port
+	BISW2	#UCB$M_VD_ABORT,-	; Request abort on current output
+		UCB$W_VD_STATUS(R5)
+	BBC	#UCB$V_INT,-		; Are we currently doing any I/O?
+		UCB$W_STS(R5),10$	; If not, nothing to abort.
+	CLRW	UCB$W_TT_OUTLEN(R5)	; Flush current burst data
+10$:	BSBW	ABORT_VD_IO		; Abort any I/O still queued to VD
+	BICW2	#UCB$M_VD_ABORT,-	; Cancel abort on current output
+		UCB$W_VD_STATUS(R5)
+	RSB				; Return
+
+
+	.SBTTL	VD_RESUME - Resume I/O on unit routine
+
+;++
+; VD_RESUME, Resumes I/O on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine resumes "stopped" output. In other words, it performs
+; an XON in this context.
+;
+; INPUTS:
+;
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;--
+VD_RESUME:				; Resume I/O to port
+	PUSHR	#^M<R4,R8>		; Save scratch registers
+	CLRL	R4			; Turn off the "HOLD" indicator
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_HOLD>,R8 ; Indicate HOLD change
+	BSBW	FLAG_HUMAN_INTERFACE	; and send it away to human interface
+	POPR	#^M<R4,R8>		; Restore scratch registers
+;
+;	PUSHL	R3			; Save contents of R3
+;	CLRL	R3			; Flow control character for XON
+;	BSBW	VD_XON			; Go do an XON
+;	POPL	R3			; Restore R3
+	RSB				; Return
+
+
+	.SBTTL	VD_LINE_CHANGE - Flow/line characteristic change routine
+
+;++
+; VD_LINE_CHANGE, Changes flow/line characteristics on unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+; INPUTS:
+;
+; IMPLICIT INPUTS:
+;
+; OUTPUTS:
+;
+;--
+
+VD_LINE_CHANGE:				; Flow/line char. change on unit
+	RSB				; Return
+
+
+	.SBTTL	VD_XON - Perform XON on unit
+
+;++
+; VD_XON, Perform XON on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine performs XON processing. This means that any data we have
+; buffered up along with the flow control character (if any) must be pumped
+; into the terminal class driver. Also, the XOFF state will be relieved.
+; Note that data stored in the typeahead buffer is still in raw, unencoded form
+; and must be translated before being passed to the terminal class driver.
+;
+; INPUTS:
+;
+;	R3 = Flow control character
+;	R5 = UCB address
+;
+; IMPLICIT INPUTS:
+;
+; OUTPUTS:
+;
+;--
+
+VD_XON:					; Perform XON on unit
+	TSTB	R3			; Is this really a flow ctrl char.?
+	BEQL	15$			; Nope. No need to send it out.
+	BBSS	#UCB$V_INT,-		; Is output active on this unit?
+		UCB$W_STS(R5),10$	;
+	PUSHR	#^M<R6,R7>		; Save registers we plan to trash
+	MOVL	#1,R6			; Buffer size is just 1
+	MOVB	R3,UCB$W_TT_HOLD(R5)	; Stash the char. in the UCB
+	MOVAB	UCB$W_TT_HOLD(R5),R7	; and pass its address for buffer
+	BSBW	SEND_VTEM_DATA		; Send data to emulator
+	POPR	#^M<R6,R7>		; Restore registers we trashed
+	BBCC	#UCB$V_INT,-		; Allow output on this unit
+		UCB$W_STS(R5),15$	;
+10$:	BBSS	#TTY$V_TANK_PREMPT,-	; Preempt with flow control char.
+		UCB$W_TT_HOLD(R5),15$	;
+	MOVB	R3,UCB$B_TT_PREMPT(R5)	; Setup this char. for output
+15$:	BICW2	#UCB$M_VD_XOFF,-	; Flag XON state
+		UCB$W_VD_STATUS(R5)	; in the UCB
+	BBS	#UCB$V_VD_FORK_ACT,-	; If fork request active, then input
+		UCB$W_VD_STATUS(R5),30$	; will be taken care of automatically
+	BSBW	EMPTY_RING_BUFFER	; Send accumulated data to class driver
+30$:	RSB				; Return
+
+
+	.SBTTL	VD_XOFF - Perform XOFF on unit
+
+;++
+; VD_XOFF, Performs XOFF on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for performing an XOFF on the specified
+; unit. This means that the flow control character, if any, will be sent to
+; the appropriate output device (emulator) and further input will be buffered
+; (up to the limit of UCB$K_VD_MAX_TYPAHD).
+;
+; INPUTS:
+;
+;	R3 = Flow control character
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;--
+
+VD_XOFF:				; Perform XOFF to unit
+	TSTB	R3			; Is this really a flow ctrl char.?
+	BEQL	15$			; Nope. Just set XOFF state.
+	BBSS	#UCB$V_INT,-		; Is output active on this unit?
+		UCB$W_STS(R5),10$	;
+	PUSHR	#^M<R6,R7>		; Save registers we plan to trash
+	MOVL	#1,R6			; Buffer size is just 1
+	MOVB	R3,UCB$W_TT_HOLD(R5)	; Stash the char. in the UCB
+	MOVAB	UCB$W_TT_HOLD(R5),R7	; and pass its address for buffer
+	BSBW	SEND_VTEM_DATA		; Send data to emulator
+	POPR	#^M<R6,R7>		; Restore registers we trashed
+	BBCC	#UCB$V_INT,-		; Allow output on this unit
+		UCB$W_STS(R5),15$	;
+10$:	BBSS	#TTY$V_TANK_PREMPT,-	; Preempt with flow control char.
+		UCB$W_TT_HOLD(R5),15$	;
+	MOVB	R3,UCB$B_TT_PREMPT(R5)	; Setup this char. for output
+15$:	BISW2	#UCB$M_VD_XOFF,-	; Flag XOFF state
+		UCB$W_VD_STATUS(R5)	; in the UCB
+	RSB				; Return
+
+
+	.SBTTL	VD_DS_SET - Dataset transition handling routine
+
+;++
+; VD_DS_SET, Handles dataset transitions
+;
+; FUNCTIONAL DESCRIPTION:
+;
+; INPUTS:
+;
+; IMPLICIT INPUTS:
+;
+; OUTPUTS:
+;
+;--
+
+VD_DS_SET:				; Dataset transition handling
+	RSB				; Return
+
+
+	.SBTTL	VD_DDTFDT - DDT and FDT Relocation Routine
+
+;++
+; VD_DDTFDT, Relocates driver DDT and FDT to system virtual addresses
+;
+; FUNCTIONAL DESCRIPTION:
+;	Called:
+;		during driver loading
+;
+; INPUTS:
+;
+;	R6	address of the DDB (Device Data block)
+;
+; IMPLICIT INPUTS:
+;
+;	IPL = IPL$_POWER
+;
+; OUTPUTS:
+;
+;	The routine must preserve all registers
+;
+;--
+
+VD_DDTFDT:				; Relocate DDT/FDT
+	PUSHR	#^M<R4,R5,R6>		; Save scratch registers
+;
+; Relocate the driver dispatch table (DDT)
+;
+	MOVAB	RELOC_DDT_TABLE,R5	; Address of offsets table
+	MOVL	DDB$L_DDT(R6),R4	; Addess of DDT
+10$:	CVTBL	(R5)+,R6		; Get next offset
+	BLSS	20$			; Branch if end of table
+	ADDL2	R4,R6			; Add start address of driver to offset
+	BBS	#31,(R6),10$		; Branch if already system address
+	ADDL2	R4,(R6)			; Add in driver base
+	BRB	10$			; Loop
+;
+; Relocate the function dispatch table (FDT)
+;
+20$:	MOVZWL	DDT$W_FDTSIZE(R4),R5	; Size of FDT
+	MOVL	DDT$L_FDT(R4),R4	; Address of FDT
+	ADDL2	R4,R5			; Add in base of FDT to get end
+	ADDL2	#4,R4			; Initial offset past legal and 
+30$:	ADDL2	#12,R4			; Get next dispatch block (12 bytes)
+	CMPL	R5,R4			; Past end ?
+	BLEQ	40$			; branch if yes
+	BBS	#31,8(R4),30$		; Branch if already system address
+	ADDL2	R4,8(R4)		; Add in current base
+	BRB	30$
+40$:	POPR	#^M<R4,R5,R6>		; Restore scratch registers
+	RSB
+
+
+	.SBTTL	ABORT_VD_IO - Abort Virtual Display I/O
+
+;++
+; ABORT_VD_IO, Aborts all I/O queued to virtual device unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine looks for all I/O requests destined for the specified
+; emulated terminal device but which haven't been processed and aborts them.
+;
+; INPUTS:
+;
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;	R5 = UCB address
+;--
+
+ABORT_VD_IO:				; Abort I/O to emulated terminal
+	PUSHR	#^M<R0,R1,R2,R11>	; Save scratch registers
+	MOVL	UCB$L_VCB(R5),R0	; Get the VCB address
+	BEQL	50$			; WHAT?? No VCB?
+	MOVL	VCB$L_AQB(R0),R0	; Get the AQB address
+	BEQL	50$			; WHAT?? No AQB?
+	PUSHR	#^M<R3,R4,R8,R9>	; Save contents of R3, R4, R8 and R9
+	MOVL	AQB$L_ACPQFL(R0),R3	; Get first IRP in the queue
+	MOVAL	AQB$L_ACPQFL(R0),R9	; Remember queue head address
+10$:	CMPL	R9,R3			; End of queue?
+	BEQL	40$			; If so, we're done
+	MOVL	IRP$L_IOQFL(R3),R8	; Save pointer to next IRP
+	CMPL	IRP$L_UCB(R3),R5	; Is this I/O to the right unit?
+	BNEQ	30$			; Nope. Go try next entry
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE, -
+		IRP$W_FUNC(R3),#IO$_VTEMDATA	; Emulator data?
+	BNEQ	30$			; Nope. Go try next entry
+	PUSHL	R5			; Save UCB address
+	REMQUE	(R3),R5			; Remove this IRP from the ACP queue
+	BSBW	VD_IOCLEANUP		; Found one. Beam it up.
+	POPL	R5			; Restore UCB address
+30$:	MOVL	R8,R3			; Retrieve pointer to next IRP
+	BRB	10$			; And go take a look
+40$:	POPR	#^M<R3,R4,R8,R9>	; Restore contents of R3, R4, R8 and R9
+50$:	POPR	#^M<R0,R1,R2,R11>	; Restore scratch registers
+	RSB				; Return
+
+
+	.SBTTL	PROCESS_OUTPUT - Process Output Data for Unit
+
+;++
+; PROCESS_OUTPUT, Process Output on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for processing output data from the
+; terminal class driver. The data will be sent to the appropriate emulated
+; terminal.
+;
+; INPUTS:
+;
+;	R3 = Character	and cc = plus
+;	R3 = Address	and cc = minus and R2 = Byte count
+;	R5 = UCB address
+;		UCB$B_TT_OUTYPE(R5) = 0 (no data to output)
+;				    > 0 (single character to output in R3)
+;				    < 0 (burst output as specified below)
+;		UCB$W_TT_OUTLEN(R5) = Burst output length
+;		UCB$L_TT_OUTADR(R5) = Burst output buffer address
+;
+; OUTPUTS:
+;	UCB$M_VD_DATA_AVAIL in UCB$W_VD_STATUS(R5) set if data accumulated
+;	in output buffer
+;
+; SIDE EFFECTS:
+;
+;	R5 is preserved
+;
+;--
+PROCESS_OUTPUT:				; Process output data on unit
+	PUSHR	#^M<R6,R7>		; Save registers to be used
+	TSTB	UCB$B_TT_OUTYPE(R5)	; What kind of output do we have?
+ 	BEQL	30$			; NO output? Who woke us up?
+	BGEQ	10$			; Single character I/O?
+	BBCC	#UCB$V_VD_DATA_AVAIL,-	; Indicate that data is NOT available
+		UCB$W_VD_STATUS(R5),5$	; in our output data buffer
+	MOVAB	UCB$B_VD_OUTDAT(R5),R7	; Point to output data buffer
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6	; Retrieve number of bytes in buffer
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Then clear out the counter
+	BSBW	SEND_VTEM_DATA		; Flush accumulated output data
+5$:	MOVZWL	UCB$W_TT_OUTLEN(R5),R6	; Burst output size
+	MOVL	UCB$L_TT_OUTADR(R5),R7	; Burst output buffer address
+	BRB	20$			; Go send the data away.
+10$:	MOVAB	UCB$B_VD_OUTDAT(R5),R7	; Point to output data buffer in UCB
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6 ; Get buffer index
+	MOVB	R3,(R7)[R6]		; Force the pulsating char. in
+	BISW2	#UCB$M_VD_DATA_AVAIL,-	; Indicate that data is available
+		UCB$W_VD_STATUS(R5)	; in our output data buffer
+	AOBLSS	#UCB$K_VD_MAX_OUTDAT,-	; If still room in the output data
+		UCB$L_VD_OUT_CNT(R5),25$; buffer, don't send to ACP just yet
+	BICW2	#UCB$M_VD_DATA_AVAIL,-	; Indicate that data is NOT available
+		UCB$W_VD_STATUS(R5)	; in our output data buffer
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6	; Retrieve number of bytes in buffer
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Then clear out the counter
+20$:	BSBW	SEND_VTEM_DATA		; Send output data to emulator
+25$:	BBCC	#TTY$V_TANK_PREMPT,-	; Do we have any preempt data?
+		UCB$W_TT_HOLD(R5),30$	; Nope. That's all for now.
+	MOVB	UCB$B_TT_PREMPT(R5),R3	; Yup. Get the character to send
+	BRB	10$			; and go do single character output
+30$:	POPR	#^M<R6,R7>		; Restore registers used
+40$:	RSB				; Return
+
+
+	.SBTTL	ECHO_DATA - Echo Output Data for Unit
+
+;++
+; ECHO_DATA, Echo Output on specified unit
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for processing output data from the
+; terminal class driver which was returned by PUTNXT to be echoed. The data
+; will be sent to the appropriate emulated terminal. This routine differs
+; from PROCESS_OUTPUT in that a request will ALWAYS be sent to the ACP. There
+; is no implied buffering.
+;
+; INPUTS:
+;
+;	R3 = Character	and cc = plus
+;	R3 = Address	and cc = minus and R2 = Byte count
+;	R5 = UCB address
+;		UCB$B_TT_OUTYPE(R5) = 0 (no data to output)
+;				    > 0 (single character to output in R3)
+;				    < 0 (burst output as specified below)
+;		UCB$W_TT_OUTLEN(R5) = Burst output length
+;		UCB$L_TT_OUTADR(R5) = Burst output buffer address
+;
+; OUTPUTS:
+;	None
+;
+; SIDE EFFECTS:
+;
+;	R5 is preserved
+;
+;--
+ECHO_DATA:				; Echo output data on unit
+	PUSHR	#^M<R6,R7>		; Save registers to be used
+	TSTB	UCB$B_TT_OUTYPE(R5)	; What kind of output do we have?
+	BEQL	30$			; NO output? Who woke us up?
+	BGEQ	10$			; Single character I/O?
+	BBCC	#UCB$V_VD_DATA_AVAIL,-	; Indicate that data is NOT available
+		UCB$W_VD_STATUS(R5),5$	; in our output data buffer
+	MOVAB	UCB$B_VD_OUTDAT(R5),R7	; Point to output data buffer
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6	; Retrieve number of bytes in buffer
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Then clear out the counter
+	BSBW	SEND_VTEM_DATA		; Flush accumulated output data
+5$:	MOVZWL	UCB$W_TT_OUTLEN(R5),R6	; Burst output size
+	MOVL	UCB$L_TT_OUTADR(R5),R7	; Burst output buffer address
+	BRB	20$			; Go send the data away.
+10$:	MOVAB	UCB$B_VD_OUTDAT(R5),R7	; Point to output data buffer in UCB
+	MOVL	UCB$L_VD_OUT_CNT(R5),R6 ; Get buffer index
+	MOVB	R3,(R7)[R6]		; Force the pulsating char. in
+	INCL	R6			; Update the byte count
+	CLRL	UCB$L_VD_OUT_CNT(R5)	; Then clear out the counter
+	BICW2	#UCB$M_VD_DATA_AVAIL,-	; Indicate that data is NOT available
+		UCB$W_VD_STATUS(R5)	; in our output data buffer
+20$:	BSBW	SEND_VTEM_DATA		; Send output data to emulator
+25$:	BBCC	#TTY$V_TANK_PREMPT,-	; Do we have any preempt data?
+		UCB$W_TT_HOLD(R5),30$	; Nope. That's all for now.
+	MOVB	UCB$B_TT_PREMPT(R5),R3	; Yup. Get the character to send
+	BRB	10$			; and go do single character output
+30$:	POPR	#^M<R6,R7>		; Restore registers used
+40$:	RSB				; Return
+
+	.SBTTL	SEND_VTEM_DATA - Send Output data to unit
+;++
+; SEND_VTEM_DATA - Send Specified data to specified unit (emulated terminal)
+;
+; Functional description:
+;
+;	This routine is responsible for doing whatever is necessary to get the
+; specified data to the appropriate terminal emulator for output.
+;
+; Inputs:
+;
+;	R5 = address of the UCB (unit control block)
+;	R6 = length of buffer
+;	R7 = address of buffer
+;
+; Outputs:
+;
+;	R0,R1,R2,R3,R4 = preserved
+;--
+SEND_VTEM_DATA:			; Send output data to unit emulator
+;
+; Allocate an I/O packet
+;
+	TSTW	UCB$W_UNIT(R5)		; Is this the template?
+	BNEQ	10$			; Nope. Continue.
+	BRW	50$			; Yup. No output allowed!
+10$:	PUSHR	#^M<R0,R1,R2,R3,R4>	; Save registers
+	CLRL	R4			; No PCB context to speak of
+	BSBW	VD_ALLOCIRP		; Allocate an I/O request packet
+	BLBS	R0,15$			; If we got an IRP, continue
+	BRW	100$			; NO IRPS?? Throw this I/O away
+15$:	MOVL	R2,R3			; Save address of packet
+;
+; Fill in some IRP info for handling as a normal I/O request
+;
+	MOVL	R5,IRP$L_UCB(R3)	; Set UCB address
+	MOVW	#IO$_VTEMDATA,-		; Set function code
+		IRP$W_FUNC(R3)
+	MOVB	#27,IRP$B_PRI(R3)	; Priority = 4
+	MOVAL	VD_IOCLEANUP,-		; Internal I/O postprocessing routine
+		IRP$L_PID(R3)		; address
+	BISW2	#IRP$M_BUFIO,-		; Pretend this is buffered I/O
+		IRP$W_STS(R3)		;
+	MOVZWL	#<VS$M_ST_WRITE!VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize write function
+;
+; Allocate a system buffer for the data to transfer or use IRP for small
+; buffers
+;
+	CMPL	R6,#VS$K_SMALL_VTEM_BUF	; Is it bigger than a breadbox?
+	BGTR	20$			; Yup. Gotta allocate a buffer.
+	MOVAB	IRP$L_IOST2(R3),R2	; Nope. Just use part of the IRP.
+	BRB	30$			; Go do the copy
+20$:	ADDL3	#VS$K_VTEM_HEAD_SIZE,R6,R1 ; How much to allocate for buffer
+	PUSHL	R3			; Save I/O packet address
+	JSB	G^EXE$ALONONPAGED	; Allocate S0 buffer (dstrys R3)
+	BLBC	R0,25$			; Branch if failure
+	POPL	R3			; Restore I/O packet address
+	MOVW	R1,IRP$W_SIZE(R2)	; Set the temporary buffer size
+	CLRB	IRP$B_TYPE(R2)		; and the type is UNKNOWN...
+	MOVW	R1,IRP$W_BOFF(R3)	; Set the temporary buffer size
+	MOVL	R2,IRP$L_SVAPTE(R3)	; Set buffer address in IRP
+	ADDL2	#VS$K_VTEM_HEAD_SIZE,R2	; Point to data area in buffer
+	BRB	30$			; and go move the data
+;
+; No pool available for the data but there was enough for the IRP? If so,
+; give back the IRP since others are probably pretty hard up
+;
+25$:	POPL	R0			; Restore address of I/O packet
+	JSB	G^EXE$DEANONPAGED	; Deallocate the IRP
+	BRW	100$			; Quit
+;
+; So far..so good. Copy the data into our new buffer and update the IRP
+; with where to look for it.
+;
+30$:	MOVW	R6,IRP$W_BCNT(R3)	; Size of output data specified
+	BBSC	#UCB$V_VD_ABORT,-	; Don't copy the data if abort set
+		UCB$W_VD_STATUS(R5),35$
+	PUSHR	#^M<R2,R3,R5>		; Save needed registers before copying
+	MOVC3	R6,(R7),(R2)		; Copy data
+	POPR	#^M<R2,R3,R5>		; Restore saved registers
+;
+; Send this request off to the ACP
+;
+	BSBW	VD_SEND_ACP		; Give it to the ACP, and return here
+	BLBC	R0,35$			; If failure, go do deallocations
+	INCL	UCB$L_VD_IRP_CNT(R5)	; Keep a count of IRPS
+	BRB	40$			; Return with success status in R0
+35$:	CMPL	R6,#VS$K_SMALL_VTEM_BUF	; Is it bigger than a breadbox?
+	BLEQ	36$			; Yup. Gotta deallocate a buffer.
+	PUSHL	R3			; Save R3 before deallocation
+	SUBL3	#VS$K_VTEM_HEAD_SIZE,R2,R0 ; Get the data buffer address and
+	JSB	G^EXE$DEANONPAGED	; deallocate it.
+	POPL	R3			; Restore R3
+36$:	MOVL	R3,R0			; Then get the IRP address and
+	JSB	G^EXE$DEANONPAGED	; deallocate it.
+40$:	POPR	#^M<R0,R1,R2,R3,R4>	; Restore saved registers
+50$:	RSB				; Return to caller
+;
+; Error handling
+;
+100$:	INCW	UCB$W_ERRCNT(R5)	; Increment error count
+	BRB	40$			; Complete erroneous operation
+
+
+	.SBTTL	PROCESS_INPUT - Setup to Send Input Data to Class Driver
+
+;++
+; PROCESS_INPUT, Setup to send buffered input data (at device IPL) to class
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for initiating the transfer of data
+; between the port and class drivers for input that has been buffered. If
+; the device is in an XOFF state or the fork has already been requested,
+; then this routine will merely return. Otherwise, the fork process to handle
+; the input data will be queued.
+;
+; INPUTS:
+;
+;	IPL = UCB$B_DIPL (VBDRIVER)
+;	R5 = UCB address
+;
+; OUTPUTS:
+;
+;	R0 = Altered.
+;--
+
+PROCESS_INPUT:				; Port fork setup processing
+	BBS	#UCB$V_VD_XOFF,-	; If device is XOFFed, then don't
+		UCB$W_VD_STATUS(R5),10$	; bother forking
+	BBSS	#UCB$V_VD_FORK_ACT,-	; If fork already requested, then
+		UCB$W_VD_STATUS(R5),10$	; we're done
+	BISW2	#UCB$M_INT,UCB$W_STS(R5); Stop that output!
+	MOVL	UCB$L_TT_CLASS(R5),R0	; Get class vector address
+	PUSHR	#^M<R2,R3,R4>		; Save potentially trashed registers
+	JSB	@CLASS_FORK(R0)		; Request a fort pork
+	POPR	#^M<R2,R3,R4>		; Restore potentially trashed registers
+10$:	RSB				; Return
+
+	.SBTTL	UNENCODED_TO_CLASS - Send Input Data to class driver
+
+;++
+; UNENCODED_TO_CLASS, Sends Buffered Input Data to Class Driver
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for taking 16-bit up/down unencoded
+; keystrokes which have been buffered, translating them into something more
+; recognizable, and sending the data to the terminal class driver for
+; processing. Note that the physical device driver (VBDRIVER) places the
+; data into a ring buffer in the UCB of the appropriate virtual device. This
+; multiplexing is managed by the ACP.
+;
+; INPUTS:
+;
+;	R5 = UCB address
+;
+; IMPLICIT INPUTS:
+;
+;	IPL = UCB$B_FIPL(R5)
+;
+; OUTPUTS:
+;
+;--
+
+UNENCODED_TO_CLASS:			; Send unencoded to class driver
+	BBC	#UCB$M_VD_LOADTT_IP,-	; Don't process characters yet if trans.
+		UCB$W_VD_STATUS(R5),5$	; table load in progress.
+	RSB				; Just return to caller
+5$:	BICW2	#UCB$M_VD_FORK_ACT,-	; Allow more fort porking (if
+		UCB$W_VD_STATUS(R5)	; needed) to synch. output processing.
+	BICW2	#UCB$M_INT,UCB$W_STS(R5); Allow more output!
+
+EMPTY_RING_BUFFER:			; Process data in the ring buffer
+	BBSS	#UCB$V_VD_INPUT_IP,-	; Branch if input processing already
+		UCB$W_VD_STATUS(R5),30$	; in progress
+	PUSHR	#^M<R2,R3,R4,R6>	; Save some registers in case needed
+	MOVAB	UCB$B_VD_TYPAHD(R5),R3	; Get typeahead buffer base address
+10$:	CMPW	(R3),2(R3)		; Any characters buffered?
+	BEQL	20$			; Nope. All done.
+	CMPW	(R3),#UCB$K_VD_MAX_TYPIDX ; Are we positioned at end of buffer?
+	BGEQ	12$			; Yup. Reinitialize pointer.
+	INCW	(R3)			; Nope. Just increment index.
+	BRB	15$			; And go get the character.
+12$:	CLRW	(R3)			; Begin at start of buffer again.
+15$:	MOVZWL	(R3),R4			; Stash buffer index.
+	MOVZWL	4(R3)[R4],R4		; Get the next character in buffer
+	BSBW	PROCESS_KEYSTROKE	; Translate and send to class driver
+	BRB	10$			; If there's any left, go do them
+20$:	POPR	#^M<R2,R3,R4,R6>	; Restore registers
+	BICW2	#UCB$M_VD_INPUT_IP,-	; Indicate that input processing no
+		UCB$W_VD_STATUS(R5)	; longer in progress on unit
+30$:	RSB				; Return
+
+	.SBTTL	PROCESS_KEYSTROKE - Translate Unencoded + send to class driver
+
+;++
+; PROCESS_KEYSTROKE, Translates up/down unencoded and sends to class driver
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for taking a 16-bit up/down unencoded
+; keystroke, translating it into something more recognizable, and sending the
+; data to the terminal class driver for processing. Note that certain
+; keystrokes cause VAXstation human interface notification and some get
+; expanded into strings.
+;
+; INPUTS:
+;
+;	R4 = 16-bit unencoded keystroke value
+;	R5 = UCB address
+;
+; IMPLICIT INPUTS:
+;
+;	IPL = UCB$B_FIPL(R5)
+;
+; OUTPUTS:
+;
+;--
+
+PROCESS_KEYSTROKE:			; Process single keystroke
+	PUSHR	#^M<R1,R2,R3,R6,R7,R8,R9,R10> ; Save registers to be used
+	MOVL	UCB$A_VD_CTRL(R5),R9	; Get controller block address
+	BBC	#KB$V_TRANSLATED,R4,10$	; Check if translation already done
+	MOVZBL	R4,R1			; Get the translated keystroke
+	BRW	PROCESS_TRANSLATED	; and go process that
+10$:	BBS	#CTRL$V_OEM,-		; If in OEM mode, don't check for
+		CTRL$W_STATUS(R9),14$	; special human interface keys
+	CMPB	R4,#VS$K_HELP_KEY	; Is this the HELP key?
+	BNEQ	13$			; Nope. Continue
+11$:	BBC	#KB$V_UP_DOWN,R4,12$	; Is it a downstroke?
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_SPKEY>,R8 ; Indicate special key
+	BSBW	FLAG_HUMAN_INTERFACE	; New symbols to display (r0,r4)
+12$:	BRW	KEY_DONE		; And that's it for this key.
+13$:	CMPB	R4,#VS$K_MENU_KEY	; Is this the MENU key?
+	BEQL	11$			; Yup. Go see if its a downstroke.
+14$:	CMPL	CTRL$L_TTABLE(R9),-	; Is translation even required
+		#VSTA$K_TT_UNENCODED	; for this device
+	BNEQ	20$			; Yup. Better go do it.
+	BISL2	#TT$M_PASSALL,-		; Force the device to be in passall
+		UCB$L_DEVDEPEND(R5)	; mode for unencoded input.
+	BISL2	#TT2$M_PASTHRU,-	; Force the device to be in pasthru
+		UCB$L_DEVDEPND2(R5)	; mode for unencoded input.
+	MOVW	R4,-(SP)		; Put unencoded stuff on stack
+	MOVL	#2,R9			; and a byte count of 2
+	BRW	SEND_TO_CLASS		; Send it away to the class driver
+20$:	BBS	#KB$V_UP_DOWN,R4,30$	; We don't do ups
+	BRW	KEY_DONE		; So we are done with this keystroke
+30$:	BBC	#KB$V_COMPOSE,R4,100$	; Composing a character?
+	MOVL	CTRL$B_TTABLE_LIST+8(R9),R1 ; The SHIFT table address
+	BEQL	90$			; No SHIFT table is not a nice thing.
+	MOVZBL	R4,R2			; Get the keycode and
+	SUBL2	#UNUSED_KEYS,R2		; adjust to use for table index.
+	MOVL	CTRL$B_SYMBOL_LIST(R9),R3 ; Point to start of symbol table
+	MOVL	#6,R4			; First non-null ptr into symbol table
+35$:	MOVW	(R3)[R4],R6		; Lets take a closer look at entry
+	BLSS	90$			; Not too exciting...(bad seed)
+	CMPW	R6,(R1)[R2]		; Is this the upper-seed we seek?
+	BEQL	40$			; Yup. Go stash the symbol index value
+	ADDL2	#6,R4			; Lets try the next symbol seed
+	BRB	35$			; until we find something
+40$:	ASHL	#1,R4,-			; Store byte offset to symbol map
+		UCB$L_VD_SYMBOL_SHIFT(R5) ; for SHIFTed seed
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_NEWSYM>,R8 ; Indicate new symbol map
+	BSBW	FLAG_HUMAN_INTERFACE	; New symbols to display (r0,r4)
+	MOVL	CTRL$B_TTABLE_LIST(R9),R7 ; The lower-case table address
+	BEQL	90$			; No lower-case table is not nice
+	MOVL	#6,R4			; First non-null ptr into symbol table
+45$:	MOVW	(R3)[R4],R6		; Lets take a closer look at entry
+	BLSS	90$			; Not too exciting...(bad seed)
+	CMPW	R6,(R7)[R2]		; Is this the lower-seed we seek?
+	BEQL	50$			; Yup. Go stash the symbol index value
+	ADDL2	#6,R4			; Lets try the next symbol seed
+	BRB	45$			; until we find something
+50$:	CMPW	(R1)[R2],(R7)[R2]	; Are upper and lower seeds the same?
+	BNEQ	55$			; If not, store what we have
+	ADDL2	#6,R4			; Otherwise, point to next symbol entry
+55$:	ASHL	#1,R4,-			; Store byte offset to symbol map
+		UCB$L_VD_SYMBOL_LOWER(R5) ; for lower-cased seed
+90$:	BRW	KEY_DONE		; All done composing. No input data.
+100$:	CMPB	R4,#METRONOME_KEY	; Is this the metronome key?
+	BEQL	KEY_DONE		; Yup. Ignore it.
+	CMPB	R4,#ALL_UPS_KEY		; Is this the all-ups key?
+	BEQL	KEY_DONE		; Yup. Ignore it.
+	CMPB	R4,#CTRL_KEY		; Is this the control key?
+	BEQL	KEY_DONE		; Yup. Ignore it.
+	CMPB	R4,#SHIFT_KEY		; Is this the shift key?
+	BEQL	KEY_DONE		; Yup. Ignore it.
+	CMPB	R4,#CPSLCK_KEY		; Is this the caps-lock key?
+	BEQL	KEY_DONE		; Yup. Ignore it.
+	EXTZV	#9,#4,R4,R1		; Determine which table to use
+	MOVAB	CTRL$B_TTABLE_LIST(R9),R0 ; Base list address
+	MOVL	(R0)[R1],R1 		; The correct table address
+	BEQL	KEY_DONE		; No table => no translation
+	MOVZBL	R4,R0			; Use the unencoded char. code to
+	SUBL2	#UNUSED_KEYS,R0		; find index to translated value
+	MOVZWL	(R1)[R0],R1		; Retrieve the translated value
+	BRB	PROCESS_TRANSLATED	; Go process translated keystroke
+
+KEY_DONE:
+	POPR	#^M<R1,R2,R3,R6,R7,R8,R9,R10> ; Restore registers
+	RSB				; Return
+
+;
+; This "routine" takes the unencoded value and the translation table entry
+; for that value, and performs a second level of translation (if needed)
+; based on flags in that translation table entry. This data will then be
+; passed off to the terminal class driver.
+;
+; INPUTS:
+;	R1 = Translation table entry
+;	R4 = Unencoded keystroke
+;	R5 = UCB address
+;	R9 = CTRL address (controller block)
+;
+PROCESS_TRANSLATED:			; Process translated keystroke
+	BBS	#KBT$V_SYMBOL,R1,105$	; If not a symbol (local function key)
+	BRW	200$			; skip over this section
+105$:	MOVZBL	R1,R1			; We only need the lower byte now.
+	MOVL	CTRL$B_SYMBOL_LIST(R9),R2 ; Get table start address
+	BEQL	KEY_DONE		; WHAT??? No table?
+	BBS	#KB$V_SHIFT,R4,110$	; SHIFTed keystroke
+	BBS	#KB$V_CAPS_LOCK,R4,110$	; CAPS-locked keystroke
+	ADDL2	UCB$L_VD_SYMBOL_LOWER(R5),R2 ; Use lower-cased symbol table
+	BRB	120$			; and go verify entry
+110$:	ADDL2	UCB$L_VD_SYMBOL_SHIFT(R5),R2 ; Use SHIFTed symbol table
+120$:	CMPB	R1,#6			; Make sure nobody's messing w/our mind
+	BGEQ	KEY_DONE		; Well. Somebody was. See figure 1.
+	MOVZWL	(R2)[R1],R3		; Retrieve the composite symbol value
+	BEQL	KEY_DONE		; and it nothing..
+	CMPW	R3,#-1			; Was it a -1?
+	BNEQ	190$			; Nope. Go handle normal symbol input.
+	CMPW	(R2),12(R2)		; First and last seed entries the same?
+	BNEQ	130$			; Nope. Needs more work.
+	ADDL2	#12,UCB$L_VD_SYMBOL_SHIFT(R5) ; Bump the shift symbol table
+	ADDL2	#12,UCB$L_VD_SYMBOL_LOWER(R5) ; Bump the lower symbol table
+	ASHL	#-1,-			; Convert byte offset to word index
+		UCB$L_VD_SYMBOL_SHIFT(R5),R4
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_NEWSYM>,R8 ; Indicate new symbol map
+	BSBW	FLAG_HUMAN_INTERFACE	; and send it away to human interface
+	BRW	KEY_DONE		; We're done.
+130$:	MOVL	CTRL$B_SYMBOL_LIST(R9),R7 ; The symbol table address
+	BEQL	KEY_DONE		; No lower-case table is not nice
+	MOVL	#6,R1			; First non-null ptr into symbol table
+135$:	MOVW	(R7)[R1],R6		; Lets take a closer look at entry
+	BLSS	KEY_DONE		; Not too exciting...(bad seed)
+	CMPW	R6,(R2)			; Is this the seed we seek?
+	BEQL	140$			; Yup. Go stash the symbol index value
+	ADDL2	#6,R1			; Lets try the next symbol seed
+	BRB	135$			; until we find something
+140$:	MOVAW	(R7)[R1],R1		; Get address of seed entry found
+	SUBL3	R1,R2,R6		; Compute displacement to seed address
+	SUBL2	R6,UCB$L_VD_SYMBOL_LOWER(R5) ; and store new lower symbol ptr
+	SUBL2	R6,UCB$L_VD_SYMBOL_SHIFT(R5) ; and store new SHIFT symbol ptr
+	MOVL	UCB$L_VD_SYMBOL_SHIFT(R5),R4 ; Need symbol table index value
+	ASHL	#-1,-			; Convert to words for table index
+		UCB$L_VD_SYMBOL_SHIFT(R5),R4
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_NEWSYM>,R8 ; Indicate new symbol map
+	BSBW	FLAG_HUMAN_INTERFACE	; and send it away to human interface
+	BRW	KEY_DONE		; We're done.
+190$:	MOVW	R3,R1			; Need composite symbol in R1
+200$:	MOVZBL	UCB$B_VD_DEAD(R5),R2	; Remember previous dead value
+	BBCC	#KBT$V_DEAD,R1,210$	; Dead diacritical table entry?
+	MOVB	R1,UCB$B_VD_DEAD(R5)	; Yup. Save the diacritical.
+	BRB	215$			; Go check previous "dead" key
+210$:	CLRB	UCB$B_VD_DEAD(R5)	; Zero out the dead field
+215$:	TSTB	R2			; Anything in the previous dead store
+	BEQL	250$			; Nothing worth processing
+	MOVL	CTRL$B_TTABLE_LIST+64(R9),R7 ; The dead table address
+	CLRL	R6			; Start with first table entry
+220$:	MOVAW	(R7)[R6],R3		; Get dead table entry address.
+	TSTW	(R3)			; At the end of the dead table?
+	BEQL	250$			; Yup. Forget about composing diacrit.
+225$:	CMPB	(R3),R2			; Is it same as previous dead entry?
+	BNEQ	230$			; Nope. Try next one.
+	CMPB	1(R3),R1		; and match our resultant char. code?
+	BNEQ	230$			; Nope. Try next one.
+;
+; Check to see if diacritical was in NRC.  If so then we need  a delete
+; if not then we don't
+;
+	PUSHL	R8			; save R8
+	PUSHL	R9			; save R9
+	PUSHL	R10			; save R10
+	MOVL	R1,R9			; Store uncomposed char in R9
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	MOVL	CTRL$A_NRC_TABLE(R8),R8 ; Get NRC table to use (if any)
+	BEQL	227$			; No NRC then need delete
+	MOVB	(R8)[R2],R10		; Get NRC table entry
+	BBS	#7,R10,228$		; Upper bit set => dead key (no trans.)
+227$:	BISW3	#KBT$M_DEAD,2(R7)[R6],R1; Following entry is one we want.
+	BRB	229$			; End: send delete
+228$:	MOVW	2(R7)[R6],R1		; End: don't send delete
+					; Is composed key in NRC
+229$:	TSTL	R8			; Is there an NRC table
+	BEQL	2295$			; No! Better not look at it then
+	MOVB	(R8)[R1],R10		; Get NRC table entry 
+	BBC	#7,R10,2295$		; Upper bit set => dead key (no trans.)
+	MOVL	R9,R1			; Composed key not in NRC so
+					; echo origional key
+2295$:	POPL	R10			; restore R10
+	POPL	R9			; restore R9
+	POPL	R8			; restore R8
+	BRB	250$			; Go take a better look
+;
+230$:	ADDL2	#2,R6			; Look at next entry.
+	BRB	220$
+250$:	BBS	#KBT$V_SPECIAL,R1,270$	; If special, go handle with care
+	BBC	#KBT$V_IGNORE,R1,252$	; Ignore it if we're supposed to.
+	BRW	KEY_DONE		; ...exit
+252$:	BBC	#UCB$V_VD_NEW_LINE,-	; If we are in "new-line" mode and the
+		UCB$W_VD_STATUS(R5),260$; character is a <CR>, expand it to
+	CMPB	R1,#VS$K_CR		; be a <CR><LF> instead
+	BNEQ	260$			; Otherwise, its just a <CR>
+	MOVW	#VS$K_CRLF,-(SP)	; Stash the <CR><LF> on stack
+	MOVL	#2,R9			; and the number of characters
+	BRW	SEND_TO_CLASS		; and get it out of here
+260$:	MOVB	R1,-(SP)		; Ordinary input onto the stack
+	MOVL	#1,R9			; and just 1 character
+	BBC	#KBT$V_DEAD,R1,266$	; Dead diacritical table entry?
+	MOVB	#VS$K_DELETE,-(SP)	; Delete last char. before dead
+	INCB	R9			; Add one to the byte count
+266$:	BRW	SEND_TO_CLASS		; and get it out of here
+270$:	EXTZV	#8,#7,R1,R9		; Pull out the special char. type field
+	CASEL	R9,#0,#4		; and go to the appropriate section
+275$:	.WORD	280$-275$,-		; PF function key handling
+		290$-275$,-		; Numeric keypad handling
+		300$-275$,-		; Cursor key handling
+		310$-275$,-		; Edit keypad handling
+		320$-275$		; Application function key handling
+280$:	MOVL	#1,R9			; Set the byte count to one
+	MOVB	R1,-(SP)		; Put the input char. on stack
+	BBS	#UCB$V_VD_EIGHTBIT,-	; If in eightbit mode, go generate
+		UCB$W_VD_STATUS(R5),285$; eight-bit codes
+	BBS	#UCB$V_VD_VT52,-	; Just <ESC><INPUT-BYTE> in VT52 mode
+		UCB$W_VD_STATUS(R5),281$; So branch around
+	MOVB	#^A/O/,-(SP)		; Stick an "O" on the stack
+	INCL	R9			; and increment the counter
+281$:	MOVB	#VS$K_ESC,-(SP)		; and lastly an escape goes on
+282$:	INCL	R9			; and increment the counter
+	BRW	SEND_TO_CLASS		; and send it away...
+285$:	MOVB	#VS$K_SS3,-(SP)		; Use SS3 and not <ESC> in eightbit
+	BRB	282$			; and increment counter + send away
+290$:	BBS	#UCB$V_VD_KEYPAD,-	; If in keypad application mode,
+		UCB$W_VD_STATUS(R5),291$; expand into proper control sequence
+	MOVB	R1,-(SP)		; Just store input character
+	MOVL	#1,R9			; and a byte count of 1
+	BRW	SEND_TO_CLASS		; and send it away...
+291$:	ADDB2	#64,R1			; Generate last byte of sequence
+	MOVB	R1,-(SP)		; and put it on the stack
+	MOVL	#1,R9			; Save the initial byte count
+	BBS	#UCB$V_VD_EIGHTBIT,-	; If in eightbit mode, go generate
+		UCB$W_VD_STATUS(R5),295$; eight-bit codes
+	BBS	#UCB$V_VD_VT52,-	; If VT52 mode, second char. different
+		UCB$W_VD_STATUS(R5),292$; So branch around
+	MOVB	#^A/O/,-(SP)		; Put an "O" on the stack
+	BRB	293$			; and go around VT52 specific
+292$:	MOVB	#^A/?/,-(SP)		; VT52 mode gets a "?" instead
+293$:	MOVB	#VS$K_ESC,-(SP)		; With an <ESC> at the beginning
+	ADDB2	#2,R9			; Adjust the byte count
+	BRW	SEND_TO_CLASS		; and off to the class driver we go..
+295$:	MOVB	#VS$K_SS3,-(SP)		; Eightbit mode gets SS3 instead
+	INCL	R9			; of <ESC> and a count of 2
+	BRW	SEND_TO_CLASS		; and off to the class driver we go..
+300$:	MOVB	R1,-(SP)		; Input char. is last in string
+	MOVL	#1,R9			; and start with a byte count of 1
+	BBS	#UCB$V_VD_EIGHTBIT,-	; If in eightbit mode, go generate
+		UCB$W_VD_STATUS(R5),305$; eight-bit codes
+	BBS	#UCB$V_VD_VT52,-	; If VT52 mode, no intermediate char.
+		UCB$W_VD_STATUS(R5),303$; So branch around
+	BBS	#UCB$V_VD_CURSOR_KEY,-	; If cursor-key mode, intermediate
+		UCB$W_VD_STATUS(R5),301$; is an "O".
+	MOVB	#^A/[/,-(SP)		; Otherwise, its an "["
+	BRB	302$			; Go increment counter
+301$:	MOVB	#^A/O/,-(SP)		; And put it on the stack
+302$:	INCL	R9			; Adjust counter for intermediate
+303$:	MOVB	#VS$K_ESC,-(SP)		; Start off sequence with an <ESC>
+304$:	INCL	R9			; and add it to the byte count
+	BRW	SEND_TO_CLASS		; and off to the class driver we go..
+305$:	BBS	#UCB$V_VD_CURSOR_KEY,-	; If cursor-key mode, start sequence
+		UCB$W_VD_STATUS(R5),306$; with SS3
+	MOVB	#VS$K_CSI,-(SP)		; Otherwise, its an CSI
+	BRB	304$			; Go increment counter + send away
+306$:	MOVB	#VS$K_SS3,-(SP)		; And put SS3 on the stack
+	BRB	304$			; Go increment counter + send away
+310$:	CMPZV	#UCB$V_VD_LEVEL,#UCB$S_VD_LEVEL,- ; Edit keypad dead in level 1
+	UCB$W_VD_STATUS(R5),#KB_LEVEL_1	; mode.
+	BNEQ	311$			; If not level 1, continue
+	BRW	KEY_DONE		; Play dead.
+311$:	MOVB	#^A/~/,-(SP)		; Tilda brings up the ranks
+	MOVB	R1,-(SP)		; and it follows the input byte
+	MOVL	#2,R9			; Byte count is 2 so far.
+	BBS	#UCB$V_VD_EIGHTBIT,-	; If in eightbit mode, go generate
+		UCB$W_VD_STATUS(R5),315$; eight-bit codes
+	MOVW	#VS$K_ESC_LB,-(SP)	; Tack on a <ESC>[
+	ADDB2	#2,R9			; which is 2 bytes
+	BRB	316$			; Go join common code again
+315$:	MOVB	#VS$K_CSI,-(SP)		; Tack on a CSI in eightbit mode
+	INCL	R9			; which is 1 byte
+316$:	BRW	SEND_TO_CLASS		; and off to the class driver we go..
+320$:	CMPZV	#UCB$V_VD_LEVEL,#UCB$S_VD_LEVEL,- ; Some fncts. dead in level 1
+	UCB$W_VD_STATUS(R5),#KB_LEVEL_1	; mode.
+	BNEQ	325$			; If not level 1, real work to do
+	MOVL	#1,R9			; Byte count always 1 for level 1
+	CMPB	R1,#VS$K_F11		; Should this be an escape?
+	BNEQ	321$			; Nope. Try something else.
+	MOVB	#VS$K_ESC,-(SP)		; Yup. An escape to process.
+	BRB	316$			; and send this char away.
+321$:	CMPB	R1,#VS$K_F12		; A backspace, perhaps?
+	BNEQ	322$			; Nope. Try something else.
+	MOVB	#VS$K_BS,-(SP)		; Yup. Process a backspace character.
+	BRB	316$			; and send this char away.
+322$:	CMPB	R1,#VS$K_F13		; Maybe a line-feed (God forbid)?
+	BNEQ	323$			; NO?? Must be a dead one then.
+	MOVB	#VS$K_LF,-(SP)		; Yup. Take care of this <LF>
+	BRB	316$			; and send this char away.
+323$:	BRW	KEY_DONE		; We've wasted enough time already.
+325$:	MOVB	#^A/~/,-(SP)		; Stick a tilda at end of string
+	MOVZBL	R1,R2			; Now lets take a closer look
+	EMUL	#1,R2,#0,-(SP)		; Get a quadword version on stack
+	EDIV	#10,(SP)+,R2,R2		; to compute R2 modulo 10
+	ADDB2	#^A/0/,R2		; and derive ascii numeric value
+	MOVB	R2,-(SP)		; to put on the stack
+	MOVZBL	R1,R2			; Now lets calculate first ascii digit
+	DIVL2	#10,R2			; of 2-digit string in sequence
+	ADDB2	#^A/0/,R2		; and derive ascii numeric value
+	MOVB	R2,-(SP)		; to put on the stack
+	MOVL	#3,R9			; Three bytes so far.
+	BBS	#UCB$V_VD_EIGHTBIT,-	; If in eightbit mode, go generate
+		UCB$W_VD_STATUS(R5),330$; eight-bit codes
+	MOVW	#VS$K_ESC_LB,-(SP)	; Tack on a <ESC>[
+	ADDB2	#2,R9			; which is 2 bytes
+	BRB	331$			; Go join common code again
+330$:	MOVB	#VS$K_CSI,-(SP)		; Tack on a CSI in eightbit mode
+	INCL	R9			; which is 1 byte
+331$:	BRB	SEND_TO_CLASS		; and off to the class driver we go..
+;
+; This "routine" just sends the accumulated data to the terminal class driver.
+; It is assumed that the data is on the stack in the order to be sent and that
+; all data must be popped off the stack. Also, there must be at least one byte
+; to pop. If the special "gin-mode" status bit is set, then the first
+; character will be sent to the ACP for processing and the other characters
+; will be ignored.
+;
+; INPUTS:
+;	R5 = UCB address
+;	R9 = Byte count
+;	SP = Pointer to first byte to send to class driver
+; OUTPUTS:
+;
+SEND_TO_CLASS:
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	MOVL	CTRL$A_NRC_TABLE(R8),R8	; Get NRC table to use (if any)
+340$:	MOVZBL	(SP)+,R3		; Get next character off stack
+	TSTL	R8			; NRC for final translation?
+	BEQL	345$			; Nope. Use raw character.
+	MOVB	(R8)[R3],R3		; Translate using NRC
+	BBS	#7,R3,350$		; Upper bit set => dead key (no trans.)
+345$:	JSB	@UCB$L_TT_PUTNXT(R5)	; Hand it off to class driver
+	BEQL	350$			; No data on the rebound to echo
+	BISW2	#UCB$M_INT,UCB$W_STS(R5); Indicate output in progress
+	BSBW	ECHO_DATA		; Take care of echo output data
+350$:	SOBGTR	R9,340$			; While data remains on stack.
+	BBC	#UCB$V_VD_GIN,-		; Is "gin" mode in affect?
+		UCB$W_VD_STATUS(R5),400$; If not, done with this keystroke
+	BISW2	#UCB$M_VD_XOFF,-	; Turn off input temporarily
+		UCB$W_VD_STATUS(R5)	; (until XONed by the emulator)
+	PUSHR	#^M<R4,R8>		; Save reg. to get trashed
+	MOVL	#<IO$M_VD_INTERNAL!IO$M_VD_GIN>,R8 ; Indicate gin input
+	BSBW	FLAG_HUMAN_INTERFACE	; Send 'er off to the ACP
+	POPR	#^M<R4,R8>		; Restore reg. to get trashed
+400$:	BRW	KEY_DONE		; All done with this character.
+
+	.SBTTL	VD_INPUT_HANDLER - Handle Input Received from Physical Device
+
+;++
+; VD_INPUT_HANDLER, Multiplex Input from Physical Device
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for getting the ball rolling as a result
+; of input data being received from the VAXstation hardware. This means
+; determining the "active" UCB (VD) for that physical device, and processing
+; the input on behalf of that virtual device. This routine is to be called
+; directly from the VBDRIVER interrupt service routine.
+;
+; INPUTS:
+;
+;	R5 = UCB address (physical device)
+;
+; IMPLICIT INPUT:
+;
+;	IPL = UCB$B_DIPL(R5) = 21
+;
+; OUTPUTS:
+;
+;	All registers preserved.
+;--
+
+VD_INPUT_HANDLER:			; Process physical device input
+	PUSHR	#^M<R0,R1,R5>		; Save scratch registers
+	MOVL	UCB$L_DDB(R5),R0	; Get device DDB
+	MOVAB	DDB$T_NAME(R0),R0	; Pull out generic device name
+	MOVZBL	3(R0),R0		; and then the controller letter
+	SUBL2	#^A/A/,R0		; Turn it into a table index
+	CMPL	R0,#VS$K_VB_MAX		; Is it too big ?
+	BGEQ	10$			; Yup. Won't fit...
+	MULL2	#CTRL$K_LEN,R0		; Compute offset from base address
+	MOVAL	VD_CTRL,R1		; Get base address of table
+	ADDL2	R1,R0			; And compute controller database adr.
+	MOVL	CTRL$A_ACTIVE_UCB(R0),R5 ; Get the "active" UCB for this ctrl
+	BEQL	10$			; If none active, we're done
+	BSBW	PROCESS_INPUT		; Translate + send to class driver
+10$:	POPR	#^M<R0,R1,R5>		; Restore scratch registers
+	RSB				; Return
+
+	.SBTTL	FLAG_HUMAN_INTERFACE - Signal Human Interface Action
+
+;++
+; FLAG_HUMAN_INTERFACE, Signal Human Interface Action to be Performed
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for signalling the VAXstation human
+; interface to perform the specified action. This is only an internal mechanism
+; for the driver to communicate such information. Since the human interface
+; resides in the VAXstation ACP, an IRP will be fabricated and sent there with
+; the specified information imbedded within it.
+;
+; INPUTS:
+;
+;	R4 = Symbol table index or human interface keystroke (HI parameter)
+;	R5 = UCB address
+;	R8 = HI function to perform (I/O function code modifier)
+;
+; IMPLICIT INPUT:
+;
+;	IPL = UCB$B_FIPL(R5)
+;
+; OUTPUTS:
+;
+;	R0-R5 Preserved for your convenience.
+;--
+
+FLAG_HUMAN_INTERFACE:			; Signal Human Interface action
+;
+; Allocate an I/O packet
+;
+	PUSHR	#^M<R0,R1,R2,R3,R4>	; Save registers
+	BBC	#IO$V_VD_INTERNAL,-	; External request already have
+		R8,5$			; an IRP allocated
+	PUSHL	R4			; Save HI parameter
+	CLRL	R4			; No PCB context to speak of
+	BSBW	VD_ALLOCIRP		; Allocate an I/O request packet
+	POPL	R4			; Restore the HI parameter
+	BLBC	R0,40$			; Branch if failure
+	MOVL	R2,R3			; Save address of packet
+	MOVAL	VD_IOCLEANUP,-		; Internal I/O postprocessing routine
+		IRP$L_PID(R3)		; address
+;
+; Fill in some IRP info for handling as a normal I/O request
+;
+	BISW3	R8,#IO$_VSTAHI,-	; Set function code and modifier
+		IRP$W_FUNC(R3)
+	BISW2	#IRP$M_BUFIO,-		; Pretend this is buffered I/O
+		IRP$W_STS(R3)		;
+5$:	MOVL	R5,IRP$L_UCB(R3)	; Set UCB address
+	MOVB	#27,IRP$B_PRI(R3)	; Priority = 4
+;
+; Instead of going to the bother of being general purpose here, for now just
+; cram the data we want to send right into the IRP.
+;
+10$:	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller database address
+	MOVL	CTRL$L_TTABLE(R8),-	; First stash translation table number
+		IRP$L_IOST1(R3)		; in the IRP
+	MOVL	R4,IRP$L_IOST2(R3)	; Now the symbol table index
+;
+; Send this request off to the ACP
+;
+	CLRL	R4			; Zero out "PCB" field so not used
+	BSBW	VD_SEND_ACP		; Give it to the ACP, and return here
+	BLBC	R0,30$			; If successful, ACP will handle IRP
+	INCL	UCB$L_VD_IRP_CNT(R5)	; Keep a count of IRPs
+	BRB	40$			; And that's all
+30$:	MOVL	R3,R0			; Otherwise, better deallocate it.
+	JSB	G^EXE$DEANONPAGED	; Deallocate IRP
+40$:	POPR	#^M<R0,R1,R2,R3,R4>	; Restore saved registers
+	RSB				; Return
+
+	.SBTTL	VD_IOCLEANUP - Cleanup Internal IRP
+
+;++
+; VD_IOCLEANUP, Cleanup Internal IRP after I/O Postprocessing
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	This routine is responsible for I/O postprocessing internal IRPs to
+; the VAXstation ACP. The address of this routine is placed in IRP$L_PID. This
+; routine is then called by VMS I/O postprocessing instead of performing normal
+; I/O postprocessing itself. This routine will merely deallocate the IRP.
+;
+; INPUTS:
+;
+;	R5 = IRP address
+;
+; IMPLICIT INPUT:
+;
+;	IPL = IPL$_IOPOST
+;
+; OUTPUTS:
+;
+;	R0 = Utter ridiculous nonsense
+;--
+
+VD_IOCLEANUP:				; Cleanup internal IRP
+;
+; Deallocate the I/O packet (if that's what it really is)
+;
+	CMPB	IRP$B_TYPE(R5),-	; Is this really an IRP that
+		#DYN$C_IRP		; we have here?
+	BNEQ	10$			; If not, better not deallocate it!
+	DSBINT	#VD$K_FIPL		; Disable interrupts
+	PUSHR	#^M<R1,R3,R6>		; Save potentially trashed registers
+	CMPW	IRP$L_IOST1(R5),-	; See if UCB address invalid by
+		#SS$_NOSUCHDEV		; checking ACP return status value
+	BNEQ	2$			; Looks okay. Go get UCB address
+	CLRL	R6			; Clear out the "UCB" address
+	BRB	3$			; And go do deallocation of IRP stuff
+2$:	MOVL	IRP$L_UCB(R5),R6	; Stash UCB address in R6
+3$:	MOVL	IRP$L_SVAPTE(R5),R0	; Get temporary buffer address (if any)
+	BGEQ	5$			; None to deallocate
+	JSB	G^EXE$DEANONPAGED	; Deallocate the temporary block
+5$:	MOVL	R5,R0			; Point to IRP for deallocation
+	JSB	G^EXE$DEANONPAGED	; Deallocate IRP
+	MOVL	R6,R5			; Get the UCB address where it belongs
+	BGEQ	7$			; Valid UCB address from IRP?
+	CMPB	UCB$B_TYPE(R5),-	; But is it REALLY a UCB?
+		#DYN$C_UCB		;
+	BNEQ	7$			; If not, don't mess with it
+	BBS	#UCB$V_DELETEUCB,-	; If UCB marked for delete, then don't
+		UCB$L_STS(R5),6$	; ask class driver for more data
+	SOBGTR	UCB$L_VD_IRP_CNT(R5),7$	; Ask for more data if we need some
+	BBS	#UCB$V_VD_ABORT,-	; If aborting current output, don't ask
+		UCB$W_VD_STATUS(R5),6$	; terminal class driver for more data
+	PUSHR	#^M<R3,R4>		; Save potentially trashed registers
+	BSBW	VD_GETNXT		; Go see if any data accumulated
+	POPR	#^M<R3,R4>		; Save potentially trashed registers
+6$:	BICW2	#UCB$M_INT,UCB$W_STS(R5); Permit future startio calls
+7$:	POPR	#^M<R1,R3,R6>		; Restore saved registers
+	ENBINT				; Restore interrupts
+10$:	RSB				; Return
+
+	.SBTTL	*** Virtual Device VSTA FDT Routines ***
+	.SBTTL	VD_WRITE_FRONT - Function Decision Routine for WRITE Functions
+;++
+; VD_WRITE_FRONT - Function Decision Routine for WRITEs (front-end)
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a WRITE
+;	I/O request. This is ONLY the front-end to the "real" FDT routine for
+;	write operations. This routine is only interested in trapping broadcast
+;	or breakthru messages and relaying that info to the ACP when
+;	appropriate for NOTICES. The "real" FDT routine will be invoked when
+;	the breakthru write is to appear on the emulated terminal. This is the
+;	case for broadcasts to oneself or when an error occurs in trying to
+;	cause a "NOTICE-only" display of the message.
+;
+;	The QIO parameters for terminal WRITES are:
+;
+;	P1 = address of the buffer
+;	P2 = size of the buffer
+;	P3 = not used
+;	P4 = carriage control specifier
+;
+;	The buffer is validated for access, the data and carriage control
+;	are copied to a message	block (if this is a breakthru write), the
+;	address of the message block is stored in the IRP, and the IRP is
+;	queued to the ACP for delivery to the Workstation via NOTICES.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;	IRP$W_BCNT(R3) = size of user buffer
+;
+;	The routine preserves all registers except R6
+;
+;--
+VD_WRITE_FRONT:				; WRITE FDT routine
+	BBS	#IO$V_BREAKTHRU,-	; If not a breakthru request, then
+		IRP$W_FUNC(R3),5$	; just ignore it
+;
+; Restore registers to previous state and jump right into the "real"
+; WRITE FDT routine
+;
+150$:	MOVL	REAL_WRITE_FDT,R6	; Get "real" write FDT address
+	JMP	(R6)			; And let it do the rest
+151$:	POPR	#^M<R0,R1,R2,R3,R4,R7,R8>	; Restore registers
+	BRB	150$			; Go jump into FDT routine
+;
+; We now know that we are going to do a broadcast. If the initiator of the
+; broadcast is the owner of the device (i.e. a broadcast to oneself), then
+; it is assumed that the user wishes to see this information on his/her
+; terminal only (such as a control-T). So if this is the case, just give
+; control back to the FDT write routine.
+;
+5$:	IFNORD	P2(AP),P1(AP),150$	; Can we read specified buffer?
+	PUSHR	#^M<R0,R1,R2,R3,R4,R7,R8>	; Save registers
+	MOVL	R4,R0			; Get requesting process PCB address
+	MOVL	UCB$L_PID(R5),R1	; Get device owner
+6$:	CMPL	PCB$L_PID(R0),R1	; Broadcast to oneself?
+	BEQL	151$			; If so, just goes to terminal
+	MOVZWL	PCB$L_OWNER(R0),R0	; Get index of process owner
+	BEQL	7$			; No owner => Not broadcast to oneself
+	MOVL	@#SCH$GL_PCBVEC,R2	; Get PCB vector base address
+	MOVL	(R2)[R0],R0		; Get owner PCB address
+	BRB	6$			; and keep trying
+;
+; This is where we make OUR copy of the IRP, add carriage control,
+; allocate buffers, and ship the NOTICE request off to the ACP if appropriate.
+; Note that requests which get sent to NOTICES do NOT get processed by the
+; FDT write routine. So the information will NOT appear on the emulated
+; terminal. However, if certain failures occur, the information will be sent
+; to the terminal class driver to make sure that the information is seen
+; somewhere.
+;
+7$:	PUSHL	R3			; Put IRP on the stack last
+	BSBW	VD_ALLOCIRP		; Allocate an I/O request packet
+	POPL	R3			; Get IRP address back
+	BLBC	R0,151$			; If we failed, abort this nonsense
+	PUSHR	#^M<R2,R4,R5>		; Save our buffer, PCB, and UCB
+	MOVC3	#IRP$K_LENGTH,(R3),(R2)	; Copy this IRP for our own abuse
+	POPR	#^M<R3,R4,R5>		; Restore with buffer adr. => R3
+	MOVL	P1(AP),R6		; Get user buffer virtual address
+	CLRL	IRP$B_CARCON(R3)	; Assume no carriage control spec
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE, -
+		R7,#IO$_WRITEPBLK	; Write Physical block???
+	BEQL	10$			; If EQL then yes
+	MOVL	P4(AP),IRP$B_CARCON(R3)	; Carriage control specifier
+	JSB	G^EXE$CARRIAGE		; Convert the carriage control
+10$:	MOVZBL	IRP$B_CARCON(R3),R8	; Calculate # of extra bytes for cc
+	MOVZBL	IRP$B_CARCON+2(R3),R2
+	ADDL	R8,R2			; Total # of cc bytes
+	ASHL	#1,R2,R8		; Double it for worst case size
+	MOVL	R6,R0			; Set up for WRITECHECK call
+	MOVZWL	P2(AP),R7		; Get transfer size
+	ADDW3	R7,R2,IRP$W_BCNT(R3)	; Note char.count in transfer size
+	MOVL	R7,R1			; Copy transfer size
+20$:	PUSHR	#^M<R3,R4,R5>		; Remember IRP address
+	MOVAB	VS$K_VTEM_HEAD_SIZE(R8)[R1],R1 ; Add header + carriage control size
+;
+; Allocate a buffer for tranfering the data
+;
+30$:	PUSHL	R3			; Save IRP address
+	JSB	G^EXE$ALONONPAGED	; Allocate S0 buffer (dstrys R3)
+	BLBS	R0,40$			; So far so good
+	POPL	R0			; Oops. Better deallocate IRP
+	JSB	G^EXE$DEANONPAGED	; See yah.
+	BRW	151$			; No NOTICE possible.
+40$:	POPL	R3			; Restore IRP address
+	MOVW	R1,IRP$W_SIZE(R2)	; Set the temporary buffer size
+	CLRB	IRP$B_TYPE(R2)		; and the type is UNKNOWN...
+	MOVL	R2,IRP$L_SVAPTE(R3)	; Insert buffer address in IRP
+	MOVW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+	ADDL2	#VS$K_VTEM_HEAD_SIZE,R2	; Point past the header in buffer
+;
+; Insert initial carriage control
+;
+70$:	MOVAB	IRP$B_CARCON(R3),R8	; Point to the characters
+	BSBB	890$			; Do the insertion
+;
+; Copy the data into the system buffer
+;
+	MOVC3	R7,(R6),(R2)		; Copy the user's data
+	MOVL	R3,R2			; Note current end of data in R2 for car cont
+;
+; Insert trailing carriage control if necessary
+;
+	POPR	#^M<R3,R4,R5>		; Remember IRP address
+	MOVAB	IRP$B_CARCON+2(R3),R8	; Point to the characters
+	BSBB	890$			; Do the insertion
+;
+; Send the message to the ACP (after modifying the IRP to look like a NOTICE
+; request).
+;
+100$:	MOVW	#<IO$_VSTAHI!IO$M_VD_INTERNAL!IO$M_VD_NOTICE>,-
+		IRP$W_FUNC(R3)		; Fix the function code
+	MOVL	R5,IRP$L_UCB(R3)	; Set the UCB of interest
+	MOVB	#27,IRP$B_PRI(R3)	; Up priority
+	MOVAB	VD_IOCLEANUP,-		; Cleanup routine for request
+		IRP$L_PID(R3)		; into the PID field of course
+	BISW2	#IRP$M_BUFIO,-		; And pretend its buffered I/O
+		IRP$W_STS(R3)		;
+	BSBW	VD_SEND_ACP		; Send message to ACP
+	BLBS	R0,115$			; If successful, terminate I/O
+;
+; If this failed, return data structures to pool and give FDT routine a shot
+;
+	MOVL	IRP$L_SVAPTE(R3),R0	; Get data buffer address
+	JSB	G^EXE$DEANONPAGED	; Deallocate it
+	MOVL	R3,R0			; Get internal IRP address
+	JSB	G^EXE$DEANONPAGED	; Deallocate it
+	BRW	151$			; and give control back to FDT routine
+;
+; SUCCESS!!! Terminate this I/O operation
+;
+115$:	INCL	UCB$L_VD_IRP_CNT(R5)	; Keep a count of IRPs
+	POPR	#^M<R0,R1,R2,R3,R4,R7,R8>	; Restore registers
+	MOVZWL	#SS$_NORMAL,R0		; Set success code for IOSB
+	JMP	G^EXE$FINISHIOC		; If all's OK, return from the qio
+;
+; Subroutine to insert prefix/suffix carriage control
+;
+890$:	MOVZBL	(R8),R0			; Get number of characters
+	BEQL	899$			; If EQL, then none
+895$:	MOVB	1(R8),(R2)+		; Insert the character
+	BNEQ	899$			; If NEQ, then don't need <CR>
+	MOVB	#TTY$C_CR,-1(R2)	; Make previous char a <CR> instead of 
+					;	a "0"
+	INCW	IRP$W_BCNT(R3)		; Increase byte count for <CR> inserted
+898$:	MOVB	#TTY$C_LF,(R2)+		; Insert the correct no. of <LF>s
+	SOBGTR	R0,898$			; Zip around until done
+899$:	RSB
+
+	.SBTTL	VD_WRITE - Function Decision Routine for WRITE Functions
+;++
+; VD_WRITE - Function Decision Routine for WRITE Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a WRITE
+;	I/O request.
+;
+;	The QIO parameters for terminal WRITES are:
+;
+;	P1 = address of the buffer
+;	P2 = size of the buffer
+;	P3 = text function code
+;	P4 = carriage control specifier
+;	P5 = line# and field# of text function
+;	P6 = char# and no. of chars for text function
+;
+;	The buffer is validated for access, the process's quota checked and
+;	decremented, the data and carriage control are copied to a message
+;	block, the address of the message block is stored in the IRP,
+;	and the IRP is queued to the ACP for delivery to the Workstation.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;	IRP$W_BCNT(R3) = size of user buffer
+;
+;	The routine preserves all registers except R0-R2, and
+;	R9-R11.
+;
+;--
+VD_WRITE:				; WRITE FDT routine
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	MOVL	P1(AP),R6		; Get user buffer virtual address
+	CLRL	IRP$B_CARCON(R3)	; Assume no carriage control spec
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE, -
+		R7,#IO$_WRITEPBLK	; Write Physical block???
+	BEQL	10$			; If EQL then yes
+	MOVL	P4(AP),IRP$B_CARCON(R3)	; Carriage control specifier
+	JSB	G^EXE$CARRIAGE		; Convert the carriage control
+10$:	MOVZBL	IRP$B_CARCON(R3),R8	; Calculate # of extra bytes for cc
+	MOVZBL	IRP$B_CARCON+2(R3),R2
+	ADDL	R2,R8			; Total # of cc bytes
+	MOVL	R6,R0			; Set up for WRITECHECK call
+	MOVZWL	P2(AP),R7		; Get transfer size
+	MOVL	R7,R1			; Copy transfer size
+	BEQL	20$			; Skip check if zero size
+	JSB	G^EXE$WRITECHK		; Check buffer access (no return
+					;	if no access)
+20$:	PUSHR	#^M<R3,R4,R5>		; Remember IRP address
+	MOVAB	TTY$L_WB_DATA+4(R8)[R1],R1 ; Add header + carriage control size
+;
+; Check buffered I/O quota
+;
+	JSB	G^EXE$BUFFRQUOTA	; Check quota
+	BLBS	R0,30$			; Branch forward on success
+	BRW	105$			; Otherwise, branch to error	
+;
+;ALLOCATE_BUFFER:
+;
+30$:
+	PUSHR	#^M<R4>			; ALLOCBUF might switch PCBs!
+	JSB	G^EXE$ALLOCBUF		; Allocate S0 buffer (dstrys R3)
+	POPR	#^M<R4>
+	BLBS	R0,40$			; Branch forward on success
+	BRW	105$			; Otherwise, branch to error
+40$:
+	MOVL	(SP),R3			; Restore IRP address
+	MOVL	R2,IRP$L_SVAPTE(R3)	; Insert buffer address in IRP
+	ADDW	R8,IRP$W_BCNT(R3)	; Note car.cont. in transfer size
+;
+; Adjust quota
+;
+	MOVL	PCB$L_JIB(R4),R0	; Get JIB address
+	MOVZWL	R1,R1			; Convert count to longword
+	SUBL	R1,JIB$L_BYTCNT(R0)	; Charge job for buffer
+	MOVW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+
+;
+; Set up the buffer
+;
+	MOVZBL	#DYN$C_TWP,-		; Insert block type
+		TTY$B_WB_TYPE(R2)
+	MOVL	R3,TTY$L_WB_IRP(R2)	; Insert IRP address
+	MOVAB	TTY$L_WB_DATA(R2),-	; Insert start of data address in
+		TTY$L_WB_NEXT(R2)	;    "next character" field
+	ADDL	#TTY$L_WB_DATA,R2	; Point to data
+
+;
+; If this is a GRAPHICS write, just copy the command string, with no
+;	carriage control
+;
+	BBC	#IO$V_GRAPHICS,IRP$W_FUNC(R3),-	; Branch if not graphics
+			70$
+	MOVC3	R7,(R6),(R2)		; Copy the command string
+	POPR	#^M<R3,R4,R5>		; Remember the IRP address
+	MOVQ	P3(AP),IRP$L_MEDIA(R3)	; Store # of commands AND mode type
+	BRB	80$			; Branch around carriage control
+70$:
+;
+; Insert initial carriage control
+;
+	MOVAB	IRP$B_CARCON(R3),R8	; Point to the characters
+	BSBB	890$			; Do the insertion
+;
+; Copy the data into the system buffer
+;
+	MOVC3	R7,(R6),(R2)		; Copy the user's data
+	MOVL	R3,R2			; Note current end of data in R2 for car cont
+;
+; Insert trailing carriage control if necessary
+;
+	POPR	#^M<R3,R4,R5>		; Remember IRP address
+	MOVAB	IRP$B_CARCON+2(R3),R8	; Point to the characters
+	BSBB	890$			; Do the insertion
+;
+; Set WRITE and VD states, because this is a WRITE to a VD (!)
+;
+80$:	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#<VS$M_ST_WRITE!VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize write function
+;
+; Set WRITE PASSALL state if required
+;
+	BBS	#IO$V_NOFORMAT,IRP$W_FUNC(R3),90$; Branch if no format spfcd
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE, -	; Passall Write ????
+		IRP$W_FUNC(R3),#IO$_WRITEPBLK
+	BNEQ	95$			; No passall: branch forward
+90$:
+	BBSS	#TTY$V_ST_WRTALL,-	; Set no format mode for
+		IRP$Q_TT_STATE+4(R3),95$ ;	write
+;
+; If the write function specified IO$_REFRESH, then set the appropriate
+;  bit in the state.
+;
+
+95$:					; Check for REFRESH bit
+	BBC	#IO$V_REFRESH,-		; If not specified, branch forward
+		IRP$W_FUNC(R3),100$
+	BBSS	#TTY$V_ST_REFRSH,-	; Otherwise, set the REFRESH bit
+		IRP$Q_TT_STATE+4(R3),100$
+;
+; Complete the WRITE operation
+;	(Relevant only for generic terminals)
+;
+100$:
+	MOVL	IRP$L_SVAPTE(R3),R2	; Point to write buffer
+	MOVL	P3(AP),TTY$L_WB_FPC(R2)	; Store the TEXT_CODE
+	MOVL	P5(AP),TTY$L_WB_FR3(R2)	; Store the line# and field#
+	MOVL	P6(AP),TTY$L_WB_FR4(R2)	; Store the char# & # of chars
+	
+;
+; Send the message to the ACP
+;
+	BRW	VD_SEND_ACPX		; Send message and exit the QIO
+
+;
+; Allocation failure
+;
+105$:	POPR	#^M<R3,R4,R5>		; Restore registers
+	JMP	G^EXE$ABORTIO		; Forget this request
+
+
+
+;
+; Subroutine to insert prefix/suffix carriage control
+;
+890$:	MOVZBL	(R8),R0			; Get number of characters
+	BEQL	899$			; If EQL, then none
+895$:	MOVB	1(R8),(R2)+		; Insert the character
+	BNEQ	899$			; If NEQ, then don't need <CR>
+	MOVB	#TTY$C_CR,-1(R2)	; Make previous char a <CR> instead of 
+					;	a "0"
+	INCW	IRP$W_BCNT(R3)		; Increase byte count for <CR> inserted
+898$:	MOVB	#TTY$C_LF,(R2)+		; Insert the correct no. of <LF>s
+	SOBGTR	R0,898$			; Zip around until done
+899$:	RSB
+
+	.SBTTL	VD_WRITE_GRAPHICS - Function Decision Routine for WRITE_GRAPHICS
+;++
+; VD_WRITE_GRAPHICS - Function Decision Routine for WRITE_GRAPHICS Function
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a WRITE_GRAPHICS
+;	I/O request.  It uses Direct I/O, as opposed to IO$_WRITEVBLK!IO$M_GRAPHICS
+;	which uses buffered I/O.  A single QIO may require several non-contiguous
+;	buffer areas to be locked down.  To accomplish this, a 'Descriptor Block'
+;	for the areas is passed in P1 and P2:
+;
+;		+-------------------------------+
+;		|  address of first buffer area |
+;		+-------------------------------+
+;		|  bytes of first buffer area   |
+;		+-------------------------------+
+;		|  access type for buffer	|
+;		+-------------------------------+
+;		|		.		|
+;		|		.		|
+;		+-------------------------------+
+;		|  access type for buffer	|
+;		+-------------------------------+
+;
+;	The QIO parameters for terminal WRITE_GRAPHICS  are:
+;
+;	P1 = address of the descriptor block
+;	P2 = number of buffer areas in the descriptor block
+;	P3 = number of commands in buffered packet
+;	P4 = Mode: 0=GIDIS, 1=native mode
+;
+;	The block is validated for access, the process's buffer pages are
+;	locked (and paged-in, if necessary) for all the areas,
+;	and the IRP is queued to the ACP for delivery to the Workstation.
+;	If more than one area is required, their SVAPTEs , BYTCNTs, and 
+;	BOFFs are stored in IRPEs (2 such areas per IRPE).  The SVAPTE,
+;	BYTCNT, and BOFF fields in the IRP will contain zeros in that case.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = SVA of the PTE mapping the user's first buffer page
+;	IRP$W_BOFF(R3) = byte offset into first page of user's first buffer
+;	IRP$W_BCNT(R3) = size of firs user buffer
+;	IRP$L_MEDIA(R3) = number of commands in first buffer
+;	IRP$L_MEDIA+4(R3) = Mode
+;	IRP$M_EXTEND in IRP$W_STS(R3) set if more than one buffer area
+;	IRP$L_EXTEND(R3) = address of first IRPE if any, or 0 if not
+;
+;	The routine preserves all registers except R0-R2, and
+;	R9		Used as counter of areas processed
+;	R10		Used as total areas needed to be processed
+;	R11		Pointer to the descriptor areas
+;
+;--
+VD_WRITE_GRAPHICS:				; WRITE_GRAPHICS FDT routine
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+;
+; Store the number of commands in the packet, and the mode
+;
+	MOVQ	P3(AP),IRP$L_MEDIA(R3)	; Store # of commands AND mode type
+;
+; Set WRITE and VD states, cuz this is a WRITE to a VD (!)
+;
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#<VS$M_ST_WRITE!VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize write function
+;
+; Check access to the Descriptor Block
+;
+	MOVQ	P1(AP),R0		; Address, # of descriptor buffer
+	MULL2	#12,R1			; Convert # of areas to bytes
+	BNEQ	5$			; Check access if there are some areas
+	BRW	NO_AREAS		; If no buffer areas, we're done
+5$:	JSB	G^EXE$WRITECHK		; Check buffer access (No return if 
+					;			none)
+;
+; If there is only one buffer area, store it in the IRP,  lock it down,
+;  and fire it off to the ACP.
+;
+	MOVL	P1(AP),R11		; Address of descriptor block
+	CMPL	P2(AP),#1		; One buffer area?
+	BGTR	MULTI_BUFFERS		; More than one buffer area
+	MOVQ	(R11)+,R0		; User's buffer address, size
+	TSTL	(R11)			; Check access mode of this buffer
+	BNEQ	7$			; If not 0 then do MODIFYLOCK insted
+					; of WRITELOCK
+	JSB	G^EXE$WRITELOCK		; Lock for writing out contents
+	BRW	VD_SEND_ACPX		; Send message and exit the QIO
+7$:	JSB	G^EXE$MODIFYLOCK	; Check access, lock pages for D-I/O
+	BRW	VD_SEND_ACPX		; Send message and exit the QIO
+;
+; More than one buffer area.  Get an IRPE for every two buffer areas, and
+; lock each area.  EXE$MODIFYLOCKR returns the SVAPTE, BYTCNT, and BOFF in
+; the IRP fields, so they must be copied and zeroed after each lock.
+;
+MULTI_BUFFERS:
+	MOVL	P2(AP),R10		; Total number of Buffer areas to lock
+	CLRL	R9			; Number of areas already locked
+	MOVL	R3,R7			; Last IRP or IRPE structure made
+10$:
+;
+; Get an IRPE
+;
+	PUSHL	R3			; Save the IRP address
+	BSBW	VD_ALLOCIRP		; Get the IRPE
+	POPL	R3			; Restore IRP address
+	BLBS	R0,20$			; If successful, continue
+	BSBW	UNLOCK_AREAS		; Undo what we've done,
+	JMP	G^EXE$ABORTIO		; Abort the I/O request
+20$:	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	; Save against the MOVC5
+	MOVC5	#0,(R2),#0,#<IRP$C_LENGTH-IRP$B_RMOD>,- ; Zero the IRPE, except for
+			IRP$B_RMOD(R2)	;		the header parts
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	; Restore the registers
+	MOVB	#DYN$C_IRPE,IRPE$B_TYPE(R2)	; It's an IRPE, not an IRP
+	MOVL	R2,IRP$L_EXTEND(R7)	; Point here in previous structure
+	BISW2	#IRP$M_EXTEND,IRP$W_STS(R7) ; Proves we exist to whoever cares
+	MOVL	R2,R7			; Now THIS is the 'previous structure'
+;
+; Lock the next area in the first slot of the IRPE
+;
+	MOVQ	(R11)+,R0		; User's buffer address, size
+	TSTL	(R11)+			; Check access mode of this buffer
+	BNEQ	23$			; Do MODIFYLOCK if access type <> 0
+	JSB	G^EXE$WRITELOCKR	; Do WRITELOCK if access type = 0
+	BLBS	R0,30$
+	BRW	25$
+23$:	JSB	G^EXE$MODIFYLOCKR	; Check access, lock pages, etc.
+	BLBS	R0,30$			; If successful, continue
+25$:	BSBW	UNLOCK_AREAS		; Undo what we've done,
+	RSB				; Return to LOCKR routine
+30$:	MOVL	IRP$L_SVAPTE(R3),-	; Successful lock: save PTE address
+		IRPE$L_SVAPTE1(R7)	;	in IRPE
+	MOVL	IRP$L_BCNT(R3),IRPE$L_BCNT1(R7)	; Save byte count in IRPE
+	MOVW	IRP$W_BOFF(R3),IRPE$W_BOFF1(R7)	; Save byte offset in IRPE
+	CLRL	IRP$L_SVAPTE(R3)	; Erase in case we UNLOCK_AREAS
+	CLRL	IRP$L_BCNT(R3)
+	CLRW	IRP$W_BOFF(R3)
+	INCL	R9			; Another area locked
+	CMPL	R9,R10			; Is that all the areas?
+	BEQL	LEAVE_AREAS		; If so, send to the ACP
+;
+; Lock the next area in the second slot of the IRPE
+;
+	MOVQ	(R11)+,R0		; User's buffer address, size
+	TSTL	(R11)+			; Check access mode of this buffer
+	BNEQ	33$			; Do MODIFYLOCK if access type <> 0
+	JSB	G^EXE$WRITELOCKR	; Do WRITELOCK if access type = 0
+	BLBS	R0,40$			; Continue if good status
+	BRW	35$			; Unlock areas if bad status
+33$:	JSB	G^EXE$MODIFYLOCKR	; Check access, lock pages, etc.
+	BLBS	R0,40$			; If successful, continue
+35$:	BSBW	UNLOCK_AREAS		; Undo what we've done,
+	RSB				; Return to LOCKR routine 
+40$:	MOVL	IRP$L_SVAPTE(R3),-	; Successful lock: save PTE address
+		IRPE$L_SVAPTE2(R7)	;	in IRPE
+	MOVL	IRP$L_BCNT(R3),IRPE$L_BCNT2(R7)	; Save byte count in IRPE
+	MOVW	IRP$W_BOFF(R3),IRPE$W_BOFF2(R7)	; Save byte offset in IRPE
+	CLRL	IRP$L_SVAPTE(R3)	; Erase in case we UNLOCK_AREAS
+	CLRL	IRP$L_BCNT(R3)
+	CLRW	IRP$W_BOFF(R3)
+
+	AOBLSS	R10,R9,50$		; If more areas, get another IRPE
+	BRB	LEAVE_AREAS		; No more areas: send to ACP
+50$:	BRW	10$			; Get another IRPE
+;
+; Send the IRP construction to the ACP, and exit
+;
+LEAVE_AREAS:
+	BRW	VD_SEND_ACPX		; Send message and exit the QIO
+;
+; Completion routines
+;
+NO_AREAS:
+	MOVL	#SS$_NORMAL,R0		; Success
+	JSB	G^EXE$FINISHIOC		; Zero the 2nd longword of the IOSB
+
+UNLOCK_AREAS:
+
+;++
+; FUNCTIONAL DESCRIPTION:
+;
+;	THIS ROUTINE UNLOCKS THE AREAS DESCRIBED BY FIELDS IN THE IRPE'S.  EACH
+;	IRPE HAS SPACE TO HOLD TWO AREA DESCRIPTIONS.
+;
+; CALLING SEQUENCE:
+;
+;	BSBW	UNLOCK_AREAS
+;
+; INPUT PARAMETERS:
+;
+;	R3 = I/O REQUEST PACKET ADDRESS
+;
+; SIDE EFFECTS:
+;
+;	R0 IS NOT RESERVED
+;--
+
+	ASSUME	IRP$L_EXTEND EQ IRPE$L_EXTEND
+
+	PUSHR	#^M<R0,R1,R2,R3,R5>		; Save all regs used here
+	MOVL	IRP$L_EXTEND(R3),R5		; Start with first IRPE address in R5
+	BBCC	#IRP$V_EXTEND,IRP$W_STS(R3),50$ ; If no IRPEs, quit, else
+						; deny IRPEs's existence
+
+10$:	; UNLOCK AREAS SPECIFIED IN NEXT IRPE
+
+	MOVL	IRPE$L_SVAPTE1(R5),R3	; GET SVAPTE OF FIRST AREA
+	BEQL	20$			; BR. IF NOTHING TO UNLOCK
+	MOVZWL	IRPE$W_BOFF1(R5),R2	; GET BYTE OFFSET IN PAGE
+	MOVL	IRPE$L_BCNT1(R5),R1	; GET SIZE OF AREA
+	BSBB	UNLK			; UNLOCK FIRST AREA
+
+20$:	MOVL	IRPE$L_SVAPTE2(R5),R3	; GET SVAPTE OF SECOND AREA
+	BEQL	30$			; BR. IF NOTHING TO UNLOCK
+	MOVZWL	IRPE$W_BOFF2(R5),R2	; GET BYTE OFFSET IN PAGE
+	MOVL	IRPE$L_BCNT2(R5),R1	; GET SIZE OF AREA
+	BSBB	UNLK			; UNLOCK SECOND AREA
+
+30$:	MOVZWL	IRPE$W_STS(R5),R2	; Save EXTEND bit for post-deallocation
+	MOVL	R5,R0			; Address of the IRPE to de-allocate
+	MOVL	IRPE$L_EXTEND(R5),R5	; Save EXTEND address in case there's another
+	PUSHL	R2			; Save R2: can get trashed if mem not
+					; in IRP list.
+	JSB	G^EXE$DEANONPAGED	; Rid ourselves of the IRPE
+	POPL	R2			; Restore R2
+	BBS	#IRPE$V_EXTEND,R2,10$ 	; BRANCH IF THERE'S ANOTHER IRPE
+
+50$:	POPR	#^M<R0,R1,R2,R3,R5>	; RESTORE R1,R2,IRP,R5
+	RSB				; Return to caller (WRITELOCKR, usually)
+
+	;
+	; LOCAL SUBROUTINE TO UNLOCK PAGES
+	;
+	;	R1 = BYTE COUNT (OR SIZE OF AREA)
+	;	R2 = BYTE OFFSET IN PAGE
+	;	R3 = SVAPTE OF START OF AREA
+	;
+
+UNLK:	MOVAB	511(R1)[R2],R1		; COMBINE OFFSET AND SIZE AND ROUND
+	ASHL	#-VA$S_BYTE,R1,R1	; CONVERT TO NUMBER OF PAGES TO UNLOCK
+	JSB	G^MMG$UNLOCK		; UNLOCK PAGES
+	RSB
+
+	.SBTTL	VD_READ - Function Decision Routine for READ Functions
+
+;++
+; VD_READ - Function Decision Routine for READ Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a READ
+;	I/O request.
+;
+;	The QIO parameters for terminal READS are:
+;
+;	P1 = address of the buffer
+;	P2 = size of the buffer
+;	P3 = number of seconds to wait for characters
+;	P4 = address of terminator class bitmask or 0 if standard
+;	P5 = address of prompt string for IO$_READPROMPT or IO$_TTYREADPALL
+;	   = Virtual Keyboard ID (PB_ID) for IO$_READ_VKB
+;	P6 = size of prompt string for IO$_READPROMPT or IO$_TTYREADPALL
+;	   = address of text field descriptor (for echoing) for IO$_READ_VKB
+;			+--------------------+
+;			|     region_id      |
+;			|----------+---------|
+;			| field #  |  line # |
+;			+----------+---------+
+;
+;	The buffer is validated for access, the process's quota checked and
+;	decremented, the timeout, terminator mask, and prompt are copied to a
+;	message block, the address of the message block is stored in the IRP,
+;	and the IRP is queued to the ACP for delivery to the Workstation.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;	IRP$W_BCNT(R3) = size of user buffer
+;
+;	The RXB (Read Extension Block) is allocated and filled.
+;	A system buffer is allocated for the read data.
+;
+;	The routine preserves all registers except R0-R2, and
+;	R9-R11.
+;
+;--
+VD_READ:				; READ FDT routine
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read from VKB function?
+		IRP$W_FUNC(R3),#IO$_READ_VKB
+	BNEQ	4$			; If not, go validate read buffer
+	BBC	#IO$V_VD_CANCEL,IRP$W_FUNC(R3),4$ ; Cancelling native VKB read?
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#<VS$M_ST_VKB>,-
+		IRP$Q_TT_STATE(R3)	; Yup. Initialize VKB cancel function
+	BSBW	ALLOCATE_VSX		; Get the VSX 
+	CVTLW	P5(AP),VSX$W_ID(R2)	; Add the ID # of the object
+	BVC	3$			; Branch if it fits into a word	
+
+2$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+3$:	BLSS	2$			; Abort if non-positive
+	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+;
+; Check access to user's buffer
+;
+4$:	BBS	#IO$V_EXTEND,-		; Make sure its not an extend-mode read
+		IRP$W_FUNC(R3),2$	; since we can't handle those yet.
+	MOVL	P1(AP),R0		; Get user buffer virtual address
+	MOVZWL	P2(AP),R1		; Get buffer size
+	BNEQ	5$			; Continue if we want something, otherwise
+	BRW	ZERO_LENGTH		;    skip it if zero-length read
+5$:	MOVL	R3,R9			; Save IRP address
+	JSB	G^EXE$READCHK		; Check buffer access
+					; (no return means no access)
+	ADDL	#TTY$L_RB_DATA,R1	; Add header to request size
+;
+; Check Buffered I/O Quota
+;
+	JSB	G^EXE$BUFFRQUOTA	; 
+	BLBS	R0,10$			; If enough quota, branch forward
+	BRW	READ_ERROR		; Else forget it
+10$:	MOVL	R9,R3			; Remember IRP address
+
+;
+; Check for access to text field descriptor, if this is a READ_VKB
+;
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read from VKB function?
+		IRP$W_FUNC(R3),#IO$_READ_VKB
+	BNEQ	20$			; Branch forward if not
+	MOVL	P6(AP),R0		; Address of text field description
+	BEQL	25$			; No text descriptor specified
+	MOVL	#8,R1			; It's a quadword of data
+	JSB	G^EXE$WRITECHK		; Check access (no return in none)
+	BRB	25$			; We can get at the description
+;
+;  Check for prompt string existence and access
+;
+20$:	MOVL	P5(AP),R0		; Address of prompt string(if any)
+	BEQL	25$			; If no prompt, don't check access
+	MOVL	P6(AP),R1		; Size of prompt string (if any)
+	BEQL	25$			; If no prompt, don't check access
+	JSB	G^EXE$WRITECHK		; Check prompt access (no return if no access)
+	
+;
+; Check access to terminator bitmask; store its size and address in 
+;	R8 and R9 for later transfer
+;
+25$:
+	CLRL	R8			; Assume no terminator specified
+	MOVL	P4(AP),R9		; Get address of terminator desc
+	BEQL	65$			; If eql none specified
+	IFNORD	#8,(R9),99$		; Descriptor accessible?
+	MOVZWL	(R9),R8			; Get bitmask size
+	BNEQ	60$			; If neq long format
+	MOVL	#4,R8			; Size of short format
+	ADDL	#4,R9			; Set address of bitmask
+	BRB	65$			;
+60$:
+	MOVL	4(R9),R9		; Get address of long format bitmask
+	IFNORD	R8,(R9),99$		; Bitmask accessible?
+	CMPW	R8,#32			; Bitmask greater than allowed size?
+	BGTRU	99$			; If gtru yes
+65$:
+	TSTL	R9			; Zero R9 means terminators are defaulted
+	BNEQ	70$			; 	NEQ means they are specified
+;					Defaults: all chars 0-31 EXCEPT
+;		   			    B(8),TAB(9),LF(A),VT(B),FF(C)
+	MOVAL	VD_DEF_TERMINATORS,R9	; Point to default mask with R9
+	MOVL	#32,R8			; Default mask is 32 bytes long
+	BRB	70$			; Move on to acquisitions
+;
+;
+99$:	MOVZWL	#SS$_ACCVIO,R0		; Indicate no access
+	BRW	READ_ERROR
+;
+
+;
+; Now R8 has size of terminator mask, R9 has its address
+; Allocate system buffer for data
+;
+70$:	MOVW	P2(AP),IRP$W_BCNT(R3)	; Re-set read buffer size
+					;     (modified by EXE$WRITECHK)
+	MOVQ	P1(AP),R0		; Address, size of user buffer
+	MOVL	#TTY$L_RB_DATA,R2	; Size of buffer header
+	JSB	ALLOCATE_BUFFER		; Allocate S0 buffer, charge quota, etc.
+
+;
+; Set up the buffer
+;
+	MOVZBL	#DYN$C_TWP,-		; Insert block type
+		TTY$B_WB_TYPE(R2)
+	MOVAB	TTY$L_RB_DATA(R2),-	; Insert start of data address in
+		TTY$L_RB_TXT(R2)	;    "next character" field
+	CLRW	TTY$W_RB_TIMOS(R2) 	; Zero out read Timeout field
+	BBC	#IO$V_TIMED,IRP$W_FUNC(R3),72$ ; If no timeout, continue
+	CVTLW	P3(AP),TTY$W_RB_TIMOS(R2) ; Insert read Timeout
+	BVC	72$			; Continue if timeout fits into word
+	JSB	DE_ALLOCATE_BUFFER	; Otherwise give back the buffer 
+	MOVZWL	#SS$_BADPARAM,R0	; Negative timeout
+	JMP	G^EXE$ABORTIO		; Forget it
+72$:	MOVL	P1(AP),TTY$L_RB_UVA(R2)	; Insert user's buffer address
+	MOVL	R2,R6			; Save address of data block in R6
+;
+; Now allocate a Read Extension Block (RXB)
+;
+	PUSHR	#^M<R0,R3>		; Save buffer and IRP addresses
+	CLRL	R1			; Assume no prompt string 
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read from VKB function?
+		IRP$W_FUNC(R3),#IO$_READ_VKB
+	BEQL	75$			; No prompt allowed if VKB read
+	ADDL	P6(AP),R1		; Prompt size (might be 0)
+75$:	ADDL	#RX$B_PROMPT,R1		; Add header size to prompt size
+	JSB	G^EXE$BUFFRQUOTA	; Check process's quotas
+	BLBC	R0,28$			; LBC means quota failure
+	PUSHR	#^M<R4>			; ALLOCBUF might switch PCBs!
+	JSB	G^EXE$ALLOCBUF		; Allocate RXB (destroys R3)
+	POPR	#^M<R4>
+	BLBC	R0,28$			; LBC means allocation failure
+	MOVL	PCB$L_JIB(R4),R0	; Get JIB address
+	SUBL	R1,JIB$L_BYTCNT(R0)	; Charge job for buffer
+	POPR	#^M<R0,R3>		; Remember prompt and IRP addresses
+	ADDW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+	BRB	30$			; Branch forward
+;
+; If a problem allocating the RX, give back the S0 buffer
+;
+28$:	POPR	#^M<R0,R3>		; Restore registers
+29$:	JSB	DE_ALLOCATE_BUFFER	; Purge it from our collective minds
+	MOVZWL	#SS$_INSFMEM,R0		; Couldn't get the buffer
+	JMP	G^EXE$ABORTIO		; Forget it
+;
+; Set up the RXB
+;
+30$:	MOVAB	RX$B_PROMPT(R2),RX$A_NXT(R2) ; Store pointer to prompt string
+	CLRW	RX$W_PROMPT_SIZE(R2)	     ; Assume no user prompt string
+	MOVL	P5(AP),RX$A_PROMPT_UVA(R2)   ; Store pointer to user prompt buffer
+	MOVW	R1,RX$W_SIZE(R2)	     ; Store size of block
+	MOVB	#VS$K_RX_TYPE,RX$B_TYPE(R2)  ; Store type of block
+	MOVL	R2,TTY$L_RB_AES(R6)	     ; Store address of RX in S0BUFFER
+;
+;  If a read from the virtual keyboard, store the corresponding data
+;
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read from VKB function?
+		IRP$W_FUNC(R3),#IO$_READ_VKB
+	BNEQ	35$			; If not, check for a prompt string
+
+33$:	MOVL	P5(AP),RX$W_PB_ID(R2)	; Store the VKB id, (PB_ID)
+	TSTL	P6(AP)			; Check text descriptor address
+	BEQL	34$			; None specified. Don't do copy.
+	MOVQ	@P6(AP),RX$L_REGION(R2)	; Copy all 3 fields into the RXB
+34$:	CLRL	RX$A_PROMPT_UVA(R2)	; No user prompt buffer 
+	BRB	80$			; No prompt string allowed on VKB
+;
+; Get prompt, if specified
+;
+35$:	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read with prompt function?
+		IRP$W_FUNC(R3),#IO$_READPROMPT	
+	BEQL	40$			; Branch if yes
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Read with prompt passall function?
+		IRP$W_FUNC(R3),#IO$_TTYREADPALL
+	BNEQ	80$			; Branch if not
+40$:	MOVZWL	P6(AP),R1		; Get size of prompt
+	ADDW	R1,RX$W_PROMPT_SIZE(R2) ; Add size of user prompt string
+	BEQL	80$			; If eql then make this normal read
+	MOVL	P5(AP),R0		; Get prompt buffer address
+	PUSHR	#^M<R2,R3,R4,R5>	; Save against the MOVC3
+	MOVL	(R2),R3			; Point to data area of buffer
+	MOVC3	R1,(R0),(R3)		; Copy the prompt string
+	POPR	#^M<R2,R3,R4,R5>	; Restore regs to their rightful...
+
+;
+; Copy terminator bitmask to the RXB. 
+;	Size and location (still) in R8 and R9.
+;
+80$:
+	PUSHR	#^M<R2,R3,R4,R5>	; Save regs destroyed by MOVC5
+	MOVC5	R8,(R9),#0,#32,-	; Copy  the 32 byte terminator mask; 
+		RX$L_BREAK_TABLE(R2)	; 	fill with nulls
+	POPR	#^M<R2,R3,R4,R5>	; Restore registers
+;
+; Set READ and VD and PB states, cuz this is a READ from a VD and a VKB
+;
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#<VS$M_ST_READ!VS$M_ST_VD!VS$M_ST_PB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize READ function
+;
+; Send the message to the ACP and exit the QIO service
+;
+	BRW	VD_SEND_ACPX		;
+
+;
+; Error in processing
+;
+ZERO_LENGTH:
+	MOVZWL	#SS$_NORMAL,R0
+	JMP	G^EXE$FINISHIOC
+READ_ERROR:
+	JMP	G^EXE$ABORTIO		; Abort the I/O request
+
+;++
+; BUFFER_DATA copies data from a user buffer to a system buffer that
+;	it allocates
+; ALLOCATE_BUFFER just gets the buffer (for READs, etc.).
+;
+; INPUTS:
+;	R0	- address of user buffer
+;	R1	- size of user buffer
+;	R2	- size of buffer header
+;
+; OUTPUTS:
+;	R0	- address of user buffer
+;	R1	- size of user buffer
+;	R2	- address of system buffer
+;
+;  Preserves all other registers
+;
+;--
+BUFFER_DATA:
+;
+; Allocate the message buffer
+;
+	PUSHR	#^M<R0,R1,R3,R4,R5>	; Save caller's regs
+	MOVL	R2,R5			; Save header length out of harm's way
+	JSB	ALLOCATE_BUFFER		; Get the buffer
+;
+; Copy the data to the system message buffer
+;
+	PUSHL	R2			; Save buffer address
+	MOVL	(R2),R3			; Point to data area of buffer
+	SUBL2	R5,R1			; Set transfer length
+	MOVC3	R1,(R0),(R3)		; Copy data
+	POPL	R2			; Restore buffer address
+	POPR	#^M<R0,R1,R3,R4,R5>	; Restore the caller's registers
+	RSB
+
+
+ALLOCATE_BUFFER:
+	PUSHL	R5			; Save register
+	MOVW	R1,IRP$W_BCNT(R3)	; Store size of user buffer
+	PUSHR	#^M<R0,R3>		; Save buffer & IRP addresses
+	MOVL	R2,R5			; Save Header size
+	ADDL	R2,R1			; Add header to request size
+	JSB	G^EXE$BUFFRQUOTA	; Check process's quotas
+	BLBC	R0,40$			; LBC means quota failure
+	PUSHR	#^M<R4>			; ALLOCBUF might switch PCBs!
+	JSB	G^EXE$ALLOCBUF		; Allocate S0 buffer (dstrys R3)
+	POPR	#^M<R4>
+	BLBC	R0,40$			; LBC means allocation failure
+	POPR	#^M<R0,R3>		; Remember buffer & IRP pointers
+	MOVL	R2,IRP$L_SVAPTE(R3)	; Insert buffer address in IRP
+	ADDW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+	PUSHL	R0			; Save buffer address again
+	MOVL	PCB$L_JIB(R4),R0	; Get JIB address
+	SUBL	R1,JIB$L_BYTCNT(R0)	; Charge job for buffer
+	POPL	R0			; Restore buffer address again
+	PUSHR	#^M<R2,R3>		; Save the regs temporarily
+	ADDL3	R5,R2,R3		; Find S0 data area
+	MOVL	R3,(R2)+		; Save its address in the buffer
+	MOVL	R0,(R2)			; Save user buffer address in the S0 buffer
+	POPR	#^M<R2,R3>		; Restore temp regs
+	POPL	R5			; Restore register
+	RSB
+;
+; Irregularities
+;
+40$:	POPR	#^M<R0,R2>		; Retrieve IRP address
+	POPL	R5			; Restore register
+	MOVZWL	#SS$_INSFMEM,R0		; Couldn't get the buffer
+	JMP	G^EXE$ABORTIO		; Forget it
+
+;
+; DE-ALLOCATE_BUFFER deletes the system buffer if it exists, otherwise 
+; returns to the caller.  Called before a JMP to EXE$ABORTIO.
+;
+DE_ALLOCATE_BUFFER:
+	MOVL	IRP$L_SVAPTE(R3),R0	; Get address of S0 buffer
+	BEQL	10$			; If 0, no buffer to de-allocate
+	MOVL	PCB$L_JIB(R4),R1	; Get JIB address
+	ADDW	VSX$W_SIZE(R0),JIB$L_BYTCNT(R1) ; Restore quota to job
+	CLRL	IRP$L_SVAPTE(R3)	; No more S0 buffer
+	PUSHR	#^M<R2,R3>		; May be Destroyed by deallocation routine
+	JSB	G^EXE$DEANONPAGED	; Deallocate the buffer
+	POPR	#^M<R2,R3>		; Restore regs
+10$:	RSB
+
+
+	.SBTTL	VD_SETMODE, Function Decision Routine for SETMODE/SETCHAR
+;++
+; VD_SETMODE, Function Decision Routine for SETMODE/SETCHAR Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a SETMODE
+;	or SETCHAR I/O request.
+;
+;	The QIO parameters for terminal SETMODE or SETCHAR are:
+;
+;
+;		P1 = address of 8 or 12 byte characteristics buffer
+;		P2 = 0, 8 or 12
+;		P3 = speed specifier
+;		P4 = fill specifier
+;		P5 = parity flags
+;
+;	IO$V_CTRLYAST -
+;		P1 = AST routine address or zero to cancel
+;
+;	IO$V_CTRLCAST -
+;		 P1 = AST routine address or zero to cancel
+;
+;	IO$V_HANGUP -
+;		NONE
+;
+;	The buffer (if any) is validated for access, the process's quota
+;	checked and decremented, a message block is allocated, the parameters
+;	(if any) are stored in the  message block, the address of the message
+;	block is stored in the IRP, and the IRP is queued to the ACP for
+;	delivery to the Workstation.
+;
+;	If an AST is to be enabled, an AST control block is allocated and
+;	hung off the UCB for later delivery by the ACP upon receipt of a 
+;	corresponding keyboard input.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;
+;	The routine preserves all registers except R0-R2, R7, and R9-R11
+;--
+VD_SETMODE:				; SETMODE/SETCHAR FDT routine
+
+	MOVL	UCB$L_TT_DEVDP1(R5),IRP$Q_TT_STATE+4(R3)	;INIT DEFAULT
+	BRB	SET_COMMON
+
+	.SBTTL	VD_SETCHAR - FUNCTION DECISION ROUTINE FOR TERMINAL SET CHARS
+;++
+; VD_SETCHAR - FUNCTION DECISION ROUTINE FOR TERMINAL SET CHARACTERISTICS FUNCTIONS
+;
+; FUNCTIONAL DESCRIPTION:
+;
+; THIS ROUTINE IS THE FUNCTION DECISION ROUTINE FOR TERMINAL SET MODE FUNCTIONS.
+; THERE ARE TWO BASIC FUNCTIONS -- SET UP FOR CONTROL Y AND SET MODE.
+;
+; INPUTS:
+;
+;	R3 = I/O PACKET ADDRESS
+;	R4 = PCB ADDRESS OF CURRENT PROCESS
+;	R5 = UCB ADDRESS
+;	R6 = CCB ADDRESS FOR ASSIGNED UNIT
+;	AP = ADDRESS OF ARGUMENT LIST AT USER PARAMETERS
+;
+; OUTPUTS:
+;
+;	THE FUNCTION IS COMPLETED HERE BY "EXE$FINISHIO".
+;
+; IMPLICIT OUTPUTS:
+;
+; 	R3,R5 ARE PRESERVED.
+;--
+VD_SETCHAR:				;
+	MOVL	UCB$L_TT_DECHA1(R5),IRP$Q_TT_STATE+4(R3)	;INIT DEFAULT
+SET_COMMON:
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	MOVAB	UCB$L_TL_CTRLC(R5),R7	; ASSUME CONTROL C
+	BBS	#IO$V_CTRLCAST,IRP$W_FUNC(R3),CTRLAST; BR IF CONTROL C
+	MOVAB	UCB$L_TL_CTRLY(R5),R7	; ADDRESS LIST HEAD
+	BBC	#IO$V_CTRLYAST,IRP$W_FUNC(R3),OUTBAND; BR IF NOT
+
+CTRLAST:
+	CLRL	R2			; NULL MASK
+	JSB	G^COM$SETATTNAST	; ENTER SET UP CODE
+	BRW	VD_SEND_ACPX		; Send to the VSACP and exit
+;
+; ENABLE OUT OF BAND MASK
+;
+OUTBAND:
+	BBC	#IO$V_OUTBAND,IRP$W_FUNC(R3),SET; NOT OUT OF BAND FUNCTION
+4$:	MOVAB	UCB$L_TL_BANDQUE(R5),R7		; GET LIST HEAD ADDRESS
+	MOVAL	UCB$L_TL_OUTBAND(R5),R2		; GET CURRENT MASK ADDRESS
+	JSB	G^COM$SETCTRLAST		; ENABLE/DISABLE AST
+	BRW	VD_SEND_ACPX		; Send to the VSACP and exit
+;
+; PROCESS SET MODE OR CHARACTERISTICS
+;
+SET:					;
+	BBS	#IO$V_HANGUP,-		; If this is a hangup function, then
+		IRP$W_FUNC(R3),REQCOM	; we're already done
+	BBS	#IO$V_TT_CONNECT,-	; If this is a connect function, we
+		IRP$W_FUNC(R3),BRQCOM	; don't support it under VMS V3
+	BBS	#IO$V_TT_DISCON,-	; If this is a disconnect function, we
+		IRP$W_FUNC(R3),BRQCOM	; don't support it under VMS V3
+	BBS	#IO$V_BRDCST,-		; If this is a broadcast function, we
+		IRP$W_FUNC(R3),BRQCOM	; don't support it under VMS V3
+	BBC	#IO$V_TT_PROCESS,-	; If this is a process ctrl function,
+		IRP$W_FUNC(R3),DO_SET	; its simple enough to do what V4 does
+	MOVL	PCB$L_PID(R4),-		; Just store away the controlling PID
+		UCB$L_TL_CTLPID(R5)	; in the UCB and we're done
+	BRB	REQCOM
+DO_SET:	MOVL	P1(AP),R1		; GET ADDRESS OF BUFFER
+	MOVZWL	#SS$_ACCVIO,R0		; ASSUME ACCESS VIOLATION
+	IFNORD	#8,(R1),BAD_SET		; BR IF NO ACCESS TO QUADWORD BUFFER
+	MOVL	(R1),IRP$L_MEDIA(R3)	; SAVE NEW DATA
+	MOVL	4(R1),IRP$Q_TT_STATE(R3); SAVE 1ST DEVDEPEND WORD
+	CMPL	P2(AP),#12		; CHECK FOR SECOND DEVDEPEND ARGUMENT
+	BLSSU	5$			; NONE
+	IFNORD	#12,(R1),BAD_SET	; CHECK IF ADDRESSABLE
+	MOVL	8(R1),IRP$Q_TT_STATE+4(R3)
+					; GET 2ND DEVDEPEND WORD
+5$:
+	BBS	#IO$V_SET_MODEM,-	; IF SET MODEM DIAGNOSTIC FUNCTION
+		IRP$W_FUNC(R3),QPKT	; THEN OK
+
+	TSTW	2(R1)			; PAGE WIDTH 0?
+	BLEQ	10$			; 0 IS BAD WIDTH
+	CMPW	#TTY$C_MAXPAGWID,2(R1)	; RESTRICT WIDTH
+	BGEQ	GOOD_SET		; FALL THROUGH IF > MAX
+10$:
+	MOVZWL	#SS$_BADPARAM,R0	; SET ERROR
+BAD_SET:JMP	G^EXE$ABORTIO		; RETURN ON ERROR
+GOOD_SET:
+	CLRW	IRP$W_TT_PRMPT(R3) 	; CLEAR THE SPEED PARAMETER
+	CLRW	IRP$W_TT_PRMPT+2(R3)	; CLEAR FILLS
+	CLRB	IRP$L_MEDIA(R3)		; CLEAR PARITY
+
+QPKT:	BSB	DO_SETCHAR		; Set the characteristics in the UCB
+BRQCOM:	MOVZWL	#SS$_ILLIOFUNC,R0	; Signal failure
+	JMP	G^EXE$ABORTIO		; Return with error status
+REQCOM:	MOVZWL	#SS$_NORMAL,R0		; Signal success
+	JMP	G^EXE$FINISHIO		; Exit the QIO
+
+
+	.SBTTL	DO_SETCHAR -- Change the characteristics in the UCB
+;++
+; DO_SETCHAR -- Change the characteristics in the UCB
+; DO_SETMODE
+;
+; Functional Description:
+;	This routine is called from the SETCHAR VD FDT routine to actually
+;	accomplish the changing of the characteristics.
+;
+; INPUTS:
+;	R3 = IRP Address
+;	R5 = UCB Address
+;
+; OUTPUTS:
+;	NONE
+;--
+
+DO_SETCHAR:
+DO_SETMODE:	
+;
+; PROCESS CHANGE OF CHARACTERISTICS AND MODE
+;
+	DSBINT	#IPL$_SYNCH		; Synchronize access to database
+;
+; CHANGE BASIC MODE BITS IN UCB$L_DEVDEPEND
+;
+6$:	XORL3	IRP$Q_TT_STATE(R3),UCB$L_DEVDEPEND(R5),R4; GET MODIFIED BITS
+	BBCC	#TT$V_REMOTE,R4,8$	; DISALLOW CLEARING REMOTE BIT
+	BICL2	#TT$M_REMOTE,IRP$Q_TT_STATE(R3)
+					; DISALLOW SETTING REMOTE BIT
+8$:
+	BICL2	R4,UCB$L_DEVDEPEND(R5)	; CLEAR THE CHANGED BITS
+	BISL2	IRP$Q_TT_STATE(R3),UCB$L_DEVDEPEND(R5);
+	MOVB	IRP$L_MEDIA+1(R3),UCB$B_DEVTYPE(R5); INSERT NEW TERMINAL TYPE
+;
+;	DEVDP1 BIT CHECKING
+;
+	MOVL	IRP$Q_TT_STATE+4(R3),R0	; GET SECOND DEVDEPEND WORD
+	XORL3	R0,UCB$L_TT_DEVDP1(R5),R1 ; GET MODIFIED BITS
+
+
+15$:
+	MOVL	R0,UCB$L_TT_DEVDP1(R5) ; SET SECOND DEVDEPENDENT WORD
+
+;
+; SET UP WIDTH
+;
+25$:	MOVW	IRP$L_MEDIA+2(R3),UCB$W_DEVBUFSIZ(R5); INSERT NEW CARRIAGE WIDTH
+
+;
+; COPY OVER PASSALL AND NOECHO TO CURRENT STATE
+;
+80$:	MOVAB	UCB$Q_TT_STATE(R5),R2			; Point to state vector
+	BICB3	#^C<TT$M_PASSALL!TT$M_NOECHO>,UCB$L_DEVDEPEND(R5),R4
+	INSV	R4,#TTY$V_ST_PASALL,#2,4(R2); INSERT IN STATE VECTOR
+	EXTV	#TT$V_ESCAPE,#1,UCB$L_DEVDEPEND(R5),R4	; GET CURRENT SETTING
+	INSV	R4,#TTY$V_ST_ESCAPE,#1,4(R2)		; UPDATE IN STATE
+	
+;
+; CHECK FOR SET CHARACTERISTICS AND RETURN IOSB DATA
+;
+110$:	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,IRP$W_FUNC(R3),#IO$_SETCHAR; SET CHAR?
+	BNEQ	120$			; IF NEQ THEN NO
+	MOVL	UCB$B_DEVTYPE(R5),UCB$B_TT_DETYPE(R5); RESET TYPE AND WIDTH
+	BICL3	#TT$M_REMOTE,UCB$L_DEVDEPEND(R5),UCB$L_TT_DECHAR(R5); RESET PERM CHARACTERISTICS
+	MOVL	UCB$L_TT_DEVDP1(R5),UCB$L_TT_DECHA1(R5)	;UPDATE SECOND CHAR WORD
+
+120$:
+
+DO_EXIT:
+	ENBINT				; Return IPL to value at time-of-call
+	MOVZWL	#SS$_NORMAL,R0		; SET STATUS
+	RSB
+
+
+	.SBTTL	VD_CHARSIZE, Size of characteristics buffer
+;++
+; VD_CHARSIZE
+;
+; inputs
+;	AP -> qio argument list
+;
+; outputs
+;	r2 = 8 or 12 for size of characteristics buffer
+;
+; ABORT if P2(ap) is not 0, 8, 12.
+;--
+
+VD_CHARSIZE:
+	MOVL	P2(AP), R2	; Size of characters buffer
+	BEQL	10$		; Zero is for 8
+	CMPL	R2, #8		; 8 is allowed
+	BEQL	20$		; Ok
+	BLSSU	30$		; Less is no good
+	CMPL	R2, #12		; Must be 12 and nothing else
+	BNEQ	30$		; No good
+	RSB			; Ok
+10$:	MOVL	#8, R2		; Use 8 if zero
+20$:	RSB
+
+30$:	MOVZWL	#SS$_BADPARAM, R0	; Abort qio with an error
+	JMP	G^EXE$ABORTIO
+
+
+	.SBTTL	VD_SENSEMODE, Function Decision Routine for SENSEMODE/SENSECHAR
+;++
+; VD_SENSEMODE, Function Decision Routine for SENSEMODE/SENSECHAR Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a SENSEMODE
+;	or SENSECHAR I/O request.
+;
+;	The QIO parameters for terminal SENSEMODE/SENSECHAR are:
+;
+;	P1 = address of 8 or 12 byte characteristics buffer
+;	P2 = 0, 8 or 12
+;
+;	The buffer is validated for access, the process's quota checked and
+;	decremented, a message block is allocated, the address of the message
+;	block is stored in the IRP, and the IRP is queued to the ACP for
+;	delivery to the Workstation.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;	IRP$L_MEDIA(R3) = address of user characteristics buffer
+;	IRP$W_BCNT(R3) = size of user characteristics buffer, 8
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+;
+
+;++
+; VD_SENSEMODE- SENSE MODE
+; VDSENSECHAR- SENSE CHARACTERISTICS
+;
+; FUNCTIONAL DESCRIPTION:
+;
+; THIS ROUTINE PASSES THE CURRENT CHARACTERISTICS FOR SENSEMODE AND
+; THE PERMANENT CHARACTERISTICS FOR SETCHAR.
+; THE BUFFER RETURNED IS A QUADWORD.
+;
+; INPUTS:
+;
+;	R3 = I/O PACKET ADDRESS
+;	R4 = CURRENT PCB ADDRESS
+;	R5 = UCB ADDRESS
+;	R6 = CCB ADDRESS
+;	R7 = FUNCTION CODE
+;	AP = ARG LIST FROM QIO
+;
+; OUTPUTS:
+;
+;	CONTROL IS PASSED TO EXE$FINISHIO ON SUCCESS
+;	AND EXE$ABORTIO ON FAILURE
+;
+; STATUS RETURNS:
+;
+;	SS$_NORMAL - SUCCESSFULL
+;	SS$_ACCVIO - BUFFER NOT ACCESSIBLE
+;--
+VD_SENSEMODE:				; SENSEMODE/SENSECHAR FDT routine
+	BSBW	COMMON_SENSE		; PROCESS ARG LIST
+	MOVL	UCB$B_DEVCLASS(R5),(R1); RETURN CLASS, TYPE AND BUFFER SIZE
+	MOVL	UCB$L_DEVDEPEND(R5),4(R1); RETURN DEVICE DEPENDENT LONG WORD
+	CMPL	R11,#12			; ROOM FOR SECOND DEVDEPEND LONG WORD?
+	BLSSU	5$			; NO
+	CLRL	R2			; Clear flag register
+	TSTL	UCB$L_AMB(R5)		; Any associated mailbox to device?
+	BEQL	2$			; Nope. Go do second char. longword
+	BISL2	#TT2$M_DCL_MAILBX,R2	; Set special characteristic
+2$:	BISL3	R2,UCB$L_DEVDEPND2(R5),8(R1) ; Return second devdepend value
+5$:	MOVL	UCB$W_TT_SPEED-2(R5),R0	; RETURN SPEED
+	BICL3	#^C<<UCB$M_TT_PARTY!UCB$M_TT_ODD>@16>,UCB$B_TT_PARITY-2(R5),R1;
+	MOVZWL	#0,R1			; INSERT FILL DATA
+	MOVW	#SS$_NORMAL,R0		; SET STATUS
+	JMP	G^EXE$FINISHIO		; COMPLETE THE I/O
+;
+;
+VD_SENSECHAR:				; SENSE CHAR
+	BSBB	COMMON_SENSE		; PROCESS ARG LIST
+	MOVB	#DC$_TERM,(R1)		; SET CLASS
+	MOVL	UCB$B_TT_DETYPE(R5),1(R1); RETURN TYPE AND BUFFER SIZE
+	MOVL	UCB$L_TT_DECHAR(R5),4(R1); RETURN DEVICE DEPENDENT LONG WORD
+	CMPL	R11,#12			; ROOM FOR SECOND DEVDEPEND LONG WORD?
+	BLSSU	5$			; NO
+	CLRL	R2			; Clear flag register
+	TSTL	UCB$L_AMB(R5)		; Any associated mailbox to device?
+	BEQL	2$			; Nope. Go do second char. longword
+	BISL2	#TT2$M_DCL_MAILBX,R2	; Set special characteristic
+2$:	BISL3	R2,UCB$L_TT_DECHA1(R5),8(R1) ; Return second char. value
+5$:	CLRL	R0			; RETURN SPEED
+	BICL3	#^C<<UCB$M_TT_PARTY!UCB$M_TT_ODD>@16>,UCB$B_TT_DEPARI-2(R5),R1;
+	MOVZWL	#0,R1			; INSERT FILL DATA
+	MOVZWL	#SS$_NORMAL,R0		; SET STATUS
+	JMP	G^EXE$FINISHIO		; COMPLETE THE I/O
+;
+; COMMON SENSE SUBROUTINE
+;
+COMMON_SENSE:				;
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	BBS	#IO$V_RD_MODEM,-	; IS FUNCTION SENSE MODEM
+		IRP$W_FUNC(R3), 30$	; INFO?  BRANCH SINCE NOT SUPPORTED.
+	MOVL	P1(AP),R1		; ADDRESS BUFFER
+	IFNOWRT	#8,(R1),30$		; BR IF NO ACCESS TO QUADWORD BUFFER
+	BBC	#IO$V_BRDCST,-		; IS FUNCTION SENSE BROADCAST
+		IRP$W_FUNC(R3), 10$	; INFO?  BRANCH IF NOT.
+	MOVQ	UCB$Q_TL_BRKTHRU(R5),(R1) ; RETURN BROADCAST MASK
+	BRB	15$			; AND RETURN
+10$:	BBC	#IO$V_TYPEAHDCNT,-	; IS FUNCTION SENSE TYPEAHEAD
+		IRP$W_FUNC(R3), 20$	; INFO?  BRANCH IF NOT.
+	PUSHL	R9			; SAVE SCRATCH REGISTERS
+	MOVL	UCB$L_TL_PHYUCB(R5),R9	; GET PHYSICAL UCB ADDRESS
+	BEQL	14$			; DON'T GOT ONE
+	MOVL	UCB$L_TT_TYPAHD(R9),R9	; GET TYPEAHEAD BUFFER ADDRESS
+	BEQL	14$			; DON'T GOT ONE OF THOSE
+	MOVW	TTY$W_TA_INAHD(R9),(R1)	; GET # OF CHARS IN TYPAHD BUF
+	MOVB	@TTY$L_TA_GET(R9),2(R1)	; GET FIRST CHAR IN TYPAHD
+14$:	POPL	R9			; RESTORE SCRATCH REGISTER
+15$:	MOVZWL	#SS$_NORMAL,R0		; SUCCESS STATUS
+	JMP	G^EXE$FINISHIO		; COMPLETE THE I/O
+20$:
+	MOVL	P2(AP),R11		; GET SIZE ARGUMENT
+	CMPL	R11,#12			; ROOM FOR SECOND DEVDEPEND SPECIFIED?
+	BLSSU	25$			; NO
+	IFNOWRT	#12,(R1),30$		; CHECK IF WRITE ACCESS
+25$:
+;	BBC	#IO$V_RD_MODEM,-	; SKIP IF NOT READ MODEM FUNCTION
+;		IRP$W_FUNC(R3),28$
+;	CLRQ	(R1)			; INIT RETURN VALUES
+;	MOVL	UCB$L_CRB(R5),R0	; GET CRB ADDRESS
+;	MOVB	CRB$B_TT_TYPE(R0),(R1)	; RETURN CONTROLLER TYPE
+;	MOVB	UCB$B_TT_DS_RCV(R5),2(R1); RETURN CURRENT RECEIVE MODEM SIGNALS
+;	BRB	10$			; FINISHED
+;28$:
+	RSB
+
+30$:
+	MOVZWL	#SS$_ACCVIO,R0		; SET ERROR STATUS
+	JMP	G^EXE$ABORTIO		; ABORT THE IO
+
+
+;
+;	BSBB	VD_CHARSIZE		; Put size of chars buffer into R2
+;	MOVL	R2,R1
+;	MOVL	P1(AP),R0		; Get address of characteristics buffer
+;	JSB	G^EXE$READCHK		; Buffer accessible? (No return if not)
+;	MOVL	#VSX$K_HDR_LEN,R2	; Size of buffer header
+;	BSBW	ALLOCATE_BUFFER		; Allocate and initialize the message buffer
+;	BRW	VD_SEND_ACPX		; Send the IRP and exit the QIO
+
+	.SBTTL	VD_CREATE, Function Decision Routine for CREATE/DELETE
+;++
+; VD_CREATE, Function Decision Routine for CREATE/DELETE Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a CREATE
+;	or DELETE SDA object request.
+;
+;	The CREATE or DELETE function code is modified by the object of 
+;	interest:
+;			IO$M_VD		Virtual Display
+;			IO$M_PB		Paste Board
+;			IO$M_W		Window
+;			IO$M_VP		View Port
+;			IO$M_VS		Virtual Screen
+;			IO$M_PS		Physical Screen
+;
+;	The QIO parameters for terminal CREATE/DELETE are:
+;
+;  VD:
+;	P1 = address of data block containingmode, characteristics,
+;		background, foreground, text linesize, text baseline,
+;		display height and width,and text font information
+;	P2 = length of data block
+;  PB:
+;	P2 = flags for VKB, VTB creation, PERManence
+;	P3 = color
+;	P4 = width DX (pixels)
+;	P5 = height DY
+;	P6 = protection code
+;  VS:
+;	P3 = color
+;  W:
+;	P1 = address of window name descriptor
+;	P2 = PB_ID associated with this window
+;	P3 = Xo (pixels)
+;	P4 = Yo
+;	P5 = DX
+;	P6 = DY
+;  VP:
+;	P2 = Window ID
+;	P3 = VS ID that this VP goes on
+;	P4 = Xo (pixels)
+;	P5 = Yo
+;	P6 = Base VP number, for stacking control
+;  PS:
+;	P2 = VS ID
+;	P3 = X0
+;	P4 = Y0
+;	P5 = Device type
+;	P6 = Device unit number
+;
+; Inputs:
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;	A VSX message buffer is allocated from nonpaged pool, filled
+;	with appropriate information, and queued to the VSACP.
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_CREATE:				; CREATE/DELETE FDT routine
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	IRP$W_FUNC(R3),R1	; Cache the function code
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE,- ; Is this a DELETE?
+		R1,#IO$_DELETE
+	BNEQ	10$			; If NEQ, a create
+	BRW	VD_DELETE		;   else a delete
+10$:	BBC	#IO$V_VD,R1,11$		; Creating a Virt Disp?
+	MOVZWL	#<VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create VD function
+	BRW	110$
+11$:	BBC	#IO$V_PB,R1,12$		; Creating a Paste Board?
+	MOVZWL	#<VS$M_ST_PB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create PB function
+	BRW	120$
+12$:	BBC	#IO$V_W,R1,13$		; Creating a Window?
+	MOVZWL	#<VS$M_ST_W>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create W function
+	BRW	130$
+13$:	BBC	#IO$V_VP,R1,14$		; Creating a View Port?
+	BBC	#PRV$V_LOG_IO,-		; Abort if LOG_IO priv is not there
+		@PCB$L_PHD(R4),80$
+	MOVZWL	#<VS$M_ST_VP>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create VP function
+	BRW	140$
+14$:	BBC	#IO$V_VS,R1,15$		; Creating a Virt Screen?
+	MOVZWL	#<VS$M_ST_VS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create VS function
+	BRW	150$
+15$:	BBC	#IO$V_PS,R1,16$		; Creating a Physical Screen?
+	MOVZWL	#<VS$M_ST_PS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create PS function
+	BRW	160$
+16$:	BBC	#IO$V_SW,R1,17$		; Creating a system window?
+	MOVZWL	#<VS$M_ST_W>,-
+		IRP$Q_TT_STATE(R3)	; Initialize create VD function
+	BRW	130$
+17$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+	JMP	G^EXE$ABORTIO		; If none of above, error
+80$:	MOVZWL	#SS$_NOLOG_IO,R0	; Otherwise, ABORT the request
+	JMP	G^EXE$ABORTIO
+;
+; VD creation
+;
+110$:	BBC	#IO$V_VTB,R1,111$	; Is this a terminal tablet create?
+	BRW	VD_SEND_ACPX		; Yup. No parameters. Send to the ACP.
+111$:	MOVL	P1(AP),R0		; Address of VD data buffer
+	MOVL	P2(AP),R1		; Size of VD data buffer
+	BEQL	16$			; If no info, can't create it
+	JSB	G^EXE$WRITECHK		; Can we get at the info??
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX 
+	PUSHR	#^M<R3,R4,R5>		; Save regs for MOVC3
+	ADDL3	#VSX$K_HDR_LEN,R2,R3	; Find buffer data location
+	MOVL	P1(AP),R0		; Address of VD data buffer
+	MOVL	P2(AP),R1		; Re-set transfer length (destroyed by
+					;     allocation)
+	MOVC3	R1,(R0),(R3)		; Copy data
+	POPR	#^M<R3,R4,R5>		; Retrieve regs
+115$:	MOVL	P3(AP),R0		; Address of window name buffer
+	MOVL	P4(AP),R1		; Size of window name buffer
+	BEQL	119$			; If no window name, don't buffer it
+	JSB	G^EXE$WRITECHK		; Can we get at the name??
+	MOVL	#VS$K_TTY_DATA,R2	; Store buffer header size
+	BSBW	BUFFER_DATA		; Buffer the data (No return if no good)
+119$:	BRW	VD_SEND_ACPX		; Send to the VSACP and exit
+;
+; PB creation
+;
+120$:	BSBW	ALLOCATE_VSX		; Procure the VSX
+	MOVL	P2(AP),VSX$L_PB_FLAGS(R2)	; Flags for VKB, VTB, PERM
+	CVTLW	P3(AP),VSX$W_PB_COLOR(R2)	; Fill in color data
+	BVS	125$				; Branch if doesn't fit into word
+	BLSS	125$				; Branch if negative color
+	CVTLW	P4(AP),VSX$W_PB_WIDTH(R2)	; Pixels of width
+	BVS	125$				; Branch if doesn't fit into word
+	BLSS	125$				; Branch if non-positive
+	CVTLW	P5(AP),VSX$W_PB_HEIGHT(R2)	; Pixels of height
+	BVS	125$				; Branch if doesn't fit into word
+	BLSS	125$				; Branch if non-positive
+	MOVW	P6(AP),VSX$W_PB_PROTECTION(R2)	; Protection code (mask)
+	BRW	VD_SEND_ACPX		; Send buffer to ACP, and exit
+
+125$:	MOVZWL	#SS$_BADPARAM,R0	; Bad parameter
+	JMP	G^EXE$ABORTIO		; Forget it
+
+;
+; W creation
+;
+130$:	IFNORD	#8,@P1(AP),131$		; See if there is any window name at all
+	MOVQ	@P1(AP),R7		; Descriptor of window name=>R7,R8
+	MOVZWL	R7,R1			; Length of name string
+	BEQL	131$			; Skip check if zero size
+	MOVL	R8,R0			; (Address in R0, length in R1)
+	JSB	G^EXE$WRITECHK		; Can we get at the name?? If yes...
+131$:	BSBW	ALLOCATE_VSX		; Get the VSX
+	CVTLW	P3(AP),VSX$W_W_X0(R2)	; Transfer the object's location
+	BVS	132$			; Branch if it doesn't fit into word
+	BLSS	132$			; Branch if negative
+	CVTLW	P4(AP),VSX$W_W_Y0(R2)
+	BVS	132$			; Branch if it doesn't fit into word
+	BLSS	132$			; Branch if negative
+	CVTLW	P5(AP),VSX$W_W_DX(R2)	; Transfer the object's extent
+	BVS	132$			; Branch if it doesn't fit into word
+	BLSS	132$			; Branch if non-positive
+	CVTLW	P6(AP),VSX$W_W_DY(R2)
+	BVS	132$			; Branch if it doesn't fit into word
+	BLSS	132$			; Branch if non-positive
+	CVTLW	P2(AP),VSX$W_W_PB_ID(R2) ; Transfer associated Pasteboard #
+	BVS	132$			; Branch if it doesn't fit into word
+	BLSS	132$			; Branch if non-positive
+	BRB	133$			; Continue if all the parameters are OK
+
+132$:	MOVZWL	#SS$_BADPARAM,R0	; Bad parameter
+	JMP	G^EXE$ABORTIO		; Forget it
+
+  ;
+  ; Buffer the window name
+  ;
+133$:	TSTL	P1(AP)			; See if there is any window name at all
+	BEQL	135$			; Branch if no name; else descriptor in R7,R8
+	MOVZWL	R7,R1			; Length of name string
+	MOVL	R8,R0			; (Address in R0, length in R1)
+	MOVL	#VSX$K_HDR_LEN,R2	; Size of buffer header
+	BSBW	BUFFER_DATA		; Put name in system buffer
+135$:	BRW	VD_SEND_ACPX		; Send the buffer to ACP, and exit
+;
+; Create VP
+;
+140$:	BSBW	ALLOCATE_VSX		; Get the VSX
+	CVTLW	P2(AP),VSX$W_VP_W_ID(R2)  ; Transfer associated Window #
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if non-positive
+	CVTLW	P3(AP),VSX$W_VP_VS_ID(R2) ; Transfer associated Virt. Scr. #
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if non-positive
+	CVTLW	P4(AP),VSX$W_VP_X0(R2)	; Transfer VP location on VS
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	CVTLW	P5(AP),VSX$W_VP_Y0(R2) 
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	CVTLW	P6(AP),VSX$W_VP_BASE(R2) ; Save Base VP number
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; Send the buffer to ACP, and exit
+
+142$:	MOVZWL	#SS$_BADPARAM,R0	; Bad parameter
+	JMP	G^EXE$ABORTIO		; Forget it
+
+;
+; VS creation
+;
+150$:	BSBW	ALLOCATE_VSX		; Procure the VSX
+	CVTLW	P3(AP),VSX$W_VS_COLOR(R2)	; Fill in color data
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative color
+	BRW	VD_SEND_ACPX		; Send buffer to ACP, and exit
+;
+; PS creation
+;
+160$:	BSBW	ALLOCATE_VSX		; Get the VSX
+	CVTLW	P2(AP),VSX$W_PS_VS_ID(R2) ; Transfer associated VS #
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if non-positive
+	CVTLW	P3(AP),VSX$W_PS_X0(R2)	; Transfer PS location on VS
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	CVTLW	P4(AP),VSX$W_PS_Y0(R2)
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	CVTLW	P5(AP),VSX$W_PS_DEV_TYPE(R2) ; Device type
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	CVTLW	P6(AP),VSX$W_PS_UNIT(R2) ; Device unit number
+	BVS	142$			; Branch if it doesn't fit into word
+	BLSS	142$			; Branch if negative
+	BRW	VD_SEND_ACPX		; Send the buffer to ACP, and exit
+;
+; Object DELETION
+;
+VD_DELETE:
+	BBC	#IO$V_VD,R1,211$	; Deleting a Virt Disp?
+	MOVZWL	#<VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete VD function
+	BBC	#IO$V_VTB,R1,210$	; Deleting a terminal tablet?
+	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+210$:	MOVZWL	IRP$W_CHAN(R3),R2	; Set Channel offset for Flushes
+	PUSHL	R3			; CANCEL destroys R3
+	BSBW	VD_CANCEL
+	POPL	R3			; Restore IRP address
+	BRW	300$
+211$:	BBC	#IO$V_PB,R1,212$	; Deleting a Paste Board?
+	MOVZWL	#<VS$M_ST_PB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete PB function
+	BRW	300$
+212$:	BBC	#IO$V_W,R1,213$		; Deleting a Window?
+	MOVZWL	#<VS$M_ST_W>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete W function
+	BRW	300$
+213$:	BBC	#IO$V_VP,R1,214$	; Deleting a View Port?
+	BBC	#PRV$V_LOG_IO,-		; Abort if LOG_IO priv is not there
+		@PCB$L_PHD(R4),280$
+	MOVZWL	#<VS$M_ST_VP>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete VP function
+	BRW	300$
+214$:	BBC	#IO$V_VS,R1,215$	; Deleting a Virt Screen?
+	MOVZWL	#<VS$M_ST_VS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete VS function
+	BRW	300$
+215$:	BBC	#IO$V_PS,R1,216$	; Deleting a Physical Screen?
+	MOVZWL	#<VS$M_ST_PS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize delete PS function
+	BRW	300$
+216$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+	JMP	G^EXE$ABORTIO		; If none of above, error
+280$:	MOVZWL	#SS$_NOLOG_IO,R0	; Otherwise, ABORT the request
+	JMP	G^EXE$ABORTIO
+
+300$:	BSBW	ALLOCATE_VSX		; Get the VSX 
+	CVTLW	P3(AP),VSX$W_ID(R2)	; Add the ID # of the object
+	BVC	305$			; Branch if it fits into a word	
+303$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+305$:	BLSS	303$			; Abort if non-positive
+	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+
+;++
+; ALLOCATE_VSX, Allocates non-paged pool for a VSX, fills in the header
+;	information, enters its own address in IRP$L_EXTEND, and
+;	returns its address in R2
+;	This is done by allocating an IRP Extension (IRPE). If the
+;	IRP$V_EXTEND bit in IRP$W_STS is set, the IO Postprocessor
+;	will automatically de-allocate this non-paged resource for
+;	us.  To do that, he will check the TYPE and SIZE fields, which
+;	should therefore not be fiddled with after VD_ALLOCIRP fills 
+;	them in for us.
+;
+; INPUT:
+;	R3 = IRP address
+;	R4 = PCB address
+;	R5 = UCB address
+;
+; OUTPUT:
+;	IRP$L_EXTEND filled in with address of VSX
+;	IRP$V_EXTEND bit in IRP$W_STS set
+;	R1 = size of VSX (rounded up to 16 byte multiple)
+;	R2 = address of VSX
+;	R0, R3-R11 are preserved
+;	The current process's quotas are not decremented.
+;--
+ALLOCATE_VSX:
+	PUSHR	#^M<R0,R3>		; Save buffer and IRP addresses
+	MOVL	#IRP$C_LENGTH,R1	; Load size of IRP to be allocated
+	JSB	G^EXE$BUFFRQUOTA	; Check process's quotas
+	BLBC	R0,ABORT_VSX		; LBC means unlucky quota failure
+	PUSHR	#^M<R4>			; ALLOCIRP might change PCBs!
+	BSBW	VD_ALLOCIRP		; Allocate S0 buffer (dstrys R3)
+	POPR	#^M<R4>
+	BLBC	R0,ABORT_VSX		; LBC means unlucky allocation
+	POPR	#^M<R0,R3>		; Remember buffer,IRP addresses
+	MOVB	#DYN$C_IRPE,IRPE$B_TYPE(R2) ; This is an extended IRP
+	CLRW	IRPE$W_STS(R2)		; No further extensions
+	MOVL	R2,IRP$L_EXTEND(R3)	; Put VSX address into IRP
+	BISW2	#IRP$M_EXTEND,IRP$W_STS(R3); Signals Post-processor to De-allocate
+;
+; Don't charge this IRPE to process's quota
+;
+;	BBC	#IRP$V_BUFIO,-		; Tally Buffered-I/O bytes ONLY
+;		IRP$W_STS(R3),10$	; 	in BOFF
+;	ADDW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+;10$:	PUSHL	R0			; Save buffer address, again
+;	MOVL	PCB$L_JIB(R4),R0	; Get JIB address
+;	SUBL	R1,JIB$L_BYTCNT(R0)	; Charge job for buffer
+;	POPL	R0			; Restore buffer address, again
+
+;
+; Fill in some of the VSX header and fields the post-processor will check
+;
+VSX_HDR:
+	MOVL	PCB$L_UIC(R4),-		; Store the UIC in the VSX
+		VSX$L_UIC(R2)
+	MOVL	UCB$L_VD_ID(R5),VSX$W_ID(R2) ; Assume VD is object of interest
+
+; Here's an assembly-time check that makes sure the programmer-defined fields
+; (see vsacpdef.sdl) don't collide with the system-defined fields.
+;
+.if greater vsx$k_data_len - irpe$w_sts
+.error ; Some vsx block in vsacpdef.sdl is too large !
+.endc
+
+	CLRL	IRPE$L_SVAPTE1(R2)	; No additional buffer area
+	CLRW	IRPE$W_BOFF1(R2)
+	CLRL	IRPE$L_BCNT1(R2)
+	CLRL	IRPE$L_SVAPTE2(R2)	; No additional buffer area
+	CLRW	IRPE$W_BOFF2(R2)
+	CLRL	IRPE$L_BCNT2(R2)
+	CLRW	IRPE$W_STS(R2)		; No additional IRPE
+	RSB				; Return
+;
+; Failure of some sort -- abort
+;
+ABORT_VSX:
+	POPR	#^M<R1,R3>		; Restore IRP address, don't hurt R0
+	JMP	G^EXE$ABORTIO		; Forget it
+
+	.SBTTL	VD_ACCESS, Function Decision Routine for ACCESS/MODIFY
+;++
+; VD_ACCESS, Function Decision Routine for ACCESS/MODIFY Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a ACCESS
+;	or MODIFY I/O request.
+;
+;	The ACCESS and MODIFY functions are performed as DIRECT I/O
+;
+;	The QIO parameters for object ACCESS are:
+;
+;	P1 = Address of return buffer
+;	P2 = Length of return buffer
+;	P3 = ID # of object
+;
+;	The QIO parameters for object MODIFY are device-dependent:
+;
+;	IO$_MODIFY!IO$M_VD
+;		P1 = Address of VD data block
+;		P2 = Length of VD data block
+;		P3 = ID of Virtual Display in question
+;
+;	IO$_MODIFY!IO$M_PB
+;		P1 = Address of color array
+;		P2 = Length of color array
+;		P3 = ID of Pasteboard
+;		P4 = color_specification code (RBG or HSL)
+;		P5 = color of pasteboard
+;		P6 = protection code
+;
+;	IO$_MODIFY!IO$M_W
+;		P3 = Window ID
+;		P4 = width of window
+;		P5 = height of window
+;
+;	IO$_MODIFY!IO$M_VS
+;		P3 = ID of Virtual Screen
+;		P4 = color of virtual screen
+;
+;	IO$_MODIFY!IO$M_VKB[!IO$M_TRANS_TABLE]
+;		P3 = ID of Virtual Keyboard
+;		P4 = New translation table to use (integer)
+;		P5 = Modify states mask
+;		P6 = New state bits mask
+;
+;  N.B. MODIFication of Viewports and of Physical Screens is **not**
+;	supported at this time.
+;
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_ACCESS:				; ACCESS FDT routine
+;
+; Check access to user's buffer and allocate a system buffer
+;		(BUFFERED I/O)
+;
+;	MOVL	P1(AP),R0		; User's buffer address
+;	MOVL	R0,IRP$L_MEDIA(R3)	; Save the address in packet
+;	MOVZWL	P2(AP),R1		; Get size of buffer
+;	JSB	G^EXE$READCHK		; Check buffer access
+;					; (no return if no access)
+;	MOVL	#VSX$K_HDR_LEN,R2	; Size of buffer header
+;	JSB	ALLOCATE_BUFFER		; Get an empty buffer for the data
+
+;
+; Check whether this VD has been marked for deletion
+;
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+;
+; Check if the function code modifier is legal
+;
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	IRP$W_FUNC(R3),R1	; Cache the function code
+	BBC	#IO$V_GRAPHICS,R1,40$	; Accessing GIDIS data?
+	MOVZWL	#<VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access VD (Graphics Term)
+	BRB	110$
+40$:	BBC	#IO$V_VD,R1,50$		; Accessing a Virt Disp?
+	MOVZWL	#<VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access VD
+	BRB	110$
+50$:	BBC	#IO$V_PB,R1,60$		; Accessing a Paste Board?
+	MOVZWL	#<VS$M_ST_PB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access PB
+	BRB	110$
+60$:	BBC	#IO$V_W,R1,70$		; Accessing a Window?
+	MOVZWL	#<VS$M_ST_W>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access W
+	BRB	110$
+70$:	BBC	#IO$V_VP,R1,80$		; Accessing a View Port?
+	MOVZWL	#<VS$M_ST_VP>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access VP
+	BRB	110$
+80$:	BBC	#IO$V_VS,R1,90$		; Accessing a Virt Screen?
+	MOVZWL	#<VS$M_ST_VS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access VS
+	BRB	110$
+90$:	BBC	#IO$V_PS,R1,100$	; Accessing a Physical Screen?
+	MOVZWL	#<VS$M_ST_PS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access PS
+	BRB	110$
+100$:	BBC	#IO$V_VKB,R1,105$	; Accessing a Virtual Keyboard
+	MOVZWL	#<VS$M_ST_VKB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access VKB
+	BRB	110$
+105$:	CMPZV	#6,#10,R1,#0		; Accessing an error block (no mods)
+	BNEQ	107$
+	MOVZWL	#<VS$M_ST_ERRBLOCK>,-
+		IRP$Q_TT_STATE(R3)	; Initialize access to error block
+	BRB	110$
+107$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+	JMP	G^EXE$ABORTIO		; If none of above, error
+110$:
+	MOVQ	P1(AP),R0		; User buffer address and size
+
+;
+; Call system routine to check access to user's buffer, lock it down, and 
+; set the read function bit IRP$V_FUNC in IRP$W_STS.
+;
+	JSB	G^EXE$READLOCK
+
+;
+; Allocate the VSX and send it to the ACP, and exit
+;
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	MOVL	P3(AP),VSX$W_ID(R2)	; Store ID of object
+	BVS	305$			; Branch if it doesn't fit into a word
+	BLSS	305$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; If good, send to the VSACP and exit
+
+305$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+
+
+;
+; MODIFICATION
+;
+
+VD_MODIFY:
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	IRP$W_FUNC(R3),R1	; Cache the function code
+	BBC	#IO$V_VD,R1,11$		; Modifying a Virt Disp?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_VD>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify VD function
+	BRW	110$
+11$:	BBC	#IO$V_PB,R1,12$		; Modifying a Paste Board?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_PB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify PB function
+	BRW	120$
+12$:	BBC	#IO$V_W, R1,13$		; Modifying a Window?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_W>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify W function
+	BRW	130$
+13$:	BBC	#IO$V_VP,R1,14$		; Modifying a View Port?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_VP>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify VP function
+	BRW	140$
+14$:	BBC	#IO$V_VS,R1,15$		; Modifying a Virt Screen?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_VS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify VS function
+	BRW	150$
+15$:	BBC	#IO$V_PS,R1,16$		; Modifying a Physical Screen?
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_PS>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify PS function
+	BRW	160$
+16$:	BBC	#IO$V_VKB,R1,17$	; Modifying a Virtual Keyboard
+	MOVZWL	#<VS$M_ST_MODIFY!VS$M_ST_VKB>,-
+		IRP$Q_TT_STATE(R3)	; Initialize modify VKB function
+	BRW	170$
+17$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+	JMP	G^EXE$ABORTIO		; If none of above, error
+;
+; VD modification
+;
+110$:
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	CVTLW	P3(AP),VSX$W_ID(R2)	; Store ID # of object in VSX
+	BVS	115$			; Branch if it doesn't fit into a word
+	BLSS	115$			; Branch if non-positive
+	BRB	117$			; If good, continue
+
+115$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+117$:	MOVQ	P1(AP),R0		; User buffer address and size
+	JSB	G^EXE$WRITELOCK		; Check access, lock pages for DIRECT IO
+	BRW	VD_SEND_ACPX		; Send to the VSACP and exit
+;
+; PB modification
+;
+120$:
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Procure the VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	CVTLW	P3(AP),VSX$W_ID(R2)		; Store ID # of object in VSX
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if non-positive
+	CVTLW	P4(AP),VSX$W_PB_COLOR_SPEC(R2) ; RGB or HSL code
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if negative color code
+	CVTLW	P5(AP),VSX$W_PB_COLOR(R2)	; Fill in color data
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if negative color code
+	MOVW	P6(AP),VSX$W_PB_PROTECTION(R2)	; Store protection mask in VSX
+
+	MOVL	P1(AP),R0		; User buffer address for color array
+	BEQL	126$			; If none, don't lock anything
+	MOVL	P2(AP),R1		; User buffer size
+	BEQL	126$			; If none, don't lock anything
+	JSB	G^EXE$WRITELOCK		; Check access, lock pages for DIRECT IO
+126$:	BRW	VD_SEND_ACPX		; Send buffer to ACP, and exit
+
+127$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+;
+; W modification
+;
+130$:
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	CVTLW	P4(AP),VSX$W_W_DX(R2)	; Transfer the object's extent
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if non-positive
+	CVTLW	P5(AP),VSX$W_W_DY(R2)
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if non-positive
+	CVTLW	P3(AP),VSX$W_ID(R2)		; Store ID # of object in VSX
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; Send the buffer to ACP, and exit
+;
+; VP modification
+;
+140$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+	JMP	G^EXE$ABORTIO		; This isn't allowed for now
+
+;
+; VS modification
+;
+150$:	
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	CVTLW	P4(AP),VSX$W_VS_COLOR(R2)	; Fill in color data
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if negative color
+	CVTLW	P3(AP),VSX$W_ID(R2)		; Store ID # of object in VSX
+	BVS	127$			; Branch if it doesn't fit into a word
+	BLSS	127$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; Send buffer to ACP, and exit
+;
+; PS modification -- THIS IS HOW WE 'END_SESSION' !!!!!!!!!!!
+;
+160$:
+	BRW	VD_SEND_ACPX		; Just send it; no data needed
+
+;	MOVZWL	#SS$_ILLIOFUNC,R0	; Bad function code
+;	JMP	G^EXE$ABORTIO		; This isn't allowed for now
+
+;
+; VKB modification
+;
+170$:	
+	MOVZWL	IRP$W_BOFF(R3),R9	; Save byte offset
+	BSBW	ALLOCATE_VSX		; Get an initialized VSX
+	MOVW	R9,IRP$W_BOFF(R3)	; Restore byte offset
+	MOVL	P6(AP),VSX$L_VKB_STATE_BITS(R2)  ; Fill in new state bits
+	MOVL	P5(AP),VSX$L_VKB_MOD_STATES(R2)  ; Fill in states to modify
+	MOVL	P4(AP),VSX$L_VKB_TRANS_TABLE(R2) ; Fill in translation table
+	MOVL	P2(AP),VSX$L_VKB_DEVDEPEND(R2)   ; Fill in characteristics
+	CVTLW	P3(AP),VSX$W_ID(R2)		; Store ID # of object in VSX
+	BVS	180$			; Branch if it doesn't fit into a word
+	BLSS	180$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; Send buffer to ACP, and exit
+
+180$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+
+	.SBTTL	VD_CONTROL, Function Decision Routine for CONTROL
+;++
+; VD_CONTROL, Function Decision Routine for CONTROL Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a CONTROL
+;	I/O request.
+;
+;	The QIO parameters for terminal CONTROL are:
+;
+;	P1 = 
+;	P2 = 
+;
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_CONTROL:				; CONTROL FDT routine
+
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#VS$M_ST_CONTROL,-
+		IRP$Q_TT_STATE(R3)	; Initialize control function
+	MOVZWL	IRP$W_FUNC(R3),R1	; Cache the function code
+	BBC	#IO$V_VD,R1,11$		; Modifying a Virt Disp?
+	BISL2	#VS$M_ST_VD,-
+		IRP$Q_TT_STATE(R3)	; Note VD is one object
+11$:	BBC	#IO$V_PB,R1,12$		; Modifying a Paste Board?
+	BISL2	#VS$M_ST_PB,-
+		IRP$Q_TT_STATE(R3)	; Note PB is one object
+12$:	BBC	#IO$V_W, R1,13$		; Modifying a Window?
+	BISL2	#VS$M_ST_W,-
+		IRP$Q_TT_STATE(R3)	; Note W is one object
+13$:	BBC	#IO$V_VP,R1,14$		; Modifying a View Port?
+	BISL2	#VS$M_ST_VP,-
+		IRP$Q_TT_STATE(R3)	; Note VP is one object
+14$:	BBC	#IO$V_VS,R1,15$		; Modifying a Virt Screen?
+	BISL2	#VS$M_ST_VS,-
+		IRP$Q_TT_STATE(R3)	; Note VS is one object
+15$:	BBC	#IO$V_PS,R1,16$		; Modifying a Physical Screen?
+	BISL2	#VS$M_ST_PS,-
+		IRP$Q_TT_STATE(R3)	; Note PS is one object
+	
+16$:	BSBW	ALLOCATE_VSX			; Get the VSX buffer
+	CVTLW	P2(AP),VSX$W_CTRL_STACKING(R2)	; Move or remove object?
+	BVS	18$			; Branch if it doesn't fit into a word
+	BLSS	18$			; Branch if negative
+	CVTLW	P3(AP),VSX$W_CTRL_SUBJECT_ID(R2) ; Object to be manipulated
+	BVS	18$			; Branch if it doesn't fit into a word
+	BLSS	18$			; Branch if non-positive
+	CVTLW	P4(AP),VSX$W_CTRL_OBJECT_ID(R2)	; Supporting object
+	BVS	18$			; Branch if it doesn't fit into a word
+	BLSS	18$			; Branch if negative (MOVEs don't have this)
+	CVTLW	P5(AP),VSX$W_CTRL_X0(R2)	; Object location
+	BVS	18$			; Branch if it doesn't fit into a word
+	BLSS	18$			; Branch if negative
+	CVTLW	P6(AP),VSX$W_CTRL_Y0(R2)
+	BVS	18$			; Branch if it doesn't fit into a word
+	BLSS	18$			; Branch if negative
+	BRW	VD_SEND_ACPX			; Send to VSACP and exit
+
+18$:	MOVZWL	#SS$_BADPARAM,R0	; Abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+
+	.SBTTL	VD_UETP, Function Decision Routine for UETP/tuning functions
+;++
+; VD_UETP, Function Decision Routine for UETP/tuning functions
+;
+; Functional description:
+;
+;	Called by UETP to test VAXstation device or by privileged applications
+;	to modify certain tunable characteristics. Requires PHY_IO privilege.
+;
+;	Modifiers: 
+;	    IO$M_DIAGNOSTIC 
+;		Return info from device to UETP's buffer:
+;		    P1 = Buffer address
+;		    P2 = Buffer size
+;	    IO$M_CREATE
+;		Create a "session" for UETP:
+;		    P1 = Username buffer address
+;		    P2 = Username size
+;	    IO$M_RESET
+;		Delete a "session" for UETP:
+;	    IO$M_SETBSIZE
+;		Set new internal IRP count for ALL virtual terminals
+;		    P3 = New value
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_UETP:				; UETP/tuning FDT routine
+
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+;
+	BBS	#PRV$V_PHY_IO,-		; Continue if PHY_IO priv is there
+		@PCB$L_PHD(R4),10$
+	MOVZWL	#SS$_NOPHY_IO,R0	; Otherwise, ABORT the request
+	JMP	G^EXE$ABORTIO
+;
+10$:	MOVZWL	IRP$W_FUNC(R3),R1	; Cache the function code
+	BBS	#IO$V_RESET,R1,15$	; Branch if cancelling UETP session
+	BBC	#IO$V_DIAGNOSTIC,R1,20$ ; Branch if not Diagnostic
+	BSBW	INIT_DATA_BUFFER	; Get the data buffer
+	BSBW	ALLOCATE_VSX		; Get the VSX 
+15$:	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+
+20$:	BBC	#IO$V_CREATE,R1,30$	; Abort if not Create Session
+	MOVL	P1(AP),R0		; Username buffer address
+	MOVL	P2(AP),R1		; Username buffer size
+	BEQL	100$			; If no name, forget it
+	JSB	G^EXE$WRITECHK		; Can we get at the name??(No return if not)
+	BSBW	ALLOCATE_VSX		; Get the VSX 
+	MOVQ	P1(AP),R0		; Get the address and size again
+	MOVL	#VS$K_TTY_DATA,R2	; Store buffer header size
+	BSBW	BUFFER_DATA		; Put data into buffer (No return if no good)
+	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+
+30$:	BBC	#IO$V_SETBSIZE,R1,100$	; Internal IRP count modification?
+	MOVL	P3(AP),R0		; Retrieve the new internal IRP count
+	BGTR	35$			; If its positive, we'll use it
+	MOVL	#VS$K_MAX_IRP_CNT,R0	; Otherwise, use the default value
+35$:	DSBINT	UCB$B_FIPL(R5)		; Disable access to count
+	MOVL	R0,VD_MAX_IRPCNT	; Store the new value to be used
+	ENBINT				; Lower IPL to allow access
+	MOVZWL	#SS$_NORMAL,R0		; Set successful status
+	JMP	G^EXE$FINISHIO		; Complete the I/O (no need for ACP)
+
+100$:	MOVZWL	#SS$_BADPARAM,R0	; Abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+
+	.SBTTL	VD_POINTER, Function Decision Routine for Pointer set-up
+;++
+; VD_POINTER, Function Decision Routine for pointer set-ups
+;
+; Functional description:
+;
+;	Called to activate or de-activate a pointing device, i.e. the mouse
+;	or the tablet.
+;
+;	The QIO parameters for pointer activation are:
+;
+;	P3 =  Virtual Keyboard ID (PB_ID) or UCB address for VD activation
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_POINTER:				; Pointer FDT routine
+
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	BBC	#IO$V_VD,-		;Activating a VD (or UCB)?
+		IRP$W_FUNC(R3),5$	;
+	MOVL	UCB$A_VD_CTRL(R5),R0	; Get controller address
+	CMPZV	#IRP$V_FCODE,#IRP$S_FCODE, - ; Are we activating?
+		IRP$W_FUNC(R3),#IO$_ACTIVATE
+	BNEQ	3$			; Nope. Go assume deactivating.
+	MOVL	P3(AP),-		; and set the "active" UCB
+		CTRL$A_ACTIVE_UCB(R0)	; 
+	BRB	4$			; Done for now
+3$:	CLRL	CTRL$A_ACTIVE_UCB(R0)	; Zero out "active" UCB field
+4$:	MOVZWL	#SS$_NORMAL,R0		; Set successful status
+	JMP	G^EXE$FINISHIO		; Complete the I/O (no need for ACP)
+5$:	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#VS$M_ST_POINTER,-
+		IRP$Q_TT_STATE(R3)	; Initialize control function
+
+	BSBW	ALLOCATE_VSX		; Get the VSX 
+	CVTLW	P3(AP),VSX$W_ID(R2)	; Add the ID # of the VKB (PB_ID)
+	BVS	10$			; Abort if it doesn't fit into a word
+	BLSS	10$			; Branch if non-positive
+	BRW	VD_SEND_ACPX		; If OK, send it to the ACP; exit
+
+10$:	MOVZWL	#SS$_BADPARAM,R0	; Otherwise, abort with a bad 
+	JMP	G^EXE$ABORTIO		; parameter
+
+	.SBTTL	VD_VSTAHI Function Decision Routine for HI functions
+;++
+; VD_VSTAHI Function Decision Routine for human interface functions
+;
+; Functional description:
+;
+;	Called to request certain human interface functions to be performed on
+;	behalf of an application program.
+;
+;	The QIO parameters for VSTA HI stuff are:
+;
+;		P3 = OEM-mode flags
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_VSTAHI:				; VSTA HI FDT routine
+;
+; Process modifier-specific parameters
+;
+	BBS	#IO$V_VD_TRANS_TABLE,-
+		  IRP$W_FUNC(R3),10$	; Request to load new trans. table?
+	BRW	100$			; Nope. Check next possibility
+;
+; This section loads new translation tables. The previous table, if any, is
+; obliterated. The format of the new table is assumed to be correct and will
+; affect all future keyboard translations for this controller. The inputs are
+; as follows:
+;		P1(AP) = Address of new table(s)
+;		P2(AP) = Size of above buffer (bytes)
+;		P3(AP) = Address of sub-table list with relative address
+;			 offsets from start of buffer specified in P1(AP)
+;		P4(AP) = Translation table ID
+;
+10$:	PUSHR	#^M<R2,R3,R4,R5,R8>	; Save scratch registers
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	CMPL	P4(AP),#VSTA$K_TT_UNENCODED ; Make it up/down unencoded?
+	BNEQ	11$			; Nope. Go try new buffer.
+	MOVL	P4(AP),CTRL$L_TTABLE(R8); Set the translation table ID
+	BRW	30$			; That's all we need here
+11$:	MOVL	P2(AP),R1		; Get translation table size
+	BNEQ	15$			; Too small.
+12$:	BRW	97$			; Return with error
+15$:	CMPL	R1,#VS$K_ALL_MODE_SIZE	; Is specified table too big?
+	BGTR	12$			; Yup. Return with error.
+	IFNORD	R1,@P1(AP),12$		; Can we read the specified buffer?
+	BISW2	#UCB$M_VD_LOADTT_IP,-	; Don't process characters while trans.
+		UCB$W_VD_STATUS(R5)	; table load in progress.
+	CMPL	CTRL$L_TTABLE(R8),-	; If previous translation table is
+		#VSTA$K_TT_UNENCODED	; up/down unencoded, no deallocate
+	BEQL	17$			; needed.
+	SUBL3	#12,CTRL$A_TTABLE(R8),R0; Point to translation table buffer
+	JSB	G^EXE$DEANONPAGED	; Hyperspace bound
+17$:	ADDL3	#12,P2(AP),R1		; Add header size to new table size
+	PUSHL	R3			; Save IRP address
+	JSB	G^EXE$ALONONPAGED	; Allocate storage for table
+	POPL	R3			; Restore IRP address
+	BLBS	R0,18$			; Return with error if necessary
+	BRB	98$			; Go return with error status
+18$:	MOVL	P4(AP),CTRL$L_TTABLE(R8); Set the translation table ID
+	MOVW	R1,IRP$W_SIZE(R2)	; Save the buffer size in buffer
+	ADDL3	#12,R2,CTRL$A_TTABLE(R8); Point to new translation buffer
+	MOVC3	P2(AP),@P1(AP),-	; Copy new translation table into
+		@CTRL$A_TTABLE(R8)	; new buffer
+	IFRD	#VS$K_TABLE_LIST_SIZE,-	; Can we read trans. table list?
+		@P3(AP),19$		; If not, return with error
+	BRB	97$			; Go return with error status
+19$:	MOVAB	CTRL$B_TTABLE_LIST(R8),R1 ; Get address of trans. table list
+	MOVL	P3(AP),R0		; Get new trans. table list address
+	MOVL	#VS$K_MAX_MODE_TABLES,R2; No. longword list entries
+20$:	ADDL3	(R0)+,-			; Add offset to base table address to
+		CTRL$A_TTABLE(R8),(R1)+	; derive subtable addresses
+	SOBGTR	R2,20$			; Do the entire list.
+30$:	POPR	#^M<R2,R3,R4,R5,R8>	; Restore scratch registers
+	BRW	400$			; Return successful
+97$:	MOVL	#SS$_BADPARAM,R0	; Bad parameter specified
+98$:	MOVL	#VSTA$K_TT_UNENCODED,-	; For all errors detected, set the
+		CTRL$L_TTABLE(R8)	; translation table to unencoded
+	POPR	#^M<R2,R3,R4,R5,R8>	; Restore scratch registers
+99$:	BRW	600$			; Go return with error
+100$:	BBS	#IO$V_VD_SYMBOL_TABLE,-
+		  IRP$W_FUNC(R3),110$	; Request to load new symbol table?
+	BRW	200$			; Nope. Check next possibility
+;
+; This section loads new symbol tables. The previous table, if any, is
+; obliterated. The format of the new table is assumed to be correct and will
+; affect all future keyboard translations for this controller. The inputs are
+; as follows:
+;		P1(AP) = Address of new table(s)
+;		P2(AP) = Size of above buffer (bytes)
+;		P3(AP) = Address of sub-table list with relative address
+;			 offsets from start of buffer specified in P1(AP)
+;
+110$:	MOVL	P2(AP),R1		; Get symbol table size
+	BNEQ	115$			; Too small.
+112$:	MOVL	#SS$_BADPARAM,R0	; Bad parameter specified
+	BRW	600$			; Return with error
+115$:	CMPL	R1,#VS$K_ALL_SYMBOL_SIZE; Is specified table too big?
+	BGTR	112$			; Yup. Return with error.
+	IFNORD	R1,@P1(AP),112$		; Can we read the specified buffer?
+	PUSHR	#^M<R2,R3,R4,R5,R8>	; Save scratch registers
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	BISW2	#UCB$M_VD_LOADTT_IP,-	; Don't process characters while trans.
+		UCB$W_VD_STATUS(R5)	; table load in progress.
+	TSTL	CTRL$A_SYMBOL_TABLE(R8)	; Any symbol table to deallocate?
+	BEQL	117$			; If not, better not try
+	SUBL3	#12,CTRL$A_SYMBOL_TABLE(R8),R0 ; Point to symbol table buffer
+	JSB	G^EXE$DEANONPAGED	; Hyperspace bound
+	CLRL	CTRL$A_SYMBOL_TABLE(R8)	; Zero out field
+117$:	ADDL3	#12,P2(AP),R1		; Add header size to new table size
+	PUSHL	R3			; Save IRP address
+	JSB	G^EXE$ALONONPAGED	; Allocate storage for table
+	POPL	R3			; Restore IRP address
+	BLBS	R0,118$			; Return with error if necessary
+	BRB	198$			; Go return with error status
+118$:	MOVW	R1,IRP$W_SIZE(R2)	; Save the buffer size in buffer
+	ADDL3	#12,R2,CTRL$A_SYMBOL_TABLE(R8) ; Point to new symbol buffer
+	MOVC3	P2(AP),@P1(AP),-	; Copy new symbol table into
+		@CTRL$A_SYMBOL_TABLE(R8); new buffer
+	IFRD	#VS$K_SYMBOL_LIST_SIZE,-; Can we read symbol table list?
+		@P3(AP),119$		; If not, return with error
+	MOVL	CTRL$A_SYMBOL_TABLE(R8),- ; If we can't read the list, just
+		CTRL$B_SYMBOL_LIST(R8)	; point first entry to new table
+	BRB	197$			; and return with an error
+119$:	MOVAB	CTRL$B_SYMBOL_LIST(R8),R1 ; Get address of symbol table list
+	MOVL	P3(AP),R0		; Get new trans. table list address
+	MOVL	#VS$K_MAX_MODE_TABLES,R2; No. longword list entries
+120$:	ADDL3	(R0)+,-			; Add offset to base table address to
+		CTRL$A_SYMBOL_TABLE(R8),(R1)+; derive subtable addresses
+	SOBGTR	R2,120$			; Do the entire list.
+130$:	POPR	#^M<R2,R3,R4,R5,R8>	; Restore scratch registers
+	BRW	400$			; Return successful
+197$:	MOVL	#SS$_BADPARAM,R0	; Bad parameter specified
+198$:	POPR	#^M<R2,R3,R4,R5,R8>	; Restore scratch registers
+199$:	BRW	600$			; Go return with error
+200$:	BBS	#IO$V_VD_NRC_TABLE,-
+		  IRP$W_FUNC(R3),210$	; Request to load new NRC table?
+	BRW	300$			; Nope. Check next possibility
+;
+; This section loads new NRC tables. The previous table, if any, is
+; obliterated. The format of the new table is assumed to be correct and will
+; affect all future keyboard translations for this controller. The inputs are
+; as follows:
+;		P1(AP) = Address of new table (or zero)
+;
+210$:	TSTL	P1(AP)			; Any buffer specified?
+	BEQL	212$			; Nope, but that's okay with me.
+	IFRD	#VS$K_NRC_SIZE,-	; Make sure we can read the
+		@P1(AP),212$		; NRC table buffer
+	BRW	112$			; Return with error
+212$:	PUSHR	#^M<R2,R3,R4,R5,R8>	; Save scratch registers
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	BISW2	#UCB$M_VD_LOADTT_IP,-	; Don't process characters while trans.
+		UCB$W_VD_STATUS(R5)	; table load in progress.
+	TSTL	CTRL$A_NRC_TABLE(R8)	; Any NRC table to deallocate?
+	BEQL	215$			; If not, better not try
+	SUBL3	#12,CTRL$A_NRC_TABLE(R8),R0 ; Point to NRC table buffer
+	JSB	G^EXE$DEANONPAGED	; Hyperspace bound
+	CLRL	CTRL$A_NRC_TABLE(R8)	; Zero out field
+215$:	TSTL	P1(AP)			; Check specified NRC address again
+	BEQL	220$			; If zero, we're done
+217$:	MOVL	#VS$K_NRC_SIZE+12,R1	; Add header size to new table size
+	PUSHL	R3			; Save IRP address
+	JSB	G^EXE$ALONONPAGED	; Allocate storage for table
+	POPL	R3			; Restore IRP address
+	BLBS	R0,218$			; Return with error if necessary
+	BRW	198$			; Go return with error status
+218$:	MOVW	R1,IRP$W_SIZE(R2)	; Save the buffer size in buffer
+	ADDL3	#12,R2,CTRL$A_NRC_TABLE(R8) ; Point to new NRC table buffer
+	MOVC3	#VS$K_NRC_SIZE,@P1(AP),-; Copy new NRC table into
+		@CTRL$A_NRC_TABLE(R8)	; new buffer
+220$:	POPR	#^M<R2,R3,R4,R5,R8>	; Restore scratch registers
+	BRW	400$			; Return successful
+;
+; If keyboard handling has been disabled during the load of new translation,
+; symbol, or NRC tables and there is keyboard input to process, make sure it
+; gets done now that we're done. This subroutine only requires that R5 point
+; to the UCB.
+;
+250$:	BBCC	#UCB$V_VD_LOADTT_IP,-	; Allow character processing now that
+		UCB$W_VD_STATUS(R5),270$; table load complete
+	DSBINT	UCB$B_FIPL(R5)		; Routine requires IPL = UCB$B_FIPL(R5)
+	BSBW	EMPTY_RING_BUFFER	; Go take care of accumulated input
+	ENBINT				; Restore IPL to previous setting
+270$:	RSB				; Return to caller
+;
+; This section toggles OEM-mode behavior. OEM mode only effects keyboard
+; input trapped by the VAXstation human interface (like HELP and MENU).
+;
+300$:	BBC	#IO$V_VD_OEM,-
+		  IRP$W_FUNC(R3),500$	; Request to enter OEM mode?
+	PUSHR	#^M<R4,R8>		; Save registers to be trashed
+	MOVL	UCB$A_VD_CTRL(R5),R8	; Get controller address
+	MOVW	P3(AP),CTRL$W_STATUS(R8) ; Adjust OEM mode accordingly
+	POPR	#^M<R4,R8>		; Restore registers
+;
+400$:	BSBW	250$			; Restore input processing if necessary
+	MOVL	#SS$_NORMAL,R0		; Success
+	JMP	G^EXE$FINISHIOC		; Zero the 2nd longword of the IOSB
+500$:	BSBW	250$			; Restore input processing if necessary
+	MOVZWL	#SS$_ILLIOFUNC,R0	; Abort with illegal function code
+	JMP	G^EXE$ABORTIO		; indicator
+600$:	PUSHL	R0			; Save return status value
+	BSBW	250$			; Restore input processing if necessary
+	POPL	R0			; Restore return status value
+	JMP	G^EXE$ABORTIO		; indicator
+
+	.SBTTL	VD_VSTAPTR Function Decision Routine for pointer functions
+;++
+; VD_VSTAPTR Function Decision Routine for pointer functions
+;
+; Functional description:
+;
+;	Called to set up movement ASTs, button ASTs, boundary ASTs, or to
+;	get information about the mouse and tablet.
+;
+;	The QIO parameters for VSTA pointer stuff are:
+;
+;	P1 =  VSTAptr information buffer address
+;	P2 =  VSTAptr information buffer size (bytes)
+;	P3 =  Pasteboard ID
+;	P4 =  Button up mask (for button ASTs only) or
+;	      last known X and Y coordinates for tablet pointer movement ASTs
+;	P5 =  Button down mask (for button ASTs only) or
+;	      distance threshold for tablet pointer movement ASTs
+;	P6 =  Time interval for timeout (secs)
+;
+;	The VSTA pointer information buffer returned (if requested) resembles
+; the following:
+;			31			       0
+;			--------------------------------
+;			|	X-coordinate	       |
+;			--------------------------------
+;			|	Y-coordinate	       |
+;			--------------------------------
+;			|	Button Mask	       |
+;			--------------------------------
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_VSTAPTR:				; VSTA pointer FDT routine
+
+;	jsb	VD_CHECK_DEVICE		; Deleted VD? No return if no access
+	BBC	#UCB$V_ONLINE,-		; If device offline - abort request
+		UCB$W_STS(R5),30$
+	CLRQ	IRP$Q_TT_STATE(R3)	; Initialize state region
+	MOVZWL	#VS$M_ST_POINTER,-
+		IRP$Q_TT_STATE(R3)	; Initialize control function
+;
+; Init buffer for returning data and fill in standard parameters
+;
+	BSBW INIT_DATA_BUFFER
+
+10$:	BSBW	ALLOCATE_VSX		; Get the VSX 
+	MOVL	P3(AP),VSX$L_PTR_PB_ID(R2)	; Add the ID # of the PB
+	BLSS	40$			; Branch if non-positive (illegal)
+;
+; Process modifier-specific parameters
+;
+	BBS	#IO$V_PTR_INFO,-
+		  IRP$W_FUNC(R3),100$	; If an info request, we're done.
+	MOVL	P6(AP),VSX$L_PTR_DT(R2)	; Time threshold (secs)
+	BLSS	40$			; Branch if negative (illegal)
+	BBS	#IO$V_BOUNDARY_AST,-
+		  IRP$W_FUNC(R3),100$	; If a boundary AST, we're done now.
+	BBC	#IO$V_MOVE_AST,-
+		  IRP$W_FUNC(R3),20$	; Is this a movement AST?
+	BBS	#IO$V_MOUSE,-
+		  IRP$W_FUNC(R3),100$	; If mouse movement, we're done.
+	MOVZWL	P4(AP),VSX$L_PTR_X0(R2)	; Initial value of X
+	BLSS	40$			; Branch if negative (illegal)
+	MOVZWL	P4+2(AP),VSX$L_PTR_Y0(R2)	; Initial value of Y
+	BLSS	40$			; Branch if negative (illegal)
+	MOVL	P5(AP),VSX$L_PTR_DX(R2)	; Distance threshold (pixels)
+	BLSS	40$			; Branch if non-positive (illegal)
+	BRB	100$			; Go send packet to the ACP
+20$:	BBC	#IO$V_BUTTON_AST,-
+		  IRP$W_FUNC(R3),50$	; Is this a button AST request?
+	MOVL	P4(AP),VSX$L_PTR_UP_MASK(R2)	; Up mask
+	MOVL	P5(AP),VSX$L_PTR_DOWN_MASK(R2)	; Down mask
+	BRB	100$			; Go send packet to the ACP
+;
+30$:	MOVZWL	#SS$_DEVOFFLINE,R0	; Abort with device off-line status
+	JMP	G^EXE$ABORTIO		; 
+40$:	MOVZWL	#SS$_BADPARAM,R0	; Abort with a bad parameter
+	JMP	G^EXE$ABORTIO		; 
+50$:	MOVZWL	#SS$_ILLIOFUNC,R0	; Abort with illegal function code
+	JMP	G^EXE$ABORTIO		; indicator
+100$:	BRW	VD_SEND_ACPX		; Send it to the ACP; exit
+
+
+	.SBTTL	INIT_DATA_BUFFER - Get buffer for user data
+;++
+; INIT_DATA_BUFFER
+;
+; Functional description:
+;
+;	Call this routine for responding to any qio for which P1 is an
+;	address of a buffer of length specified in P2, where the buffer is
+;	to be used by the ACP for returning information to the caller.
+;--
+INIT_DATA_BUFFER:
+
+;
+; Check access to user's buffer
+;
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	MOVL	P1(AP),R0		; Get user buffer virtual address
+	MOVL	R0,IRP$L_MEDIA(R3)	; Save address in packet
+	MOVZWL	P2(AP),R1		; Get buffer size
+	BNEQ	5$			; Continue if we want something, otherwise
+	MOVW	R1,IRP$W_BCNT(R3)	; Store size of user buffer (=0) in IRP
+	MOVW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged (=0)
+	MOVL	#0,IRP$L_SVAPTE(R3)	; Insert zero buffer address in IRP
+	RSB				; No buffer to check - Return to caller
+5$:	MOVL	R3,R9			; Save IRP address
+	JSB	G^EXE$READCHK		; Check buffer access
+					; (no return means no access)
+	ADDL	#VS$K_TTY_DATA,R1	; Add header to request size
+;
+; Check Buffered I/O Quota
+;
+	JSB	G^EXE$BUFFRQUOTA	; 
+	BLBS	R0,10$			; If enough quota, branch forward
+	JMP	G^EXE$ABORTIO		; Else forget it
+10$:	MOVL	R9,R3			; Remember IRP address
+
+;
+; Allocate system buffer for data
+;
+	MOVQ	P1(AP),R0		; Address, size of user buffer
+	MOVL	#VS$K_TTY_DATA,R2	; Size of buffer header
+	JSB	ALLOCATE_BUFFER		; Allocate S0 buffer, charge quota, etc.
+
+;
+; Set up the buffer
+;
+	MOVZBL	#DYN$C_TWP,-		; Insert block type
+		TTY$B_WB_TYPE(R2)
+	MOVAB	VS$K_TTY_DATA(R2),-	; Insert start of data address in
+		TTY$L_RB_TXT(R2)	;    "next character" field
+	MOVL	P1(AP),TTY$L_RB_UVA(R2)	; Insert user's buffer address
+	RSB
+
+
+	.SBTTL	VD_MOUNT, Function Decision Routine for MOUNT
+;++
+; VD_MOUNT, Function Decision Routine for MOUNT Functions
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a MOUNT
+;	I/O request.
+;
+;	The QIO parameters for terminal MOUNT are:
+;
+;	P1 = 
+;	P2 = 
+;
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;
+;	The routine preserves all registers except R0-R2, and R9-R11
+;--
+VD_MOUNT:				; MOUNT FDT routine
+
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	BICW2	#UCB$M_MOUNTING,UCB$W_STS(R5)	; Clear 'mounting' bit
+;
+; We don't need any VSX here.  Just send the IRP with the request.
+;
+	BRW	VD_SEND_ACPX			; Send to VSACP and exit
+
+	.SBTTL	VD_BROADCAST - Broadcast Start I/O Routine
+;++
+; VD_BROADCAST - Broadcast Start I/O Routine
+;
+; Functional description:
+;
+;	This routine is called by the SYS$BRDCST service to dispatch a
+;	broadcast I/O request.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of write buffer (TWP) (may be destroyed)
+;	R4 = NOT the address of the PCB 
+;	R5 = address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	A message block is allocated, the broadcast message is copied to the
+;	block,  the function code in the message is set to IO$_BROADCAST,
+;	an I/O packet is allocated, the addresss of the message block is 
+;	stored in the I/O packet, and the I/O packet is queued to the ACP for
+;	delivery to the Workstation.
+;
+;--
+VD_BROADCAST:				; BROADCAST routine
+	PUSHR	#^M<R4,R5,R6,R7>	; Save registers
+;	jsb	VD_CHECK_DEVICE		; Deleted VD? No return if no access
+	MOVL	UCB$L_TL_PHYUCB(R5),R6	; Get physical UCB address
+	BEQL	10$			; None there. Just return ...
+	MOVL	R6,R5			; Put the UCB address somewhere normal
+	BBC	#UCB$V_ONLINE,-		; If clr, device is offline - ignore it
+		UCB$W_STS(R5),10$
+	BBC	#DEV$V_MNT,-		; If not mounted, don't bother
+		UCB$L_DEVCHAR(R5),10$
+	BRB	20$			; Continue on
+
+10$:					; We won't broadcast the message
+	CLRL	TTY$L_WB_END(R3)	; Indicate no need to wait and we
+					; don't want the packet.
+	POPR	#^M<R4,R5,R6,R7>	; Restore registers
+	RSB				;
+;
+; Fill in some IRP info
+;
+20$:	MOVL	R3,R7			; Save write packet address
+	MOVL	TTY$L_WB_IRP(R3),R3	; Get address if IRP
+	MOVZWL	#VS$M_ST_BRDCST,-
+		IRP$Q_TT_STATE(R3)	; Initialize control function
+	MOVL	R7,IRP$L_WIND(R3)	; Set pointer to TWP in WINDow
+	MOVL	R5,IRP$L_UCB(R3)	; Set UCB address
+	MOVB	#27,IRP$B_PRI(R3)	; Priority = 4
+	BISW2	#IRP$M_BUFIO,IRP$W_STS(R3); Mark packet as buffered for 
+					;	Post Processor
+;
+; Send the message to the ACP and return to SYS$BRKTHRU
+;
+	BSBW	VD_SEND_ACP		; Give it to the ACP, and return here
+	POPR	#^M<R4,R5,R6,R7>	; Restore registers
+	RSB				;
+
+	.SBTTL	CREATE_MENU - Function Decision Routine for menu creation
+
+;++
+; CREATE_MENU - Function Decision Routine for menu creation
+;
+; Functional description:
+;
+;	This routine is called by the SYS$QIO service to dispatch a create-menu
+;	I/O request.
+;
+;	This routine is modeled after VD_READ due to its similarity, that
+;	being the usage of an input and an output buffer.  Here's a chart
+;	showing the similarity of buffer usage:
+;
+;	
+;				"read" buffer		"prompt" string
+;				-------------		---------------
+;	usage by create-menu |	receives menu item   |	contains menu text
+;			     |	 region coordinates  |
+;	 - - - - - - - - - - + - - - - - - - - - - - + - - - - - - - - - - - -
+;	usage by terminal    |	receives what the    |	contains prompt string
+;	read operations	     |		user types   |
+;
+;	The QIO parameters are:
+;
+;	P1 = address of the output buffer, receives region coordinates
+;	P2 = size of the buffer
+;
+;	The buffer is validated for access, the process's quota checked and
+;	decremented, the input buffer is copied to a
+;	message block, the address of the message block is stored in the IRP,
+;	and the IRP is queued to the ACP for delivery to the Workstation.
+;
+; Inputs:
+;
+;	R0-R2 = scratch registers
+;	R3 = address of the IRP (I/O request packet)
+;	R4 = address of the PCB (process control block)
+;	R5 = address of the UCB (unit control block)
+;	R6 = address of the CCB (channel control block)
+;	R7 = bit number of the I/O function code
+;	R8 = address of the FDT table entry for this routine
+;	R9-R11 = scratch registers
+;	AP = address of the 1st function dependent QIO parameter
+;
+; Outputs:
+;
+;	IRP$L_SVAPTE(R3) = address of message buffer
+;	IRP$W_BOFF(R3) = size of message buffer
+;	IRP$W_BCNT(R3) = size of user buffer
+;
+;	The RXB (Read Extension Block) is allocated and filled.
+;	A system buffer is allocated for the output buffer.
+;
+;	The routine preserves all registers except R0-R2, and
+;	R9-R11.
+;
+;--
+CREATE_MENU:				; menu FDT routine
+;
+; Check access to user's buffer
+;
+;	jsb	VD_CHECK_DEVICE		;Deleted VD? No return if no access
+	MOVL	P1(AP),R0		; Get user buffer virtual address
+	MOVZWL	P2(AP),R1		; Get buffer size
+	BNEQ	5$			; Continue if we want something, otherwise
+	BRW	ZERO_LENGTH		;    skip it if zero-length read
+5$:	MOVL	R3,R9			; Save IRP address
+	JSB	G^EXE$READCHK		; Check buffer access
+					; (no return means no access)
+	ADDL	#TTY$L_RB_DATA,R1	; Add header to request size
+;
+; Check Buffered I/O Quota
+;
+	JSB	G^EXE$BUFFRQUOTA	; 
+	BLBS	R0,10$			; If enough quota, branch forward
+	BRW	READ_ERROR		; Else forget it
+10$:	MOVL	R9,R3			; Remember IRP address
+	MOVL	P5(AP),R0		; Address of input buffer(if any)
+	BEQL	25$			; If no input buffer, don't check access
+	MOVL	P6(AP),R1		; Size of input buffer (if any)
+	BEQL	25$			; If no input buffer, don't check access
+	JSB	G^EXE$WRITECHK		; Check input buffer access (no return if no access)
+25$:	MOVW	P2(AP),IRP$W_BCNT(R3)	; Re-set read buffer size
+					;     (modified by EXE$WRITECHK)
+	MOVQ	P1(AP),R0		; Address, size of user buffer
+	MOVL	#TTY$L_RB_DATA,R2	; Size of buffer header
+	JSB	ALLOCATE_BUFFER		; Allocate S0 buffer, charge quota, etc.
+
+;
+; Set up the buffer
+;
+	MOVZBL	#DYN$C_TWP,-		; Insert block type
+		TTY$B_WB_TYPE(R2)
+	MOVAB	TTY$L_RB_DATA(R2),-	; Insert start of data address in
+		TTY$L_RB_TXT(R2)	;    "next character" field
+	MOVL	P1(AP),TTY$L_RB_UVA(R2)	; Insert user's buffer address
+	MOVL	R2,R6			; Save address of data block in R6
+;
+; Now allocate a Read Extension Block (RXB)
+;
+	PUSHR	#^M<R0,R3>		; Save buffer and IRP addresses
+	MOVL	P6(AP),R1		; input buffer size (might be 0)
+	ADDL	#RX$B_PROMPT,R1		; Add header size to input buffer size
+	JSB	G^EXE$BUFFRQUOTA	; Check process's quotas
+	BLBC	R0,29$			; LBC means quota failure
+	PUSHR	#^M<R4>			; ALLOCBUF might switch PCBs!
+	JSB	G^EXE$ALLOCBUF		; Allocate RXB (destroys R3)
+	POPR	#^M<R4>
+	BLBC	R0,29$			; LBC means allocation failure
+	MOVL	PCB$L_JIB(R4),R0	; Get JIB address
+	SUBL	R1,JIB$L_BYTCNT(R0)	; Charge job for buffer
+	POPR	#^M<R0,R3>		; Remember input buffer and IRP addresses
+	ADDW	R1,IRP$W_BOFF(R3)	; Number of quota bytes charged
+	BRB	30$			; Branch forward
+;
+; If a problem allocating the RX, give back the S0 buffer
+;
+29$:	POPR	#^M<R0,R3>		; Restore registers
+	JSB	DE_ALLOCATE_BUFFER	; Purge it from our collective minds
+	MOVZWL	#SS$_INSFMEM,R0		; Couldn't get the buffer
+	JMP	G^EXE$ABORTIO		; Forget it
+;
+; Set up the RXB
+;
+30$:	MOVAB	RX$B_PROMPT(R2),RX$A_NXT(R2) ; Store pointer to input buffer
+	CLRW	RX$W_PROMPT_SIZE(R2)	     ; Assume no user input buffer
+	MOVL	P5(AP),RX$A_PROMPT_UVA(R2)   ; Store pointer to user input buffer
+	MOVW	R1,RX$W_SIZE(R2)	     ; Store size of block
+	MOVB	#VS$K_RX_TYPE,RX$B_TYPE(R2)  ; Store type of block
+	MOVL	R2,TTY$L_RB_AES(R6)	     ; Store address of RX in S0BUFFER
+;
+; Get input buffer
+;
+	MOVZWL	P6(AP),R1		; Get size of input buffer
+	ADDW	R1,RX$W_PROMPT_SIZE(R2) ; Add size of user input buffer
+	MOVL	P5(AP),R0		; Get input buffer address
+	PUSHR	#^M<R2,R3,R4,R5>	; Save against the MOVC3
+	MOVL	(R2),R3			; Point to data area of buffer
+	MOVC3	R1,(R0),(R3)		; Copy the input buffer
+	POPR	#^M<R2,R3,R4,R5>	; Restore regs to their rightful...
+	BRW	VD_SEND_ACPX		;
+
+	.SBTTL	VD_CANCEL, Cancel I/O routine
+;++
+; VD_CANCEL, Cancels an I/O operation in progress
+;
+; Functional description:
+;
+;	This routine cancels any CTRL/C or CTRL/Y AST's that were
+;	requested by the cancelling process on the cancelling channel.
+;
+;	If there are no more references remaining to the device, then,
+;	if the UCB is a terminal device, a message is sent to the ACP,
+;	which deletes the UCB and the VD data associated with it.  
+;	If the UCB is a mailbox marked for deletion,
+;	then the ACP has already deleted the VD data associated with the
+;	device, so the UCB is simply de-allocated.
+;
+; Inputs:
+;
+;	R2 = negated value of the channel index number
+;	R4 = address of the PCB (process control block) for the
+;		  process canceling I/O
+;	R5 = address of the UCB (unit control block)
+;	R8 = reason for cancel (CAN$C_DASSGN, or CAN$C_CANCEL)
+;
+;	IPL = driver fork IPL
+;
+; Outputs:
+;
+;	The routine preserves all registers except R0-R3.
+;--
+
+VD_CANCEL:				; Cancel an I/O operation
+	PUSHR	#^M<R2,R4,R5,R6,R7>	; Save registers
+	MOVL	R2,R6			; Channel number should be in R6 for flushes
+	MOVL	R2,R3			; Put channel in R3 so VD_FORK won't
+					; clobber it.
+
+	CMPB	#CAN$C_DASSGN,R8	; Is this a $DASSGN (or a $CANCEL)?
+	BEQL	4$			; Branch if DEASSIGN
+	BRW	40$			; If a CANCEL, go there
+;
+; DEASSIGN VD
+;
+4$:	TSTW	UCB$W_REFC(R5)		; Last channel to the device?
+	BGTR 	10$			; Branch if there are more channels
+	BBC	#UCB$V_DELMBX,-		; Is this a mailbox marked for deletion?
+		UCB$W_DEVSTS(R5),3$	;	Branch if still a TERMINAL
+;
+; Mailbox to delete  -  VMS will take care of deleting the mailbox
+; when we return from the driver's cancel routine.  
+;
+	BRW	5$			; Return from cancel routine
+3$:	TSTW	UCB$W_UNIT(R5)		; Is this VDA0:?
+	BEQL	11$			; If so, cancel any requests on it
+	POPR	#^M<R2,R4,R5,R6,R7>	; Else, restore registers
+
+	BSBW	VD_ALLOC_CANCEL_IRP	; Get an IRP for the ACP 
+	BLBC	R0,6$			; If no IRP, quit
+	MOVW	#IO$_STOP!IO$M_VD, -	; Delete this VD only if it is 
+		IRP$W_FUNC(R3)		;	temporary (ACP decides)
+	BRW	VD_SEND_ACP		; Send IRP to ACP and return
+	BLBS	R0,5$			; Go to success return
+;
+; If we failed to get this "delete VD" request to the ACP, then assume that
+; it must be deleted. (It shouldn't matter whether its temporary or permanent
+; here. If ACP is gone, this UCB must be marked for deletion by turning it
+; into a mailbox and letting VMS do it, of course).
+;
+	MOVAB	UCB$L_FQFL(R5),-	; IOC$DELMBX makes amusing assumptions
+		UCB$L_FQFL(R5)		; about FQFL and FQBL if not
+	MOVAB	UCB$L_FQFL(R5),-	; reinitialized to indicate an empty
+		UCB$L_FQBL(R5)		; queue.
+	BISW2	#UCB$M_DELMBX,-		; Make it a mailbox marked for delete
+		UCB$W_DEVSTS(R5)	;
+	BICW2	#UCB$M_ONLINE,-		; Turn offline to prevent further I/O
+		UCB$W_DEVSTS(R5)	;
+	BISL2	#DEV$M_MBX,-		; Don't forget to make it a mailbox
+		UCB$L_DEVCHAR(R5)	;
+	BICL2	#<DEV$M_TRM!DEV$M_MNT>,-; and its not a terminal or mounted
+		UCB$L_DEVCHAR(R5)	;
+5$:	BRW	50$			; Restore regs and return to caller
+6$:	BRW	60$			; Return to caller
+
+;
+; THERE ARE MORE CHANNELS to this device (REFC > 0)
+;
+10$:	TSTW	UCB$W_UNIT(R5)		; Is this VDA0:?
+	BNEQ	40$			; If not, cancel the I/O on the device
+11$:	POPR	#^M<R2,R4,R5,R6,R7>	; Else, restore registers
+
+	BSBW	VD_ALLOC_CANCEL_IRP	; Get an IRP for the ACP
+	BLBC	R0,60$			; If no IRP, quit
+	MOVW	#IO$_STOP!IO$M_PB, -	; Delete all this process's TEMPORARY
+		IRP$W_FUNC(R3)		;	PBs
+	BRW	VD_SEND_ACP		; Send IRP to ACP and return
+
+;
+; CANCEL I/O
+;
+40$:	MOVAL	UCB$L_TL_CTRLC(R5),R7	; Get address of CTRL/C AST list
+	CLRL	R2			; Specify null mask
+	JSB	G^COM$FLUSHATTNS	; Flush any cancelled AST's
+
+	MOVAL	UCB$L_TL_OUTBAND(R5),R2	; Get out-of-band summary mask address
+	MOVAL	UCB$L_TL_BANDQUE(R5),R7	; Get address of out-of-band AST list
+	JSB	G^COM$FLUSHCTRLS	; Flush any cancelled AST's
+
+	CMPW	R8,#CAN$C_DASSGN	; Is this a deassign?
+	BNEQ	41$			; If not, don't flush CTRL/Y AST list
+	MOVAL	UCB$L_TL_CTRLY(R5),R7	; Get address of CTRL/Y AST list
+	CLRL	R2			; Specify null mask
+	JSB	G^COM$FLUSHATTNS	; Flush all cancelled AST's
+
+;
+; Call the ACP to CANCEL all the I/O on this VD
+;
+41$:	POPR	#^M<R2,R4,R5,R6,R7>	; Restore registers
+	BSBW	VD_ALLOC_CANCEL_IRP	; Get an IRP for the ACP 
+	BLBC	R0,60$			; If no IRP, quit
+	MOVW	#IO$_STOP!IO$M_VD_CANCEL, - ; Cancel the I/O
+		IRP$W_FUNC(R3)		;
+	BRW	VD_SEND_ACP		; Send IRP to ACP and return
+
+;
+; EXITs
+;
+50$:
+	POPR	#^M<R2,R4,R5,R6,R7>	; Restore registers
+60$:	RSB				; Return
+
+	.SBTTL	VD_ALLOC_CANCEL_IRP - Allocate a cancel-io-irp
+;++
+; VD_ALLOC_CANCEL_IRP
+;
+; Functional description:
+;
+;	Create an irp for communicating cancel requests to the acp.
+;
+; Inputs:
+;
+;	R3 = negated value of the channel index number (instead of R2, since
+;		VD_FORK clobbers R2 and preserves R3
+;	R4 = address of the PCB (process control block) for the
+;		process canceling I/O (if any)
+;	R5 = address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	R3 = address of newly created irp
+;--
+
+VD_ALLOC_CANCEL_IRP:
+
+	PUSHR	#^M<R3,R4>		; Save channel, PCB
+	BSBW	VD_ALLOCIRP		; Allocate an I/O request packet
+	MOVL	R2,R3			; Save address of packet
+	POPR	#^M<R2,R4>		; Restore channel, PCB
+	BLBC	R0,10$			; Branch if failure
+	MOVL	R5,IRP$L_UCB(R3)	; Set UCB address
+	MOVW	R2,IRP$W_CHAN(R3)	; Set Channel number
+	TSTL	R4			; Has a PCB been supplied?
+	BEQL	5$			; Nope. Lets forget about the PID then
+	MOVL	PCB$L_PID(R4),IRP$L_PID(R3)	; Set PID
+5$:	MOVB	#27,IRP$B_PRI(R3)	; Priority = 4
+	BICW2	#IRP$M_TERMIO,-		; Mark packet as phoney I/O for IRP
+		IRP$W_STS(R3)		; deallocation and NOT post-processing
+	MOVL	UCB$L_DDB(R5),R0	; Address of DDB
+	MOVL	DDB$L_UCB(R0),IRP$L_UCB(R3) ; VDA0:'s UCB into the IRP (old one's gone)
+	MOVL	UCB$L_VD_ID(R5), -	; Store unit number for ACP's use
+		IRP$L_IOST1(R3)		;
+	MOVL	#SS$_NORMAL,R0		; Success
+10$:	RSB
+
+	.SBTTL	VD_FORK, Create Fork Process
+;++
+; VD_FORK, Create Fork Process at lower IPL
+;
+; Functional description:
+;
+;	This routine creates a Fork Process executing at lower IPL.
+;	It is essentially the same as EXE$FORK, except that this one
+;	preserves R3 and R4, and forks to IPL 6, saving the FIPL field in
+;	DIPL.
+;
+; Inputs:
+;
+;	R5 = address of the UCB (unit control block)
+;
+;	(SP) = address of caller
+;	4(SP) = address of caller's caller
+;
+; Outputs:
+;
+;	R3 and R4 are saved in the UCB.
+;	UCB$B_DIPL contains the previous contents of UCB$B_FIPL, which
+;	now contains a 6.
+;	The routine preserves all registers.
+;	Control is passed to the caller's caller.
+;--
+
+VD_FORK:				; Create Fork Process
+	MOVB	UCB$B_FIPL(R5), -	; Save Driver Fork Level
+		UCB$B_DIPL(R5)		;
+	MOVB	#6,UCB$B_FIPL(R5)	; Fork to IPL=6
+	MOVQ	R3,FKB$L_FR3(R5)	; Save context in the UCB
+	POPL	FKB$L_FPC(R5)		; Set Fork Process PC
+	MOVZBL	FKB$B_FIPL(R5),R4	; Get IPL for process
+	MOVAQ	G^SWI$GL_FQFL-<6*8>[R4],R3 ; Get address of fork queue listhead
+	INSQUE	(R5),@4(R3)		; Insert Fork Block in fork queue
+	SOFTINT	R4			; Request the interrupt
+	MOVQ	FKB$L_FR3(R5),R3	; Restore R3 and R4
+	RSB				; Return to caller's caller
+
+
+	.SBTTL VD_ALLOCIRP  -- Allocate IRP from non-paged pool
+;
+; Inputs:
+;	R4 = PCB address (or zero to indicate no PCB context)
+;	IPL = Must be at or below IPL$_SYNCH
+;
+; Outputs:
+;	R0 = status
+;	R1 = Size of IRP allocated
+;	R2 = Address of IRP
+;	R3 = destroyed
+;	IPL = caller's IPL
+;
+VD_ALLOCIRP:
+	DSBINT	#IPL$_SYNCH			; Raise IPL
+10$:	MOVZWL	#IRP$C_LENGTH,R1		; Size of request
+	JSB	G^EXE$ALONONPAGED		; Get the thing
+	BLBC	R0,50$				; Branch if no buffer
+	PUSHR	#^M<R1,R2,R4,R5>		; Save regs destroyed by MOVC5
+	MOVC5	#0,(R2),#0,R1,(R2)		; Zero out the buffer
+	POPR	#^M<R1,R2,R4,R5>		; Restore registers
+	MOVW	R1,IRP$W_SIZE(R2)		; IRP size field
+	MOVB	#DYN$C_IRP,IRP$B_TYPE(R2)	; IRP type field
+	MOVZWL	#SS$_NORMAL,R0			; Success code
+	BRB	80$
+
+50$:	TSTL	R4				; Is there a PCB context?
+	BGEQ	80$				; Nope. Just return error.
+	BBC	#PCB$V_SSRWAIT,-		; Wait for resource to become
+		PCB$L_STS(R4),80$		;   available? Branch if not.
+	MOVZWL	#RSN$_NPDYNMEM,R0		; Indicate wait reason
+	JSB	G^SCH$RWAIT			; Wait for non-paged pool
+	BRB	10$				; Try it again
+
+80$:	ENBINT					; Restore IPL
+	RSB					; Return to caller
+
+	.SBTTL VD_SEND_ACP  - Send message to VSACP
+;
+; VD_SEND_ACPX  -  Send message to ACP and exit qio
+; VD_SEND_ACP   -  Send message to ACP
+;
+; inputs:
+;	r3 -> VD irp
+;	r4 -> pcb
+;	r5 -> VD ucb
+;
+
+VD_SEND_ACPX:
+	MOVL	#SS$_NORMAL,R0		; Initialize innocence
+	BBS	#DEV$V_MNT,-		; If device mounted, continue
+		UCB$L_DEVCHAR(R5),9$	; Otherwise, device may be going away.
+	CMPW	#IO$_MOUNT,-		; If this is a mount, then its okay
+		IRP$W_FUNC(R3)		; to send off the request to ACP
+	BEQL	9$			;
+	MOVZWL	#SS$_NODEVAVL,R0	; Otherwise, this request needs to be
+	BRB	10$			; aborted
+9$:	BISW2	#IRP$M_TERMIO,-		; Mark packet as terminal I/O for
+		IRP$W_STS(R3)		; priority boosts upon completion
+	BSB	VD_SEND_ACP		; Send the message at normal IPL
+	BLBC	R0,10$			; Still pure? If not, then ABORT
+	JMP	G^EXE$QIORETURN		; If all's OK, return from the qio
+10$:	JMP	G^EXE$ABORTIO		; If SS$_NOAQB, we're at a loss
+
+VD_SEND_ACP:
+	pushr	#^m<r4,r7>		; Save PCB and whatever's in R7 
+	dsbint	#IPL$_SYNCH,r7		; Synchronize access to IO database
+	CMPW	#IO$_BROADCAST,-	; If this is a broadcast, UIC already
+		IRP$W_FUNC(R3)		; set up AND R4 no longer necessarily
+	beql	30$			; contains PCB anymore anyway !
+	TSTL	R4			; Double-check for PCB address
+	BEQL	30$			; None to speak of. Branch around.
+	MOVL	PCB$L_UIC(R4),-		; Store the UIC in the IRP out of
+		IRP$L_SAVD_RTN(R3)	;	everyone's way
+30$:	movl	UCB$L_VCB(R5),R1	; Get address of VCB
+	beql	50$			; No VCB?
+	movl	VCB$L_AQB(R1),R2	; Get address of ACP AQB
+	beql	50$			; No AQB?
+	incw	VCB$W_TRANS(R1)		; Another transaction noted
+	jsb	g^EXE$INSERTIRP		; Insert IRP in ACP queue
+	bneq	40$			; If neq, not first entry in queue
+	movl	AQB$L_ACPPID(R2),R1	; Get the ACP process ID
+	jsb	g^SCH$WAKE		; Wake the ACP process
+	blbc	R0,60$			; What happened to our ACP??!!
+40$:
+	enbint	r7			; Restore IPL to caller's
+45$:	popr	#^m<r4,r7>		; Restore PCB and old contents of R7
+	movl	#ss$_normal,r0		; We're cool here
+	rsb				;
+
+;
+; One of the ACP data structures is absent!!  Exit.
+;
+50$:
+	enbint	r7			; Restore IPL to caller's
+55$:	popr	#^m<r4,r7>		; Restore PCB and old contents of R7
+	movl	#SS$_NOAQB,R0
+	rsb				; Return to ABORT, or whatever
+;
+; The ACP process isn't there to wake up! Clean up data structures to allow
+; restart and return to abort this request. Note: It is assumed that this is
+; the initial STARTACP mount request which is failing. Otherwise, IRPs will
+; be dangling aimlessly in deep space while the processes which issued them
+; will be MWAITing.
+;
+60$:
+	bicl2	#DEV$M_MNT,-
+		UCB$L_DEVCHAR(R5)	; Set unit not-mounted
+	pushr	#^m<r0,r3>		; Save return status and IRP address
+	movl	g^ioc$gl_aqblist,r0	; Get adr. of first AQB in system list
+	beql	63$			; Not much to look at. Go deallocate
+	cmpl	r0,r2			; Is this our AQB?
+	bneq	61$			; Nope. Go through the AQB list.
+	movl	aqb$l_link(r2),-	; Yup. Remove our AQB from the system's
+		g^ioc$gl_aqblist	; list of AQBs
+	brb	63$			; and go do the deallocations
+61$:	cmpl	aqb$l_link(r0),r2	; Look at forward link
+	bneq	62$			; Is it pointing at our AQB?
+ 	movl	aqb$l_link(r2),-	; Yup. Fix his flink
+		aqb$l_link(r0)		; to point at our flink.
+	brb	63$			; and go do VCB/AQB deallocations
+62$:	movl	aqb$l_link(r0),r0	; Is it pointing at nothing?
+	bneq	61$			; Nope. Go look at next list element.
+63$:	enbint	r7			; Restore IPL to caller's
+	movl	UCB$L_VCB(R5),R0	; Get address of VCB
+	clrl	UCB$L_VCB(R5)		; Clear address of VCB out of UCB
+	pushl	R2			; Can get destroyed by deallocate
+	jsb	g^exe$deanonpaged	; and deallocate it
+	popl	R2			; Restore r2 from routine
+	movl	R2,R0			; Get address of AQB
+	pushl	R2			; Can get destroyed by deallocate
+	jsb	g^exe$deanonpaged	; and deallocate it
+	popl	R2			; Restore r2 from routine
+	popr	#^m<r0,r3>		; Restore status and IRP address
+	popr	#^m<r4,r7>		; Restore PCB and old contents of R7
+	rsb				; Return to ABORT, or whatever
+
+
+	.SBTTL	VD_END, End of VDDRIVER
+;
+; This label marks the end of VDDRIVER
+;
+VD_END:
+	.END

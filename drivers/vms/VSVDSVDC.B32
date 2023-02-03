@@ -1,0 +1,3834 @@
+%title 'vsta$vdc_control - Virtual display I/O controller'
+MODULE vsta$vdc_control (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---This module contains the routines to control the virtual display operations
+!   sent to vsta$drive.  Any routines used to implement the multi-threaded
+!---ACP will appear here.
+
+
+
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE!S 	! Globals
+	 vsta$$vds_access_vd_image
+	,vsta$$vds_purge_all_vd_rc_lists
+	,vsta$$vds_purge_vd_rc_lists
+	,vsta$$vds_copy_vd_rc_lists
+	,vsta$$vds_get_vd_rc_lists
+	,vsta$$vds_turn_cursor_on
+	,vsta$$vds_turn_cursor_off
+	,vsta$$vds_set_region_show
+	,vsta$$vds_set_region_noshow
+	,vsta$$vds_xor_region_box
+	,vsta$$vds_hide_indicators
+	,vsta$$vds_show_indicators
+	,vsta$$vds_redisp_vd
+	,vsta$$vds_redisp_complete
+	,vsta$$vds_scroll_text
+	,vs$$vds_final_decisions
+	,vs$$vds_final_decisions_k
+	,vs$$vds_create_int
+	,vs$$vds_queue_int
+	,vs$$vds_queue_int_hipq
+	,vs$$vds_create_int_noparams
+	,vs$$vds_synchronize_vd
+	,vsta$$vds_irp_ircnt: NOVALUE
+	,vsta$$vds_irp_drcnt
+	,vsta$$vds_queue_vdc
+	,vsta$$vds_flush_vd_path
+	,vsta$$vds_start_vd_path
+	,vsta$$vds_end_vd_path
+	,vsta$$vds_redisplay_vd_text
+	,vsta$$vds_access_vd_bitmap
+	,VSTA$$VDS_SAVE_VD_RC_LISTS
+	,VSTA$$VDS_STORE_VD_RC_LISTS
+	;
+
+FORWARD ROUTINE!S 	! Private for VDS hands only 
+
+	 vdc$$restore_backing
+	,vdc$$purge_vd_rc_lists
+	,vdc$$copy_vd_rc_lists
+	,vdc$$get_vd_rc_lists
+	,vdc$$turn_cursor_on
+	,vdc$$turn_cursor_off
+	,vdc$$cursor_opr_complete
+	,vdc$$set_region_show
+	,vdc$$xor_region_box
+	,vdc$$hide_indicators
+	,vdc$$show_indicators
+	,vdc$$set_region_noshow
+	,vdc$$set_region_complete
+	,vdc$$noop_region_complete
+	,vdc$$queue_vdc
+	,vdc$$flush_vd_path
+	,vdc$$start_vd_path
+	,vdc$$end_vd_path
+	;
+
+External routine
+	 vs$$vds_sobgtr
+	,VS$$ACP_AST_LEVEL
+	,vs$$acp_enqueue_int
+	,vs$$acp_enqueue_int_hipq
+	,vs$$acp_done_io
+	,vs$$acp_done_io_no_iosb
+	,vsta$$odrv_write
+	,vsta$$error
+	,vs$$vds_vd_pointer
+	,vs$$vds_disp_vd
+	,vs$$txt_displayalltext
+	,vs$$acp_get_vm
+	,vs$$acp_free_vm
+	,vsta$$rcs_merge
+	,vsta$$rcs_inter_list_with_lists
+	,vt$$dt_redisplay_vd
+	;
+
+Builtin
+	 TESTBITCS
+	,TESTBITSS
+	;
+
+!---------------------------------------------
+! Get the data base definition file and system library routines
+!---------------------------------------------
+!LIBRARY 'vsta$library:vstasyms';
+REQUIRE 'vsta$library:vsvdsvdc.r32';
+LIBRARY 'vsta$library:libmacros';	!Symbols like "$base"
+LIBRARY 'vsta$Library:vstagbl';
+LIBRARY 'vsta$library:vstamacs';
+REQUIRE 'vsta$library:vstanativ';
+LIBRARY 'vsta$library:vstadef';
+LIBRARY 'vsta$library:vsvdsvd';
+LIBRARY 'sys$library:starlet';
+LIBRARY 'vsta$library:vserrors';	!Error symbols
+
+!---------------------------------------------
+! Define the PSECTs
+!---------------------------------------------
+$vsta_psect;
+
+!---------------------------------------------
+! Define the error recording macros and boolean macros
+!---------------------------------------------
+MACRO
+	 $CLEAR(bitfld) = bitfld = 0%
+	,$SET(bitfld) = bitfld = 1%
+	;
+
+!---------------------------------------------
+! DEFINE MODULE LITERALS
+!---------------------------------------------
+LITERAL
+	 true = 1
+	,false = 0
+	;
+!---------------------------------------------
+! DEFINE EXTERNAL GLOBALS
+!---------------------------------------------
+EXTERNAL
+	 VS$A_HIPQ:vector [0,long]	! High Priority INT Queue
+	,VS$A_IRP:ref block[0,byte]	! Current IRP or INT address
+	,VS$GW_VBCHAN: word
+	,VSTA$A_FRAME_BUFFER: vector [,long]
+	,VDB_Q_HEAD: vector [,long]
+	;
+
+%SBTTL	'vsta$$vds_ACCESS_VD_image -- GET VD BITMAP ADDRESS'
+global routine vsta$$vds_ACCESS_VD_image
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!	Get descriptor for a display's bitmap.  This routine is similar to
+!	vsta$$vds_access_vd_bitmap, except this routine points at the
+!	screen image if it exists, whereas the latter always points to
+!	the backing store.
+!
+!	NOTE: This routine turns off indicator graphics (eg. region boxes,
+!	cursors), in order that the graphics operation not include them.
+!	Callers must take care to turn the indicators back on after the
+!	graphics operation.
+!
+!  FORMAL PARAMETERS:
+!
+		(
+		 vd_id			! virtual display id
+		,vd_bitmap_a: 		! place to copy bitmap desc
+				ref block [,byte]
+		,screen_x		! adr's to rcv screen location
+		,screen_y
+		,screen_or_backing_a	! flag to set if backing is on screen
+					! or other memory.
+		):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE: 
+!
+!---Failure status if this vd cannot be found or the vd has not graphics 
+!---ablility
+!
+!  SIDE EFFECTS: 
+!
+!---The VDB is accessed and its text block is conditionally redisplayed
+!
+!---
+begin
+
+local
+	 VDB: ref vdblock
+	,STAT
+	;
+
+if not VS$$VDS_VD_POINTER(.VD_ID,VDB)
+then $RETERR(STATUS=ss$_badparam);
+
+!
+!  If graphics is to exist but the backing store is not yet created then
+!  create it and and set the graphics exists flag
+!
+if (.VDB [VDB$B_TEXT_OR_GRAPHICS] neq 3) and 
+   (.VDB [VDB$B_TEXT_OR_GRAPHICS] neq 1) 
+then $RETERR(STATUS=ss$_badparam)
+else if not .VDB [VDB$V_GRAPHICS_EXIST]
+     then begin
+		VDB [VDB$V_GRAPHICS_EXIST]=1;
+		if (not (STAT=VS$$ACP_GET_VM (%ref(.VDB [VDB$L_GRAPHIC_SIZE]),
+					VDB [VDB$A_GRAPHIC])))
+		then return .STAT;
+
+		!
+		! Paint background color into backing-store
+		!
+		if (not (STAT=$DRIVEBACK(
+				 CHAN	= .VS$GW_VBCHAN
+				,DST	= .VDB [VDB$A_BITMAP_DESCRIPTOR]
+				,COLOR	= .VDB [VDB$W_BACKGROUND]
+				,WIDTH	= .VDB [VDB$W_WIDTH]
+				,HEIGHT	= .VDB [VDB$W_HEIGHT]
+				)))
+		then return .STAT;
+	  end;
+!
+! If image is on actual screen, give address
+! of frame buffer descriptor and tell caller where image is on screen.
+! If not, give address of backing storage frame buffer descriptor.
+!
+	if not .VDB [VDB$V_BACKING_DISABLED]
+	then .VD_BITMAP_A = .VDB [VDB$A_BITMAP_DESCRIPTOR]
+	else
+	    begin
+!
+! Image is on screen, so hide vestiges that we don't want to appear
+! in the copy, namely region boxes and cursors.  Note that our caller
+! is reponsible to turn these on again when through !
+!
+! We turn them off with a routine that is prepared to do nothing if
+! things are already off.  This is important for situations where the
+! SAME image is used for several different parameters in a graphics
+! operation, in which case we really only turn things off ONCE, not once
+! per usage !
+!
+	    if not (stat = vdc$$hide_indicators (vdb[$base]))
+	    then return .stat;
+!
+! Announce where screen image is.
+!
+	    .VD_BITMAP_A = .vsta$a_frame_buffer;
+!
+! Announce where the image is on the screen.  We assume that since backing
+! is disabled, the image must entirely show on the screen in exactly one place,
+! and hence we can merely use the first (and only) rectangle list from which
+! to extract the information.
+!
+	    .screen_x = .vector [.VDB [VDB$A_RCAQFL], 3];
+	    .screen_y = .vector [.VDB [VDB$A_RCAQFL], 4]
+
+	    end;	! of case of image is on actual screen
+!
+! Tell caller whether source is actually on screen.
+!
+	.SCREEN_OR_BACKING_A = .VDB [VDB$V_BACKING_DISABLED];
+
+	SS$_NORMAL
+
+	end;
+
+%sbttl  'VSTA$$VDS_SAVE_VD_RC_LISTS -- Save vd rectangles'
+global routine VSTA$$VDS_SAVE_VD_RC_LISTS (
+						 VDID
+						,RCSQ	: ref vector [,long]
+					  ) =
+!++
+!  Functional Description
+!
+!  This routine saves the vd clipping queue in the queue header RCSQ
+!
+begin
+
+local
+	 STAT
+	,VDB: ref vdblock
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VDID, VDB))
+then return .STAT;
+
+!
+!  If the vd rc lists are empty then just make RCSQ an empty queue
+!
+if .VDB [VDB$A_RCAQFL] eql VDB [VDB$A_RCAQFL]
+then begin
+	RCSQ [0] = RCSQ [0];
+	RCSQ [1] = RCSQ [0];
+     end
+else begin
+
+	RCSQ [0] = .VDB [VDB$A_RCAQFL];
+	(.VDB [VDB$A_RCAQFL] + 4) = RCSQ [0];
+	RCSQ [1] = .VDB [VDB$A_RCAQBL];
+	(.VDB [VDB$A_RCAQBL]) = RCSQ [0];
+
+	VDB [VDB$A_RCAQFL] = VDB [VDB$A_RCAQFL];
+	VDB [VDB$A_RCAQBL] = VDB [VDB$A_RCAQFL];
+
+     end;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+
+%sbttl  'VSTA$$VDS_STORE_VD_RC_LISTS -- Save vd rectangles'
+global routine VSTA$$VDS_STORE_VD_RC_LISTS (
+						 VDID
+						,RCSQ	: ref vector [,long]
+					  ) =
+!++
+!  Functional Description
+!
+!  This routine saves the vd clipping queue in the queue header RCSQ
+!
+begin
+
+local
+	 STAT
+	,VDB: ref vdblock
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VDID, VDB))
+then return .STAT;
+
+!
+!  If the vd rc lists are empty then just make RCSQ an empty queue
+!
+if .RCSQ [0] eql RCSQ [0]
+then begin
+
+	VDB [VDB$A_RCAQFL] = VDB [VDB$A_RCAQFL];
+	VDB [VDB$A_RCAQBL] = VDB [VDB$A_RCAQFL];
+
+     end
+else begin
+	
+	VDB [VDB$A_RCAQFL] = .RCSQ [0];
+	(.RCSQ [0] + 4) = VDB [VDB$A_RCAQFL];
+	VDB [VDB$A_RCAQBL] = .RCSQ [1];
+	(.RCSQ [1]) = VDB [VDB$A_RCAQFL];
+
+	RCSQ [0] = RCSQ [0];
+	RCSQ [1] = RCSQ [0];
+
+     end;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+%sbttl 'VDC$$RESTORE_BACKING -- Restore vd backing store from screen'
+global routine VDC$$RESTORE_BACKING( VDB: ref vdblock) =
+!++
+!  Functional Description
+!
+!  This routine will restore the vd backing store if it has been disabled
+!  because it is fully visable on the screen
+!
+!--
+begin
+
+local
+	 RCA: ref vector [,long]
+	,R_LIST: ref vector [,word]
+	,SAVED_CURSOR_STATE
+	,S
+	;
+
+!
+!  If the backing no disabled then return
+!
+if not .VDB [VDB$V_BACKING_DISABLED]
+then return ss$_normal;
+
+
+
+!
+!  If graphics does not exist yet then just return
+!
+if not .VDB [VDB$V_GRAPHICS_EXIST]
+then return ss$_normal;
+
+!
+!  if the cursor is on then turn it off save the state to turn it back on
+!  at the end
+!
+if (SAVED_CURSOR_STATE=.VDB [VDB$V_CURSOR_ENABLE]) 
+then VDC$$TURN_CURSOR_OFF( .VDB);
+
+!
+!  If region is showing then turn it off durring the save
+!
+VDC$$XOR_REGION_BOX( .VDB);
+
+!
+!  Get address of screen rectangle which includes entire vd
+!
+RCA = .VDB [VDB$A_RESADR];
+R_LIST = RCA [6];
+
+if not (s=$DRIVECOPY(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP	= vsta$k_src_bm			! bitmap
+		,SOURCE	= .vsta$a_frame_buffer [0]	! from screen
+		,SRCOFX	= .RCA [3]			! physical screen x
+		,SRCOFY = .RCA [4]			! physical screen y
+		,MSKTYP = vsta$k_msk_rectangle		! rectangle 
+		,MASK	= R_LIST [2]			! rectangle extents
+		,DST	= .VDB [VDB$A_BITMAP_DESCRIPTOR]! backing store
+	))
+then return .s;
+
+!
+!  If region is showing then turn it on after the save
+!
+VDC$$XOR_REGION_BOX( .VDB);
+
+!
+!  if the cursor is on then turn it off save the state to turn it back on
+!  at the end
+!
+if .SAVED_CURSOR_STATE
+then VDC$$TURN_CURSOR_ON( .VDB);
+
+return SS$_NORMAL;
+end;
+
+
+
+%sbttl  'VSTA$$VDS_PURGE_ALL_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VSTA$$VDS_PURGE_ALL_VD_RC_LISTS =
+!++
+!  Functional Description
+!
+!---Calls the internal routine to get vd.s rc list
+!
+!  Formal Parameters
+!
+!  Side Effects
+!
+!--
+begin
+
+local
+	 VDB: ref vdblock
+	;
+
+!
+!  Loop thru all vd's and call vdc$$purge_vd_rc_lists
+!
+VDB = .VDB_Q_HEAD [0];
+
+until .VDB eql VDB_Q_HEAD [0]
+do begin
+	VDC$$PURGE_VD_RC_LISTS( .VDB);
+	VDB = .VDB [VDB$A_FL];
+   end;
+
+return ss$_normal;
+
+end;
+
+
+
+
+
+%sbttl  'VSTA$$VDS_PURGE_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VSTA$$VDS_PURGE_VD_RC_LISTS(
+				 VD_ID
+					):=
+!++
+!  Functional Description
+!
+!---Calls the internal routine to get vd.s rc list
+!
+!  Formal Parameters
+!
+!  	VD_ID			virtual display ID
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+
+!
+!  Call the internal version of this routine
+!
+return CALLG( .AP, VDC$$PURGE_VD_RC_LISTS);
+
+end;
+
+
+
+
+%sbttl  'VDC$$PURGE_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VDC$$PURGE_VD_RC_LISTS(
+				 VDB: ref vdblock
+					):=
+!++
+!  Functional Description
+!
+!---Copies the rectangle lists in the vdb and links them in a queue whose
+!---base is LIST_BASE.
+!
+!  Formal Parameters
+!
+!  	VDB		Virtual display block
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+
+builtin
+	 insque
+	;
+
+local
+	 STAT
+	,RCA: ref vector [,long]		! Pointer at rc list structure
+	,NEXT_RCA: ref vector [,long]		! Pointer to cloned rc list
+	;
+
+
+!
+!  Restore the backing from screen if it has been disabled
+!
+VDC$$RESTORE_BACKING( .VDB);
+
+!
+!  Indicate that backing is no longer disabled
+!
+VDB [VDB$V_BACKING_DISABLED] = 0;
+
+!
+!  If the rc list is allready purged then just return
+!
+if .VDB [VDB$V_RECTANGLES_PURGED]
+then return SS$_NORMAL
+else VDB [VDB$V_RECTANGLES_PURGED] = 1;
+
+!
+!  loop thru all the rc lists associated with this vd
+!  Deallocate the memory for the list
+!
+RCA = .VDB [VDB$A_RCAQFL];
+
+until .RCA eql VDB [VDB$A_RCAQFL]
+do begin
+	NEXT_RCA = .RCA [0];
+	VS$$ACP_FREE_VM( RCA [2], RCA);
+	RCA = .NEXT_RCA;
+   end;
+
+VDB [VDB$A_RCAQFL] = VDB [VDB$A_RCAQFL];
+VDB [VDB$A_RCAQBL] = VDB [VDB$A_RCAQFL];
+
+return ss$_normal;
+
+end;
+
+
+
+
+%sbttl  'VSTA$$VDS_GET_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VSTA$$VDS_GET_VD_RC_LISTS(
+				 VD_ID
+					):=
+!++
+!  Functional Description
+!
+!---Calls the internal routine to get vd.s rc list
+!
+!  Formal Parameters
+!
+!  	VD_ID			Virtual display ID
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+return CALLG( .AP, VDC$$GET_VD_RC_LISTS);
+
+end;
+
+
+
+
+%sbttl  'VDC$$GET_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VDC$$GET_VD_RC_LISTS(
+				 VDB: ref vdblock
+				,RETURNED_Q_ADDR
+					):=
+!++
+!  Functional Description
+!
+!---Returns the address of the vd rectangle list queue base
+!
+!  Formal Parameters
+!
+!  	VD_ID			Virtual display ID
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+builtin
+	 callg
+	;
+
+local
+	 STAT
+	;
+
+
+!
+!  Is the rc list for this vd purged
+!
+if .VDB [VDB$V_RECTANGLES_PURGED]
+then begin
+	VDB [VDB$V_RECTANGLES_PURGED] = 0;
+
+	VDB [VDB$W_OPCODE] = VSTA$K_GETRCS;
+
+	!
+	!  Determine which display routine to call
+	!
+	if .VDB [VDB$A_REDISP_ROUTINE] gtr 0
+	then STAT = 		CALLG( .VDB [VDB$A_REDISP_ARGBLOCK],
+					.VDB [VDB$A_REDISP_ROUTINE])
+	else STAT = 		VS$$VDS_DISP_VD( .VDB [VDB$_VD_ID]);
+
+	if not .STAT then return .STAT;
+
+     end;
+
+.RETURNED_Q_ADDR = VDB [VDB$A_RCAQFL];
+
+!
+!  If the vd rectangle base is null or if the vd is disabled then
+!  return 3
+!
+if (.VDB [VDB$A_RCAQFL] eql VDB [VDB$A_RCAQFL]) or
+   (.VDB [VDB$V_DISABLED])
+then return 3;
+
+
+return SS$_NORMAL;
+
+end;
+
+
+%sbttl  'VSTA$$VDS_COPY_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VSTA$$VDS_COPY_VD_RC_LISTS(
+				 VD_ID
+					):=
+!++
+!  Functional Description
+!
+!---Calls the internal routine to get vd.s rc list
+!
+!  Formal Parameters
+!
+!  	VD_ID	
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	,VDB
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+return CALLG( .AP, VDC$$COPY_VD_RC_LISTS);
+
+end;
+
+
+
+
+%sbttl  'VDC$$COPY_VD_RC_LISTS -- Get the vd.s clipping rectangles'
+global routine VDC$$COPY_VD_RC_LISTS(
+				 VDB: ref vdblock
+				,LIST_BASE: ref vector [,long]
+					):=
+!++
+!  Functional Description
+!
+!---Copies the rectangle lists in the vdb and links them in a queue whose
+!---base is LIST_BASE.
+!
+!  Formal Parameters
+!
+!  	VDB	      
+!  	LIST_BASE		address of a two longword block
+!				which is the base of a queue to link the
+!				the copied rc lists to.
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+
+builtin
+	 insque
+	,callg
+	;
+
+local
+	 STAT
+	,RCA: ref vector [,long]		! Pointer at rc list structure
+	,NEW_RCA: ref vector [,long]		! Pointer to cloned rc list
+	;
+
+
+!
+!  Is the rc list for this vd purged
+!
+if .VDB [VDB$V_RECTANGLES_PURGED]
+then begin
+	VDB [VDB$V_RECTANGLES_PURGED] = 0;
+
+	VDB [VDB$W_OPCODE] = VSTA$K_GETRCS;
+
+	!
+	!  Determine which display routine to call
+	!
+	if .VDB [VDB$A_REDISP_ROUTINE] gtr 0
+	then STAT = 		CALLG( .VDB [VDB$A_REDISP_ARGBLOCK],
+					.VDB [VDB$A_REDISP_ROUTINE])
+	else STAT = 		VS$$VDS_DISP_VD( .VDB [VDB$_VD_ID]);
+
+	if not .STAT then return .STAT;
+
+     end;
+	
+!
+!  Inititialize the list base
+!
+LIST_BASE [0] = LIST_BASE [0];
+LIST_BASE [1] = LIST_BASE [0];
+
+!
+!  If the vd rectangle base is null or if the vd is disabled then
+!  return 3
+!
+if (.VDB [VDB$A_RCAQFL] eql VDB [VDB$A_RCAQFL]) or
+   (.VDB [VDB$V_DISABLED])
+then return 3;
+
+!
+!  loop thru all the rc lists associated with this vd
+!  copy each list and queue it to the end of the specified list base
+!
+RCA = .VDB [VDB$A_RCAQFL];
+
+until .RCA eql VDB [VDB$A_RCAQFL]
+do begin
+	VS$$ACP_GET_VM( RCA [2], NEW_RCA);
+	CH$MOVE( .RCA [2], RCA [0], NEW_RCA [0]);
+	insque( .NEW_RCA , .LIST_BASE [1]);
+	RCA = .RCA [0];
+   end;
+
+return ss$_normal;
+
+end;
+
+
+
+
+
+%sbttl  'VSTA$$VDS_TURN_CURSOR_ON -- Turns on vd cursor'
+global routine VSTA$$VDS_TURN_CURSOR_ON(
+				 VD_ID
+					):=
+!++
+!  Functional Description
+!
+!---Calls the internal routine to turn a cursor on
+!
+!  Formal Parameters
+!
+!  	VD_ID	
+!  	XOFF - YEXT		Defines a rectangle for the cursor
+!
+!  
+!  Side Effects
+!
+!--
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	,VDB
+	;
+
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+return CALLG(.AP,VDC$$TURN_CURSOR_ON);
+
+end;
+
+
+
+%sbttl  'VDC$$TURN_CURSOR_ON -- Turns on vd cursor'
+global routine VDC$$TURN_CURSOR_ON(
+				 VDB		: ref vdblock
+					):=
+!++
+!  Functional Description
+!
+!---This routine shows a region of a vd as potentially selectible.  
+!
+!  Formal Parameters
+!
+!  	VD_ID			
+!  	XOFF - YEXT		Defines a cursor region to show
+!
+!  
+!  Side Effects
+!
+!---This routine will perform a copy operation to the screen of the station
+!   only.  Thus redisplay vd must be responcible for redisplaying this region
+!   as well.  Also this region must be turned off durring an output operation
+!---since we can't have it interfering with operations to the screen.
+!
+!--
+begin
+
+builtin
+	 ACTUALCOUNT
+	,ACTUALPARAMETER
+	;
+
+local
+	 STAT
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS
+	;
+
+!
+!  If there is a region already showing then turn it off and continue
+!
+if .VDB [VDB$V_CURSOR_ENABLE]
+then VDC$$TURN_CURSOR_OFF( .VDB);
+
+
+!
+!  If new coodinates are specified then use them otherwise use the old ones
+!
+selectone ACTUALCOUNT() 
+of set
+	[5]: begin
+		!
+		!  If the size of the cursor has changed then we must
+		!  flush the path since the mask will have to change
+		!
+		if (.VDB [VDB$W_CUR_EXT_X] neq ACTUALPARAMETER(4)) or
+		   (.VDB [VDB$W_CUR_EXT_Y] neq ACTUALPARAMETER(5))
+		then begin
+			VDC$$FLUSH_VD_PATH( .VDB);
+			VDB [VDB$W_CUR_EXT_X] = ACTUALPARAMETER(4);
+			VDB [VDB$W_CUR_EXT_Y] = ACTUALPARAMETER(5);
+		     end;
+		VDB [VDB$W_CUR_OFF_X] = ACTUALPARAMETER(2);
+		VDB [VDB$W_CUR_OFF_Y] = ACTUALPARAMETER(3);
+	     end;
+	[1]:;
+	[OTHERWISE]: return ss$_badparam;
+   tes;
+
+!
+!  Indicate that the cursor is now on.  
+!
+VDB [VDB$V_CURSOR_ENABLE] = 1;
+VDB [VDB$V_CURSOR_CYCLE] = 1;		! Cursor will now be in the on cycle
+
+!
+!  Get the vd clipping rectangles and display the cursor in each
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then return .STAT;
+
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	!
+	!  
+	if not (STAT=$DRIVECOPY(
+		 CHAN	= .VS$GW_VBCHAN
+		,SRCOFX = .VDB [VDB$W_CUR_OFF_X] + .RCS [3]
+		,SRCOFY	= .VDB [VDB$W_CUR_OFF_Y] + .RCS [4]
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= VDB [VDB$W_CUR_EXT_X]
+		,DST	= .VSTA$A_FRAME_BUFFER [0]
+		,DSTOFX	= .VDB [VDB$W_CUR_OFF_X] + .RCS [3]
+		,DSTOFY	= .VDB [VDB$W_CUR_OFF_Y] + .RCS [4]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! REVERSE VIDEO
+		,RECNUM = .RCS [5]
+		,RECADR = RCS [6]
+		,ASTADR = (
+				if (.RCS [0] eql RCSQ [0])
+
+				then VDC$$CURSOR_OPR_COMPLETE
+				else 0
+			   )
+		,ASTPRM = .RCSQ [0]
+		))
+	then return .STAT;
+
+	!
+	!  Next list
+	!
+	RCS = .NEXT_RCS;
+
+   end;
+
+
+return ss$_normal;
+
+end; 
+
+
+
+
+
+%sbttl  'VSTA$$VDS_TURN_CURSOR_OFF -- Turns the vd cursor off'
+global routine VSTA$$VDS_TURN_CURSOR_OFF(
+					 VD_ID
+					):=
+!++
+!  Functional Description:
+!
+!---This routine set a shown region to noshow.  After it as performed the 
+!---task to the screen the VDB region control areas are cleared.
+!
+!
+begin
+
+local
+	 STAT
+	,VDB
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VDB))
+then return .STAT;
+
+!
+!  Call the internal routine to turn off the region
+!
+return VDC$$TURN_CURSOR_OFF( .VDB);
+
+end;
+
+
+
+
+
+%sbttl  'VDC$$TURN_CURSOR_OFF -- Turns cursor off'
+global routine VDC$$TURN_CURSOR_OFF(
+				 VDB		: ref vdblock
+					):=
+!++
+!  Functional Description:
+!
+!
+begin
+
+local
+	 STAT
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS	
+	;
+
+!
+!  If there is not a cursor visible then just return
+!
+if not .VDB [VDB$V_CURSOR_ENABLE]
+then return ss$_normal;
+
+!
+!  Set the region switch off
+!
+VDB [VDB$V_CURSOR_ENABLE] = 0;
+
+!
+!  Get the vd clipping rectangles and display the cursor in each
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then return .STAT;
+
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	!
+	!  
+	if not (STAT=$DRIVECOPY(
+		 CHAN	= .VS$GW_VBCHAN
+		,SRCOFX = .VDB [VDB$W_CUR_OFF_X] + .RCS [3]
+		,SRCOFY	= .VDB [VDB$W_CUR_OFF_Y] + .RCS [4]
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= VDB [VDB$W_CUR_EXT_X]
+		,DST	= .VSTA$A_FRAME_BUFFER [0]
+		,DSTOFX	= .VDB [VDB$W_CUR_OFF_X] + .RCS [3]
+		,DSTOFY	= .VDB [VDB$W_CUR_OFF_Y] + .RCS [4]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! REVERSE VIDEO
+		,RECNUM = .RCS [5]
+		,RECADR = RCS [6]
+		,ASTADR = (
+				if (.RCS [0] eql RCSQ [0])
+
+				then VDC$$CURSOR_OPR_COMPLETE
+				else 0
+			   )
+		,ASTPRM = .RCSQ [0]
+		))
+	then return .STAT;
+
+	!
+	!  Next list
+	!
+	RCS = .NEXT_RCS;
+
+   end;
+
+return ss$_normal;
+
+end;
+
+
+%sbttl  'VDC$$CURSOR_OPR_COMPLETE -- Clean up after cursor operations'
+routine VDC$$CURSOR_OPR_COMPLETE( RCS: ref vector [,long])=
+!++
+!
+!  Cleans up queue of clipping rectangles 
+!
+!--
+begin
+
+local
+	 BASE
+	,NEXT_RCS
+	;
+
+!
+!  calculate the base of the list it no longer exists
+!
+BASE = .RCS [1];
+
+until .RCS eql .BASE
+do begin
+	NEXT_RCS = .RCS [0];
+	VS$$ACP_FREE_VM( RCS [2], RCS);
+	RCS = .NEXT_RCS;
+   end;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+%sbttl  'VSTA$$VDS_SET_REGION_SHOW -- Shows region potentially selectible'
+global routine VSTA$$VDS_SET_REGION_SHOW(
+				 VD_ID
+					):=
+!++
+!  Functional Description
+!
+!---This routine shows a region of a vd as potentially selectible.  
+!
+!  Formal Parameters
+!
+!  	VD_ID		  
+!  	XOFF - YEXT		Defines a rectangle region to show
+!
+!  
+!  Side Effects
+!
+!---This routine will perform a draw operation to the screen of the station
+!   only.  Thus redisplay vd must be responcible for redisplaying this region
+!   as well.  Also this region must be turned off durring an output operation
+!---since we can't have it interfering with operations to the screen.
+!
+!--
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	,VDB
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+CALLG(.AP,VDC$$SET_REGION_SHOW)
+
+end;
+
+
+
+%sbttl  'VDC$$SET_REGION_SHOW -- Shows region potentially selectible'
+global routine VDC$$SET_REGION_SHOW(
+				 VDB		: ref vdblock
+				,SEL_ATTRIBUTE
+				! four option parameters x,y,xext,yext
+				):=
+!++
+!  Functional Description
+!
+!---This routine shows a region of a vd as potentially selectible.  
+!
+!  Formal Parameters
+!
+!  	VD_ID	   
+!  	XOFF - YEXT		Defines a rectangle region to show
+!
+!  
+!  Side Effects
+!
+!---This routine will perform a draw operation to the screen of the station
+!   only.  Thus redisplay vd must be responcible for redisplaying this region
+!   as well.  Also this region must be turned off durring an output operation
+!---since we can't have it interfering with operations to the screen.
+!
+!--
+begin
+
+builtin
+	 ACTUALCOUNT
+	,ACTUALPARAMETER
+	;
+
+local
+	 STAT
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS	
+	,DSC		: ref vector [,long]
+	,OFFSET
+	;
+
+bind
+
+	 XOFF = VDB [VDB$W_RGN_OFF_X] : word
+	,YOFF = VDB [VDB$W_RGN_OFF_Y] : word
+	,XEXT = VDB [VDB$W_RGN_EXT_X] : word
+	,YEXT = VDB [VDB$W_RGN_EXT_Y] : word
+	;
+
+!
+!  If there is a region already showing then turn it off and continue
+!
+if .VDB [VDB$V_REGION_ENABLE]
+then VDC$$SET_REGION_NOSHOW( .VDB);
+
+!
+! Decide whether the box is offset or not.
+! If a text field is made selectable, the box is at the very edge
+! of the field; else it is 1 pixel in.
+!
+if .SEL_ATTRIBUTE eql VSTA$K_SEL_TEXT
+then OFFSET = 0
+else OFFSET = 1;
+
+selectone ACTUALCOUNT() 
+of set
+	[6]: begin
+		VDB [VDB$W_RGN_OFF_X] = ACTUALPARAMETER(3) + .OFFSET;
+		VDB [VDB$W_RGN_OFF_Y] = ACTUALPARAMETER(4) + .OFFSET;
+		VDB [VDB$W_RGN_EXT_X] = ACTUALPARAMETER(5) - (.OFFSET * 2);
+		VDB [VDB$W_RGN_EXT_Y] = ACTUALPARAMETER(6) - (.OFFSET * 2);
+	     end;
+	[1]:;
+
+	[OTHERWISE]: return ss$_badparam;
+
+   tes;
+
+
+if not (STAT = VS$$ACP_GET_VM ($EXTSYM (VSTA$L_128B_SIZE),
+    VDB [VDB$A_REGION_DSC]))
+then return .STAT;
+
+DSC = .VDB [VDB$A_REGION_DSC];
+
+!
+!  Generate the path in the following words
+!
+begin
+	!
+	!  Put the path in DSC [1] .. DSC [8]
+	!
+	bind PATH = DSC [1]: vector [,word];
+		
+	PATH [0] = .XOFF;
+	PATH [1] = .YOFF;
+	PATH [2] = 2;
+
+	PATH [3] = .XOFF + .XEXT - 1;
+	PATH [4] = .YOFF;
+	PATH [5] = 0;
+
+	PATH [6] = .PATH [3];
+	PATH [7] = .YOFF + .YEXT - 1;
+	PATH [8] = 0;
+	
+	PATH [9] = .XOFF;
+	PATH [10] = .PATH [7];
+	PATH [11] = 0;
+
+	PATH [12] = .XOFF;
+	PATH [13] = .YOFF;
+	PATH [14] = 0;
+
+	!
+	!  Put the line thickness in next two words DSC [9]
+	!
+	PATH [16] = 1;
+	PATH [17] = 1;
+
+	!
+	!  Put pattern in the last two words and the next word. DSC[9], DSC[12]
+	!
+	PATH [18] = 1;
+
+	!
+	!  The pattern state is 0,0 put that in the next two words
+	!
+	PATH [20] = 0;
+	PATH [21] = 0;
+
+end;
+
+
+!
+!  Tell the display there is a region showing
+!
+VDB [VDB$V_REGION_ENABLE] = 1;
+
+!
+!  Get the vd clipping rectangles and display the REGION in each
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then return .STAT;
+
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	!
+	!  
+	if not (STAT=$DRIVEDRAW(
+		 CHAN	= .VS$GW_VBCHAN
+		,SOURCE	= VSTA$K_COLOR_WHITE
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= DSC [9]
+		,DST	= .VSTA$A_FRAME_BUFFER [0]
+		,DSTOFX	= .RCS [3]
+		,DSTOFY	= .RCS [4]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! Reverse video
+		,PTHNUM	= 5
+		,PTHADR	= DSC [1]
+		,PATBLK	= DSC [9]
+		,PATSTA	= DSC [11]
+		,RECNUM = .RCS [5]
+		,RECADR = RCS [6]
+		,ASTADR = (
+				if (.RCS [0] eql RCSQ [0])
+
+				then VDC$$CURSOR_OPR_COMPLETE
+				else 0
+			   )
+		,ASTPRM = .RCSQ [0]
+		))
+	then return .STAT;
+
+	!
+	!  Next list
+	!
+	RCS = .NEXT_RCS;
+
+   end;
+
+
+
+return ss$_normal;
+
+end; 
+
+
+
+%sbttl  'VSTA$$VDS_SET_REGION_NOSHOW -- Shows region not potentially selectible'
+global routine VSTA$$VDS_SET_REGION_NOSHOW(
+				 VD_ID
+					):=
+!++
+!  Functional Description:
+!
+!---This routine set a shown region to noshow.  After it as performed the 
+!---task to the screen the VDB region control areas are cleared.
+!
+!
+begin
+
+local
+	 STAT
+	,VDB
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VDB))
+then return .STAT;
+
+!
+!  Call the internal routine to turn off the region
+!
+return VDC$$SET_REGION_NOSHOW( .VDB);
+
+end;
+
+
+
+%sbttl 'VSTA$$VDS_XOR_REGION_BOX -- Draws a box around region in reverse dst'
+global routine VSTA$$VDS_XOR_REGION_BOX(
+				 VD_ID
+					):=
+
+
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+CALLG(.AP,VDC$$XOR_REGION_BOX)
+
+end;
+
+
+
+
+%sbttl 'VDC$$XOR_REGION_BOX -- Draws a box around region in reverse dst'
+global routine VDC$$XOR_REGION_BOX(
+				 VDB: ref vdblock
+					):=
+!++
+!  Functional Description 
+!
+!  This routine just draws the region box.  If the box is already visible
+!  then it will be erased.  If no region is potentially selectible then
+!  the routine just returns
+!
+!--
+begin
+
+local
+	 STAT
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS	
+	,DSC		: ref vector [,long]
+	;
+
+!
+!  If there is not a visible region then just return
+!
+if not .VDB [VDB$V_REGION_ENABLE]
+then return ss$_normal;
+
+
+!
+!  Get the vd clipping rectangles and display the REGION in each
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then return .STAT;
+
+
+DSC = .VDB [VDB$A_REGION_DSC];
+
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	!
+	!  
+	if not (STAT=$DRIVEDRAW(
+		 CHAN	= .VS$GW_VBCHAN
+		,SOURCE	= VSTA$K_COLOR_WHITE
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= DSC [9]
+		,DST	= .VSTA$A_FRAME_BUFFER [0]
+		,DSTOFX	= .RCS [3]
+		,DSTOFY	= .RCS [4]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! Reverse video
+		,PTHNUM	= 5
+		,PTHADR	= DSC [1]
+		,PATBLK	= DSC [9]
+		,PATSTA	= DSC [11]
+		,RECNUM = .RCS [5]
+		,RECADR = RCS [6]
+		,ASTADR = (
+				if (.RCS [0] eql RCSQ [0])
+
+				then VDC$$CURSOR_OPR_COMPLETE
+				else 0
+			   )
+		,ASTPRM = .RCSQ [0]
+		))
+	then return .STAT;
+
+	!
+	!  Next list
+	!
+	RCS = .NEXT_RCS;
+
+   end;
+
+return ss$_normal;
+end;
+
+%sbttl 'VSTA$$VDS_HIDE_INDICATORS -- Hide graphics indicators'
+global routine VSTA$$VDS_HIDE_INDICATORS(
+				 VD_ID
+					):=
+
+
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+CALLG(.AP,VDC$$HIDE_INDICATORS)
+
+end;
+
+
+
+
+%sbttl 'VSTA$$VDS_SHOW_INDICATORS -- Show graphics indicators'
+global routine VSTA$$VDS_SHOW_INDICATORS(
+				 VD_ID
+					):=
+
+
+begin
+
+builtin
+	 AP
+	,CALLG
+	;
+
+local
+	 STAT
+	;
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER( .VD_ID, VD_ID))
+then return .STAT;
+
+!
+!  Call the internal version of this routine
+!
+CALLG(.AP,VDC$$SHOW_INDICATORS)
+
+end;
+
+
+
+
+global routine vdc$$hide_indicators
+!++
+! Functional description:
+!
+!	Call this routine in order to hide things like cursors and regions
+!	from display images.  This is needed when the image is to be acted
+!	upon with some operation when you don't want the cursors or regions
+!	to be affected.
+!
+!	This routine may be called multiple times for the same image.
+!
+! Formal parameters:
+ (
+	vdb : ref vdblock		! display involved
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s;
+!
+! If cursors are enabled and cycled on, turn them off.
+!
+	if .vdb[vdb$v_cursor_enable] and .vdb[vdb$v_cursor_cycle]
+	then
+
+	    begin
+
+	    if not (s = vdc$$turn_cursor_off (vdb[$base]))
+	    then return .s;
+!
+! Remember that cursor is actually still enabled.
+!
+	    vdb[vdb$v_cursor_enable] = 1;
+!
+! Remember that cursor is now cycled off.
+!
+	    vdb[vdb$v_cursor_cycle] = 0
+
+	    end;
+!
+! If region boxes are cycled on, turn them off.
+!
+	if .vdb[vdb$v_region_cycle]
+	then
+	    if not (s = vdc$$xor_region_box (vdb[$base]))
+	    then return .s
+	    else vdb[vdb$v_region_cycle] = 0;
+
+	ss$_normal
+
+	end;
+
+global routine vdc$$show_indicators
+!++
+! Functional description:
+!
+!	Call this routine in order to show things like cursors and regions
+!	after a display operation.
+!
+!	This routine may be called multiple times for the same image.
+!
+! Formal parameters:
+ (
+	vdb : ref vdblock		! display involved
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s;
+!
+! If cursors are enabled and cycled off, turn them on.
+!
+	if .vdb[vdb$v_cursor_enable] and not .vdb[vdb$v_cursor_cycle]
+	then
+
+	    begin
+!
+! Pretend cursor is off so routine that turns it on won't be upset.
+!
+	    vdb[vdb$v_cursor_enable] = 0;
+
+	    if not (s = vdc$$turn_cursor_on (vdb[$base]))
+	    then return .s;
+!
+! Remember that cursor is now cycled on.
+!
+	    vdb[vdb$v_cursor_cycle] = 1
+
+	    end;
+!
+! If region boxes are cycled off, turn them on.
+!
+	if not .vdb[vdb$v_region_cycle]
+	then
+	    if not (s = vdc$$xor_region_box (vdb[$base]))
+	    then return .s
+	    else vdb[vdb$v_region_cycle] = 1;
+
+	ss$_normal
+
+	end;
+
+%sbttl  'VDC$$SET_REGION_NOSHOW -- Shows region not potentially selectible'
+global routine VDC$$SET_REGION_NOSHOW(
+				 VDB		: ref vdblock
+					):=
+!++
+!  Functional Description:
+!
+!---This routine set a shown region to noshow.  After it as performed the 
+!---task to the screen the VDB region control areas are cleared.
+!
+!
+begin
+
+local
+	 STAT
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS	
+	,DSC		: ref vector [,long]
+	;
+
+!
+!  If there is not a visible region then just return
+!
+if not .VDB [VDB$V_REGION_ENABLE]
+then return ss$_normal;
+
+!
+!  Set the region switch off
+!
+VDB [VDB$V_REGION_ENABLE] = 0;
+
+DSC = .VDB [VDB$A_REGION_DSC];
+
+
+!
+! Get the vd clipping rectangles and display the REGION in each.
+! If no visible regions to display, return with a noop so that region memory
+! gets relinquished but not until previous region operation completes.
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then
+	begin
+!
+! Perform noop to wait for previous region operation to complete before
+! we relinquish memory.
+!
+	return $DRIVENOOP (
+	     CHAN	= .VS$GW_VBCHAN
+	    ,ASTADR	= VDC$$NOOP_REGION_COMPLETE
+	    ,ASTPRM	= DSC [0]
+	    )
+
+	end;
+!
+!  Let DSC [30] point at the RC list queue
+!
+DSC [30] = .RCSQ [0];
+
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	!
+	!  
+	if not (STAT=$DRIVEDRAW(
+		 CHAN	= .VS$GW_VBCHAN
+		,SOURCE	= VSTA$K_COLOR_WHITE
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= DSC [9]
+		,DST	= .VSTA$A_FRAME_BUFFER [0]
+		,DSTOFX	= .RCS [3]
+		,DSTOFY	= .RCS [4]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! Reverse video
+		,PTHNUM	= 5
+		,PTHADR	= DSC [1]
+		,PATBLK	= DSC [9]
+		,PATSTA	= DSC [11]
+		,RECNUM = .RCS [5]
+		,RECADR = RCS [6]
+		,ASTADR = (
+				if (.RCS [0] eql RCSQ [0])
+
+				then VDC$$SET_REGION_COMPLETE
+				else 0
+			   )
+		,ASTPRM = DSC [0]
+		))
+	then return .STAT;
+
+	!
+	!  Next list
+	!
+	RCS = .NEXT_RCS;
+
+   end;
+
+return ss$_normal;
+
+end;
+
+
+
+%sbttl  'VDC$$SET_REGION_COMPLETE -- Clean up after region action'
+global routine VDC$$SET_REGION_COMPLETE(
+				 DSC 	: ref vector [,long]
+					):=
+!++
+!  Functional Description:
+!
+!---This deallocates the VDC pointed to by the DSC [0] and the DSC 
+!
+!
+begin
+
+local
+	 BASE
+	,RCS 	: ref vector [,long]
+	,NEXT_RCS
+	;
+
+!
+!  Get pointer to rc list queue
+!
+RCS = .DSC [30];
+
+if .RCS gtr 0
+then begin
+	!
+	!  calculate the base of the list it no longer exists
+	!
+	BASE = .RCS [1];
+
+	until .RCS eql .BASE
+	do begin
+		NEXT_RCS = .RCS [0];
+		VS$$ACP_FREE_VM( RCS [2], RCS);
+		RCS = .NEXT_RCS;
+	   end;
+     end;
+
+VS$$ACP_FREE_VM ($EXTSYM (VSTA$L_128B_SIZE), DSC)
+
+end;
+
+
+
+%sbttl  'VDC$$NOOP_REGION_COMPLETE -- Clean up after null region action'
+global routine VDC$$NOOP_REGION_COMPLETE(
+				 DSC 	: ref vector [,long]
+					):=
+!++
+!  Functional Description:
+!
+!---This deallocates the DSC.  This version is only used if there was
+!	no region to actually delete.  We're called at the end of a noop
+!	function executed for the purpose of waiting for a previous actual
+!	region operation to complete.
+!
+!
+begin
+
+VS$$ACP_FREE_VM ($EXTSYM (VSTA$L_128B_SIZE), DSC)
+
+end;
+
+
+
+%sbttl  'VSTA$$VDS_REDISP_VD -- REdisplay vd in object with rectangles'
+global routine VSTA$$VDS_REDISP_VD(
+				 VD_ID
+				,RC_ADDR	: ref vector [,word]
+				,RC_COUNT
+				,ROUTIN
+				,ARGLST
+				 ):=
+!++
+!  Functional Description
+!
+!---This routine will redisplay the portions of a vd inside the rectangles 
+!   specified in the rectangle list.  Routin is a display vd routine which
+!---will redisplay the vd in a given object.
+!
+!  Formal Parameters
+!
+!	VD_ID	Virtual Display id
+!	RC_ADDR		Address of a rectangle list to redisplay vd in
+!	RC_COUNT	Number of rectangles in the list
+!	ROUTIN		Routine to dispatch the display request to
+!	ARGLST		Dynamic arguments to pass to the routine 
+!
+!  Side Effects
+!
+!---This routine will set up a rectangle list in the vdb which the Stage text
+!   routine will use to clip redisplayed text to.  Also the routine and its
+!   arguments will be put into the vdb which will signal disp vd to call the
+!---routine with the appropriate routine with the given arguments.
+!
+!--
+begin
+
+builtin
+	 ACTUALCOUNT
+	;
+
+local
+	 STAT
+	,VDB		: ref vdblock
+	,SAVED_VD_RCQ_BASE: vector [2,long]
+	,SAVED_VD_RCQ_STATE
+	,SAVED_CURSOR_STATE
+	,RCSQ		: vector [2,long]
+	,RCS		: ref vector [,long]
+	,NEXT_RCS
+	,VD_REC		: vector [4,word]
+	,REDISP_ALL 	: initial (0)
+	,DUMMY
+	;
+
+
+!
+!  Find the VDB
+!
+if not (STAT = VS$$VDS_VD_POINTER(.VD_ID, VDB))
+then return .STAT;
+
+!
+!  Purge old rectangle list for this vd and get new one
+!
+VDC$$PURGE_VD_RC_LISTS( .VDB);
+
+
+!
+!  If the rectangle list passed is null then make it the one rectangle the
+!  size of the vd
+!
+if .RC_COUNT leq 0
+then begin
+	REDISP_ALL = 1;
+	RC_COUNT = 1;
+	VD_REC [0] = 0;
+	VD_REC [1] = 0;
+	VD_REC [2] = .VDB [VDB$W_WIDTH];
+	VD_REC [3] = .VDB [VDB$W_HEIGHT];
+	RC_ADDR = VD_REC;
+     end;
+
+
+!
+!  Set up the VDB with the routine to dispatch to
+!
+VDB [VDB$A_REDISP_ROUTINE] = .ROUTIN;
+
+!
+!  Build the argument block in the argument list given to this routine
+!
+ROUTIN = ACTUALCOUNT() - 4;
+VDB [VDB$A_REDISP_ARGBLOCK] = ROUTIN;
+
+!
+!  Now get the partial vd display rectangles
+!
+if (STAT=VDC$$COPY_VD_RC_LISTS( .VDB, RCSQ)) neq 1
+then begin
+	!
+	!  If there are none then clean up and purge the null lists from
+	!  the vd data base
+	!
+	VDB [VDB$A_REDISP_ROUTINE] = 0;
+	VDC$$PURGE_VD_RC_LISTS( .VDB);
+	return .STAT;
+     end;
+
+!
+!  Call routine which will turn off any potentially selectible region
+!  for this instance of the vd
+!
+VDC$$XOR_REGION_BOX( .VDB);
+
+!
+!  if the cursor is on then turn it off save the state to turn it back on
+!  at the end
+!
+if (SAVED_CURSOR_STATE=.VDB [VDB$V_CURSOR_ENABLE]) 
+then VDC$$TURN_CURSOR_OFF( .VDB);
+
+!
+!  For each list of rectangles in the RCAQ get either backing store or background
+!
+RCS = .RCSQ [0];
+
+until .RCS eql RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	incr I from 0 to .RC_COUNT*4 - 4 by 4
+	do begin
+		!
+		!  Is this a graphics display.  If so then copy backing store 
+		!  screen clipped by the rectangle list
+		!
+		if .VDB [VDB$V_GRAPHICS_EXIST]
+		then begin
+			$DRIVECOPY(
+				 CHAN	= .VS$GW_VBCHAN
+				,SRCTYP	= VSTA$K_SRC_BM
+				,SOURCE	= .VDB [VDB$A_BITMAP_DESCRIPTOR]
+				,SRCOFX = .RC_ADDR [.I] 
+				,SRCOFY	= .RC_ADDR [.I + 1]
+				,MSKTYP = VSTA$K_MSK_RECTANGLE
+				,MASK	= RC_ADDR [.I + 2]
+				,DST	= .VSTA$A_FRAME_BUFFER [0]
+				,DSTOFX = .RC_ADDR [.I] + .RCS [3]
+				,DSTOFY	= .RC_ADDR [.I + 1] + .RCS [4]
+				,RECNUM = .RCS [5]
+				,RECADR	= RCS [6]
+				,ASTADR = (if 
+						(.RCS [0] eql RCSQ [0])
+							and
+						(.I eql .RC_COUNT*4 - 4)
+
+					   then VSTA$$VDS_REDISP_COMPLETE
+					   else 0)
+				,ASTPRM = .RCSQ [0]
+				)
+		     end
+		else begin
+			$DRIVEBACK(
+				 CHAN	= .VS$GW_VBCHAN
+				,COLOR	= .VDB [VDB$W_BACKGROUND]
+				,OFFX	= .RC_ADDR [.I] + .RCS [3]
+				,OFFY	= .RC_ADDR [.I + 1] + .RCS [4]
+				,WIDTH	= .RC_ADDR [.I + 2]
+				,HEIGHT	= .RC_ADDR [.I + 3]
+				,DST	= .VSTA$A_FRAME_BUFFER [0]
+				,RECNUM	= .RCS [5]
+				,RECADR	= RCS [6]
+				,ASTADR = (if 
+						(.RCS [0] eql RCSQ [0])
+							and
+						(.I eql .RC_COUNT*4 - 4)
+
+					   then VSTA$$VDS_REDISP_COMPLETE
+					   else 0)
+				,ASTPRM = .RCSQ [0]
+				);
+		     end;
+
+	   end; ! for each rectangle to be redisplayed !
+
+	RCS = .NEXT_RCS;
+
+   end; ! for each list of the vd !
+
+
+!
+!  Call routine which will turn on any potentially selectible region
+!  for this instance of the vd if it was on at the start of this routine
+!
+VDC$$XOR_REGION_BOX( .VDB);
+
+
+!
+!  Now if text exists then set up the vdb with a redisplay rectangle list
+!  Which will be read by STAGE_TEXT and perhaps the text services: to be used
+!  to clip the text on the screen
+!
+if .VDB [VDB$V_TEXT_EXIST]
+then begin
+
+	if .REDISP_ALL
+	then RC_COUNT = 0;
+
+	VDB [VDB$A_REDISP_RECTANGLES] = .RC_ADDR;
+	VDB [VDB$L_REDISP_RC_COUNT] = .RC_COUNT;
+
+	STAT=VS$$TXT_DISPLAYALLTEXT( .VD_ID);
+
+	VDB [VDB$A_REDISP_RECTANGLES] = 0;
+	VDB [VDB$L_REDISP_RC_COUNT] = 0;
+
+     end;
+
+
+if .VDB [VDB$b_mode] eql 1
+then begin
+
+	if .REDISP_ALL
+	then RC_COUNT = 0;
+
+	VDB [VDB$A_REDISP_RECTANGLES] = .RC_ADDR;
+	VDB [VDB$L_REDISP_RC_COUNT] = .RC_COUNT;
+
+	STAT=vt$$dt_redisplay_vd(.vd_id);
+
+	VDB [VDB$A_REDISP_RECTANGLES] = 0;
+	VDB [VDB$L_REDISP_RC_COUNT] = 0;
+
+     end;
+
+!
+!  if the cursor is on then turn it off save the state to turn it back on
+!  at the end
+!
+if .SAVED_CURSOR_STATE
+then VDC$$TURN_CURSOR_ON( .VDB);
+
+!
+!  PUrge the partial display rectangles
+!
+VDC$$PURGE_VD_RC_LISTS( .VDB);
+
+VDB [VDB$A_REDISP_ROUTINE] = 0;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+%sbttl  'VSTA$$VDS_REDISP_COMPLETE -- Clean up routine for redisp_vd'
+global routine VSTA$$VDS_REDISP_COMPLETE( RCS: ref vector [,long], STATUS):=
+!++
+!  Functional Description
+!
+!  Cleans up the VDC generated in the above routine
+!
+!--
+begin
+local
+	 BASE
+	,NEXT_RCS
+	;
+
+!
+!  Base gets the address of base of the queue.  Note that the base no longer
+!  exists but that the queue is still pointing to it
+!
+BASE = .RCS [1];
+
+until .RCS eql .BASE
+do begin
+	NEXT_RCS = .RCS [0];
+	VS$$ACP_FREE_VM( RCS [2], RCS);
+	RCS = .NEXT_RCS;	
+   end;
+
+return ss$_normal;
+end;
+
+
+
+%sbttl  'VSTA$$VDS_SCROLL_TEXT -- Multi rectangle scrolling service'
+global routine VSTA$$VDS_SCROLL_TEXT(
+				 VDB		: ref vdblock
+				,CLIP_RCSQ	: ref vector [,long]
+				,X_FROM		: signed
+				,Y_FROM		: signed
+				,WIDTH
+				,HEIGHT
+				,X_TO		: signed
+				,Y_TO		: signed
+				) =
+!
+!  Functional Description
+!
+!  This routine performs proper text scrolling for a vd that is not
+!  totally visible in all cases
+!
+!
+begin
+
+builtin
+	 insque
+	,remque
+	;
+
+local
+	 SRC_RC		: vector [4,word,signed]
+	,SRC_RCSQ	: vector [2,long]
+	,TXT_RCSQ	: vector [2,long] 
+	,TXT_RCS	: ref vector [,long]
+	,TXT_REC_LIST	: ref vector [,word,signed]
+	,TXT_REC_INDEX
+	,DY		: signed
+	,RCS		: ref vector [,long]
+	,NEXT_RCS
+	;
+
+!
+!  Init the text recovery rectangle lists queue
+!
+TXT_RCSQ [0] = TXT_RCSQ [0];
+TXT_RCSQ [1] = TXT_RCSQ [0];
+
+DY = .Y_TO - .Y_FROM;
+
+!
+!  Determine the scroll rectangle.  This is the source rectangle union the
+!  The destination rectangle
+!
+if .DY lss 0 
+then begin
+	!
+	!  Scroll in upward direction
+	!
+	SRC_RC [0] = .X_FROM;
+	SRC_RC [1] = .Y_TO;
+	SRC_RC [2] = .WIDTH;
+	SRC_RC [3] = .HEIGHT - .DY;
+     end
+else begin
+	!
+	!  Scroll in downward dirction
+	!
+	SRC_RC [0] = .X_FROM;
+	SRC_RC [1] = .Y_FROM;
+	SRC_RC [2] = .WIDTH;
+	SRC_RC [3] = .HEIGHT + .DY;
+     end;
+
+!
+!  Intersect the source rectangle with the vd clipping rectangles
+!
+VSTA$$RCS_INTER_LIST_WITH_LISTS( 1, SRC_RC [0], .CLIP_RCSQ, SRC_RCSQ [0]);
+
+!
+!  If the result is null then just return
+!
+if .SRC_RCSQ [0] eql SRC_RCSQ [0]
+then return SS$_NORMAL;
+
+!
+!  Now for each clipping rectangle list 
+!
+RCS = .SRC_RCSQ [0];
+
+until .RCS eql SRC_RCSQ [0]
+do begin
+
+	bind 
+		 SRC_RCS = RCS [6]: vector [,word,signed]
+		;
+
+	!
+	!  Get vm for text recovery rectangles
+	!
+	VS$$ACP_GET_VM( RCS [2], TXT_RCS);
+	TXT_RCS [2] = .RCS [2];
+	TXT_RCS [3] = .RCS [3];
+	TXT_RCS [4] = .RCS [4];
+	TXT_RCS [5] = .RCS [5];
+	TXT_REC_LIST = TXT_RCS [6];
+	TXT_REC_INDEX = 0;
+
+	!
+	!  Put the new list in the TXT_RCSQ
+	!
+	insque( TXT_RCS [0], .TXT_RCSQ [1]);
+
+	!
+	!  Process each scrolling rectangle.  MOve the region up by 
+	!  .DY distance: NOte .DY may be negative.
+	!
+	incr I from 0 to (.RCS [5] - 1) * 4 by 4
+	do begin
+	
+ 
+		!
+		!  Move the region desired
+		!
+		$DRIVECOPY(
+			 CHAN	= .VS$GW_VBCHAN
+			,SRCTYP = VSTA$K_SRC_BM
+			,SOURCE	= .VSTA$A_FRAME_BUFFER [0]
+			,SRCOFX = .SRC_RCS [.I]
+			,SRCOFY = .SRC_RCS [.I + 1] 
+			,MSKTYP	= VSTA$K_MSK_RECTANGLE
+			,MASK	= SRC_RCS [.I + 2]
+			,DST	= .VSTA$A_FRAME_BUFFER [0]
+			,DSTOFX	= .SRC_RCS [.I]
+			,DSTOFY	= .SRC_RCS [.I + 1] + .DY
+			,RECNUM	= 1
+			,RECADR	= SRC_RCS [.I]
+		  );
+
+		!
+		!  Determine the rectangle to fill with text if there is
+		!  one.  Determine the direction of the scroll first.
+		!
+		if .DY lss 0
+		then begin	! Scroll was in the upward direction.
+			
+			!
+			!  Was the source rectangle clipped on the bottom
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX] = .SRC_RCS [.I];
+			TXT_REC_LIST [.TXT_REC_INDEX + 2] = .SRC_RCS [.I + 2];
+
+			!
+			!  Determine the depth of the text recovery rectangle
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX + 3] = 
+					MIN(-.DY,.SRC_RCS [.I + 3]);
+
+			!
+			!  Now determine the y offset of the rectangle
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX + 1] = 
+					.SRC_RCS [.I + 1] +
+					.SRC_RCS [.I + 3] -
+					.TXT_REC_LIST [.TXT_REC_INDEX + 3];
+
+			!
+			!  If the text recovery rectangle is at the bottom of the
+			!  source rectangle then don't recover the text in it.
+			!
+			if (.TXT_REC_LIST [.TXT_REC_INDEX + 1] + 
+			    .TXT_REC_LIST [.TXT_REC_INDEX + 3]) eql
+			   (.SRC_RC [1] + .SRC_RC [3] + .TXT_RCS [4]) 
+			then begin
+				TXT_REC_INDEX = .TXT_REC_INDEX - 4;
+				TXT_RCS [5] = .TXT_RCS [5] - 1;
+			     end;
+
+		     end
+		else begin	! Scrolling was downward.
+			!
+			!  Was the source rectangle clipped on the bottom
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX] = .SRC_RCS [.I];
+			TXT_REC_LIST [.TXT_REC_INDEX + 2] = .SRC_RCS [.I + 2];
+
+			!
+			!  Determine the depth of the text recovery rectangle
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX + 3] = 
+					MIN(.DY,.SRC_RCS [.I + 3]);
+
+			!
+			!  Now determine the y offset of the rectangle
+			!
+			TXT_REC_LIST [.TXT_REC_INDEX + 1] = 
+					.SRC_RCS [.I + 1];
+
+
+			!
+			!  If the text recovery rectangle is at the top of the
+			!  source rectangle then don't recover the text in it.
+			!
+			if .TXT_REC_LIST [.TXT_REC_INDEX+1] eql 
+				(.SRC_RC [1] + .TXT_RCS [4])
+			then begin
+				TXT_REC_INDEX = .TXT_REC_INDEX - 4;
+				TXT_RCS [5] = .TXT_RCS [5] - 1;
+			     end;
+
+		     end;
+
+		!
+		!  Now increment the recovery rectangle pointer
+		!
+		TXT_REC_INDEX = .TXT_REC_INDEX + 4;
+
+	   end;	! End of processing each rectangle in list !
+	!
+	!  If no rectangles resulted the remove this list from the queue
+	!  and deallocate the memory for it
+	!
+	if .TXT_REC_INDEX eql 0
+	then begin
+		local RL: ref vector [,long];
+
+		REMQUE( .TXT_RCSQ [1], RL);
+		VS$$ACP_FREE_VM( RL [2], RL);
+
+	     end;
+
+	!
+	!  Next list
+	!
+	RCS = .RCS [0];
+
+   end;	! End of processing each rectangle list for the vd !
+
+
+!
+!  If the scroll queue is not empty then redisplay the text
+!
+if .TXT_RCSQ [0] neq TXT_RCSQ [0]
+then begin
+	VDB [VDB$V_SCROLL_IN_PROGRESS] = 1;
+	VDB [VDB$A_REDISP_RECTANGLES] = TXT_RCSQ;
+	VS$$TXT_DISPLAYALLTEXT(.VDB [VDB$_VD_ID]);
+
+	!
+	!  Now we need to deallocate the TXT_RCSQ lists
+	!
+	RCS = .TXT_RCSQ [0];
+	until .RCS eql TXT_RCSQ [0]
+	do begin
+		NEXT_RCS = .RCS [0];
+		VS$$ACP_FREE_VM( RCS [2], RCS);
+		RCS = .NEXT_RCS;
+	   end;
+     end;
+
+!
+!  Now deallocate the source rcs queue lists
+!
+RCS = .SRC_RCSQ [0];
+until .RCS eql SRC_RCSQ [0]
+do begin
+	NEXT_RCS = .RCS [0];
+	VS$$ACP_FREE_VM( RCS [2], RCS);
+	RCS = .NEXT_RCS;
+   end;
+
+
+VDB [VDB$L_REDISP_RC_COUNT] = 0;
+VDB [VDB$V_SCROLL_IN_PROGRESS] = 0;
+
+return ss$_normal;
+
+end;
+
+
+
+
+
+
+%sbttl	'VS$$VDS_FINAL_DECISIONS -- DONE_IO or not?'
+global routine VS$$VDS_FINAL_DECISIONS  =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns "true" if all the QIO ASTs have completed, 
+!	otherwise returns "false".
+!	Checks whether VS$A_IRP contains a system address (IRP) or not
+!	(INT), and enters Kernel mode (IRP) or not (INT) to examine
+!	the COUNT and synchronization bits there.
+!
+! FORMAL PARAMETERS:
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	VS$A_IRP contains the address of the current IRP, or, if this 
+!	request reflects an internal request, the current INT.
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	TRUE or FALSE
+!
+! SIDE EFFECTS:
+!
+!	Goes into Kernel mode if we are dealing with an IRP.
+!
+!--
+
+    begin
+
+    local
+	INT:ref block [0,byte],
+	STAT;					! Temporary return values
+
+!
+! See whether we have an IRP or an INT
+!
+	INT = .VS$A_IRP;
+	if .INT lss 0 then 	! If<0, then it's a S0 IRP
+		return $CMKRNL (routin=VS$$VDS_FINAL_DECISIONS_K);
+
+!
+! Call VS$$VDS_SOBGTR to see if all the ASTs have already completed. 
+!
+	return VS$$VDS_SOBGTR ( INT [INT$L_IIP_COUNT] ); ! Address of field
+
+    end;			!End of VS$$VDS_FINAL_DECISIONS
+
+%sbttl	'VS$$VDS_FINAL_DECISIONS_K -- DONE_IO or not? K mode'
+routine VS$$VDS_FINAL_DECISIONS_K   =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns "true" if all the QIO ASTs have completed, 
+!	otherwise returns "false".
+!
+! FORMAL PARAMETERS:
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	VS$A_IRP contains the address of the current IRP.
+! 	Called in KERNEL mode.
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	TRUE or FALSE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    local
+	STAT;					! Temporary return values
+
+!
+! Call VS$$VDS_SOBGTR to see if all the ASTs have already completed. 
+!
+	return VS$$VDS_SOBGTR ( VS$A_IRP [IRP$L_IIP_COUNT] ); ! Address of field
+
+    end;			!End of VS$$VDS_FINAL_DECISIONS_K
+
+%sbttl	'VS$$VDS_CREATE_INT  --  Internal Request Creation'
+global routine VS$$VDS_CREATE_INT ( ROUTN, P1,P2,P3,P4,P5,P6,P7,P8,P9,P10,
+					P11,P12 ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by AST routines in response to mouse interrupts, for example.
+!	Creates and intializes an INT block.
+!	Checks its argument block to see how many parameters were actually
+!	passed to it, and stores those parameters in the INT.
+!	Does not queue the INT block to the INTQ.
+!
+! FORMAL PARAMETERS:
+!	ROUTN		Address of the routine to be called
+!	P1 - P12	Parameters to pass ROUTN
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    builtin
+	AP;
+
+    local
+	INT:ref block [0,byte],
+	SIZE,
+	NUM,
+	STAT;					! Temporary return values
+
+	NUM = ((..AP) - 1);			! Number of Parameters
+	SIZE = INT$K_HEADER_LEN + (4*.NUM);
+	if (not (STAT=VS$$ACP_GET_VM ( SIZE, INT))) then return .STAT;
+
+	INT [INT$W_SIZE] = .SIZE;
+	INT [INT$B_TYPE] = VS$K_INT_TYPE;
+	INT [INT$V_DONE_IO_MEXCLF] = 0;
+	INT [INT$V_DONE_IO_REQUEST] = 0;
+	INT [INT$L_IIP_COUNT] = 1;	! Offset count for synchronization
+	INT [INT$L_IOST1] = 0;
+	INT [INT$L_IOST2] = 0;
+	INT [INT$A_ROUTINE] = .ROUTN;
+	INT [INT$L_ARGLIST] = .NUM;
+
+	incr I from 1 to .NUM do
+		begin	! Parameters
+		(INT [INT$L_P1] + (4*(.I-1)) ) = .(P1 + (4*(.I-1)) );
+		end;	! Parameters
+
+    return SS$_NORMAL;
+    end;			!End of VS$$VDS_CREATE_INT
+
+%sbttl	'VS$$VDS_CREATE_INT_NOPARAMS  --  Internal Request Packet'
+routine VS$$VDS_CREATE_INT_NOPARAMS ( ROUTN, NUM_PARAMS, INT_ADDR ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates and intializes an INT block.
+!	The caller must store the parameter values in the block.
+!
+! FORMAL PARAMETERS:
+!	ROUTN		Address of the routine to be called
+!	NUM_PARAMS	Number of parameters to be passed to the routine
+!	INT_ADDR	Address of the INT block (returned to caller)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    local
+	INT:ref block [0,byte],
+	SIZE,
+	STAT;					! Temporary return values
+
+	SIZE = INT$K_HEADER_LEN + (4 * .NUM_PARAMS) + 4;
+	if (not (STAT=VS$$ACP_GET_VM ( SIZE, INT))) then return .STAT;
+
+	INT [INT$W_SIZE] = .SIZE;
+	INT [INT$B_TYPE] = VS$K_INT_TYPE;
+	INT [INT$V_DONE_IO_MEXCLF] = 0;
+	INT [INT$V_DONE_IO_REQUEST] = 0;
+	INT [INT$L_IIP_COUNT] = 1;	! Offset count for synchronization
+	INT [INT$L_IOST1] = 0;
+	INT [INT$L_IOST2] = 0;
+	INT [INT$A_ROUTINE] = .ROUTN;
+	INT [INT$L_ARGLIST] = .NUM_PARAMS;
+
+    .INT_ADDR = .INT;		! Return address of block to caller
+
+    return SS$_NORMAL;
+    end;			!End of VS$$VDS_CREATE_INT_NOPARAMS
+
+%sbttl	'VS$$VDS_QUEUE_INT  --  Internal Request Creation and Queueing'
+global routine VS$$VDS_QUEUE_INT ( ROUTN, P1,P2,P3,P4,P5,P6,P7,P8,P9,P10,
+					P11,P12 ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by AST routines in response to mouse interrupts, for example.
+!	Creates and intializes an INT block.
+!	Checks its argument block to see how many parameters were actually
+!	passed to it, and stores those parameters in the INT.
+!	Queues the INT block to the INTQ for processing at process level.
+!
+! FORMAL PARAMETERS:
+!	ROUTN		Address of the routine to be called
+!	P1 - P12	Parameters to pass ROUTN
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    builtin
+	AP;
+
+    local
+	INT:ref block [0,byte],
+	SIZE,
+	NUM,
+	STAT;					! Temporary return values
+
+	NUM = ((..AP) - 1);			! Number of Parameters
+	SIZE = INT$K_HEADER_LEN + (4*.NUM) + 4;
+	if not (STAT=VS$$ACP_GET_VM ( SIZE, INT))
+		then return $sysres	(vsta$_getmem
+					,integer_type, .size
+					,string_type, %ASCID 'INT block'
+					);
+
+	INT [INT$W_SIZE] = .SIZE;
+	INT [INT$B_TYPE] = VS$K_INT_TYPE;
+	INT [INT$V_DONE_IO_MEXCLF] = 0;
+	INT [INT$V_DONE_IO_REQUEST] = 0;
+	INT [INT$L_IIP_COUNT] = 1;	! Offset count for synchronization
+	INT [INT$L_IOST1] = 0;
+	INT [INT$L_IOST2] = 0;
+	INT [INT$A_ROUTINE] = .ROUTN;
+	INT [INT$L_ARGLIST] = .NUM;
+
+	incr I from 1 to .NUM do
+		begin	! Parameters
+		(INT [INT$L_P1] + (4*(.I-1)) ) = .(P1 + (4*(.I-1)) );
+		end;	! Parameters
+
+    VS$$ACP_ENQUEUE_INT ( .INT );		! Put it in at the tail of INTQ
+
+    return SS$_NORMAL;
+  end;
+
+%sbttl	'VS$$VDS_QUEUE_INT_HIPQ  --  Internal Request Creation and Queueing'
+global routine VS$$VDS_QUEUE_INT_HIPQ ( ROUTN, P1,P2,P3,P4,P5,P6,P7,P8,P9,P10,
+					P11,P12 ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by AST routines in response to mouse interrupts, for example.
+!	Creates and intializes an INT block.
+!	Checks its argument block to see how many parameters were actually
+!	passed to it, and stores those parameters in the INT.
+!	Queues the INT block to the INTQ for processing at process level.
+!
+! FORMAL PARAMETERS:
+!	ROUTN		Address of the routine to be called
+!	P1 - P12	Parameters to pass ROUTN
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    builtin
+	AP;
+
+    local
+	INT:ref block [0,byte],
+	SIZE,
+	NUM,
+	STAT;					! Temporary return values
+
+	NUM = ((..AP) - 1);			! Number of Parameters
+	SIZE = INT$K_HEADER_LEN + (4*.NUM) + 4;
+	if not (STAT=VS$$ACP_GET_VM ( SIZE, INT))
+		then return $sysres	(vsta$_getmem
+					,integer_type, .size
+					,string_type, %ASCID 'INT block'
+					);
+
+	INT [INT$W_SIZE] = .SIZE;
+	INT [INT$B_TYPE] = VS$K_INT_TYPE;
+	INT [INT$V_DONE_IO_MEXCLF] = 0;
+	INT [INT$V_DONE_IO_REQUEST] = 0;
+	INT [INT$L_IIP_COUNT] = 1;	! Offset count for synchronization
+	INT [INT$L_IOST1] = 0;
+	INT [INT$L_IOST2] = 0;
+	INT [INT$A_ROUTINE] = .ROUTN;
+	INT [INT$L_ARGLIST] = .NUM;
+
+	incr I from 1 to .NUM do
+		begin	! Parameters
+		(INT [INT$L_P1] + (4*(.I-1)) ) = .(P1 + (4*(.I-1)) );
+		end;	! Parameters
+
+    VS$$ACP_ENQUEUE_INT_HIPQ ( .INT );		! Put it in at the tail of INTQ
+
+    return SS$_NORMAL;
+    end;			!End of VS$$VDS_QUEUE_INT_HIPQ
+
+%sbttl	'VS$$VDS_SYNCHRONIZE_VD -- Queues INT to HIPQ or calls routine'
+global routine VS$$VDS_SYNCHRONIZE_VD ( VDID, IRP_ADDR, ROUTN, P1,P2,P3,P4,
+				P5,P6,P7,P8,P9,P10,P11,P12 ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by all routines to synchronize access to the VD's database.
+!	Checks to see whether this VD is blocked by other activity, and
+!	if so, creates and intializes and queues an INT block.  (Note that
+!	this can happen only at AST level.)
+!	Also checks to see whether the High Priority INT Queue has any VDs
+!	in it.  If this request is at AST level and the HIPQ is non-empty,
+!	some of those requests might be for this VD, so we make an INT and
+!	Queue it to the HIPQ, instead of processing it out of order.
+!	If the VD is not blocked, we call the specified routine, either at
+!	AST level, or, at process level, whichever we are at at the moment.
+!
+! FORMAL PARAMETERS:
+!	VDID		ID of the VD
+!	IRP_ADDR	Address of the INT or IRP, or 0 if this is at AST level
+!	ROUTN		Address of the routine to be called
+!	P1 - P12	Parameters to pass ROUTN
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    builtin
+	CALLG,
+	AP;
+
+    local
+	VDB:ref vdblock,
+	INT:ref block [0,byte],
+	ROUTN_HOLDER,
+	IRP_HOLDER,
+	SIZE,
+	NUM,
+	STAT,
+	S,
+	AST_LEVEL:byte;
+
+	NUM = ((..AP) - 3);			! Number of Parameters
+
+!
+! If the vd id is 0 then just call routine directly
+!
+	if .VDID eql 0
+	then begin
+	    	ROUTN_HOLDER = .ROUTN;		! Remember the address
+		ROUTN = .NUM;			! Make an Argument List on stack
+		RETURN (CALLG ( ROUTN, .ROUTN_HOLDER )); ! Really [Arglist,Routine_addr]
+	     end;
+!
+! Find the VDB
+!
+	if (not (STAT=VS$$VDS_VD_POINTER(.VDID,VDB))) 
+			then return vsta$$error(.stat);
+
+!
+! If at AST level, put in HIPQ
+!
+	if (not (STAT=VS$$ACP_AST_LEVEL (AST_LEVEL)))
+			then return vsta$$error(.STAT);
+	
+	if (.AST_LEVEL neq 0) then	! AST level: put in HIPQ
+	    begin		! AST level
+
+		if (not (STAT=VS$$VDS_CREATE_INT_NOPARAMS ( .ROUTN, .NUM, INT )))
+			then return (.STAT);
+		incr I from 1 to .NUM do
+			begin	! Parameters
+			(INT [INT$L_P1] + (4*(.I-1)) ) = .(P1 + (4*(.I-1)) );
+			end;	! Parameters
+		VS$$ACP_ENQUEUE_INT_HIPQ ( .INT );	! Put it in the High Priority Queue
+		if (.VS$A_IRP eql 0) then $WAKE();	! Might be $HIBERnating
+		return SS$_NORMAL;
+
+	    end			! AST level
+
+	else
+	    begin		! Process level
+!	    VDB [VDB$W_BLOCKS] = .VDB [VDB$W_BLOCKS] + 1;! Block further interruptions
+	    ROUTN_HOLDER = .ROUTN;		! Remember the address
+	    ROUTN = .NUM;			! Make an Argument List on stack
+
+	    STAT = CALLG ( ROUTN, .ROUTN_HOLDER ); ! Really [Arglist,Routine_addr]
+
+!	    VDB [VDB$W_BLOCKS] = .VDB [VDB$W_BLOCKS] - 1;! Allow further interruptions
+	    VDB [VDB$W_BLOCKS] = 0;
+
+	    return .STAT;
+
+	    end;		! Process level
+
+    end;			!End of VS$$VDS_SYNCHRONIZE_VD	
+
+%sbttl	'VS$$VDS_SYNCHRONIZE_ECHO -- Creates,Queues INT to HIPQ for ECHO'
+global routine VS$$VDS_SYNCHRONIZE_ECHO ( VDID, ROUTN,
+				STRING_ADDR, STRING_LEN ) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by VKB echo routines to synchronize access to the VD's database.
+!	Creates and intializes and queues an INT block.  (Note that
+!	this can happen only at AST level.)  Copies the echo string into the 
+!	INT. 
+!
+! FORMAL PARAMETERS:
+!	VDID		ID of the VD
+!	ROUTN		Address of the routine to be called
+!	STRING_ADDR	Address of the character string to be echoed
+!	STRING_LEN	Number of bytes to echo.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    literal
+	TEMP_STRING_SIZE = 128;
+    own
+	TEMP_STRING_BUFFER : vector[TEMP_STRING_SIZE,byte];
+    local
+	VDB:ref vdblock,
+	INT:ref block [0,byte],
+	SIZE,
+	STAT,
+	AST_LEVEL:byte;
+
+!
+! Find the VDB
+!
+	if (not (STAT=VS$$VDS_VD_POINTER(.VDID,VDB))) 
+			then return vsta$$error(.stat);
+
+	if (not (STAT=VS$$ACP_AST_LEVEL (AST_LEVEL)))
+			then return vsta$$error(.STAT);
+	
+	if (.AST_LEVEL neq 0) then	! AST level: put in HIPQ
+	    begin		! AST level
+	!
+	! Get an INT big enough to hold the string
+	!
+		SIZE = INT$K_HEADER_LEN + (7*4) + .STRING_LEN;
+		if not (STAT=VS$$ACP_GET_VM ( SIZE, INT))
+		  then return $sysres	(vsta$_getmem
+					,integer_type, .size
+					,string_type, %ASCID 'INT block'
+					);
+	
+		INT [INT$W_SIZE] = .SIZE;
+		INT [INT$B_TYPE] = VS$K_INT_TYPE;
+		INT [INT$V_DONE_IO_MEXCLF] = 0;
+		INT [INT$V_DONE_IO_REQUEST] = 0;
+		INT [INT$L_IIP_COUNT] = 1;	! Offset count for synchronization
+		INT [INT$L_IOST1] = 0;
+		INT [INT$L_IOST2] = 0;
+		INT [INT$A_ROUTINE] = VSTA$$ODRV_WRITE;
+		INT [INT$L_ARGLIST] = 6;
+		INT [INT$L_P1] = .VDID;
+		INT [INT$L_P2] = 0;
+		INT [INT$L_P3] = 0;
+		INT [INT$L_P4] = .STRING_LEN;
+		INT [INT$L_P5] = INT [INT$L_P7];
+		INT [INT$L_P6] = .ROUTN;
+	!
+	! Copy the string
+	!
+		CH$MOVE (	.STRING_LEN,		! How many bytes
+				.STRING_ADDR,		! Source address
+				INT [INT$L_P7]		! Destination address
+			);
+	!
+	! Queue it up, wake up the ACP, if necessary, and return
+	!
+		VS$$ACP_ENQUEUE_INT_HIPQ ( .INT );	! Put it in the High Priority Queue
+
+		if (.VS$A_IRP eql 0) then $WAKE();	! Might be $HIBERnating
+		return SS$_NORMAL;
+	    end
+	else 
+		if .STRING_LEN leq TEMP_STRING_SIZE then
+		  begin
+		    CH$MOVE(
+			.STRING_LEN,
+			.STRING_ADDR,
+			TEMP_STRING_BUFFER);
+		    return VSTA$$ODRV_WRITE( .VDID, 0, 0, .STRING_LEN, 
+					TEMP_STRING_BUFFER, .ROUTN);
+
+		  end
+		else
+		  begin
+		    if not (STAT=VS$$ACP_GET_VM ( STRING_LEN, INT))
+		      then return $sysres	(vsta$_getmem
+					,integer_type, .size
+					,string_type, %ASCID 'INT block'
+					);
+		    CH$MOVE(
+			.STRING_LEN,
+			.STRING_ADDR,
+			.INT);
+		    STAT = VSTA$$ODRV_WRITE( .VDID, 0, 0, .STRING_LEN, 
+					.INT, .ROUTN);
+		    VS$$ACP_FREE_VM( STRING_LEN, INT);
+		    return .STAT;
+		  end;
+
+    end;			!End of VS$$VDS_SYNCHRONIZE_ECHO
+
+
+
+
+
+
+
+
+
+%SBTTL	'VSTA$$VDS_IRP_IRCNT - INCREMENT IRP IIP COUNT'
+global routine VSTA$$VDS_IRP_IRCNT
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine takes the address of an irp and increments its iip reference
+!---count
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 irp: REF BLOCK [,BYTE]
+	):
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+	NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---This routine must run in KERNAL MODE
+!
+!--
+begin
+IRP [IRP$L_IIP_COUNT] = .IRP [IRP$L_IIP_COUNT] + 1;
+end;
+
+
+
+
+
+
+%SBTTL	'VSTA$$VDS_IRP_DRCNT - DECRIMENTS IRP IIP COUNT'
+global routine VSTA$$VDS_IRP_DRCNT
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine takes the address of an irp and decriments its iip reference
+!---count
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 irp: REF BLOCK [,BYTE]
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!---This routine returns true if the irp iip reference count greater than 0
+!---Otherwise it returns false
+!
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---This routine must run in KERNAL MODE
+!
+!--
+begin
+
+!
+! Call VS$$VDS_SOBGTR to see if all the ASTs have already completed. 
+!
+	return (not VS$$VDS_SOBGTR ( IRP [IRP$L_IIP_COUNT] ));
+
+end;
+
+
+
+%SBTTL	'VSTA$$VDS_QUEUE_VDC -- QUEUES A COMMAND PACKET TO VD'
+global routine VSTA$$VDS_QUEUE_VDC
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VD_ID
+	,VDC_ADDR: ref block [,byte]
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+local
+	 VDB
+	,STATUS
+	;
+
+!
+!  Find the vdb for this vd.  If not there then return the status.
+!
+if not VS$$VDS_VD_POINTER(.VD_ID, VDB)
+then begin
+	if .vdc_addr [vdc$l_efn] neq 0
+	then $SETEF(efn=.VDC_ADDR [VDC$L_EFN]);
+
+	if .VDC_ADDR [VDC$A_ASTADR] neq 0
+	then (.VDC_ADDR [VDC$A_ASTADR])(.VDC_ADDR [VDC$L_ASTPRM],SS$_BADPARAM);
+
+	return SS$_BADPARAM;
+
+     end;
+
+return VDC$$QUEUE_VDC( .VDB, .VDC_ADDR);
+
+end;
+
+
+
+
+
+%SBTTL	'VDC$$QUEUE_VDC -- QUEUES A COMMAND PACKET TO VD'
+global routine VDC$$QUEUE_VDC
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VDB		: ref vdblock
+	,VDC_ADDR	: ref block [,byte]
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+builtin
+	 insque
+	;
+
+local
+	 STATUS
+	;
+
+!
+!  If the vd is disabled then just deliver the completion routine if any and
+!  set the efn if any
+!
+if .VDB [VDB$V_DISABLED]
+then begin
+	if .VDC_ADDR [VDC$L_EFN] neq 0
+	then $SETEF(efn=.VDC_ADDR [VDC$L_EFN]);
+	
+	if .VDC_ADDR [vdc$a_astadr] neq 0
+	then (.VDC_ADDR [VDC$A_ASTADR])
+	     (.VDC_ADDR [VDC$L_ASTPRM], ss$_normal);
+
+	$FREEVDC( .VDC_ADDR);
+
+	return ss$_normal;
+
+     end;
+
+VDC_ADDR [VDC$L_REFCNT] = 1;
+
+!
+!  Insert the vdc at the end of the vd queue
+!
+insque(.VDC_ADDR,.VDB [VDB$A_VDCQBL]);
+
+!
+!  If the pathing count is greater than one then don't display this operation
+!  now.  Wait for later
+!
+!if .VDB [VDB$L_PATHING] eql 0
+
+VDC$$FLUSH_VD_PATH( .VDB);
+
+return ss$_normal;
+
+end;
+
+
+
+
+
+
+%SBTTL	'VSTA$$VDS_FLUSH_VD_PATH -- FLUSHES QUEUED COMMAND PACKETS IN VD'
+global routine VSTA$$VDS_FLUSH_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VD_ID
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+local
+	 STAT
+	,VDB
+	;
+
+if not (STAT=VS$$VDS_VD_POINTER( .VD_ID, VDB))
+then return .STAT;
+
+return VDC$$FLUSH_VD_PATH( .VDB);
+
+end;
+
+
+
+%SBTTL	'VDC$$FLUSH_VD_PATH -- FLUSHES QUEUED COMMAND PACKETS IN VD'
+global routine VDC$$FLUSH_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VDB		: ref vdblock
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+builtin
+	 insque
+	,callg
+	;
+local 
+	 VDC: ref block [,byte]
+	,NEXT_VDC
+	,DSC: ref vector [,long]
+	,STATUS
+	;
+
+
+!
+!  If there are no vdc's in the queue then just return
+!
+if .VDB [VDB$A_VDCQFL] eql VDB [VDB$A_VDCQFL]
+then return SS$_NORMAL;
+
+!
+!  If a region is lighted then we must turn it off for this operation
+!
+if .VDB [VDB$V_REGION_ENABLE]
+then begin
+
+	DSC = .VDB [VDB$A_REGION_DSC];
+
+	$GETVDC( VDC);
+
+	$VDCDRAW(
+		 VDCBLK	= .VDC
+		,SOURCE	= VSTA$K_COLOR_WHITE
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= DSC [9]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! Reverse video
+		,PTHNUM	= 5
+		,PTHADR	= DSC [1]
+		,PATBLK	= DSC [9]
+		,PATSTA	= DSC [11]
+		);
+
+	!
+	!  Increment the reference count on the vdc
+	!
+	VDC [VDC$L_REFCNT] = 1;
+
+	!
+	!  put this one on the start of the queue so to turn off the region
+	!
+	insque( .VDC, VDB [VDB$A_VDCQFL]);
+
+	$GETVDC( VDC);
+
+	$VDCDRAW(
+		 VDCBLK	= .VDC
+		,SOURCE	= VSTA$K_COLOR_WHITE
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= DSC [9]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! Reverse video
+		,PTHNUM	= 5
+		,PTHADR	= DSC [1]
+		,PATBLK	= DSC [9]
+		,PATSTA	= DSC [11]
+		);
+	!
+	!  Increment the reference count on the vdc
+	!
+	VDC [VDC$L_REFCNT] = 1;
+
+	!
+	!  Put this one at the end of the queue. So to turn the region back on
+	!
+	insque( .VDC, .VDB [VDB$A_VDCQBL]);
+
+     end;
+
+!
+!  If the cursor is enabled and it is also in the visible portion of its 
+!  cycle then turn it off and on
+!
+if (.VDB [VDB$V_CURSOR_ENABLE]) and (.VDB [VDB$V_CURSOR_CYCLE])
+then begin
+
+	$GETVDC( VDC);
+
+	$VDCCOPY(
+		 VDCBLK	= .VDC
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= VDB [VDB$W_CUR_EXT_X]
+		,DSTOFX	= .VDB [VDB$W_CUR_OFF_X]
+		,DSTOFY	= .VDB [VDB$W_CUR_OFF_Y]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! REVERSE VIDEO
+		);
+
+	!
+	!  Increment the reference count on the vdc
+	!
+	VDC [VDC$L_REFCNT] = 1;
+
+	!
+	!  put this one on the start of the queue so to turn off the region
+	!
+	insque( .VDC, VDB [VDB$A_VDCQFL]);
+
+	$GETVDC( VDC);
+
+	$VDCCOPY(
+		 VDCBLK	= .VDC
+		,MSKTYP	= VSTA$K_MSK_RECTANGLE
+		,MASK	= VDB [VDB$W_CUR_EXT_X]
+		,DSTOFX	= .VDB [VDB$W_CUR_OFF_X]
+		,DSTOFY	= .VDB [VDB$W_CUR_OFF_Y]
+		,MAPTYP	= VSTA$K_MAP_SD_LITERAL
+		,MAPVAL	= 10			! REVERSE VIDEO
+		);
+
+	!
+	!  Increment the reference count on the vdc
+	!
+	VDC [VDC$L_REFCNT] = 1;
+
+	!
+	!  Put this one at the end of the queue. So to turn the region back on
+	!
+	insque(.VDC, .VDB [VDB$A_VDCQBL]);
+
+     end;
+
+
+!
+!  Determine which display routine to call
+!
+if .VDB [VDB$A_REDISP_ROUTINE] gtr 0
+then STATUS = 		CALLG( .VDB [VDB$A_REDISP_ARGBLOCK],
+				.VDB [VDB$A_REDISP_ROUTINE])
+else STATUS = 		VS$$VDS_DISP_VD( .VDB [VDB$_VD_ID]);
+
+
+!
+!  For all the vdc's in the queue dereference them and see if 
+!  an ast or efn needs to be delivered
+!
+
+VDC = .VDB [VDB$A_VDCQFL];
+until .VDC eql VDB [VDB$A_VDCQFL]
+do begin
+	!
+	!  Obtain the address of the next vdc befor we do the SOBGTR because
+	!  after the sobgtr is performed (and fails) the VDC block is no longer
+	!  safe.  
+	!
+	NEXT_VDC = .VDC [VDC$A_FLINK];
+	if VS$$VDS_SOBGTR(VDC [VDC$L_REFCNT])
+	then begin
+		if .VDC [VDC$L_EFN] neq 0
+		then $SETEF(efn=.VDC [VDC$L_EFN]);
+		
+		if .VDC [vdc$a_astadr] neq 0
+		then (.VDC [VDC$A_ASTADR])
+		     (.VDC [VDC$L_ASTPRM],.STATUS);
+
+		$FREEVDC( .VDC);
+	     end;
+	VDC = .NEXT_VDC;
+
+   end;
+
+!
+!  Remove the request blocks from the vdc queue
+!
+VDB [VDB$A_VDCQBL] = VDB [VDB$A_VDCQFL];
+VDB [VDB$A_VDCQFL] = VDB [VDB$A_VDCQFL];
+
+
+return .STATUS;
+
+end;
+
+
+%SBTTL	'VSTA$$VDS_START_VD_PATH -- STARTS QUEUEING VDC TO A VD'
+global routine VSTA$$VDS_START_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VD_ID
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+local
+	 STAT
+	,VDB
+	;
+
+if not (STAT=VS$$VDS_VD_POINTER( .VD_ID, VDB))
+then return .STAT;
+
+return VDC$$START_VD_PATH( .VDB);
+
+end;
+
+
+
+%SBTTL	'VDC$$START_VD_PATH -- STARTS QUEUEING VDC TO A VD'
+global routine VDC$$START_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VDB		: ref vdblock
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+VDB [VDB$L_PATHING] = .VDB [VDB$L_PATHING] + 1;
+
+return ss$_normal;
+
+end;
+
+
+
+%SBTTL	'VSTA$$VDS_END_VD_PATH -- END QUEUEING VDCs TO A VD'
+global routine VSTA$$VDS_END_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VD_ID
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+local
+	 STAT
+	,VDB
+	;
+
+if not (STAT=VS$$VDS_VD_POINTER( .VD_ID, VDB))
+then return .STAT;
+
+return VDC$$END_VD_PATH( .VDB);
+
+end;
+
+
+
+%SBTTL	'VDC$$END_VD_PATH -- ENDS QUEUEING VDC TO A VD'
+global routine VDC$$END_VD_PATH
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  FORMAL PARAMETERS:
+!
+	(		
+	 VDB		: ref vdblock
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+begin
+
+VDB [VDB$L_PATHING] = MAX(.VDB [VDB$L_PATHING] - 1, 0);
+
+return ss$_normal;
+
+end;
+
+
+
+
+%SBTTL	'VSTA$$VDS_REDISPLAY_VD_TEXT -- RE-DISPLAY TEXT IN VD'
+global routine VSTA$$VDS_REDISPLAY_VD_TEXT
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine queries the VDB for this vd and redisplays its text if
+!---it is found to have text ablility
+!
+!  FORMAL PARAMETERS:
+!
+		(
+		 vd_id
+		):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE: 
+!
+!---Failure status if this vd cannot be found
+!
+!  SIDE EFFECTS: 
+!
+!---The VDB is accessed and its text block is conditionally redisplayed
+!
+!---
+begin
+
+local
+	 VDB: ref vdblock
+	;
+
+if not VS$$VDS_VD_POINTER(.VD_ID,VDB)
+then $RETERR(STATUS=ss$_badparam);
+
+if .VDB [VDB$V_TEXT_EXIST]
+then
+	if not VS$$TXT_DISPLAYALLTEXT(.VD_ID)
+	then $RETERR(STATUS=ss$_badparam);
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+%SBTTL	'VSTA$$VDS_ACCESS_VD_BITMAP -- GET VD BITMAP ADDRESS'
+global routine VSTA$$VDS_ACCESS_VD_BITMAP
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---Queries the VDB for this virtual display id and return the address of its
+!---backing store bitmap.
+!
+!  FORMAL PARAMETERS:
+!
+		(
+		 vd_id			! virtual display id
+		,read_or_write		! read access or write access
+		,vd_bitmap_a: 		! place to copy bitmap desc
+				ref block [,byte]
+		,screen_or_backing_a	! flag to set if backing is on screen
+					! or other memory.
+		!
+		!  text exist		! optional parameter
+		!
+		):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE: 
+!
+!---Failure status if this vd cannot be found or the vd has not graphics 
+!---ablility
+!
+!  SIDE EFFECTS: 
+!
+!---The VDB is accessed and its text block is conditionally redisplayed
+!
+!---
+begin
+
+builtin
+	 ACTUALCOUNT
+	,ACTUALPARAMETER
+	;
+
+local
+	 VDB: ref vdblock
+	,STAT
+	;
+
+if not VS$$VDS_VD_POINTER(.VD_ID,VDB)
+then $RETERR(STATUS=ss$_badparam);
+
+!
+!  If graphics is to exist but the backing store is not yet created then
+!  create it and and set the graphics exists flag
+!
+if (.VDB [VDB$B_TEXT_OR_GRAPHICS] neq 3) and 
+   (.VDB [VDB$B_TEXT_OR_GRAPHICS] neq 1) 
+then $RETERR(STATUS=ss$_badparam)
+else if not .VDB [VDB$V_GRAPHICS_EXIST]
+     then begin
+		VDB [VDB$V_GRAPHICS_EXIST]=1;
+		if (not (STAT=VS$$ACP_GET_VM (%ref(.VDB [VDB$L_GRAPHIC_SIZE]),
+					VDB [VDB$A_GRAPHIC])))
+		then return .STAT;
+
+		!
+		! Paint background color into backing-store
+		!
+		if (not (STAT=$DRIVEBACK(
+				 CHAN	= .VS$GW_VBCHAN
+				,DST	= .VDB [VDB$A_BITMAP_DESCRIPTOR]
+				,COLOR	= .VDB [VDB$W_BACKGROUND]
+				,WIDTH	= .VDB [VDB$W_WIDTH]
+				,HEIGHT	= .VDB [VDB$W_HEIGHT]
+				)))
+		then return .STAT;
+	  end;
+
+
+if .READ_OR_WRITE eql vsta$k_read
+then VDC$$RESTORE_BACKING( .VDB);
+
+if .VD_BITMAP_A neq 0
+then .VD_BITMAP_A = .VDB [VDB$A_BITMAP_DESCRIPTOR];
+
+if .SCREEN_OR_BACKING_A neq 0
+then .SCREEN_OR_BACKING_A = .VDB [VDB$V_BACKING_DISABLED];
+
+!
+!  If the 5th parameter is there and is not 0 then return the
+!  text exist flag to that address
+!
+if ACTUALCOUNT() gtr 4
+then if ACTUALPARAMETER(5) neq 0
+then ACTUALPARAMETER(5) = .VDB [VDB$V_TEXT_EXIST];
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+end
+eludom
+
+

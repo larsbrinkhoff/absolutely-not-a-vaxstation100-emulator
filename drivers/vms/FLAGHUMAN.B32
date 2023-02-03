@@ -1,0 +1,96 @@
+MODULE VS$FLAGHUMAN(
+		ADDRESSING_MODE (EXTERNAL = GENERAL,
+				 NONEXTERNAL = GENERAL)
+		  ) =
+BEGIN
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+LITERAL
+	vs$k_max_mbx_msg = 16;		!*** Until put into VSDEF.SDL
+
+GLOBAL ROUTINE vs$$flag_human(
+				w_id,		!Window ID
+				uic,		!Process UIC
+				pid,		!Process ID or PID
+				flag		!Create/delete flag
+			) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for informing the human interface process
+! when a window has been either created or deleted and send it any info
+! it might need for a decision on what to do about it.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID : Longword Window id
+!			(input parameter)		
+!	UIC  : Longword UIC of process creating/deleting the window
+!			(input parameter)		
+!	PID  : Longword PID of process creating/deleting the window
+!			(input parameter)		
+!	FLAG : Longword Create/Delete flag (0 => Delete, 1 => Create)
+!			(input parameter)		
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! Returns "SS$_NORMAL" if successful, or error status returned by $CREMBX or
+! by $QIO
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+BUILTIN
+	ap;				!Argument pointer
+LOCAL
+	mbxchan,			!VAXstation mailbox channel number
+	iosb: VECTOR[4,WORD],		!$QIO I/O status block
+	status;				!Return status value
+
+!
+! First get a channel to the VAXstation mailbox
+!
+	IF (NOT (status = $CREMBX(
+				CHAN   = mbxchan,
+				MAXMSG = vs$k_max_mbx_msg,
+				PROMSK = %X'333',	!Read/Write (not world)
+				LOGNAM = $DESCRIPTOR('VSMBX')
+				))) THEN
+	  RETURN .status;
+!
+! We don't care if it was already there or not (since we're not going to wait
+! around for a response). So just put the parameters into the mailbox and
+! return...
+!
+	IF (NOT (status = $QIO(
+				CHAN = .mbxchan,
+				FUNC = IO$_WRITEVBLK + IO$M_NOW,
+				IOSB = iosb,
+				P1   = (.ap + 4),
+				P2   = (..ap * 4)
+				))) THEN
+	  RETURN .status;
+!
+	RETURN .iosb[0];
+END;  
+
+
+END
+ELUDOM

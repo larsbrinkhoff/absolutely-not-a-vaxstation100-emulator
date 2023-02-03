@@ -1,0 +1,53 @@
+module VSTA$DBFR;
+/*
+/* FUNCTIONAL DESCRIPTION:
+/*
+/* This module contains the definition of the data buffering structures
+/*
+/*---
+
+/*
+/*  Define the dbfr types
+/*
+	constant(
+		 REFERENCE
+		,IMMEDIATE
+		) equals 1 increment 1 prefix DBFR$;
+
+/*
+/* Define the allocation classes
+/*
+	constant(
+		 SRP_CLASS
+		,MRP_CLASS
+		,NRP_CLASS
+		,LRP_CLASS
+		) equals 1 increment 1 prefix DBFR$;
+/*
+/* Define the allocation class sizes
+/*
+	constant SRP_SIZE 	equals 	64 	prefix DBFR$;
+	constant MRP_SIZE	equals  128	prefix DBFR$;
+	constant NRP_SIZE	equals  256	prefix DBFR$;
+	constant LRP_SIZE	equals  2048	prefix DBFR$;
+/*
+/* Define the structure of the dbfr descriptor
+/*
+aggregate DBFR_BLOCK structure prefix DBFR$;
+
+	#DBFR_BASE = .;
+	TYPE			BYTE UNSIGNED;		/* Type field one of above types
+	UNIT_SIZE		BYTE UNSIGNED;		/* Unit size 
+	ALOCLS			WORD UNSIGNED;		/* Allocation class
+	DATA_SIZE		LONGWORD UNSIGNED;	/* Number of data bytes 
+	DBFR_REDEF union;
+		REFCNT		LONGWORD UNSIGNED;	/* Reference count for 
+							/* immediate dbfrs
+		DATA		ADDRESS;		/* Data pointer for 
+							/* reference dbfrs
+	end DBFR_REDEF;
+	constant DESC_SIZE equals .-#DBFR_BASE;
+
+end DBFR_BLOCK;
+
+END_MODULE;

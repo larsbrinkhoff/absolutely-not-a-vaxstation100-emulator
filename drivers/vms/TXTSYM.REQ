@@ -1,0 +1,419 @@
+! Block field definitions for text data structures for Onyx.
+
+library 'sys$library:starlet';	! symbols like "nam$s_dvi"
+				! this points out a reason that SDL is not
+				! used for defining some of the data structures
+				! herein, namely that SDL doesn't allow using
+				! a symbol from starlet as the size of a block
+literal
+	true = 1,		! result values for routines
+	false = 0;
+
+macro!s
+
+    ! Allocate number of fullwords, return address of block.
+    ! Exit current routine if there's a failure.
+    allocateFullwords(n) =
+	begin
+	external routine alcful;
+	local addr, s;
+	if not (s = alcful ((n), addr))
+	then return .s
+	else .addr
+	end
+	% ,
+	
+    ! Allocate number of bytes, return address of block.
+    ! Exit current routine if there's a failure.
+    allocateBytes(n) =
+	begin
+	external routine alcbyt;
+	local addr, s;
+	if not (s = alcbyt ((n), addr))
+	then return .s
+	else .addr
+	end
+	% ,
+	
+    ! Test to see if the nth argument is supplied to a routine
+    argumentExists(n) =
+	begin
+	builtin nullParameter;
+	not nullParameter(n)
+	end
+	% ,
+
+!
+! Macro to get address of text block for given display id, and return
+! error code from current routine if can't.
+!
+    getTextBlock(id) =
+	begin
+	external routine
+	    find_text_block;
+	local
+	    s,
+	    txt$blk : ref text_block;
+!
+! Find text block, return error if can't.
+!
+	if not (s = find_text_block (id, txt$blk))
+	then return .s;
+!
+! Tell caller address of block.
+!
+	txt$blk[base]
+
+	end % ,
+!
+! Macro to get address of line block for given display id and line number,
+! and return error code from current routine if can't.
+!
+    getLineBlock(id, lineNum) =
+	begin
+	external routine
+	    find_line_block;
+	local
+	    s,
+	    lin$blk : ref line_block;
+!
+! Find the line.
+!
+	if not (s = find_line_block((id), (lineNum), lin$blk))
+	then return .s;
+!
+! Got it.  Tell caller the address.
+!
+	lin$blk[base]
+
+	end % ,
+!
+! Macro to get address of field block for given parameters and return
+! error code from current routine if can't.
+!
+    getFieldBlock(txtblk, lineNum, fieldPos) =
+	begin
+	external routine
+	    find_field_block;
+
+	local
+
+	    s,
+	    fld$blk : ref field_block;
+
+	bind
+
+	    txt_Blk = (txtBlk) : text_block;
+!
+! Find the field, return error if can't.
+!
+	if not (s = find_field_block(txt_blk, (lineNum), (fieldPos), fld$blk))
+	then return .s;
+!
+! Tell caller the address of the field block.
+!
+	fld$blk[base]
+
+	end % ,
+
+
+    ! The defineStructure(foo) macro call allows data items to be declared
+    ! as in
+    !
+    !			zot:ref foo
+    !
+    ! which declares zot to point to a structure which has a fullword length of
+    !
+    !			foo_length
+    !
+    ! and defines a symbol
+    !
+    !			foo_id = id
+    !
+    ! and has fields named under the field set called
+    !
+    !			foo_fields
+    defineStructure(strName, id) =
+	literal %name(strName, '_id') = id;
+
+	structure %name(strName,'_str')[offset,position,bitWidth,ext;size] =
+	    [size*4]		! number of bytes to allocate
+	    (%name(strName,'_str') + offset)<position,bitWidth,ext>;
+		
+		literal %name(strName,'_length') = (this + 3) / 4;
+
+	macro strName =
+	     %name(%name('%qu','ote') strName,'_str')
+		[%name(%name('%qu','ote') strName,'_length')]
+	    field (%name(%name('%qu','ote') strName,'_fields'), genFields)
+	    %quote %
+	%,
+
+    $nbytes (n) =		! allocate a specific number of bytes
+	this			! use current byte number
+	%assign(this, this+(n))	! step over allocated space
+	%,
+
+    fieldSet =			! start new field set
+	%assign(this,firstValue)! reset length for this set
+	field %;
+
+! for tallying lengths of blocks
+compileTime
+    firstValue = 4,		! blocks always start with full word to hold id
+    this = firstValue;
+
+    ! The parameters in each field are
+    !
+    !		[fullword offset, bits from right, size in bits]
+    !
+
+! All blocks have the following fields defined for them
+field genFields =
+    set
+    base = [0,0,32,0],		! use foo[base] to get base address
+    block_id = [0,0,32,0]	! holds identification of type of block
+    tes;
+
+fieldSet string_descriptor_fields =
+    set
+	%assign (this,firstValue-4)	! no id for string descriptor
+    sd_len = [$nbytes (2),0,16,0],
+				! length of string
+    sd_rest = [$nbytes (2),0,16,0],
+				! rest of descriptor
+    sd_adr = [$nbytes (4),0,32,0]
+				! address of string
+    tes;
+    defineStructure (string_descriptor, 0);
+
+fieldSet text_block_fields =
+    set
+	%assign (this,firstValue-4)	! no id for text block, since vax
+					! architecture requires flink and blink
+					! to come first.
+    txt_flink = [$nbytes (4),0,32,0],	! address of next text block (or list head)
+    txt_blink = [$nbytes (4),0,32,0],	! address of previous text block (or list head)
+    txt_vd_id = [$nbytes (4),0,32,0],	! virtual display id
+    txt_tot_lin_hit = [$nbytes (4),0,32,0],
+				! total pixel height of lines
+    txt_nLines = [$nbytes (4),0,32,0],	! number of lines on virtual display
+    txt_lines = [$nbytes (4),0,32,0],	! address of list of lines for this virtual display
+    txt_nFonts = [$nbytes (4),0,32,0],	! number of private fonts defined
+    txt_fonts = [$nbytes (4),0,32,0],	! address of list of private fonts
+    txt_height = [$nbytes (4),0,32,0],	! height of entire virtual display
+    txt_stdHgt = [$nbytes (4),0,32,0],	! standard height for lines in this vd
+    txt_width = [$nbytes (4),0,32,0],	! how wide virtual display is
+
+    txt_curTypefaceLen = [$nbytes (4),0,32,0],
+					! This and next form descriptor to current typeface
+    txt_curTypefaceAdr = [$nbytes (4),0,32,0],
+
+    txt_curBase = [$nbytes (4),0,32,0],	! how high base of characters should be on line
+    txt_curSize = [$nbytes (4),0,32,0],	! size type for printing
+    txt_curOffset = [$nbytes (4),0,32,0],
+					! horizontal offset for next write
+    txt_curRend = [$nbytes (4),0,32,0],	! current rendition
+    txt_curInk = [$nbytes (4),0,32,0],	! color for writing
+    txt_curBack = [$nbytes (4),0,32,0],	! color for background
+    txt_stab_att = [$nbytes (4),0,32,0],
+					! "attributes are stable", set until something
+					! changes that affects choice of font
+    txt_n_sys = [$nbytes (4),0,32,0],	! number of system font transactions at last
+				! updating of cache
+    txt_fid = [$nbytes (4),0,32,0],	! cached font id
+    txt_font_rend = [$nbytes (4),0,32,0],
+					! cached font rendition bits
+    txt_cell_flag = [$nbytes (4),0,32,0],
+					! 1 if current font is a cell font
+    txt_vd_color = [$nbytes (4),0,32,0]
+					! copy of .vd[vdb$w_background] (for avoiding
+					! vs$$vds_vd_pointer call on every write)
+    tes;
+    defineStructure (text_block, 111);
+
+fieldSet line_block_fields =	! data stored for each line
+    set
+    lin_nFields = [$nbytes (4),0,32,0],	! number of fields on line
+    lin_fields = [$nbytes (4),0,32,0],	! address of list of fields for line
+    lin_height = [$nbytes (4),0,32,0]	! height of line in points
+    tes;
+    defineStructure (line_block, 222);
+
+fieldSet field_block_fields =		! data stored per field
+    set
+    fld_nStrings = [$nbytes (4),0,32,0],
+					! number of strings field is chopped into
+    fld_strings = [$nbytes (4),0,32,0],	! address of list of strings
+    fld_nChars = [$nbytes (4),0,32,0],	! total characters in this field so far
+    fld_pos = [$nbytes (4),0,32,0],	! distance from left margin that field starts
+    fld_size = [$nbytes (4),0,32,0],	! width of field
+    fld_format = [$nbytes (4),0,32,0],	! format of field
+    fld_used_width = [$nbytes (4),0,32,0]
+					! width used so far by characters in field
+    tes;
+    defineStructure (field_block,333);
+
+	! Literal values designating field formats.
+	!
+	literal
+
+	    ff_left = 0,	! left-justified field, the default.
+	    ff_right = 1,	! right-justified field.
+	    ff_center = 2,	! centered field.
+
+	    ff_max = 2;		! maximum legal format
+
+fieldSet rend_word_fields =	! bits stored in rendition word
+	set
+    rend_all = [$nbytes (4),0,32,0],
+				! mainly a placeholder to give block length of 1
+    rend_bold = [0,0,1,0],
+    rend_italics = [0,1,1,0],
+    rend_underscore = [0,2,1,0],
+    rend_blink = [0,3,1,0],
+    rend_reverse = [0,4,1,0]
+	tes;
+	defineStructure (rend_word, 0);
+
+	! Define symbols that can be used to specify rendition bits as
+	! arguments to routines.
+	!
+	macro getBit (fld) = 1 ^ %fieldExpand (fld, 1) %;
+
+	literal
+	    rend_bold_bit = getBit (rend_bold),
+	    rend_italics_bit = getBit (rend_italics),
+	    rend_underscore_bit = getBit (rend_underscore),
+	    rend_blink_bit = getBit (rend_blink),
+	    rend_reverse_bit = getBit (rend_reverse);
+
+fieldSet string_block_fields =		! data stored per string
+    set
+	! *** keep next set together for use as descriptor
+    str_len = [$nbytes (2),0,16,0],
+					! number of bytes in string
+    str_dtyp = [$nbytes (2),0,16,0],
+					! descriptor type
+    str_ptr = [$nbytes (4),0,32,0],	! pointer to string
+	! *** keep previous set together for use as descriptor
+    str_beg = [$nbytes (4),0,32,0],	! where in field this string starts
+    str_end = [$nbytes (4),0,32,0],	! position just beyond end of string
+    str_size = [$nbytes (4),0,32,0],	! size type of characters in this string
+    str_base = [$nbytes (4),0,32,0],	! how high on line string should be positioned
+    str_height = [$nbytes (4),0,32,0],	! height of characters, computed from font
+    str_offset = [$nbytes (4),0,32,0],	! horizontal offset from previous string
+    str_fid = [$nbytes (4),0,32,0],	! font image id
+    str_rendition = [$nbytes (4),0,32,0],
+					! bits describing appearance of characters
+    str_backgroundColor = [$nbytes (4),0,32,0],
+					! background color
+    str_inkColor = [$nbytes (4),0,32,0],
+					! ink color
+    str_typeface_len = [$nbytes (4),0,32,0],
+					! length of current typeface when string was printed
+    str_typeface_adr = [$nbytes (4),0,32,0],
+					! name of current typeface when string was printed
+    str_width = [$nbytes (4),0,32,0],	! width taken up by string on tube
+    str_font_rend = [$nbytes (4),0,32,0],
+					! rendition bits associated with chosen font
+    str_cell_flag = [$nbytes (4),0,32,0]
+					! 1 if font for this string is a cell font
+    tes;
+    defineStructure (string_block, 444);
+
+fieldSet font_block_fields =		! data stored per font
+	set
+					! descriptor pointing at typeface
+    fnt_typefaceLen = [$nbytes (2),0,16,0],
+    fnt_typefaceClass = [$nbytes (2),0,16,0],
+    fnt_typefaceAdr = [$nbytes (4),0,32,0],
+    fnt_size = [$nbytes (4),0,32,0],	! size of type for this font
+    fnt_rend = [$nbytes (4),0,32,0],	! rendition bits for this font
+    fnt_namLen = [$nbytes (2),0,16,0],
+					! length of filespec
+    fnt_namClass = [$nbytes (2),0,16,0],
+		! *** keep together in sequence, since they
+		! are used as a descriptor
+    fnt_namPtr = [$nbytes (4),0,32,0],
+					! pointer to filespec holding font
+    fnt_bufLen = [$nbytes (4),0,32,0],
+					! length of buffer
+    fnt_id = [$nbytes (4),0,32,0],	! address of buffer into which font file read
+    fnt_height = [$nbytes (4),0,32,0],	! height of font, cached from fim
+    fnt_cell_flag = [$nbytes (4),0,32,0]
+					! 1 if this is a cell font
+	tes;
+	defineStructure (font_block, 555);
+
+fieldSet
+	fim_block_fields =		! organization of font image
+	set
+	%assign (this,firstValue-4)
+					! no id for font image
+    fim_bits = [$nbytes (4),0,32,0],	! offset to find actual bits
+    fim_width = [$nbytes (2),0,16,0],
+					! pixels wide entire font is
+    fim_height = [$nbytes (2),0,16,0],
+					! pixels high each character is
+    fim_z = [$nbytes (2),0,16,0],
+					! bits per pixel (width is x, height is y)
+    fim_first = [$nbytes (2),0,16,0],
+					! first legal character index
+    fim_last = [$nbytes (2),0,16,0],
+					! last legal character index
+    fim_xtable = [$nbytes (4),0,32,0],
+					! offset to find horizontal offsets
+    fim_base = [$nbytes (2),0,16,0],
+					! pixels from top down to bottom of capitals
+    fim_space = [$nbytes (2),0,16,0],
+					! index for space character
+    fim_char_width = [$nbytes (2),0,16,0]
+  					! char width if fix pitch font [ahh 10/5/84]
+	tes;
+	defineStructure (fim_block, 0);
+
+fieldSet fib_fields =			! font image block
+	set
+	%assign (this,firstValue-4)
+					! no id for fib, since vax
+					! architecture requires flink and blink
+					! to come first.
+    fib_flink = [$nbytes (4),0,32,0],	! address of next fib (or list head)
+    fib_blink = [$nbytes (4),0,32,0],	! adr of previous fib (or list head)
+    fib_ref = [$nbytes (4),0,32,0],	! reference count
+    fib_fid = [$nbytes (4),0,32,0],	! unique id associated with each fib
+    fib_imageLen = [$nbytes (4),0,32,0],
+					! length of image portion
+    fib_imageAdr = [$nbytes (4),0,32,0],
+					! address of image
+    fib_file_len = [$nbytes (4),0,32,0],
+					! length of entire file buffer
+    fib_file_buf = [$nbytes (4),0,32,0],
+					! address of entire file buffer
+    fib_file_chan = [$nbytes (4),0,32,0],
+					! channel open on file
+    fib_char_width = [$nbytes (4),0,32,0],
+					! 0 for var wth, non-0 for cell width
+    fib_chrwth_len = [$nbytes (4),0,32,0],
+					! number of bytes in character width
+					! table
+    fib_chrwth_adr = [$nbytes (4),0,32,0],
+					! 0 or address of character width table
+    fib_display_adr = [$nbytes (4),0,32,0],
+					! 0 or display address of font
+    fib_bits = [$nbytes (4),0,32,0],	! byte offset to font bitmap
+    fib_width = [$nbytes (4),0,32,0],	! pixel width of font bitmap
+    fib_height = [$nbytes (4),0,32,0],	! pixel height of font bitmap
+    fib_depth = [$nbytes (4),0,32,0],	! pixel depth of font bitmap
+    fib_base = [$nbytes (4),0,32,0],	! baseline (from top to bottom of char)
+    fib_rmsdvi = [$nbytes (nam$s_dvi),0,32,0],
+					! rms device identifier
+    fib_rmsdid = [$nbytes (nam$s_did),0,32,0],
+					! rms directory identifier
+    fib_rmsfid = [$nbytes (nam$s_fid),0,32,0],
+					! rms file identifier
+    fib_fim = [$nbytes (fim_block_length * 4),0,32,0]
+					! copy of entire font header
+	tes;
+	defineStructure (fib, 777);

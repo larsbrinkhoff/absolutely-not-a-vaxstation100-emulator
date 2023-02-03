@@ -1,0 +1,32 @@
+ 
+!*** MODULE vstamf ***
+! 
+!  Binary document file offsets used by VSTAMF and the human interface.
+! 
+!  Header
+literal mfh$k_sanity_data = 1431703568; !  The value that must be there.
+FIELD mfh$mf_header_block_FIELDSET =
+  SET
+  mfh$l_sanity = [0,0,32,1],            !  Sanity word
+  mfh$l_version = [4,0,32,1],           !  version number
+  mfh$l_language_key = [8,0,32,1],      !  which language
+  mfh$l_num_msgs = [12,0,32,1],         !  Number of messages in the file
+  mfh$l_num_hdr_blks = [16,0,32,1]      !  how many header blocks
+  TES;
+literal mfh$s_mf_header_block = 20;
+MACRO mf_header_block = BLOCK [mfh$s_mf_header_block,byte] FIELD (mfh$mf_header_block_FIELDSET) %;
+FIELD mfp$mf_page_block_FIELDSET =
+  SET
+  mfp$w_first = [0,0,16,0],             !  First number used
+  mfp$w_last = [2,0,16,0]               !  Last number used
+  TES;
+literal mfp$s_mf_page_block = 4;
+MACRO mf_page_block = BLOCK [mfp$s_mf_page_block,byte] FIELD (mfp$mf_page_block_FIELDSET) %;
+literal mft$k_hdr_size = 4;             !  Place where string is
+FIELD mft$mf_txt_block_FIELDSET =
+  SET
+  mft$w_link = [0,0,16,0],              !  Link number
+  mft$w_size = [2,0,16,0]               !  Size of string
+  TES;
+literal mft$s_mf_txt_block = 4;
+MACRO mf_txt_block = BLOCK [mft$s_mf_txt_block,byte] FIELD (mft$mf_txt_block_FIELDSET) %;

@@ -1,0 +1,477 @@
+MODULE DOC$PAGBRK (
+		IDENT = 'VSTADOC Utility Page Break routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module checks to make sure page breaks occur before the
+!	VD height runs out, and also takes care of putting the page
+!	numbers in the running text if they are wanted.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$pagbrk_init,		!Initialize variables for this module
+    doc$$check_linesize,	!Make sure a proposed linesize will fit.
+    doc$$preline_processing,	!Do pre-processing (possibly do a page break)
+				! Because a line is about to be written.
+    doc$$page_break,		!Cause a pagebreak (called when FF char input
+				! or text lines ran out).
+    save_line_parameters,	!Save current line parameters
+    restore_line_parameters,	!Restore line parameters
+    write_pn_line,		!Write line "-nnn-" (in correct font)
+    doc$$gen_pagenums,		!PAGE_NUMBERS command given.
+    doc$$gen_off_pagenums;	!Turn off generation of page numbers
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$insure_pagesize,	!Insure that a PAGESIZE has been specified
+    doc$$setup_new_page,	!Setup next page.
+    doc$$setup_new_line,	!Setup new line.
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type out a line on TTY
+    doc$$gen_blank,		!##: BLANK :##
+    doc$$gen_center,		!##: CENTER "-nnn-" :##
+    doc$$font_start_new_page,	!Tell FONT routines that we're
+				! starting a new page.
+    doc$$gen_set_typeface,	!##: SET TYPEFACE :##
+    doc$$gen_set_typesize,	!##: SET TYPESIZE :##
+    doc$$gen_set_rendition;	!##: SET RENDITION :##
+
+EXTERNAL
+    last_pagex,
+    last_pagey,
+    text_seen_flag,
+    doc$gl_cur_page_num,	!Current page number
+    doc$gl_cur_lm,
+    doc$gl_cur_rm,
+    doc$gl_cur_line_height,
+    doc$gl_line_buf,
+    doc$gl_cur_typesize,
+    doc$gl_cur_rendition,
+    doc$gl_cur_typeface_len,
+    doc$gl_cur_typeface_str: VECTOR [128,BYTE],
+    fatal_error,
+    num_user_errors,		!Number of user errors processed
+    pageb: REF page_block,	!Current page block
+    lineb: REF txt_line_block;	!Current line block
+!
+!
+
+OWN
+    want_pagenums_flag,		!Set to 1 if we want page numbers
+    pagenum_typeface_str: VECTOR [256,BYTE],
+    pagenum_typeface_desc: VECTOR [2]
+		INITIAL (0, pagenum_typeface_str),
+    pagenum_typesize,
+    pagenum_rend,
+    pagenum_lineheight,
+    pagenum_overspace,
+    pagenum_underspace,
+    reserved_space,		!# pixels needed for page footer.
+    current_lineb: txt_line_block,	!Saved text line block
+    current_line_buf: VECTOR [512,BYTE], !Saved text line.
+    current_lm,				!Current left margin
+    current_rm,				!Current right margin
+    current_lineheight,			!Current lineheight value
+    current_fill_setting,		!Current value of FILL
+    processing_flag;			!Set to 1 if we are processing now.
+
+GLOBAL ROUTINE doc$$pagbrk_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize variables for the PAGBRK module
+!	Called at the start of GENERATE.
+!--
+BEGIN
+
+processing_flag = 0;			!Not currently doing pre-line process.
+want_pagenums_flag = 0;			!Default = user doesn't want page nums.
+reserved_space = 0;			!Reserved space needed for page footer.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$check_linesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Checks whether or not a proposed line size will fit.
+! FORMAL PARAMETERS:
+	(line_size		!# pixels of height proposed
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.line_size GTR (.last_pagey - .reserved_space))
+  THEN
+    BEGIN
+    $gen_error ('%ERR: LINESIZE too large');
+    RETURN SS$_BADPARAM
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$preline_processing =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Check page breaks, etc. before writing out this line
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.processing_flag)
+  THEN RETURN SS$_NORMAL;		!Do nothing if this is for us.
+!
+! If there is enough space in this VD for this lineheight + reserved space,
+! then we are ok. Otherwise cause a page break.
+!
+IF ((.last_pagey - .pageb [pgb$w_y_so_far])	!Space available
+		LSS
+	(.lineb [lin$w_lineheight] + .reserved_space)) !Space we need
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Too much text on page ');
+    $gen_error ('      [You must insert a form-feed somewhere before this point]');
+  !
+  ! Save current line information.
+  !
+    save_line_parameters ();
+  !
+  ! Call page_break
+  !
+    IF NOT (status =
+	doc$$page_break ()		!Do page break
+	    )
+      THEN RETURN .status;
+  !
+  ! Setup a new page.
+  !
+    IF NOT (doc$$setup_new_page ()
+	    )
+      THEN RETURN .status;
+
+    doc$$font_start_new_page ();	!Tell FONT routines that we're
+					! starting a new page.
+  !
+  ! Restore previous line information and return.
+  !
+    restore_line_parameters ();
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$page_break =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This routine is called because <FF> was input or the useable
+!	space ran out. Writes the page number lines, if he wants
+!	page numbers.
+!--
+BEGIN
+LOCAL
+    sl,			!Space left to end of display
+    req_line_height,	!Height of line required before page number.
+    status;
+
+IF (NOT (.want_pagenums_flag))
+  THEN RETURN SS$_NORMAL;
+!
+! OK, have to write our pagenumbers. Because of the way
+! this is organized, we KNOW that it will fit in the Y-dimension.
+!
+!
+! The steps to do this is as follows:
+!1. Set flag saying we're doing page-number processing.
+!2. Re-init lineb as if we just did a BREAK.
+!   Set RM = vd-width, LM = 1.
+!3. Let SL = space left to end of display.
+!   If (overspace NEQ 0) OR ((SL - space_required) GTR 0)
+!   write a blank line of that lineheight.
+!4. Set current typeface, typesize, rendition as needed.
+!   Compute line with string "-nnn-", and write it out.
+!5. Restore old parameters.
+!6. Clear flag saying we're doing page-number processing.
+!
+!(1) Set flag saying we're doing page-number processing.
+!
+processing_flag = 1;
+
+!
+!(2) Save parameters. lineb info has been saved (if necessary).
+!
+current_lm = .doc$gl_cur_lm;	!Save current leftmargin
+current_rm = .doc$gl_cur_rm;	! and right margin
+current_lineheight = .doc$gl_cur_line_height;
+doc$gl_cur_lm = 1;		!Set leftmargin to 1
+doc$gl_cur_rm = .last_pagex;	!Set rightmargin to endpoint of display
+doc$$setup_new_line ();		!Setup a new line block
+!
+!(3) Compute space left to end of display.
+!   Write a blank line to get to the bottom of the page, if we need to.
+!
+sl = .last_pagey - .pageb [pgb$w_y_so_far];
+req_line_height = .sl - (.pagenum_lineheight + .pagenum_underspace);
+IF (.req_line_height GTR 0)
+  THEN
+    BEGIN
+    lineb [lin$w_lineheight] = .req_line_height;
+    doc$$gen_blank (1);		!##: BLANK :##
+    END;
+!
+!(4) Setup to write page number line. We have to set FONT parameters.
+!
+write_pn_line ();		!write the pagenumber line
+
+!
+!(5) Restore parameters.
+!
+doc$gl_cur_line_height = .current_lineheight;
+doc$gl_cur_lm = .current_lm;
+doc$gl_cur_rm = .current_rm;
+lineb [lin$w_lineheight] = .current_lineheight;
+lineb [lin$w_rightmargin] = .current_rm;
+lineb [lin$w_leftmargin] = .current_lm;
+!
+!(8) Clear flag saying we're doing page-number processing.
+!
+processing_flag = 0;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE save_line_parameters =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Save current line parameters.
+!	(lineb --> current_lineb
+!	doc$gl_line_buf --> current_line_buf)
+!--
+BEGIN
+LOCAL
+    status;
+
+CH$MOVE	(lin$S_txt_line_block
+	,.lineb
+	,current_lineb
+	);
+
+IF (.current_lineb [lin$w_cidx] NEQ 0)
+  THEN
+    CH$MOVE	(.current_lineb [lin$w_cidx]
+		,doc$gl_line_buf
+		,current_line_buf
+		);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE restore_line_parameters =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Restore current line parameters.
+!	(current_lineb --> lineb
+!	current_line_buf --> doc$gl_line_buf)
+!--
+BEGIN
+LOCAL
+    status;
+
+CH$MOVE	(lin$S_txt_line_block
+	,current_lineb
+	,.lineb
+	);
+
+IF (.current_lineb [lin$w_cidx] NEQ 0)
+  THEN
+    CH$MOVE	(.current_lineb [lin$w_cidx]
+		,current_line_buf
+		,doc$gl_line_buf
+		);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_pn_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Compute and write the pagenumber line.
+!	Remembers and restores current font parameters.
+! IMPLICIT INPUTS:
+!	doc$gl_cur_page_num
+!--
+BEGIN
+LOCAL
+    saved_typeface_desc: VECTOR [2],
+    saved_cur_typeface_str: VECTOR [128,BYTE],
+    saved_cur_typesize,
+    saved_cur_rendition,
+    pagenum_str: VECTOR [256,BYTE],
+    pagenum_desc: VECTOR [2],
+    pagenum_str_len: WORD,
+    status;
+
+pagenum_desc [0] = 256;
+pagenum_desc [1] = pagenum_str;
+
+IF NOT (status =
+    $fao	(%ASCID '-!SL-'		!CTRSTR
+		,pagenum_str_len	!OUTLEN
+		,pagenum_desc		!OUTSTR
+		,.doc$gl_cur_page_num	!P1
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?$fao failed to get page number string');
+    RETURN doc$$error (.status);
+    END;
+
+pagenum_desc [0] = .pagenum_str_len;	!Now have descriptor to -nnn- string
+!
+! Set font parameters.
+!
+!
+! Save current typeface, typesize, rendition.
+!
+saved_typeface_desc [0] = .doc$gl_cur_typeface_len;
+saved_typeface_desc [1] = saved_cur_typeface_str;
+CH$MOVE	(.saved_typeface_desc [0]
+	,doc$gl_cur_typeface_str
+	,saved_cur_typeface_str
+	);
+saved_cur_typesize = .doc$gl_cur_typesize;
+saved_cur_rendition = .doc$gl_cur_rendition;
+!
+! Set new font parameters.
+!
+doc$$gen_set_typeface (pagenum_typeface_desc);
+doc$$gen_set_typesize (.pagenum_typesize);
+doc$$gen_set_rendition (.pagenum_rend, -1);	!on, off
+!
+! Set current line parameters
+!
+lineb [lin$w_lineheight] = .pagenum_lineheight;
+
+!
+! Write the (centered) line
+!
+doc$$gen_center (pagenum_desc);		!This causes a BREAK afterwards.
+
+!
+! Put back old font parameters
+!
+doc$$gen_set_typeface (saved_typeface_desc);
+doc$$gen_set_typesize (.saved_cur_typesize);
+doc$$gen_set_rendition (.saved_cur_rendition, -1);	!on, off
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_pagenums
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Remembers that the user wants page numbers at the bottom
+!	of each page.
+! FORMAL PARAMETERS:
+	(linesize		!Height of the line where page num is
+	,overspace		!Min # pixels between last text and page num
+	,underspace		!# pixels between page num line and bottom
+	,typeface_desc: REF VECTOR [2]	!Typeface
+	,typesize		!Typesize
+	,rend			!Rendition
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.text_seen_flag)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: PAGE_NUMBERS command must appear before text');
+    RETURN SS$_NORMAL		!Just ignore the command
+    END;
+
+doc$$insure_pagesize ();	!Make sure PAGESIZE has been specified
+
+IF (.text_seen_flag)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: PAGE_NUMBERS command must appear before text');
+    RETURN SS$_BADPARAM		!Not that anyone is listening..
+    END;
+
+want_pagenums_flag = 1;		!Remember we want page nums.
+!
+! Set up all pagenum parameters
+!
+pagenum_lineheight = .linesize;
+pagenum_typesize = .typesize;
+pagenum_rend = .rend;
+pagenum_overspace = .overspace;
+pagenum_underspace = .underspace;
+pagenum_typeface_desc [0] = .typeface_desc [0];
+IF (.typeface_desc [0] NEQ 0)
+  THEN
+    CH$MOVE	(.typeface_desc [0]
+		,.typeface_desc [1]
+		,pagenum_typeface_str
+		);
+!
+! Sanity check - make sure at least 15 (or current line height) pixels
+!		of space for text.
+!
+IF ((.pagenum_overspace + .pagenum_underspace + .pagenum_lineheight
+	+ MAX (16, .doc$gl_cur_line_height)) GTR .last_pagey)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    $gen_error ('%FATAL: Not enough space for page number footer AND text in VD');
+    RETURN SS$_BADPARAM
+    END;
+
+!
+! Compute how many pixels (total) are needed by the page footer.
+!
+reserved_space = .pagenum_overspace + .pagenum_underspace
+		+ .pagenum_lineheight;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_off_pagenums =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Turn off generation of page numbers.
+!--
+BEGIN
+
+want_pagenums_flag = 0;
+reserved_space = 0;
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

@@ -1,0 +1,593 @@
+MODULE DOC$FONT (
+		IDENT = 'VSTADOC Utility FONT routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides FONT routines for GENERATE.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$font_init,		!Initialize for GENERATE
+    doc$$font_start_new_page,	! Starting a new page of text
+    doc$$insure_font,		!Insure that a FONT is set up - text
+				! is about to be written.
+    set_curr_typeface,		!Sets current typeface
+    set_curr_typesize,		!Sets current typesize
+    set_curr_rendition,		!Sets current rendition
+    doc$$gen_define_font,	!DEFINE FONT command
+    doc$$gen_set_typeface,	!SET TYPEFACE command
+    doc$$gen_set_typesize,	!SET TYPESIZE command
+    doc$$gen_set_rendition;	!SET RENDITION command
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type out a line on TTY
+    doc$$type_sts,		!Type text and status on TTY
+    doc$$append_list_line,	!Append string to listing line
+    doc$$Put_list_line,		!Write out current listing line
+    lib$get_vm,			!Get VM
+    lib$free_vm,		!Free VM
+    doc$$insure_pagesize,	!Insure that PAGESIZE is specified
+    doc$$measure_text,		!Measure text using current font
+    doc$$define_font,		!Call VSTA$DEFINEFONT
+    doc$$set_typeface,		!Call VSTA$SET_TYPEFACE
+    doc$$set_typesize,		!Call VSTA$SET_TYPESIZE
+    doc$$set_rendition,		!Call VSTA$SET_RENDITION
+    doc$$get_space_width,	!Get width of space in current font
+    doc$$gen_add_irb;		!Add an IRB to this line
+
+EXTERNAL
+    lineb: REF txt_line_block,	!Current line block
+    fatal_error,
+    doc$gl_cur_gen_vd,		!Current vd-id used for generate
+    num_user_errors;		!Number of user errors processed
+!
+!
+GLOBAL
+    doc$gl_cur_typesize,	!Global so PAGBRK can save and restore them..
+    doc$gl_cur_typeface_len,
+    doc$gl_cur_typeface_str: VECTOR [128,BYTE],
+    doc$gl_cur_rendition,
+    doc$gl_font_q_hdr: VECTOR [2]
+		INITIAL (doc$gl_font_q_hdr, doc$gl_font_q_hdr);
+OWN
+    typeface_current_flag,
+    typesize_current_flag,
+    rendition_current_flag,
+    this_page_typesize,		!Currently set for this page...
+    this_page_rendition,	!Rendition currently set for this page..
+    this_page_typeface_len,	!Typeface currently set for this page..
+    this_page_typeface_str: VECTOR [128,BYTE];
+
+BUILTIN
+    INSQUE, REMQUE;
+
+GLOBAL ROUTINE doc$$font_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize font stuff at start of GENERATE.
+!	(Mainly cleans up from last GENERATE if we need to).
+!--
+BEGIN
+LOCAL
+    fb: REF font_def_block,
+    junk,
+    status;
+!
+! Delete all old FONT entries
+!
+fb = .doc$gl_font_q_hdr [0];
+WHILE (.fb NEQ doc$gl_font_q_hdr) DO
+    BEGIN
+    REMQUE (.fb, junk);
+    IF NOT (status =
+	lib$free_vm	(%REF (fdb$S_font_def_block), fb)
+	    )
+      THEN
+	BEGIN
+	$typeline ('% error releasing memory for fontblock');
+	doc$$error (.status);
+	END;
+
+    fb = .doc$gl_font_q_hdr [0];	!Get new first entry
+    END;
+!
+! Setup current info.
+!
+doc$gl_cur_typeface_len = 0;
+doc$gl_cur_typesize = 0;
+doc$gl_cur_rendition = 0;
+this_page_typeface_len = 0;
+this_page_typesize = 0;
+this_page_rendition = 0;
+typeface_current_flag = 0;
+typesize_current_flag = 0;
+rendition_current_flag = 0;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$font_start_new_page =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Starts a new page (clears "typeface_current" ,"typesize_current",
+!				"rendition_current").
+!	ADD IRB's to define all fonts.
+!--
+BEGIN
+LOCAL
+    fb: REF font_def_block,
+    irdeff: ir_deff,
+    status;
+
+typeface_current_flag = 0;
+typesize_current_flag = 0;
+rendition_current_flag = 0;
+this_page_typeface_len = 0;
+this_page_typesize = 0;
+this_page_rendition = 0;
+
+fb = .doc$gl_font_q_hdr [0];
+WHILE (.fb NEQ doc$gl_font_q_hdr) DO
+    BEGIN
+    irdeff [irb$w_deffont_fn_len] = .fb [fdb$w_filename_len];
+    irdeff [irb$w_deffont_tf_len] = .fb [fdb$w_typeface_len];
+    CH$MOVE	(.fb [fdb$w_filename_len]
+		,fb [fdb$b_filename_str]
+		,irdeff [irb$b_deffont_fn_str]
+		);
+    CH$MOVE	(.fb [fdb$w_typeface_len]
+		,fb [fdb$b_typeface_str]
+		,irdeff [irb$b_deffont_tf_str]
+		);
+    irdeff [irb$w_deffont_ts] = .fb [fdb$w_typesize];
+    irdeff [irb$l_deffont_rend] = .fb [fdb$l_renditions];
+
+    IF NOT (status =
+	doc$$gen_add_irb
+		(doc_rcal$K_def_font	!Type of RCAL
+		,irb$S_ir_deff		!Length of block
+		,irdeff			!Address of block
+		)
+	    )
+      THEN RETURN .status;		!Error, return
+
+    fb = .fb [fdb$a_flink];		!Go on to next font block
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$insure_font =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Insures that a font is currently defined.
+!	Called when there is some text.
+!	If there is no "current typeface" then
+!	a call is made to set one up.
+!
+! IMPLICIT OUTPUTS:
+!	doc$gl_cur_space_width - width of space in current font
+!	doc$gl_cur_space_height - height "  " "
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If current flags for typeface and typesize are off, then
+! set them.
+!
+IF (.typeface_current_flag EQL 0)
+  THEN   set_curr_typeface ();
+IF (.typesize_current_flag EQL 0)
+  THEN   set_curr_typesize ();
+IF (.rendition_current_flag EQL 0)
+  THEN   set_curr_rendition ();
+    
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_curr_typeface =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Call SET TYPEFACE with the current typeface.
+!	If there is none, use "Kilter".
+!--
+BEGIN
+MACRO
+    default_typeface = 'Kilter' %;
+LITERAL
+    tf_len = %CHARCOUNT (default_typeface);
+BIND
+    def_typeface_str_desc = %ASCID default_typeface: VECTOR [2];
+LOCAL
+    irsettf: ir_settf,
+    def_tf_desc: VECTOR [2],
+    status;
+!
+! if nothing there, set it to the default
+!
+IF (.doc$gl_cur_typeface_len EQL 0)
+  THEN
+    BEGIN
+    $typeline ('%WARN: Default typeface used');
+    doc$$append_list_line (%ASCID '%WARN: Default typeface used');
+    doc$$put_list_line ();
+    def_tf_desc [0] = tf_len;
+    def_tf_desc [1] = .def_typeface_str_desc [1];
+    IF NOT (status =
+	doc$$gen_set_typeface	(def_tf_desc)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! If typeface as currently defined for this page is the same as this,
+! then do nothing.
+!
+IF (.doc$gl_cur_typeface_len EQL .this_page_typeface_len)
+  THEN
+    BEGIN
+    IF CH$EQL (.this_page_typeface_len
+		,this_page_typeface_str
+		,.this_page_typeface_len
+		,doc$gl_cur_typeface_str
+		)
+      THEN
+	BEGIN
+	typeface_current_flag = 1;		!Remember it's current
+	RETURN SS$_NORMAL;
+	END;
+    END;
+!
+! Set the internal block up and call routine.
+!
+irsettf [irb$w_typeface_cidx] = .lineb [lin$w_cidx];	!Remember where
+							!this is done.
+irsettf [irb$w_typeface_len] = .doc$gl_cur_typeface_len;
+CH$MOVE	(.doc$gl_cur_typeface_len
+	,doc$gl_cur_typeface_str
+	,irsettf [irb$b_typeface_str]
+	);
+
+IF NOT (status =
+    doc$$gen_add_irb	(doc_rcal$K_set_typeface	!Type
+			,irb$S_ir_settf			!Length
+			,irsettf			!Addr
+			)
+	)
+  THEN RETURN .status;
+!
+! Remember we defined this typeface for this page.
+!
+
+this_page_typeface_len = .doc$gl_cur_typeface_len;
+CH$MOVE	(.this_page_typeface_len
+	,doc$gl_cur_typeface_str
+	,this_page_typeface_str
+	);
+
+typeface_current_flag = 1;		!Remember it's current
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_curr_typesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets current typesize, if none, sets to "12"
+!--
+BEGIN
+LITERAL
+    default_typesize = 12;
+LOCAL
+    irsetts: ir_setts,
+    status;
+!
+! if nothing there, set it to the default
+!
+IF (.doc$gl_cur_typesize EQL 0)
+  THEN
+    BEGIN
+    $typeline ('%WARN: Default typesize used');
+    doc$$append_list_line (%ASCID '%WARN: Default typesize used');
+    doc$$put_list_line ();
+    IF NOT (status =
+	doc$$gen_set_typesize	(.doc$gl_cur_gen_vd, default_typesize)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! If the typesize for this page is already set to that value, then
+! don't change it.
+!
+IF (.this_page_typesize EQL .doc$gl_cur_typesize)
+  THEN
+    BEGIN
+    typesize_current_flag = 1;
+    RETURN SS$_NORMAL
+    END;
+!
+! Set the internal block up and call routine.
+!
+irsetts [irb$w_typesize] = .doc$gl_cur_typesize;
+irsetts [irb$w_typesize_cidx] = .lineb [lin$w_cidx];
+
+IF NOT (status =
+    doc$$gen_add_irb	(doc_rcal$K_set_typesize	!Type
+			,irb$S_ir_setts			!Length
+			,irsetts			!Addr
+			)
+	)
+  THEN RETURN .status;
+
+this_page_typesize = .doc$gl_cur_typesize;
+typesize_current_flag = 1;		!Remember it's current
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_curr_rendition =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets current rendition, if none, doesn't do anything.
+!--
+BEGIN
+LOCAL
+    irsetr: ir_setrend,
+    bits_already_on,
+    status;
+!
+! if nothing there, do nothing.
+!
+IF (.doc$gl_cur_typeface_len EQL 0)
+  THEN RETURN SS$_NORMAL;
+IF (.doc$gl_cur_rendition EQL .this_page_rendition)
+  THEN
+    BEGIN
+    rendition_current_flag = 1;		!Already set to that.
+    RETURN SS$_NORMAL;
+    END;
+!
+! Set the internal block up and call routine.
+!
+bits_already_on = .this_page_rendition AND .doc$gl_cur_rendition;
+irsetr [irb$l_rend_on] = .doc$gl_cur_rendition AND (NOT (.bits_already_on));
+irsetr [irb$l_rend_off] = .this_page_rendition AND (NOT (.bits_already_on));
+irsetr [irb$w_rend_cidx] = .lineb [lin$w_cidx];
+
+IF NOT (status =
+    doc$$gen_add_irb	(doc_rcal$K_set_rendition	!Type
+			,irb$S_ir_setrend		!Length
+			,irsetr				!Addr
+			)
+	)
+  THEN RETURN .status;
+
+this_page_rendition = .doc$gl_cur_rendition;
+rendition_current_flag = 1;		!Remember it's current
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_define_font
+!++
+! FUNCTIONAL DESCRIPTION:
+!	DEFINE FONT command
+! FORMAL PARAMETERS:
+	(font_name_desc: REF VECTOR [2]
+	,typeface_desc: REF VECTOR [2]
+	,typesize
+	,rendition_bits
+	) =
+!--
+BEGIN
+LOCAL
+    fname_start,
+    typeface_start,
+    font_item: REF font_def_block,
+    status;
+
+doc$$insure_pagesize ();		!Make sure a pagesize is specified
+!
+! Make sure we can really define the font now - try it.
+!
+IF NOT (status =
+    doc$$define_font
+		(.doc$gl_cur_gen_vd
+		,.font_name_desc
+		,.typeface_desc
+		,.typesize
+		,.rendition_bits
+		)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: DEFINE FONT call failed');
+    RETURN .status
+    END;
+!
+! OK, Get memory for block
+!
+IF NOT (status =
+    lib$get_vm (%REF (fdb$S_font_def_block), font_item)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t get memory for font def block: ');
+    RETURN doc$$error (.status)
+    END;
+!
+! Initialize font_item
+!
+font_item [fdb$w_typesize] = .typesize;	!Store typesize
+font_item [fdb$l_renditions] = .rendition_bits;	! and rendition bits
+font_item [fdb$w_filename_len] = .font_name_Desc [0];
+font_item [fdb$w_typeface_len] = .typeface_desc [0];
+CH$MOVE	(.font_name_desc [0]
+	,.font_name_desc [1]
+	,font_item [fdb$b_filename_str]
+	);
+CH$MOVE	(.typeface_desc [0]
+	,.typeface_desc [1]
+	,font_item [fdb$b_typeface_str]
+	);
+!
+! Insert entry at rear of queue
+!
+INSQUE	(.font_item, .doc$gl_font_q_hdr [1]);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_typeface
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET TYPEFACE command
+! FORMAL PARAMETERS:
+	(typeface_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$insure_pagesize ();		!PAGESIZE must have been specified
+!
+! Try it out, to see if we really can do it now.
+!
+IF NOT (status =
+    doc$$set_typeface	(.doc$gl_cur_gen_vd, .typeface_desc)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: SET TYPEFACE call failed');
+    RETURN .status
+    END;
+
+IF NOT (status =
+    doc$$get_space_width (.doc$gl_cur_gen_vd)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Can''t get space width');
+    RETURN .status
+    END;
+!
+! Put typeface in the "current" typeface. Clear "typeface_current_flag".
+!
+doc$gl_cur_typeface_len = .typeface_desc [0];
+CH$MOVE	(.doc$gl_cur_typeface_len
+	,.typeface_desc [1]
+	,doc$gl_cur_typeface_str
+	);
+
+typeface_current_flag = 0;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_typesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET TYPESIZE command
+! FORMAL PARAMETERS:
+	(typesize
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$insure_pagesize ();		!Pagesize must have been specified
+!
+! Try it out, to see if we really can do it now.
+!
+IF NOT (status =
+    doc$$set_typesize	(.doc$gl_cur_gen_vd, .typesize)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: SET TYPESIZE call failed');
+    RETURN .status
+    END;
+
+IF NOT (status =
+    doc$$get_space_width (.doc$gl_cur_gen_vd)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Can''t get space width');
+    RETURN .status
+    END;
+
+doc$gl_cur_typesize = .typesize;
+typesize_current_flag = 0;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_rendition
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET RENDITION command
+! FORMAL PARAMETERS:
+	(on_mask
+	,off_mask
+	) =
+!--
+BEGIN
+LOCAL
+    irsetr: ir_setrend,
+    status;
+
+doc$$insure_pagesize ();		!PAGESIZE must have been specified
+!
+! Try it out, to see if we can do it now.
+!
+IF NOT (status =
+    doc$$set_rendition
+		(.doc$gl_cur_gen_vd
+		,.on_mask
+		,.off_mask
+		)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: SET RENDITION call failed');
+    RETURN .status
+    END;
+
+IF NOT (status =
+    doc$$get_space_width (.doc$gl_cur_gen_vd)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Can''t get space width');
+    RETURN .status
+    END;
+
+doc$gl_cur_rendition = .doc$gl_cur_rendition AND (NOT .off_mask);
+doc$gl_cur_rendition = .doc$gl_cur_rendition OR .on_mask;
+
+rendition_current_flag = 0;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

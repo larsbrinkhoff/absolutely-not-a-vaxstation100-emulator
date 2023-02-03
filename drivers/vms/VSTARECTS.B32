@@ -1,0 +1,487 @@
+%title 'vsta$rcs -- Rectangle services'
+MODULE vsta$rcs (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This module contains the rectangle service routines.
+!
+!---
+
+
+!
+! TABLE OF CONTENTS:
+!
+forward routine!s
+	 VSTA$$RCS_MERGE
+	,VSTA$$RCS_INTER_LIST_WITH_LISTS
+	,VSTA$$RCS_INTERSECTION
+	,VSTA$$RCS_UNION
+	;
+
+external routine!s
+	 VS$$ACP_GET_VM
+	,VS$$ACP_FREE_VM
+	,VSTA$$ERROR
+	;
+
+library 'VSTA$LIBRARY:VSTASYMS';
+library 'VSTA$LIBRARY:LIBMACROS';
+library 'SYS$LIBRARY:STARLET';
+
+! PSECT Definitions
+$vsta_psect;
+
+
+
+%sbttl 'VSTA$$RCS_MERGE -- Merge two rc lists'
+global routine VSTA$$RCS_MERGE
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  This routine takes two specified rectangle lists, finds their intersections
+!  and creates a third list containing the resulting list.  It is assumed that
+!  the source lists contain non-intersecting rectangles.  Memory is allocated
+!  for a descriptor which will contain the resulting rectangle list.
+!
+!  FORMAL PARAMETERS
+!
+	(
+	 RC1_COUNT				! number of rectangles in rectangle list 1
+	,RC1_LIST: ref vector [, word, signed]	! address of rectangle list 1
+	,RC2_COUNT				! number of rectangles in rectangle list 2
+	,RC2_LIST: ref vector [, word, signed]	! address of rectangle list 2
+	,RC2_OFFX: signed			! x offset to apply to rc list 2
+	,RC2_OFFY: signed			! y offset to apply to rc list 2
+	,MRC_ADDR_R
+	,MRC_BUFR_SIZE_R
+	,MRC_COUNT_R
+	,MRC_ONE_A: ref vector [, word, signed]
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!---May return ss$_normal or vsta$_ codes if allocation of memory fails
+!
+!  SIDE EFFECTS: memory is allocated
+!
+!--
+begin
+
+local
+	 MRC_LIST	: ref vector [, word, signed]
+	,MRC_SIZE
+	,MAX_MRCS
+	,MRC_LIST_INDEX
+	,MRC_COUNT
+	,RIGHT_1	: signed
+	,RIGHT_2	: signed
+	,BOTTOM_1	: signed
+	,BOTTOM_2	: signed
+	,INTERSECTION_FOUND
+	;
+
+!
+!  Determine the maximum size of the merged list
+!
+MAX_MRCS = .RC1_COUNT * max(.RC2_COUNT,1);
+
+case .MAX_MRCS from 0 to 1
+of set
+	[0]: begin
+		.MRC_BUFR_SIZE_R = 0;
+		.MRC_COUNT_R = 0;
+		.MRC_ADDR_R =  0;
+		return ss$_normal;
+	     end;
+
+	[1]: begin
+		MRC_LIST = .MRC_ONE_A;
+		INTERSECTION_FOUND = 1;
+	     end;
+
+	[outrange]:
+
+		INTERSECTION_FOUND = 0;
+    tes;
+	
+!
+! Generate the rectangle list to be used. Must use intersection of two 
+! input rectangle lists
+!
+MRC_LIST_INDEX = 0;
+MRC_COUNT = 0;	
+
+if .RC2_COUNT leq 0
+then begin
+	!
+	!  If an intersecting rectangle has been
+	!  found then allocate the memory for the
+	!  max posible resulting rectangles
+	!
+	if not .INTERSECTION_FOUND 
+	then begin
+		if not VS$$ACP_GET_VM(
+			 %REF(.MAX_MRCS*8)
+			,MRC_LIST
+			,0
+				)
+		then return ss$_badparam;
+		INTERSECTION_FOUND = 1;
+	     end;
+
+	CH$MOVE(
+		 .RC1_COUNT*8
+		,RC1_LIST[0]
+		,MRC_LIST[0]
+		);
+	MRC_COUNT = .RC1_COUNT;	
+
+      end
+else
+	incr I from 0 to (.RC1_COUNT*4 - 4) by 4
+	do begin
+
+		BOTTOM_1 = .RC1_LIST[.I+1] + .RC1_LIST[.I+3];
+		RIGHT_1 = .RC1_LIST[.I] + .RC1_LIST[.I+2];
+
+		incr J from 0 to (.RC2_COUNT*4 - 4) by 4
+		do begin
+			!
+			! Determine if the two rc.s intersect if so then
+			! determine the coordinated and dimmensions of it
+			!
+			BOTTOM_2 = .RC2_LIST[.J+1] + .RC2_LIST[.J+3] + .RC2_OFFY;
+			RIGHT_2	= .RC2_LIST[.J] + .RC2_LIST[.J+2] + .RC2_OFFX;
+			if (
+			    (.RC2_LIST[.J+1] + .RC2_OFFY lss
+			     .BOTTOM_1)
+					and
+			    (.RC1_LIST[.I+1] lss
+			     .BOTTOM_2)
+					and
+			    (.RC2_LIST[.J] + .RC2_OFFX lss
+			     .RIGHT_1)
+					and
+			    (.RC1_LIST[.I] lss 
+			     .RIGHT_2) 
+			   )
+			then begin
+
+				!
+				!  If an intersecting rectangle has been
+				!  found then allocate the memory for the
+				!  max posible resulting rectangles
+				!
+				if not .INTERSECTION_FOUND 
+				then begin
+					if not VS$$ACP_GET_VM(
+						 %REF(.MAX_MRCS*8)
+						,MRC_LIST
+						,0
+							)
+					then return ss$_badparam;
+					INTERSECTION_FOUND = 1;
+
+				     end;
+
+				!
+				! Code to determine the coordinates of dst rc
+				!
+				MRC_LIST_INDEX = .MRC_COUNT*4;
+
+				MRC_LIST[.MRC_LIST_INDEX] = 
+				   max(.RC1_LIST[.I],
+					.RC2_LIST[.J] + .RC2_OFFX);
+
+				MRC_LIST[.MRC_LIST_INDEX+1] = 
+				   max(.RC1_LIST[.I+1],
+					.RC2_LIST[.J+1] + .RC2_OFFY);
+
+				MRC_LIST[.MRC_LIST_INDEX+2] = 
+				   min(.RIGHT_1 - .MRC_LIST [.MRC_LIST_INDEX],
+				       .RIGHT_2 - .MRC_LIST [.MRC_LIST_INDEX]);
+
+				MRC_LIST[.MRC_LIST_INDEX+3] = 
+				   min(.BOTTOM_1 - 
+					.MRC_LIST [.MRC_LIST_INDEX + 1],
+				       .BOTTOM_2 -
+					.MRC_LIST [.MRC_LIST_INDEX + 1]);
+
+				MRC_COUNT = .MRC_COUNT + 1;
+			     end  ! of generated dst rc !
+		   end; ! end of loop thru rc2 and loop thru rc1 !
+	   end;
+
+.MRC_COUNT_R = .MRC_COUNT;
+.MRC_ADDR_R = .MRC_LIST;
+if (.MAX_MRCS gtr 1) and (.INTERSECTION_FOUND)
+then .MRC_BUFR_SIZE_R = .MAX_MRCS * 8
+else .MRC_BUFR_SIZE_R = 0;
+
+return ss$_normal;
+
+end;	! Of merge rectangles !
+
+
+
+
+%sbttl 'VSTA$$RCS_INTER_LIST_WITH_LISTS-- Special intersect routine'
+global routine VSTA$$RCS_INTER_LIST_WITH_LISTS(
+					 SRC_RC_COUNT
+					,SRC_RC_LIST: ref vector [,word,signed]
+					,SRC_RCSQ:    ref vector [,long]
+					,DST_RCSQ:    ref vector [,long]
+						) = 
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!  This routine will intersect a simple rectangle list with rectangle list 
+!  structure of the following form.  The result will be a structure of the
+!  same form linked into the DST_RCS queue base.
+!
+!		+-----------------------+
+!		|	flink		|
+!		+-----------------------+
+!		|	blink		|
+!		+-----------------------+
+!		|	bcnt		|
+!		+-----------------------+
+!		|	offx		|
+!		+-----------------------+
+!		|	offy		!
+!		+-----------------------+
+!		|	rcc		|
+!		+-----------------------+
+!		| (rectangles...)	|
+!		+-----------------------+
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUT: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: SS$_NORMAL
+!
+!  SIDE EFFECTS: 
+!
+!--
+begin
+
+builtin
+	 insque
+	;
+
+local
+	 RCA		: ref vector [,long]
+	,RC1_LIST	: ref vector [,word,signed]
+	,RC2_LIST	: ref vector [,word,signed]
+	,MAX_NEW_RECS
+	,BOTTOM_1	: signed
+	,BOTTOM_2	: signed
+	,RIGHT_1	: signed
+	,RIGHT_2	: signed
+	,RC2_OFFX	: signed
+	,RC2_OFFY	: signed
+	,NEW_RCA	: ref vector [,long]
+	,NEW_LIST	: ref vector [,word,signed]
+	,NEW_LIST_INDEX
+	,INTERSECTION_FOUND
+	,STAT
+	;
+
+!
+!  Initialize the destination base
+!
+DST_RCSQ [0] = DST_RCSQ [0];
+DST_RCSQ [1] = DST_RCSQ [0];
+
+!
+!  If the source list is empty then just copy the lists
+!
+if .SRC_RC_COUNT leq 0
+then begin
+	RCA = .SRC_RCSQ [0];
+	
+	until .RCA eql SRC_RCSQ [0]
+	do begin
+		if not (STAT=VS$$ACP_GET_VM( RCA [2], NEW_RCA, 0))
+		then return .STAT;
+
+		!
+		!  Copy the rectangle structure
+		!
+		CH$MOVE( .RCA [2], RCA [0], NEW_RCA [0]);
+
+		!
+		!  now insert it into the destination list
+		!
+		insque( NEW_RCA [0], .DST_RCSQ [1]);
+
+		!
+		!  Next list
+		!
+		RCA = .RCA [0];
+
+	     end;
+
+	return SS$_NORMAL;
+     end;
+
+!
+!  Loop thru all the lists in the source rectangle queue
+!
+RCA = .SRC_RCSQ [0];
+
+RC2_LIST = .SRC_RC_LIST;
+
+until .RCA eql SRC_RCSQ [0]
+do begin
+	!
+	!  Initialize the found flag  
+	!
+	INTERSECTION_FOUND = 0;
+	RC1_LIST = RCA [6];
+	RC2_OFFX = .RCA [3];
+	RC2_OFFY = .RCA [4];
+	NEW_LIST_INDEX = 0;
+
+	incr I from 0 to (.RCA [5]*4 - 4) by 4
+	do begin
+
+		BOTTOM_1 = .RC1_LIST[.I+1] + .RC1_LIST[.I+3];
+		RIGHT_1 = .RC1_LIST[.I] + .RC1_LIST[.I+2];
+
+		incr J from 0 to (.SRC_RC_COUNT*4 - 4) by 4
+		do begin
+			!
+			! Determine if the two rc.s intersect if so then
+			! determine the coordinated and dimmensions of it
+			!
+			BOTTOM_2 = .RC2_LIST[.J+1] + .RC2_LIST[.J+3] + .RC2_OFFY;
+			RIGHT_2	= .RC2_LIST[.J] + .RC2_LIST[.J+2] + .RC2_OFFX;
+			if (
+			    (.RC2_LIST[.J+1] + .RC2_OFFY lss
+			     .BOTTOM_1)
+					and
+			    (.RC1_LIST[.I+1] lss
+			     .BOTTOM_2)
+					and
+			    (.RC2_LIST[.J] + .RC2_OFFX lss
+			     .RIGHT_1)
+					and
+			    (.RC1_LIST[.I] lss 
+			     .RIGHT_2) 
+			   )
+			then begin
+
+				!
+				!  If an intersecting rectangle has been
+				!  found then allocate the memory for the
+				!  max posible resulting rectangles
+				!
+				if not .INTERSECTION_FOUND 
+				then begin
+
+					MAX_NEW_RECS= .SRC_RC_COUNT * .RCA [5];
+					if not VS$$ACP_GET_VM(
+						 %REF(.MAX_NEW_RECS*8 + 24)
+						,NEW_RCA
+						,0
+							)
+					then return ss$_badparam;
+					NEW_RCA [2] = .MAX_NEW_RECS*8 + 24;
+					NEW_RCA [3] = .RC2_OFFX;
+					NEW_RCA [4] = .RC2_OFFY;
+					NEW_LIST = NEW_RCA [6];
+					insque( NEW_RCA [0], .DST_RCSQ [1]);
+					INTERSECTION_FOUND = 1;
+
+				     end;
+
+				!
+				! Code to determine the coordinates of dst rc
+				!
+				!  xoffset
+				!  yoffset
+				!  xextent
+				!  yextent
+				!
+				NEW_LIST[.NEW_LIST_INDEX] = 
+				   max(.RC1_LIST[.I],
+					.RC2_LIST[.J] + .RC2_OFFX);
+
+				NEW_LIST[.NEW_LIST_INDEX+1] = 
+				   max(.RC1_LIST[.I+1],
+					.RC2_LIST[.J+1] + .RC2_OFFY);
+
+				NEW_LIST[.NEW_LIST_INDEX+2] = 
+				   min(.RIGHT_1 - .NEW_LIST [.NEW_LIST_INDEX],
+				       .RIGHT_2 - .NEW_LIST [.NEW_LIST_INDEX]);
+
+				NEW_LIST[.NEW_LIST_INDEX+3] = 
+				   min(.BOTTOM_1 - 
+					.NEW_LIST [.NEW_LIST_INDEX + 1],
+				       .BOTTOM_2 -
+					.NEW_LIST [.NEW_LIST_INDEX + 1]);
+
+				NEW_LIST_INDEX = .NEW_LIST_INDEX + 4;
+			     end  ! of generated dst rc !
+
+		   end; ! end of loop thru rc2 !
+
+	   end; ! end of loop thru rc1 !
+	!
+	!  If intersections were found then put the number of resulting
+	!  rectangles in the 6th longword of the RCA 
+	!
+	if .NEW_LIST_INDEX gtr 0
+	then NEW_RCA [5] = .NEW_LIST_INDEX / 4;
+
+	!
+	!  Next list
+	!
+	RCA = .RCA [0];
+
+
+   end;	! End of loop thru all lists in queue !
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+%sbttl 'VSTA$$RCS_INTERSECTION -- Intersect rc.s in one list'
+global routine VSTA$$RCS_INTERSECTION:=
+begin
+return ss$_normal;
+end;
+
+
+
+
+%sbttl 'VSTA$$RCS_UNION -- Union rc.s in one list'
+global routine VSTA$$RCS_UNION:=
+begin
+return ss$_normal;
+end;
+
+
+
+end
+eludom
+

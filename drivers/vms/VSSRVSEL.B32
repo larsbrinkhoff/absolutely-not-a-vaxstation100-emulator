@@ -1,0 +1,1073 @@
+MODULE VS$SRV_SEL (
+			IDENT = 'HI SERVER Selection Module'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+!
+!  Handles SELECTION of objects and MOVING
+!
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!	This module handles selections and MOVEing viewports and icons.
+!
+! ENVIRONMENT:
+!
+! VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_toggle_hi_appear,		!Toggle appearance/disappearance of
+					! symbol bar and "workstation footer"
+    vsta$$srv_help_icon_selected,	!"Help" icon was selected
+    vsta$$srv_prof_icon_selected,	!"profile" icon was selected
+    vsta$$srv_notice_icon_selected,	!"NOTICES" icon was selected
+    vsta$$srv_jobslot_selected,		!A job in a job slot was selected
+    vsta$$srv_sel_move_vp,	!MOVE VIEWPORT was selected
+    vsta$$srv_sel_store,	!STORE menu item was selected
+    vsta$$srv_stop_vp_move,	!Stop moving a viewport, the VDB went away.
+    vsta$$srv_move_ast,		!Got a MOVE AST (moving VP or Job)
+    vsta$$srv_button_ast,	!Got a BUTTON AST (moving VP or JOB)
+    deposit,			!User hit SELECT to stop the move.
+    vsta$$srv_display_wdb,	!Deposit this wdb
+    deposit_job,		!Deposit a job on the screen
+    vsta$$srv_print_white_doc,	!Print a white document
+    vsta$$srv_print_user_vp,	!Print a user VP (what you see is what you get)
+    vsta$$srv_print_term,	!Print a terminal
+    vsta$$srv_print_vp,		!Print contents of currently selected VP.
+    vsta$$srv_cursor_normal,	!Set the normal cursor
+    vsta$$srv_cursor_thinking;	!Set the cursor to "thinking"
+
+! INCLUDE FILES:
+!
+library 'VSTA$LIBRARY:VSTAMACS';	! $DRIVExxx macro's
+library 'VSTA$LIBRARY:VSTADEF';		! VSTA$K_VAXMEM OR VSTA$K_DISPMEM
+library 'VSTA$LIBRARY:VSTAGBL';		! VSTA$K_ symbols
+library 'VSTA$LIBRARY:VSTANATIV';	! Bitmap descriptor symbols
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vs$$vss_redisplay_for_move,		!For fast vp mover
+    vs$$vss_uncover_for_move,		!For fast vp mover
+    vsta$$move_mode,			!Move a screen rectangle.
+    vs$$vds_create_pb,			!Create a PB
+    vs$$vds_paste_vd_to_pb,		!Paste a VD to a PB
+    vs$$vds_create_term_window,		!Create a window, don't tell HI
+    vs$$vss_create_vp,			!Create a viewport
+    vs$$vds_delete_pb,			!Delete a PB
+    vs$$vds_delete_vd,			!Delete a VD
+    vs$$vss_pop_vp_to_top_of_vs,	!Pop VP to top
+    vs$$vss_change_vp_paste,		!Change VP paste order
+    vs$$vss_move_vp_in_vs,		!Move a VP
+    vs$$vss_move_document,		!Move a document (2 VP's).
+    vsta$$srv_pop_current_vp_to_top,	!Pop current vp to top
+    vsta$$srv_zap_vps,			!Delete VPs attached to VDB's.
+    vsta$$srv_pop_wdb,			!Pop WDB to top
+    vsta$$srv_attach_kbd,		!Attach/detach KBD
+    vsta$$srv_attached_gone,		!Attach KBD to highest remaining job
+					! on the screen.
+    vsta$$kbrd_sound_bell,		!Ring the bell.
+    vsta$$srv_restore_vps,		!Restore VP at specified location
+    vsta$$mouse_get_vb_info,		!Find out where the mouse is pointing.
+    vsta$$get_jobslot_icon,		!Create and paste a job slot icon
+    vsta$$foot_empty_slot,		!Make a slot in the footer empty
+    vsta$$foot_find_empty_slot,		! Find first empty slot
+    vsta$$foot_help_store,		! Store the HELP document
+    vsta$$foot_prof_store,		! Store the PROFILE document
+    vsta$$foot_notice_store,		! Store the NOTICES document
+    vsta$$srv_disp_help_kwd,		! routine that puts help page up
+    vsta$$srv_help_curr,		!Open HELP document to current place
+    vsta$$srv_init_notices,		!Init notices document
+    vsta$$srv_prof_curr,		!Open PROFILE to current place
+    vsta$$foot_appear,
+    vsta$$foot_disappear,
+    vsta$$symb_appear,
+    vsta$$symb_disappear,
+    vsta$$load_mouse_from_font,
+    vsta$$get_vt100_backcolor,		!Return background color of Vt100
+    vsta$$tek_get_backcolor;		!Return background color of TEK4014
+
+GLOBAL
+    srv$gl_moving_vp_x_origin,		! if moving a VP
+    srv$gl_moving_vp_y_origin,		! if moving a VP
+    srv$gl_in_move_mode,		!=1 if moving a VP
+    srv$gl_wdb_moving: REF window_data_block,	!If moving a viewport,
+					!this is the WDB
+    srv$gl_move_buffer: VECTOR [3],
+    srv$gl_button_buffer: VECTOR [3];
+
+OWN
+    jobslots_astprm: VECTOR [12 * 2],	!AST parameter stuff
+					!longwords: [0] - slot
+					!	    [1] - jrb
+    jobslots_ast_nxt: REF VECTOR [2]
+	INITIAL (jobslots_astprm),
+    vp_rel_x,				!Where on VP pointer is attached.
+    vp_rel_y,				! " " "
+    user_vp_x_offset,			! Offset of User VP from HI VP.
+    user_vp_y_offset,			! Offset of User VP from HI VP.
+    moving_user_vp_id,			!Viewport id of the VP being moved
+    moving_hi_vp_id,			!Viewport id of the VP being moved
+    last_vs_x,				!Last place we moved something
+    last_vs_y,				!. .
+    old_button_mask;			!Previous button mask in MOVE mode
+
+EXTERNAL
+    jrb_q_hdr,
+    notice_vd_id,			!Notices virtual display
+    srv_vs_id,				!The VS-id we're using
+    vs$gw_vbchan: WORD,			!(to ring the bell)
+    vsta$gl_top_vp,			!The VP "on top"
+    vsta$gl_footer_pb_id,		!"workstation footer" PB id.
+    vsta$gb_notices_in,			!=1 if notices icon is in slot.
+    vs$gl_e_vkb_id,			!VKB-id currently being edited.
+    vsta$gl_last_selected_wdb:		!Last WDB that was selected.
+		REF window_data_block,
+    srv$gl_curr_kbd_wdb,		!Currently attached keyboard wdb_u
+    srv_gl_ignore_delw,			!Tell HI to ignore delete of window
+    vsta$gl_end_session_flag,		! 1 if we're ending session
+    vsta$gl_symbol_vp_id,
+    vsta$gl_footer_vp_id,
+    vsta$gl_footer_start_x,		!VS-X coordinate where footer starts
+    vsta$gl_icon_vd_width,		!Width of an icon
+    vsta$gl_icon_vd_height,		!Height of an icon
+    vsta$gl_help_slot,
+    vsta$gl_notice_slot,
+    vsta$gl_prof_slot,
+    vsta$gl_help_vd_id,
+    vsta$gl_notice_vd_id,
+    vsta$gl_prof_vd_id,
+    vsta$gl_footer_displayed,		!=1 if footer is being displayed
+    srv$gl_notice_wdb: REF window_data_block,	!WDB-u for NOTICES doc.
+    vsta$a_frame_buffer: ref modified_bmds,	! Defined in vbcontrol.b32
+    vsta$gl_screen			! Defined in vbcontrol.b32
+	;
+
+BUILTIN
+    INSQUE, REMQUE;
+
+
+GLOBAL ROUTINE vsta$$srv_toggle_hi_appear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Toggle appearance/disappearance of
+!	symbol bar and "workstation footer"
+! IMPLICIT INPUTS:
+!	vsta$gl_footer_displayed - = 1 if footer is now displayed
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.vsta$gl_footer_displayed EQL 1)
+  THEN
+    BEGIN		!Make it disappear
+    vsta$$foot_disappear ();
+    vsta$$symb_disappear ();
+    END
+  ELSE
+    BEGIN		!MAke it reappear
+    vsta$$foot_appear ();
+    vsta$$symb_appear ();
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_help_icon_selected =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The HELP icon was selected - open it and put on screen.
+!
+!--
+BEGIN
+!
+! Put it up on the screen.
+!
+vsta$$srv_help_curr ();		!At "current" place.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_prof_icon_selected =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The PROFILE icon was selected - start moving it.
+!--
+BEGIN
+!
+! Open profile to current place.
+!
+vsta$$srv_prof_curr ();
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_notice_icon_selected =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The NOTICES icon was selected
+!--
+BEGIN
+LOCAL
+    s;
+!
+! If notices not initialized, do it now.  We avoided doing it during
+! session startup so that users that DON'T deal with their notices won't
+! have to wait for notices initialization.
+!
+IF .notice_vd_id EQL 0
+  THEN
+    IF NOT (s = vsta$$srv_init_notices ())
+      THEN RETURN .s;
+!
+! Erase it from it's slot.
+!
+vsta$$foot_empty_slot (.vsta$gl_notice_slot);	!Not a document--won't do
+						! it itself.
+vsta$gb_notices_in = 0;				!Not in slot anymore.
+vsta$$srv_display_wdb (.srv$gl_notice_wdb);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_jobslot_selected
+!++
+! FUNCTIONAL DESCRIPTION:
+!	A job slot icon was selected - put job on screen.
+! FORMAL PARAMETERS:
+	(jobslot_info: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    slot,
+    jrb: REF job_block,
+    wdb: REF window_data_block,
+    slot_idx,
+    status;
+
+slot_idx = (.jobslot_info - jobslots_astprm) / (2 * 4);
+slot = .jobslot_info [0];
+jrb = .jobslot_info [1];
+!
+! Erase it from it's slot
+!
+vsta$$foot_empty_slot (.slot);
+jrb [jrb$l_slot] = 0;			!Not in any slot now.
+
+deposit_job (.jrb);
+!
+! Attach a keyboard (if any).
+!
+wdb = .jrb [jrb$l_last_vkb_wdb];
+IF (wdb[$base] NEQ 0)
+  THEN
+    vsta$$srv_attach_kbd (.wdb [wdb$l_u_pb_id], .wdb)
+  ELSE
+    vsta$$srv_attach_kbd (0,0);		!Detach prev. keyboard.
+!
+! Attach tablet to previous object within this job that had tablet.
+!
+	wdb = .jrb[jrb$a_last_vtb_wdb];
+	if wdb[$base] neq 0
+	then $ertn (vsta$$srv_attach_tablet) (.wdb [wdb$l_u_pb_id], .wdb);
+
+	SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_print_vp( invertp ) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called from the "Print" menu item response routines.
+!	Calls the routines in the VSPRINT module to get the
+!	real work done.
+! IMPLICIT INPUTS:
+!	vsta$gl_last_selected_wdb
+!--
+BEGIN
+EXTERNAL ROUTINE
+	vsta$$vds_purge_all_vd_rc_lists,
+	vs$$print_screen_rectangle;
+
+LOCAL
+    MOVE$B_RECTANGLE_COPY		! VP copy bitmap descritpor
+		: MODIFIED_BMDS,	! Modified bm structure
+    wdb: REF window_data_block,
+    status;
+
+own
+    string_buffer: VECTOR [128,BYTE],	! string buffer
+    string:	VECTOR [2]		! string descriptor
+		INITIAL(%ALLOCATION(string_buffer),
+			string_buffer);
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Test to see if a printer logical name is defined.  We will abort
+! 	otherwise.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+status=$TRNLOG(LOGNAM = %ASCID 'VSTA$PRINTER',	! Translate SYS$INPUT
+		RSLBUF = string,
+		RSLLEN = string);
+
+if .status neq SS$_NORMAL then	! This coding is because SS$_NOTRAN is
+	begin			! a successful return.
+	external routine vsta$$srv_notice_number;
+	vsta$$srv_notice_number (2007);	! see mfeng.txt for text of message.
+	return ss$_normal;
+	end;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Ok, the printer logical is defined.  Now we will set things up and
+! print.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+wdb = .vsta$gl_last_selected_wdb;	! This is the WDB of the target.
+					
+!  Set up the descriptor for the off screen version of the rectangle
+!
+MOVE$B_RECTANGLE_COPY [MBMD$A_ADDR] = .VSTA$GL_SCREEN + 2*%X'1CB00';
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_X] = 864;
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_Y] = 1088;
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_Z] = 1;
+MOVE$B_RECTANGLE_COPY [MBMD$W_LOCATE] = VSTA$K_DISPMEM;
+
+
+!
+!  Point the frame buffer descriptor to first page of off- screen memory.
+!
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .MOVE$B_RECTANGLE_COPY [MBMD$A_ADDR];
+
+!
+!  Redraw the target document in the off-screen memory page.
+!
+IF NOT (status=vs$$vss_redisplay_for_move(
+					.wdb [wdb$l_hi_vp_id],
+					.wdb [wdb$l_u_vp_id]
+					))
+  THEN
+	BEGIN
+	VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+	$error (vsta$_movmode);
+	END;
+
+!
+!  Call the print module's print screen rectangle, with the origin and extent.
+!
+if not (status=vs$$print_screen_rectangle(
+					0,
+					0,
+					.wdb [wdb$l_hi_vp_width],
+					.wdb [wdb$l_hi_vp_height],
+					.invertp
+					)) 
+then
+begin
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+return $error(vsta$_movdoc);
+end;
+
+!
+!  Restore the ACP's screen pointer.  
+!
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+
+!
+!  Restore the VSS module's data structures after the off-screen display.
+!
+IF NOT (status = vs$$vss_move_document	(
+					.wdb [wdb$l_hi_vp_id]
+					,.wdb [wdb$l_u_vp_id]
+					,.wdb [wdb$l_hi_vp_x_coor]
+					,.wdb [wdb$l_hi_vp_y_coor]
+					)
+	)
+  THEN
+    $error (vsta$_movdoc);
+
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_sel_move_vp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when "move vp" was selected from menu
+! IMPLICIT INPUTS:
+!	vsta$gl_last_selected_wdb
+!--
+BEGIN
+LOCAL
+    fudge_factor,			! Make sure attachment is to inside.
+    rectangle: vector [4,WORD,SIGNED],
+    wdb: REF window_data_block,
+    vs_x: SIGNED,
+    vs_y: SIGNED,
+    status;
+
+fudge_factor = 5;	! Give it some small integer.
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+!
+! Pop the vp to be moved to the top.
+!
+IF NOT (status =
+    vsta$$srv_pop_current_vp_to_top ()
+	)
+  THEN RETURN .status;
+
+!
+! Ask VB driver where the mouse is now, so we can attach the mouse to the
+! right place on the VP.
+!
+IF NOT (status =
+    vsta$$mouse_get_vb_info (vs_x, vs_y, 0)
+	)
+  THEN
+    $error (vsta$_getmseloc);
+
+srv$gl_in_move_mode = 1;	!Indicate that we're in MOVE VP mode
+srv$gl_wdb_moving = .vsta$gl_last_selected_wdb;	!This is the WDB
+wdb = .srv$gl_wdb_moving;
+
+
+moving_user_vp_id = .wdb [wdb$l_u_vp_id];	!Get VP_ID
+
+moving_hi_vp_id = .wdb [wdb$l_hi_vp_id];	!Extract the ID
+
+! Get the offset of the user VP from the HI vp underneath
+user_vp_x_offset = .wdb [wdb$l_u_vp_x_coor]
+		- .wdb [wdb$l_hi_vp_x_coor];
+user_vp_y_offset = .wdb [wdb$l_u_vp_y_coor]
+		- .wdb [wdb$l_hi_vp_y_coor];
+
+!
+! Make the origin known..
+!
+srv$gl_moving_vp_x_origin = .wdb [wdb$l_hi_vp_x_coor];
+srv$gl_moving_vp_y_origin = .wdb [wdb$l_hi_vp_y_coor];
+
+
+
+! *** If mouse not inside VP borders then fake it.
+
+if .vs_x lss (.wdb [wdb$l_u_vp_x_coor] + .fudge_factor)
+	then vs_x = .wdb [wdb$l_u_vp_x_coor] + .fudge_factor;
+
+if .vs_x gtr .wdb [wdb$l_u_vp_x_coor] +
+		.wdb [wdb$l_u_vp_width]
+	then vs_x = (.wdb [wdb$l_u_vp_x_coor] +
+		.wdb [wdb$l_u_vp_width]) - .fudge_factor;
+
+if .vs_y lss (.wdb [wdb$l_u_vp_y_coor] + (50))
+	then vs_y = .wdb [wdb$l_u_vp_y_coor] + 
+					(50);
+
+! Use 50 to avoid pushing VP's
+! off of the top of the screen due to pointer problems.
+
+if .vs_y gtr .wdb [wdb$l_u_vp_y_coor] +
+		.wdb [wdb$l_u_vp_height]
+	then vs_y = (.wdb [wdb$l_u_vp_y_coor] +
+		.wdb [wdb$l_u_vp_height]) - 
+				.fudge_factor;
+
+
+vp_rel_x = .vs_x - .wdb [wdb$l_u_vp_x_coor];
+vp_rel_y = .vs_y - .wdb [wdb$l_u_vp_y_coor];
+
+
+
+! *** Pack up the information for the Screen Rectangle mover.
+! *** We want to move the entire rectangle inside the HI's VP boundaries.
+rectangle[0] = .wdb [wdb$l_hi_vp_x_coor];
+rectangle[1] = .wdb [wdb$l_hi_vp_y_coor];
+rectangle[2] = .wdb [wdb$l_hi_vp_width];
+rectangle[3] = .wdb [wdb$l_hi_vp_height];
+
+! Do the move.
+!
+IF NOT (status=vsta$$move_mode(rectangle,		! Screen rect to move.
+				.vp_rel_x,		! Mouse offset.
+				.vp_rel_y,
+				vs$$vss_uncover_for_move, ! Routine to erase.
+				vs$$vss_redisplay_for_move, ! Routine to copy.
+				.moving_hi_vp_id,	! Parameters to above.
+				.moving_user_vp_id
+				))
+  THEN
+    $error (vsta$_movmode);
+
+vsta$$srv_cursor_normal ();		!Change cursor to normal
+
+IF NOT (status = vs$$vss_move_document	(.moving_hi_vp_id
+					,.moving_user_vp_id
+					,.rectangle[0]
+					,.rectangle[1]
+					)
+	)
+  THEN
+    $error (vsta$_movdoc);
+
+srv$gl_in_move_mode = 0;		!No longer in move mode
+
+! *** Make sure we update our knowledge of where things now are.
+wdb [wdb$l_u_vp_x_coor] = .rectangle [0] + .user_vp_x_offset;
+wdb [wdb$l_u_vp_y_coor] = .rectangle [1] + .user_vp_y_offset;
+wdb [wdb$l_hi_vp_x_coor] = .rectangle [0];
+wdb [wdb$l_hi_vp_y_coor] = .rectangle [1];
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Pop HI objects to the top (if they exist)
+!
+!! IF (.vsta$gl_footer_displayed EQL 1)
+!!  THEN
+!!    BEGIN
+!!    vs$$vss_pop_vp_to_top_of_vs (.vsta$gl_symbol_vp_id);
+!!    vs$$vss_pop_vp_to_top_of_vs (.vsta$gl_footer_vp_id);
+!!    END;
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_sel_store =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when "store" menu item selected.
+! IMPLICIT INPUTS:
+!    vsta$gl_last_selected_wdb
+!
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,
+    next_wdb: REF window_data_block,
+    jrb: REF job_block,
+    wtype,
+    vd_id,
+    slot,			!Which slot to store into
+    temp,
+    status;
+
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+wdb = .vsta$gl_last_selected_wdb;
+jrb = .wdb [wdb$a_jrb];
+
+wtype = .wdb [wdb$b_window_type];	!Get window type
+wtype = (SELECTONE .wtype OF
+    SET
+    [wdb$K_wtype_vt100, wdb$K_wtype_4014, wdb$k_wtype_ts]:
+		wdb$K_wtype_user;	!Terminals and settings are "user"
+					! jobs.
+    [OTHERWISE]: .wtype;
+    TES
+);
+
+IF (.wtype EQL wdb$K_wtype_user)
+  THEN
+    IF NOT (vsta$$foot_find_empty_slot (slot))
+      THEN
+	BEGIN
+	vsta$$kbrd_sound_bell (.vs$gw_vbchan);	!Ring the bell
+	RETURN SS$_NORMAL;	!Do nothing if there is no empty slot.
+	END;
+
+!
+! Zap all the viewports in the JRB
+!
+next_wdb = .jrb [jrb$a_wdb_q_hdr_fl];	!Get first wdb
+WHILE (.next_wdb NEQ jrb [jrb$a_wdb_q_hdr_fl]) DO
+    BEGIN
+    IF NOT (status =
+	 vsta$$srv_zap_vps (.next_wdb)
+	    )
+      THEN RETURN .status;		!Error already logged.
+  !
+  ! If a keyboard was attached, detach it. (Otherwise the user
+  ! doesn't see where he is typing.)
+  !
+    IF ((.next_wdb EQL .srv$gl_curr_kbd_wdb)
+		OR
+        (.next_wdb [wdb$l_u_pb_id] EQL .vs$gl_e_vkb_id))
+      THEN vsta$$srv_attached_gone (.jrb, 0)	!Attach KBD to highest job
+						! remaining on screen..
+      ELSE
+	BEGIN
+	IF (.next_wdb [wdb$l_hi_pb_id] EQL .vs$gl_e_vkb_id)
+	  THEN vsta$$srv_attached_gone (.jrb, 0);!Attach KBD to highest job
+						! remaining on screen..
+	END;					! header field
+!
+! If tablet was attached, detach it and attach tablet to highest job remaining
+! on screen that has tablet.
+!
+	if .next_wdb eql .$extsym (srv$gl_curr_tablet_wdb)
+	then $ertn (vsta$$srv_tablet_gone) (.jrb);
+
+    next_wdb = .next_wdb [wdb$a_flink];
+    END;
+!
+! Store job
+!
+(CASE .wtype FROM 1 TO wdb$K_highest_wtype OF
+    SET
+    [wdb$K_wtype_user]:		!Now includes terminals, TS documents, user VP.
+	BEGIN
+      ! Go get a job icon vd
+	jobslots_ast_nxt = jobslots_astprm [(.slot - 1) * 2];
+	IF NOT (status =
+	    vsta$$get_jobslot_icon (.wdb, .jobslots_ast_nxt, .slot)
+		)
+	  THEN RETURN .status;
+	jrb [jrb$l_slot] = .slot;
+	jobslots_ast_nxt [0] = .slot;	![0]= slot
+	jobslots_ast_nxt [1] = .jrb;	![1]= jrb
+	END;
+    [wdb$K_wtype_help]:
+	BEGIN
+     !
+     ! We are allowed to "store" the HELP document even if the footer
+     ! doesn't exist yet (User hit HELP key in authorization).
+     !
+	IF (.vsta$gl_footer_pb_id NEQ 0)
+	  THEN vsta$$foot_help_store ();
+	jrb [jrb$l_slot] = .vsta$gl_help_slot;
+	END;
+    [wdb$K_wtype_prof]:
+	BEGIN
+	vsta$$foot_prof_store ();
+	jrb [jrb$l_slot] = .vsta$gl_prof_slot;
+	END;
+    [wdb$K_wtype_notice]:
+	BEGIN
+	vsta$$foot_notice_store ();
+	jrb [jrb$l_slot] = .vsta$gl_notice_slot;
+	END;
+    [INRANGE, OUTRANGE]:
+	RETURN $bug (vsta$_storbadwtype
+		,integer_type, .wtype
+		);
+    TES
+);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_stop_vp_move =
+!++!
+! FUNCTIONAL DESCRIPTION:
+!	Stop moving a viewport, the WDB went away.
+! IMPLICIT INPUTS:
+!	srv$gl_wdb_moving
+! SIDE EFFECTS:
+!	move mode is cancelled. The cursor is put back to up-arrow.
+!--
+BEGIN
+
+vsta$$srv_cursor_normal ();		!Change cursor to normal
+srv$gl_in_move_mode = 0;		!No longer in move mode
+
+! *** Make sure we update our knowledge of where things now are.
+srv$gl_wdb_moving [wdb$l_u_vp_x_coor] = 0;
+srv$gl_wdb_moving [wdb$l_u_vp_y_coor] = 0;
+srv$gl_wdb_moving [wdb$l_hi_vp_x_coor] = 0;
+srv$gl_wdb_moving [wdb$l_hi_vp_y_coor] = 0;
+
+!
+! Pop HI objects to the top (if they exist)
+!
+IF (.vsta$gl_footer_displayed EQL 1)
+  THEN
+    BEGIN
+    vs$$vss_pop_vp_to_top_of_vs (.vsta$gl_symbol_vp_id);
+    vs$$vss_pop_vp_to_top_of_vs (.vsta$gl_footer_vp_id);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_move_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when mouse moved in MOVE mode.
+!	Handles a MOVE ast. What we do with it depends on what sort
+! 	of MOVE mode we are in:
+!	0 - not in move mode - do nothing.
+!	1 - move vp mode - move the VP.
+!	2 - move icon mode - move the icon.
+!--
+BEGIN
+LITERAL
+    min_distance_move = 5;	!Number of pixels we must move before really
+				! moving the viewport.
+LOCAL
+    x_moved,
+    y_moved,
+    dist_moved_squared,		!The square of the distance moved.
+    status;
+!
+! Ignore this interrupt if not in MOVE mode anymore.
+!
+IF (.srv$gl_in_move_mode EQL 0)
+  THEN RETURN SS$_NORMAL;
+
+!
+! If we haven't moved very far, do nothing.
+!
+x_moved = .last_vs_x - .srv$gl_move_buffer [0];
+y_moved = .last_vs_y - .srv$gl_move_buffer [1];
+
+dist_moved_squared = (.x_moved * .x_moved ) + (.y_moved * .y_moved);
+IF (.dist_moved_squared LSS (min_distance_move * min_distance_move))
+  THEN RETURN SS$_NORMAL;		!Don't move.
+
+!
+! We assume that the mouse server re-enabled the AST for us.
+!
+last_vs_x = .srv$gl_move_buffer [0];	!Remember where we are for next time
+last_vs_y = .srv$gl_move_buffer [1];	! . .
+
+IF (.srv$gl_in_move_mode EQL 1)
+  THEN
+    BEGIN		!Moving a VP around.
+	IF NOT (status=
+	vs$$vss_move_document
+		(.moving_hi_vp_id		!vp-id's
+		,.moving_user_vp_id
+		,.srv$gl_move_buffer [0] - .vp_rel_x
+		,.srv$gl_move_buffer [1] - .vp_rel_y
+		)
+	)
+      THEN
+	$error (vsta$_movdoc);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_button_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when mouse button hit while in MOVE mode.
+!	If it is SELECT, stop move mode.
+!--
+BEGIN
+LOCAL
+    button_mask: BITVECTOR [32],
+    status;
+!
+! Ignore this interrupt if not in move mode.
+!
+IF (.srv$gl_in_move_mode EQL 0)
+  THEN RETURN SS$_NORMAL;
+
+!
+! Check to see if SELECT has been pressed, if so, stop move mode.
+!
+button_mask = .srv$gl_button_buffer [2];	!Get button mask
+IF (.button_mask [0] EQL 1)
+  THEN deposit ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE deposit =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attempt to deposit the thing we were moving.
+!	if can't, ring the bell and continue in move mode.
+! IMPLICIT INPUTS:
+!     vsta$gl_in_move_mode, etc.
+!--
+BEGIN
+LOCAL
+    vs_x,
+    vs_y,
+    slot,			!Slot we're trying to store into
+    jrb: REF job_block,
+    status;
+
+vs_x = .srv$gl_button_buffer [0];	!Deposit it here
+vs_y = .srv$gl_button_buffer [1];	! . .
+
+IF (.srv$gl_in_move_mode EQL 1)
+  THEN					!Were moving a VP...
+    BEGIN				!Deposit the VP
+    vsta$$srv_stop_vp_move ();
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_display_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deposit a WDB at the specified location
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Pop the WDB to the top
+!
+vsta$$srv_pop_wdb (.wdb);
+!
+! Create the viewports
+!
+
+IF NOT (status =
+    vsta$$srv_restore_vps (.wdb)
+	)
+  THEN
+    RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE deposit_job
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deposit a job on the screen at the spot where it was stored.
+! FORMAL PARAMETERS:
+	(jrb: REF job_block
+	) =
+!--
+BEGIN
+LOCAL
+    wdb_q_hdr,
+    wdb: REF window_data_block,
+    vp_on_top_now,
+    real_top_vp,
+    junk,
+    status;
+
+wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Point to q header.
+vp_on_top_now = .vsta$gl_top_vp;	!Remember what the VP on top NOW is.
+wdb = ..wdb_q_hdr;			!Get first user WDB.
+!
+! Create VP's from top to bottom.
+!
+WHILE (.wdb NEQ .wdb_q_hdr) DO
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_restore_vps (.wdb)
+	    )
+      THEN RETURN .status;
+    vsta$gl_top_vp = .vp_on_top_now;	!Keep thinking that the old top
+					!Vp is still on top..
+    wdb = .wdb [wdb$a_flink];
+    END;
+
+wdb = ..wdb_q_hdr;			!Now get the REAL top VP
+IF (.wdb NEQ .wdb_q_hdr)
+  THEN vsta$gl_top_vp = .wdb [wdb$l_u_vp_id];
+
+!
+! Make sure this JRB is now "on top".
+!
+IF (.jrb [jrb$a_blink] NEQ jrb_q_hdr)
+  THEN
+    BEGIN
+    REMQUE (.jrb, junk);
+    INSQUE (.jrb, jrb_q_hdr);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_print_white_doc =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Print a document which we know is black text on white background.
+!	Call the print routine with a "0" (not reverse).
+!--
+BEGIN
+
+RETURN vsta$$srv_print_vp (0);	!Submit currently selected VP for printing.
+END;
+
+GLOBAL ROUTINE vsta$$srv_print_user_vp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Print a user's VP. What he sees is what he gets.
+!	Therefore, do not reverse (pass "0" to print routine).
+!--
+BEGIN
+
+RETURN vsta$$srv_print_vp (0);	!Submit currently selected VP for printing
+END;
+
+GLOBAL ROUTINE vsta$$srv_print_term =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Print an emulated terminal. We ask the terminal what
+!	the background color is, and if it is black, reverse
+!	all the bits so it prints as black on white.
+! IMPLICIT INPUTS:
+!	vsta$gl_last_selected_wdb - selected viewport
+!--
+BEGIN
+LOCAL
+    wtype,		!Window type
+    vd_id,		!VD-id of terminal body
+    backcolor,		!Returned background color
+    reverse_flag,	!Whether or not to reverse
+    status;
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+!
+! Get terminal body VD, used by emulators to figure out which terminal
+! we are talking about.
+!
+vd_id = .vsta$gl_last_selected_wdb [wdb$l_term_vd_id];
+wtype = .vsta$gl_last_selected_wdb [wdb$b_window_type];
+backcolor = 1;		!Incase we don't succeed
+status =
+   (SELECTONE .wtype OF
+	SET
+	[wdb$k_wtype_vt100]:
+		vsta$$get_vt100_backcolor (.vd_id, backcolor);
+	[wdb$K_wtype_4014]:
+		vsta$$tek_get_backcolor (.vd_id, backcolor);
+	[OTHERWISE]:
+		backcolor = 1;		!? don't know about this terminal
+				      	! WHAT HE SEES IS WHAT HE GETS
+	TES
+    );
+
+
+IF (.backcolor NEQ 0)
+  THEN reverse_flag = 0		!Not black background: leave bits as they are.
+  ELSE reverse_flag = 1;	!Black background: reverse bits.
+
+RETURN vsta$$srv_print_vp (.reverse_flag);	!Submit for printing
+END;
+
+GLOBAL ROUTINE vsta$$srv_cursor_normal =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set the cursor to normal
+!--
+BEGIN
+LOCAL
+    tip_y,
+    status;
+!
+! This routine is called after every menu item has been honored.  For the
+! case of an end-session item, no fonts exist anymore, so if we attempted
+! to change the cursor, we'd get an error.  Hence we now check and exit
+! if we're doing an end-session.
+!
+IF .vsta$gl_end_session_flag
+  THEN RETURN SS$_NORMAL;
+
+tip_y = 0;
+
+IF NOT vsta$$load_mouse_from_font
+		(%ASCID 'VSTA$CURSOR_TYPEFACE'	!Typeface descriptor
+		,0, 0		!Typesize, rendition
+		,0		!Source index
+		,1		!Mask index
+		,7		!Tip-x
+		,.tip_y		!Tip-y
+		,7		!Center-x
+		,max (0, vsta$K_bottom_nopoint - .tip_y)
+				!Center-y (chosen sufficiently small so that
+				!if authorization form is moved to bottom of
+				! screen, user can pick it up by pointing
+				! between bottom of screen and bottom of symbol
+				! bar.)
+		)
+  THEN $error (vsta$_loamsecur
+		,string_type, %ASCID 'Normal'
+		);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_cursor_move =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set the cursor to MOVE mode.
+!--
+BEGIN
+
+IF NOT vsta$$load_mouse_from_font
+		(%ASCID 'VSTA$CURSOR_TYPEFACE'	!Typeface descriptor
+		,0, 0		!Typesize, rendition
+		,2		!Source index
+		,3		!Mask index
+		,15		!Tip-x
+		,15		!Tip-y
+		,15		!Center-x
+		,15		!Center-y
+		)
+  THEN $error (vsta$_loamsecur
+		,string_type, %ASCID 'Move-mode'
+		);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_cursor_thinking =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set cursor to "thinking"
+!--
+BEGIN
+
+IF NOT vsta$$load_mouse_from_font
+		(%ASCID 'VSTA$CURSOR_TYPEFACE'	!Typeface descriptor
+		,0, 0		!Typesize, rendition
+		,4		!Source index
+		,5		!Mask index
+		,15		!Tip-x
+		,15		!Tip-y
+		,15		!Center-x
+		,15		!Center-y
+		)
+  THEN $error (vsta$_loamsecur
+		,string_type, %ASCID 'hourglass'
+		);
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

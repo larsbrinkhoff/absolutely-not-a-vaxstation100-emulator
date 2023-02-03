@@ -1,0 +1,115 @@
+module VSERRARGH ( addressing_mode(external=general,
+				nonexternal = general) ) =
+begin
+
+library 'VSTA$LIBRARY:LIBMACROS';
+
+$vsta_psect;
+
+global routine VS$$ERR_ARGH =
+!++
+! ARGH writes to SYS$ERROR the date, the time, and the contents of 
+! the argument blocks of all the call frames on the stack, starting with
+! the routine that called ARGH.  Only call this from the debugger.
+!
+! INPUT PARAMETERS:
+!	NONE
+!	ARGH should be called from a routine whose arguments are suspect;
+!		it locates the arguments passed to that routine, and writes
+!		them to SYS$ERROR
+!--
+begin
+
+builtin	fp;			! The frame pointer
+!	map fp:ref vector[0,long];	! points to the call frame
+
+library 'sys$library:starlet';
+
+own
+	AP: ref vector [0,long],	! Argument block of calling routine
+	LFP: ref vector [0,long],	! Local pointer to a call frame
+	FAO_LIST: vector [12,long],
+	IOSB:	vector [4,word],
+	ERROR_CHAN: word,
+	FAO_OUTLEN: word,
+	FAO_OUTBUF: vector [256,byte],
+	FAO_OUTDESC: vector [2,long] initial (256,FAO_OUTBUF),
+	ERRFAB: $FAB (fnm='SYS$ERROR',fac=<GET,PUT>),
+	ERRRAB: $RAB (fab=ERRFAB, rbf=FAO_OUTBUF,ubf=FAO_OUTBUF,usz=128);
+local 	CREATE_STAT,
+	STAT;
+
+!
+! We will write this stuff to SYS$ERROR
+!
+	if (not(CREATE_STAT=$CREATE(fab=ERRFAB)))	! Create SYS$ERROR file
+		then return .CREATE_STAT;
+	if (not(STAT=$CONNECT(rab=ERRRAB)))
+		then return .STAT;
+!
+! The following loop tends to loop indefinately if there is a file of length
+! zero.  So we will create a new file every time, as indicated in the FAB.
+!
+!	if .CREATE_STAT neq RMS$_CREATED		! Point to end of file
+!	    then until .ERRRAB[RAB$L_STS] eql RMS$_EOF do $GET(rab=ERRRAB);
+
+!
+! Write the date
+!
+	if(not(STAT=$FAOL(ctrstr=$DESCRIPTOR('!/!/!/!%D!/'),
+			outlen = FAO_OUTLEN,
+			outbuf = FAO_OUTDESC,
+			prmlst = FAO_LIST)))
+		then return .STAT;
+
+	ERRRAB[RAB$W_RSZ] = .FAO_OUTLEN;
+	if (not(STAT=$PUT(rab=ERRRAB)))
+		then return .STAT;
+
+!
+! For all the call frames on the stack except the last two (this one, and
+!   the one for the condition handler),
+!
+	LFP = .FP;			! Initialize the local pointer
+	LFP = .LFP[3];			! Skip the handler call frame
+
+	while .LFP[3] neq 0 do
+	begin
+	AP = .LFP[2];
+	LFP = .LFP[3];
+!
+! Fill in parameter list with the argument block
+!
+	FAO_LIST[0] = ap[0];		! Value of Argument Pointer
+	if .AP eql 0  then FAO_LIST[1] = 0
+	   else
+		begin
+		FAO_LIST[1] = .ap[0];		! Number of Arguments
+		incr I from 1 to .ap[0] do 	! The arguments themselves
+			FAO_LIST[.I+1]=.ap[.I];
+		end;
+!
+! Construct the ASCII string
+!
+	if(not(STAT=$FAOL(
+   ctrstr=$DESCRIPTOR('!/AP = !XL   !2UL Argument!%S (hex):!/!-!#(9XL)'),
+			outlen = FAO_OUTLEN,
+			outbuf = FAO_OUTDESC,
+			prmlst = FAO_LIST)))
+		then return .STAT;
+!
+! Shove it
+!
+	ERRRAB[RAB$W_RSZ] = .FAO_OUTLEN;
+	if (not(STAT=$PUT(rab=ERRRAB)))
+		then return .STAT;
+
+	end;	! End call frame do loop
+
+    if (not(STAT=$CLOSE(fab=ERRFAB)))	! Close SYS$ERROR
+	then return .STAT;
+
+return SS$_NORMAL;
+end;	! End of routine VS$$ERR_ARGH
+end	! End of module VSERRARGH
+eludom

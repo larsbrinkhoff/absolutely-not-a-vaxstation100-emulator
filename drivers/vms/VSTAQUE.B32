@@ -1,0 +1,101 @@
+%title 'vsta$queues -- Data queues'
+MODULE vsta$queues (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! Queue definition module.
+!
+!---
+
+REQUIRE 'vsta$library:vsvdsvdc.r32';
+LIBRARY 'vsta$library:libmacros';
+
+! PSECT Definitions
+$vsta_psect;
+
+GLOBAL 
+	 vsta$l_dsc_size: INITIAL (32)
+	,vsta$l_vdc_size: INITIAL (vdc$s_vdc_blk)
+	,vsta$l_32b_size: INITIAL (32)
+	,vsta$l_128b_size: INITIAL (128)
+	,vsta$l_256b_size: INITIAL (256)
+	,vsta$l_512b_size: INITIAL (512)
+	,vsta$l_1kb_size: INITIAL (1024)
+	,vsta$l_2kb_size: INITIAL (2048);
+
+literal
+!
+! Define largest chunk of memory (number of bytes) that we'll keep around.
+! Anything larger we always call lib$get_vm for, and throw away with
+! lib$free_vm.  Things smaller we try to squirrel away at free time so
+! that we can quickly dole it out when asked.
+!
+	largest_chunk_size = 5000;	! chosen because tek4014 buffers tend
+					! to be in the 4000's.
+global literal
+!
+! Define number of memory queues we'll need.
+!
+	vsta$k_num_mem_queues = largest_chunk_size / 16;
+!
+! Define macro for generating a queue.
+!
+macro
+
+	$gen_q =
+	    vsta$gqv_mem[$idx], vsta$gqv_mem[$idx]
+	    %assign ($idx, $idx + 2)
+	    % ;
+!
+! Define macro that generates n queues.
+!
+macro
+
+	$gen_n_queues (n) [] =
+	    %if n gtr 10
+	    %then
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_q,
+		$gen_n_queues (n-10)
+	    %else
+
+	    %if n gtr 1 and n leq 10
+	    %then
+		$gen_q,
+		$gen_n_queues (n-1)
+	    %else
+
+	    %if n eql 1
+	    %then
+		$gen_q
+	    %fi %fi %fi
+
+	    % ;
+!
+! Initialize $idx so queues point to correct place.
+!
+compileTime
+
+	$idx = 0;
+
+global
+	!
+	!  Define the acp get and free vm queues
+	!
+	vsta$gqv_mem: vector [vsta$k_num_mem_queues * 2, LONG] INITIAL
+		($gen_n_queues (vsta$k_num_mem_queues));
+
+END
+ELUDOM

@@ -1,0 +1,2341 @@
+MODULE VS$SRV_FORM (
+			IDENT = 'HI SERVER Forms Control'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module does the human interface forms management.
+! It takes care of the HELP document, PROFILE form, various menus,
+! notices, workstation footer, etc. that are EITHER read in at
+! initialization time, or created dynamically, and appear based on
+! user actions and profile. The reading and writing of forms files
+! is done in VSSRVFMIO (Forms IO module).
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    create_form_menu,			!Initialize menu for a form
+    vsta$$srv_forms_init,		!initialize forms in a language.
+    init_help_form,			!do help file initialization
+    vsta$$srv_forms_end,		!End session for forms.
+    close_doc,				!Close a document file.
+    delete_all_pics,			!Delete pictures
+    release_checkoff_mem,		!Release memory used by checkoff blks
+    release_edit_mem,			!Release memory used by edit blks
+    startup_doc_file,			!Read in initial doc file stuff
+    create_multi_page_para,		!Create footer, etc. for a doc.
+    vsta$$srv_help_curr,		!Open HELP document to current place
+    vsta$$srv_prof_curr,		!Open PROFILE document to current place
+    vsta$$srv_doc_takedown,		!Take down current page of a document
+    vsta$$srv_open_doc_new,		!Open any document to new place.
+    vsta$$srv_doc_curr,			!open any document to current place
+    show_document_vp,			!Get document vp "on top" of screen.
+    vsta$$srv_disp_help_kwd,		!Display help document (use KEYWORD)
+    vsta$$srv_doc_next_page,		!Go to next page of a document
+    vsta$$srv_doc_prev_page,		!Go to previous page of a document
+    vsta$$srv_doc_firstpage,		!Go to first page of a document
+    vsta$$srv_doc_lastpage,		!Go to last page of a document
+    select_doc_page,			!Go to a page in a document.
+    generate_doc_body_vd,		!Generate the body VD for a page
+    write_doc_body_vd,			!Do calls to write the VD
+    process_rcals,			!Process a bunch of RCALs to write VD
+    paste_pictures,			!Paste the pictures on the page.
+    write_picture,			!Write the picture VD
+    find_checkoff_addr,			!Find checkoff entry
+    find_ede_addr,			!Find editable entry
+    select_checkoff,			!A checkoff item was selected.
+    select_editable_field,		!An editable field was selected.
+    get_relevant_wdb_docblk;		!Given it was selected.
+
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:DOCFILE';
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Termtype symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application pgm symbols
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!vs$m_vkb
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!$string_descriptor
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols, macros
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    get_prof_menu_pb,			!Get profile menu pasteboard
+    get_help_menu_pb,			!Get help menu pasteboard
+    vsta$$srv_open_a_doc,		!Open a document or mess file, read
+					! in header
+    vsta$$srv_read_doc_block,		!Read a block of a document
+    vsta$$srv_close_a_doc,		!Close a document file
+    vsta$$srv_menu_setup,		!Setup menus and message file
+    vsta$$srv_menu_cleanup,		!Delete menus and message file
+    vs$$vds_create_vd,			!Create a VD
+    vs$$vds_delete_vd,			!Delete a VD
+    vs$$vds_create_pb,			!Create a PB
+    vs$$vds_delete_pb,			!Delete a pasteboard
+    vs$$vds_paste_vd_to_pb,		!Paste a VD to a pasteboard
+    vs$$vds_create_term_window,		!Create a term window (no VP)
+    vsta$$srv_pop_only_wdb,		!Pop WDB to top of stacking order
+    vsta$$srv_restore_vps,		!Put VP's on screen.
+    vsta$$srv_vps_fully_visible,	!Make sure VP's will be fully visible
+    vsta$$foot_empty_slot,		!Empty a footer slot.
+    vsta$$srv_vds_write_docfoot,	!Write the document side VD
+    vsta$$srv_helpwin_created,		!Create the HELP window
+    vsta$$srv_profwin_created,		!Create the PROFILE window
+    vs$$txt_setWritingColor,
+    vs$$txt_setBackgroundColor,
+    vs$$txt_defineField,		!Define a field
+    vs$$txt_deleteField,		!Delete a field
+    vs$$txt_set_field_format,		!Set format of a field
+    vs$$txt_defineFont,			!Define a local font
+    vs$$txt_setTypeface,		!set a typeface
+    vs$$txt_setTypesize,		!set a typesize
+    vs$$txt_set_Rendition,		!Set a rendition
+    vs$$txt_addLines,			!Add lines to text block
+    vs$$txt_insertText,			!Insert text into field
+    vs$$txt_appendText,			!Append text to field
+    vsta$$rgn_define_region,		!Define a region
+    vsta$$rgn_set_region_selectable,	!Set a region selectable
+    vsta$$set_rgn_help,			!Set help routine if user on region
+    vsta$$set_vd_help,			!Set help routine if user on VD
+    vsta$$set_pb_help,			!Set help routine if user on PB
+    vsta$$srv_intr_write_checks,	!Write initial checkmarks
+    vsta$$srv_intr_write_edits,		!Write initial stuff into editable
+					! fields.
+    vsta$$srv_intr_chk,			!Interaction- check selected.
+    vsta$$srv_intr_edit,		!Interaction- editable field selected.
+    vsta$$srv_restore_kbd_attach,	!Restore saved KBD attachment
+    vsta$$kbrd_sound_bell,		!Ring the bell
+    vs$$acp_get_vm,
+    vs$$acp_free_vm,
+    vsta$$error;			!Report an error
+
+EXTERNAL
+    vsta$gl_help_slot,		!Slot where HELP document is now.
+    vsta$gl_prof_slot,		!Slot where PROFILE document is now.
+    vs$gl_e_vkb_id,		!VKB currently being edited, or 0
+    srv$gl_prof_menu : hi_menu_block,
+				!Holds menu block for profile
+    srv$gl_help_menu : hi_menu_block,
+				!Holds menu block for help border
+    srv_gl_ignore_delw,		!Ignore the deletion of a window.
+    vs$gw_vbchan: WORD;		!To ring the bell.
+
+GLOBAL
+    help_doc: doc_block;	!"document block" for the help doc
+OWN
+    help_fab: $FAB	(FAC = <BIO,GET>
+			,MRS = 512
+			,RFM = FIX
+			),
+    prof_fab: $FAB	(FAC = <BIO,GET>
+			,MRS = 512
+			,RFM = FIX
+			),
+    curr_help_hdr: header_block,
+    curr_prof_hdr: header_block,
+    curr_language: INITIAL (-1),	!Which language we're using
+    prof_doc: doc_block;		! .. and profile (see vssrvdata.sdl)
+
+!
+! Macro to store a filename in a fab.
+!    
+MACRO
+    $store_name_in_fab (strng, fab) =
+	BEGIN
+	fab [FAB$B_FNS] = %CHARCOUNT (strng);
+	fab [FAB$L_FNA] = UPLIT (strng);
+	END % ;
+!
+! Macro to stuff two words into a longword
+!
+macro $two_words(w0, w1) =
+	begin
+	(w1)^16 + (w0)
+	end % ;
+
+
+GLOBAL ROUTINE create_form_menu
+!++
+! Functional description:
+!
+!	To keep start-session fast, we delay creating form menus and setting
+!	them selectable until the user has first requested the form.
+!	This routine creates the menu after the caller has decided that
+!	the menu is not yet created.
+!
+! Formal parameters:
+	(wdb : REF window_data_block	! structure for form
+	,hi_menu : REF hi_menu_block	! address of human interface menu block
+	,menu_routine			! routine for creating the menu
+	) =
+!--
+BEGIN
+LOCAL
+    s;
+!
+! Establish routine to call.
+!
+BIND ROUTINE create_menu = .menu_routine;
+!
+! Create the menu.
+!
+IF NOT (s = create_menu ())
+  THEN RETURN .s;
+!
+! Make the border of form be selectable, with the appropriate menu specified.
+!
+IF NOT vsta$$rgn_set_region_selectable
+		(.wdb [wdb$l_win_border_vd_id]
+		,0, 0			!Region X,y
+		,0, 0			! no routine or parameter
+		,.hi_menu [hmb$l_pb]	!Popup PB
+		,.hi_menu [hmb$w_def_x]
+		,.hi_menu [hmb$w_def_y]
+		,vsta$K_sel_area
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_forms_init
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize forms in a language.
+! FORMAL PARAMETERS:
+	(language
+	) =
+!--
+BEGIN
+LOCAL
+    name_desc: VECTOR [2],
+    status;
+
+IF (.curr_language EQL .language)	!If this IS the current language,
+  THEN RETURN SS$_NORMAL;		!Nothing to do.
+!
+! Close current files, delete VD's, etc. if we have them.
+!
+IF (.curr_language NEQ -1)		!If no prev language, then do nothing
+  THEN vsta$$srv_forms_end ();		! else delete the old stuff.
+!
+! Initialize variables.
+!
+help_doc [dkb$a_hdr_address] = curr_help_hdr;
+help_doc [dkb$a_fab] = help_fab;
+prof_doc [dkb$a_hdr_address] = curr_prof_hdr;
+help_doc [dkb$l_vd_of_body] = 0;
+prof_doc [dkb$l_vd_of_body] = 0;
+prof_doc [dkb$a_fab] = prof_fab;
+!
+! Get filenames of new files.
+!
+(SELECTONE (.language) OF
+    SET
+    [doc_lang$K_english]:
+	BEGIN
+	$store_name_in_fab ('VSTA$HILIB:HELPENG.EDF', help_fab);
+	$store_name_in_fab ('VSTA$HILIB:PROFENG.EDF', prof_fab);
+	END;
+    [doc_lang$K_french]:
+	BEGIN
+	$store_name_in_fab ('VSTA$HILIB:HELPFRE.EDF', help_fab);
+	$store_name_in_fab ('VSTA$HILIB:PROFFRE.EDF', prof_fab);
+	END;
+    [doc_lang$K_german]:
+	BEGIN
+	$store_name_in_fab ('VSTA$HILIB:HELPGER.EDF', help_fab);
+	$store_name_in_fab ('VSTA$HILIB:PROFGER.EDF', prof_fab);
+	END;
+    [otherwise]:
+	BEGIN
+	RETURN $system_error (SS$_BADPARAM);
+	END;
+    TES
+);
+!
+! Open the message file and create all the menus and popup-pb's.
+!
+IF NOT (status =
+    vsta$$srv_menu_setup (.language)
+	)
+  THEN RETURN .status;
+
+!
+! Open the PROFILE file and read in the header block
+!
+IF NOT (status =
+    startup_doc_file (.language, prof_fab, prof_doc)
+	)
+  THEN RETURN .status;
+!
+!
+! And now, the profile.
+!
+name_desc [0] = .curr_prof_hdr [hdr$w_title_len];
+name_desc [1] = curr_prof_hdr [hdr$b_title_string];
+!
+! Create PB, vd's for PROFILE
+!
+IF NOT (status =
+    create_multi_page_para (prof_doc, name_Desc, %ascid 'User profile')
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    vsta$$srv_profwin_created
+		(.prof_doc [dkb$l_window_id]
+		,.prof_doc [dkb$w_pb_size_x]
+		,.prof_doc [dkb$w_pb_size_y]
+		,.prof_doc [dkb$l_pb]
+		,.vsta$gl_prof_slot	!Where profile doc is now.
+		,prof_doc [dkb$a_wdb]	!Place to store WDB
+		)
+	)
+  THEN RETURN .status;
+
+curr_language = .language;		!Set current language
+RETURN SS$_NORMAL
+END;
+
+ROUTINE init_help_form =
+!++
+! Functional description:
+!
+!	Do what's necessary to open the help file.  We avoid doing this
+!	until the user asks for help the first time, in order that
+!	users NOT asking for help don't have to wait for this initialization
+!	to happen.
+!
+!--
+BEGIN
+LOCAL
+    name_desc: VECTOR [2],
+    status;
+!
+! Open the HELP file and read in the header block
+!
+IF NOT (status =
+    startup_doc_file (.curr_language, help_fab, help_doc)
+	)
+  THEN RETURN .status;
+!
+! Create PB, vd's for HELP document
+!
+name_desc [0] = .curr_help_hdr [hdr$w_title_len];
+name_desc [1] = curr_help_hdr [hdr$b_title_string];
+
+IF NOT (status =
+    create_multi_page_para (help_doc, name_desc, %ascid 'Help')
+	)
+  THEN RETURN .status;
+!
+! Create HI things (window, PB, etc.) for the profile and help document
+!
+IF NOT (status =
+    vsta$$srv_helpwin_created
+		(.help_doc [dkb$l_window_id]
+		,.help_doc [dkb$w_pb_size_x]
+		,.help_doc [dkb$w_pb_size_y]
+		,.help_doc [dkb$l_pb]
+		,.vsta$gl_help_slot	!Where HELP document is now..
+		,help_doc [dkb$a_wdb]	!Place to store WDB
+		)
+	)
+  THEN RETURN .status;
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as to allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF .srv$gl_help_menu [hmb$l_vd] EQL 0
+  THEN
+    IF NOT (status = create_form_menu (
+		.help_doc[dkb$a_wdb],
+		srv$gl_help_menu,
+		get_help_menu_pb
+		))
+      THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_forms_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when user selects "end session". The module
+!	is put back into a virgin state.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Zap document blocks (close file, delete VD's and PB's, WDB, JRB if
+!			multi-page para).
+!
+close_doc (help_doc);
+close_doc (prof_doc);
+!
+! Delete the menus and close the message file.
+!
+vsta$$srv_menu_cleanup ();
+
+curr_language = -1;		!Re-init "current language" to "null"
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE close_doc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Close a document out (for end session).
+! FORMAL PARAMETERS:
+	(docb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Delete the body VD if there is one.
+!
+IF (.docb [dkb$l_vd_of_body] NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.docb [dkb$l_vd_of_body]);
+    docb [dkb$l_vd_of_body] = 0;
+    END;
+!
+! If there were pictures, delete all the VD's for them, too.
+! Also release memory
+!
+IF (.docb [dkb$w_num_pic_blks] NEQ 0)
+  THEN delete_all_pics (.docb [dkb$w_num_pic_blks], .docb [dkb$a_pic_blk]);
+docb [dkb$w_num_pic_blks] = 0;
+
+!
+! If there were checkoff items, release the memory for them.
+!
+release_checkoff_mem (.docb [dkb$w_num_chk_blks], .docb [dkb$a_chk_blk]);
+docb [dkb$w_num_chk_blks] = 0;
+release_edit_mem (.docb [dkb$w_num_edit_blks], .docb [dkb$a_edit_blk]);
+docb [dkb$w_num_edit_blks] = 0;
+!
+! Close file if it exists, which it won't if user powered onyx off early
+! during session startup.
+!
+	if .docb[dkb$a_fab] neq 0
+	then vsta$$srv_close_a_doc (.docb [dkb$a_fab]);
+!
+! Delete multi_page para.
+!
+IF (.docb [dkb$l_pb] NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_pb (.docb [dkb$l_pb]); !Delete PB (and window).
+    docb [dkb$l_pb] = 0;		! This will cause the VSS modul
+    docb [dkb$l_window_id] = 0;		! to delete the WDB & JRB
+    END;
+
+IF (.docb [dkb$l_vd_footer] NEQ 0)	!Footer VD.
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.docb [dkb$l_vd_footer]);
+    docb [dkb$l_vd_footer] = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE delete_all_pics
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete all the picture VD's we had created, and release the
+!	memory allocated for the picture blocks.
+! FORMAL PARAMETERS:
+	(num_blks
+	,blk_addr
+	) =
+!--
+BEGIN
+LOCAL
+    blkh: REF picture_block_header,
+    pic: REF picture_entry,
+    status;
+
+IF (.num_blks EQL 0)
+  THEN RETURN SS$_NORMAL;		!No blocks allocated
+
+INCR i FROM 0 TO .num_blks - 1 DO
+    BEGIN
+    blkh = (.i * 512) + .blk_addr;
+    pic = .blkh + pich$S_picture_block_header;
+    INCR j FROM 1 TO .blkh [pich$w_num_ents] DO
+	BEGIN
+	IF (.pic [pic$l_vd_id] NEQ 0)
+	  THEN vs$$vds_delete_vd (.pic [pic$l_vd_id]);
+	END;
+    END;
+!
+! Now release the memory
+!
+IF NOT vs$$acp_free_vm (%REF (512 * .num_blks), blk_addr, 0)
+  THEN RETURN $error (vsta$_freevm_for
+			,string_type, %ASCID 'document file buffers'
+			);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE release_checkoff_mem
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Release memory used by the checkoff blocks.
+! FORMAL PARAMETERS:
+	(num_blks
+	,blk_addr
+	) =
+!--
+BEGIN
+
+IF (.num_blks EQL 0)
+  THEN RETURN SS$_NORMAL;		!No blocks used, no memory
+
+IF NOT vs$$acp_free_vm (%REF (.num_blks * 512), blk_addr, 0)
+  THEN RETURN $error	(vsta$_freevm_for
+			,string_type, %ASCID 'document "checkoff" blocks'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE release_edit_mem
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Release memory used by the editable field blocks.
+! FORMAL PARAMETERS:
+	(num_blks
+	,blk_addr
+	) =
+!--
+BEGIN
+
+IF (.num_blks EQL 0)
+  THEN RETURN SS$_NORMAL;		!No blocks used, no memory
+
+IF NOT vs$$acp_free_vm (%REF (.num_blks * 512), blk_addr, 0)
+  THEN RETURN $error	(vsta$_freevm_for
+			,string_type, %ASCID 'document "edit" blocks'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE startup_doc_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Prepares the document file - opens file, reads in hdr to
+!	make sure it is ok.
+! FORMAL PARAMETERS:
+	(language
+	,doc_fab: REF BLOCK [,BYTE]
+	,docblk: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    file_desc: VECTOR [2],
+    hdr_blk: REF header_block,
+    buffr: BLOCK [512,BYTE],
+    status;
+
+hdr_blk = .docblk [dkb$a_hdr_address];	!Get address of hdr block
+file_desc [0] = .doc_fab [fab$b_fns];	!Get descriptor to file
+file_desc [1] = .doc_fab [fab$l_fna];	! incase we get an error
+
+!
+! Open file
+!
+IF NOT (status =
+    vsta$$srv_open_a_doc (.doc_fab)
+	)
+  THEN RETURN .status;
+
+! Read header and make sure it is ok
+IF NOT (status =
+    vsta$$srv_read_doc_block (.doc_fab, 1, buffr)
+	)
+  THEN RETURN .status;
+!
+! Copy header to its place
+!
+CH$MOVE	(hdr$S_header_block
+	,buffr
+	,.hdr_blk
+	);
+
+IF (.hdr_blk [hdr$l_sanity] NEQ %X'55550101')
+  THEN RETURN $error (vsta$_doc_inv
+			,string_type, file_desc
+			);
+
+IF (.hdr_blk [hdr$l_language_key] NEQ .language)
+  THEN RETURN $error (vsta$_doc_wrolan
+			,string_type, file_desc
+			);
+
+IF (.hdr_blk [hdr$l_version] NEQ 3)
+  THEN RETURN $error (vsta$_doc_wrover
+			,string_type, file_desc
+			);
+!
+! Remember width of height of the VD
+!
+docblk [dkb$w_body_size_x] = .hdr_blk [hdr$w_page_width];
+docblk [dkb$w_body_size_y] = .hdr_blk [hdr$w_page_length];
+!
+! Highest page number - # body pages + # index pages
+!
+docblk [dkb$w_high_pagenum] = .hdr_blk [hdr$w_num_body_pages] +
+				.hdr_blk [hdr$w_num_index_pages];
+docblk [dkb$w_page_total] = .hdr_blk [hdr$w_num_body_pages] +
+				.hdr_blk [hdr$w_num_index_pages] +
+				.hdr_blk [hdr$w_num_toc_pages];
+
+docblk [dkb$w_cur_page] = 0;
+docblk [dkb$w_cur_page_type] = 0;	!No "current" page.
+docblk [dkb$w_num_pic_blks] = 0;
+docblk [dkb$w_num_chk_blks] = 0;
+docblk [dkb$w_num_edit_blks] = 0;
+
+RETURN SS$_NORMAL
+END;
+
+global ROUTINE create_multi_page_para
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create multi-page paraphanalia for a document file
+! FORMAL PARAMETERS:
+	(docblk: REF doc_block,		!doc_block
+	 name_Desc: REF $string_Descriptor,
+	 help_keyword			!What help page to go to in footer
+	) =
+!--
+BEGIN
+LITERAL
+    blank_space_above = 15;		!Space between body and footer
+LOCAL
+    hdr_blk: REF header_block,
+    width,
+    height,
+    toc_flag,			!=1 if there is a table of contents
+    index_flag,			!=1 if there is an index.
+    status;
+
+hdr_blk = .docblk [dkb$a_hdr_address];	!Get address of hdr block
+!
+! toc_flag and index_flag are used by vsta$$srv_vds_write_docfoot.
+!
+IF (.hdr_blk [hdr$w_num_toc_pages] GTR 0)
+  THEN toc_flag = 1
+  ELSE toc_flag = 0;
+IF (.hdr_blk [hdr$w_num_index_pages] GTR 0)
+  THEN index_flag = 1
+  ELSE index_flag = 0;
+
+!
+! Create everything but the body VD.
+!
+! First, the pasteboard. Big enough to include the footer.
+!
+width = .docblk [dkb$w_body_size_x];
+height = .docblk [dkb$w_body_size_y] + vsta$K_doc_footer_height
+	+ blank_space_above;
+docblk [dkb$w_pb_size_x] = .width;
+docblk [dkb$w_pb_size_y] = .height;
+IF NOT vs$$vds_create_pb
+		(docblk [dkb$l_pb]	!Return PB id
+		,1			!Owner = the ACP
+		,vsta$K_color_white	!Color (should be white)
+		,.width			!X
+		,.height		!Y
+		,0			!UIC
+		,vs$m_vkb		!Has a keyboard
+		,vsta$k_default_protection
+					!Protection mask
+		,.help_keyword		!Address of help keyword descriptor
+		)
+  THEN RETURN $error (vsta$_crepb_for
+			,string_type, %ASCID 'a document'
+			);
+!
+! Create the window
+!
+IF NOT vs$$vds_create_term_window
+		(.docblk [dkb$l_pb]		!PB-id
+		,docblk [dkb$l_window_id]	!Output window id
+		,.name_desc			!name desc
+		,0				!X
+		,0				!Y
+		,.width				!length
+		,.height			!height
+		)
+  THEN RETURN $error (vsta$_crewin_for
+			,string_type, %ASCID 'a document'
+			);
+!
+! Create the footer VD
+!
+IF NOT vs$$vds_create_vd
+		(vsta$K_doc_footer_height !# pixels high
+		,.width			!# pixels wide
+		,1			!Z
+		,1			!Background color
+		,0			!Writing color
+		,3			!Text mode (Internal)
+		,3			!graphics (both)
+		,0			!UIC
+		,0			!Characteristics
+		,0			!Protection
+		,docblk [dkb$l_vd_footer] !Where to put VD-id
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'document footer'
+			);
+!
+! Call the VDS module to write the (static) info on the footer VD.
+! Don't do this if there is only one page or less, however.
+!
+IF .hdr_blk [hdr$w_num_body_pages] GTR 1
+  THEN
+    IF NOT (status =
+	vsta$$srv_vds_write_docfoot (
+	    .docblk			!Address of doc block
+	    ,.toc_flag			! Flags used to put the
+	    ,.index_flag		! appropriate words in footer.
+	    ))
+      THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'footer VD for a document'
+				);
+!
+! Paste footer VD to pasteboard
+!
+IF NOT vs$$vds_paste_vd_to_pb
+		(.docblk [dkb$l_pb]	!Pb-id
+		,.docblk [dkb$l_vd_footer]	!VD-id
+		,0			!Paste at 0, body_height
+		,.docblk [dkb$w_body_size_y] + blank_space_above !. .
+		,0			!On top
+		)
+  THEN RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'footer VD'
+			,string_type, %ASCID 'document pasteboard'
+			);
+!
+! For now, we'll let startup be faster by not writing a body page yet.
+! This will be done when the document is really
+! opened.
+!
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_help_curr =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open HELP document to current place
+!--
+BEGIN
+LOCAL
+    s;
+!
+! If help logic hasn't been initialized yet, do it here.
+!
+IF .help_doc[dkb$l_pb] EQL 0
+  THEN
+    IF NOT (s = init_help_form ())
+      THEN RETURN .s;
+
+IF (.help_doc [dkb$w_cur_page] EQL 0)
+  THEN
+    RETURN vsta$$srv_open_doc_new
+		(help_doc	!doc_block
+		,1		!new page
+		,1		!New page type (TOC)
+		);
+
+! Already open -- put up the current page.
+!
+RETURN vsta$$srv_doc_curr (help_doc);
+END;
+
+GLOBAL ROUTINE vsta$$srv_prof_curr =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open profile to current place
+!--
+BEGIN
+LOCAL
+    s;
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as not allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF .srv$gl_prof_menu[hmb$l_vd] EQL 0
+  THEN
+    IF NOT (s = create_form_menu (
+		.prof_doc[dkb$a_wdb],
+		srv$gl_prof_menu,
+		get_prof_menu_pb
+		))
+      THEN RETURN .s;
+
+IF (.prof_doc [dkb$w_cur_page] EQL 0)
+  THEN
+    RETURN vsta$$srv_open_doc_new
+		(prof_doc	!doc_block
+		,1		!new page
+		,0		!New page type (body)
+		);
+
+! Already open -- put up the current page.
+!
+RETURN vsta$$srv_doc_curr (prof_doc);
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_takedown
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Take down old page of document (delete the body VD), if there was one.
+!	Stop editing fields, release memory used, etc.
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.dkb [dkb$l_vd_of_body] NEQ 0)
+  THEN
+    BEGIN
+    IF (.vs$gl_e_vkb_id EQL .dkb [dkb$l_pb])
+      THEN
+	BEGIN
+	vsta$$srv_restore_kbd_attach ();	!Restore KBD attachment
+						! to the remembered place
+						! This does a "yank" out of
+						!the edited field.
+	END;
+
+    vs$$vds_delete_vd (.dkb [dkb$l_vd_of_body]);
+    dkb [dkb$l_vd_of_body] = 0;
+    END;
+
+delete_all_pics (.dkb [dkb$w_num_pic_blks], .dkb [dkb$a_pic_blk]);
+release_checkoff_mem (.dkb [dkb$w_num_chk_blks], .dkb [dkb$a_chk_blk]);
+release_edit_mem (.dkb [dkb$w_num_edit_blks], .dkb [dkb$a_edit_blk]);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_open_doc_new
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open document to a new place.
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block
+	,new_page
+	,new_page_type
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If we are already open to that place, leave the same VD.
+!
+IF ((.new_page NEQ .dkb [dkb$w_cur_page])
+	OR
+    (.new_page_type NEQ .dkb [dkb$w_cur_page_type]))
+  THEN vsta$$srv_doc_takedown (.dkb);		!Take down old page, if any.
+
+!
+! Now display it.
+!
+IF NOT (status =
+    vsta$$srv_doc_curr (.dkb)
+	)
+  THEN RETURN .status;
+
+!
+! Now that it's there, display the proper body VD unless it is there already.
+!
+
+IF ((.new_page NEQ .dkb [dkb$w_cur_page])
+	OR
+    (.new_page_type NEQ .dkb [dkb$w_cur_page_type]))
+  THEN				!No body VD exists, must create it.
+    BEGIN
+    dkb [dkb$w_cur_page] = .new_page;
+    dkb [dkb$w_cur_page_type] = .new_page_type;
+    IF NOT generate_doc_body_vd
+		(.dkb
+		,.new_page
+		,.new_page_type
+		,dkb [dkb$l_vd_of_body]
+		)
+      THEN RETURN $error (vsta$_doc_genpage);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_curr
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open a document to the current place.
+!	Assumes the proper body VD is already pasted.
+! FORMAL PARAMETERS:
+	(docb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,
+    jrb: REF job_block,
+    status;
+
+wdb = .docb [dkb$a_wdb];		!Get the WDB ptr
+jrb = .wdb [wdb$a_jrb];			!Get pointer to JRB
+
+IF (.jrb [jrb$l_slot] NEQ 0)
+  THEN
+    BEGIN
+    vsta$$foot_empty_slot (.jrb [jrb$l_slot]);
+    jrb [jrb$l_slot] = 0;		!Now not in a slot.
+    END;
+
+IF NOT (status =
+    show_document_vp (.wdb)		!Make viewport appear.
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE show_document_vp
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Makes sure the document appears on top on the screen.
+!	This routine works whether the document was not on the
+!	screen or buried under things.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Pop the wdb to the top.
+!
+vsta$$srv_pop_only_wdb (.wdb);
+!
+! Create the viewports that we need to materialize.
+!
+IF (.wdb [wdb$l_u_vp_id] EQL 0)
+  THEN
+  !
+  ! Create the viewports that we need to materialize.
+  !
+    IF NOT (status =
+	vsta$$srv_restore_vps (.wdb)
+	    )
+      THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_disp_help_kwd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Display HELP for a keyword
+! FORMAL PARAMETERS:
+	(kwd_desc: REF $string_Descriptor
+	) =
+!--
+BEGIN
+LITERAL
+    kwds_per_block = 512 / kw$S_keyword_block;
+LOCAL
+    kwd_len,
+    kwd_buff: VECTOR [512,byte],	!A block from the file.
+    kwd_count,				!How many we've seen so far
+    kwds_left,
+    kwds_left_this_block,
+    page_num,				!Page number
+    kw: REF keyword_block,		!Ptr to keyword-block
+    num_blks,
+    num_kwds,
+    wdb: REF window_data_block,		!For the HELP document
+    status;
+!
+! If help logic hasn't been initialized yet, do it here.
+!
+IF .help_doc[dkb$l_pb] EQL 0
+  THEN
+    IF NOT (status = init_help_form ())
+      THEN RETURN .status;
+
+kwd_len = MIN (.kwd_desc [sd$w_len], vsta$K_doc_keyword_length);
+num_blks = .curr_help_hdr [hdr$w_kwd_num_blocks];
+num_kwds = .curr_help_hdr [hdr$w_num_keywords];
+
+IF (.num_kwds EQL 0)
+  THEN RETURN $error (vsta$_doc_help_nok);	!?No keywords in HELP file
+
+kwd_count = 0;
+INCR i FROM 1 TO .num_blks DO
+    BEGIN
+  ! Read in the block
+    IF NOT (status =
+	vsta$$srv_read_doc_block (.help_doc [dkb$a_fab], .i + 1, kwd_buff)
+	    )
+      THEN RETURN .status;
+
+  ! Search thru the block for the keyword.
+    kwds_left = .num_kwds - .kwd_count;		!keywords left to read.
+    kwds_left_this_block = MIN (.kwds_left, kwds_per_block);
+    kw = kwd_buff;		!Address of first keyword block
+    INCR j FROM 1 TO .kwds_left_this_block DO
+	BEGIN
+	IF (CH$EQL	(.kwd_len	!n1
+			,.kwd_desc [sd$a_adr]	!ptr1
+			,vsta$K_doc_keyword_length
+			,kw [kw$b_ascii]	!ptr2
+			,%C' '		!Fill character
+			)
+	    )
+	  THEN
+	    BEGIN		!Found the keyword!
+	    page_num = .kw [kw$w_page_number];
+	    wdb = .help_doc [dkb$a_wdb];	!Point to WDB
+	!
+	! Make sure document is fully visible (not half off screen, or buried)
+	!
+	    IF NOT (status =
+	        vsta$$srv_vps_fully_visible (.wdb)
+		    )
+	      THEN RETURN .status;
+
+	    IF NOT (status =
+		vsta$$srv_open_doc_new (help_doc, .page_num, 0)
+		    )
+	      THEN RETURN .status;
+	    RETURN SS$_NORMAL;
+	    END;
+	kw = .kw + kw$S_keyword_block;	!Go on to next keyword block
+	END;			!End incr loop through keyword entries
+    kwd_count = .kwd_count + .kwds_left_this_block;	!Bump count
+    END;		!Loop through blocks.
+!
+! Keyword not found
+!
+RETURN $error	(vsta$_kwdnotfnd
+		,string_type, .kwd_desc
+		);
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_next_page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Go to next page of a document
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block		!Info about the document
+	) =
+!--
+BEGIN
+LOCAL
+    hdr: REF header_block,
+    new_page,
+    new_page_type,
+    status;
+!
+! Find out if there IS a next page.
+!
+new_page_type = .dkb [dkb$w_cur_page_type];	!Assume new page type
+						! will equal old page type
+
+hdr = .dkb [dkb$a_hdr_address];		!Point to doc header
+(CASE .dkb [dkb$w_cur_page_type] FROM 0 TO 2 OF
+    SET
+    [0]:		!Now in the body
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ .hdr [hdr$w_num_body_pages])
+	  THEN
+	    BEGIN
+	    new_page = .dkb [dkb$w_cur_page] + 1;
+	    END
+	  ELSE
+	    BEGIN		!Went to first index page..
+	    IF (.hdr [hdr$w_num_index_pages] EQL 0)
+	      THEN
+		BEGIN
+		vsta$$kbrd_sound_bell (.vs$gw_vbchan);	!Ring the bell
+		RETURN SS$_NORMAL		!And do nothing
+		END;
+	    new_page = 1;
+	    new_page_type = 2;			!In INDEX now.
+	    END;
+	END;
+    [1]:		!Now in the TOC
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ .hdr [hdr$w_num_toc_pages])
+	  THEN new_page = .dkb [dkb$w_cur_page] + 1
+	  ELSE
+	    BEGIN
+	    new_page = 1;
+	    new_page_type = 0;			!In Body now
+	    END;
+	END;
+    [2]:		!Now in the INDEX
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ .hdr [hdr$w_num_index_pages])
+	  THEN new_page = .dkb [dkb$w_cur_page] + 1
+	  ELSE
+	    BEGIN
+	    vsta$$kbrd_sound_bell (.vs$gw_vbchan);	!Ring the bell
+	    RETURN SS$_NORMAL		!And do nothing
+	    END;
+	END;
+    TES
+);
+
+! Now reopen to new current place.
+!
+RETURN vsta$$srv_open_doc_new (.dkb, .new_page, .new_page_type);
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_prev_page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Go to previous page of a document
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    hdr: REF header_block,
+    new_page,
+    new_page_type,
+    status;
+!
+! Find out if there IS a previous page.
+!
+new_page_type = .dkb [dkb$w_cur_page_type];	!Assume new type is same
+						! as old type.
+
+hdr = .dkb [dkb$a_hdr_address];		!Point to doc header
+(CASE .dkb [dkb$w_cur_page_type] FROM 0 TO 2 OF
+    SET
+    [0]:		!Now in the body
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ 1)
+	  THEN
+	    BEGIN
+	    new_page = .dkb [dkb$w_cur_page] - 1;
+	    END
+	  ELSE
+	    BEGIN		!Went to the index
+	    IF (.hdr [hdr$w_num_toc_pages] EQL 0)
+	      THEN
+		BEGIN
+		vsta$$kbrd_sound_bell (.vs$gw_vbchan);	!Ring the bell
+		RETURN SS$_NORMAL		!And do nothing
+		END;
+	    new_page = .hdr [hdr$w_num_toc_pages];
+	    new_page_type = 1;			!In TOC now.
+	    END;
+	END;
+    [1]:		!Now in the TOC
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ 1)
+	  THEN new_page = .dkb [dkb$w_cur_page] - 1
+	  ELSE
+	    BEGIN
+	    vsta$$kbrd_sound_bell (.vs$gw_vbchan);	!Ring the bell
+	    RETURN SS$_NORMAL			!And do nothing
+	    END;
+	END;
+    [2]:		!Now in the INDEX
+	BEGIN
+	IF (.dkb [dkb$w_cur_page] NEQ 1)
+	  THEN new_page = .dkb [dkb$w_cur_page] - 1
+	  ELSE
+	    BEGIN
+	    new_page = .hdr [hdr$w_num_body_pages];
+	    new_page_type = 0;			!Go to last page in body
+	    END;
+	END;
+    TES
+);
+!
+! Now reopen to new current place.
+!
+RETURN vsta$$srv_open_doc_new (.dkb, .new_page, .new_page_type);
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_firstpage
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Go to first page of a document
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    hdr: REF header_block,
+    new_page,			!Page number we want
+    new_page_type,		!Type of page we want
+    status;
+
+new_page = 1;				!Going to end up at page 1.
+hdr = .dkb [dkb$a_hdr_address];		!Point to doc header
+!
+! If there is a table of contents, go to the first page of
+! the table of contents.  Otherwise, go to the first body page.
+!
+IF (.hdr [hdr$w_num_toc_pages] EQL 0)
+  THEN new_page_type = 0		!In body
+  ELSE new_page_type = 1;		!TOC
+
+!
+! Now reopen to new current place.
+!
+RETURN vsta$$srv_open_doc_new (.dkb, .new_page, .new_page_type);
+END;
+
+GLOBAL ROUTINE vsta$$srv_doc_lastpage
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Go to last page of a document
+! FORMAL PARAMETERS:
+	(dkb: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    hdr: REF header_block,
+    new_page,
+    new_page_type,
+    status;
+
+hdr = .dkb [dkb$a_hdr_address];		!Point to doc header
+!
+IF (.hdr [hdr$w_num_index_pages] EQL 0)
+  THEN
+    BEGIN		!No index, go to last body page.
+    new_page = .hdr [hdr$w_num_body_pages];
+    new_page_type = 0;			!In body
+    END
+  ELSE
+    BEGIN
+    new_page = 1;			!index, go to page 1.
+    new_page_type = 2;			!INDEX
+    END;
+!
+! Now reopen to new current place.
+!
+RETURN vsta$$srv_open_doc_new (.dkb, .new_page, .new_page_type);
+END;
+
+ROUTINE select_doc_page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Go to a particular page in a document
+!	Someone moved the page pointer and selected a new page number
+!	Not AST level.
+! FORMAL PARAMETERS:
+	(
+	 two_params : vector [2, word]		! wdb_id, page number
+	) =
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,
+    docblk: REF doc_block,
+    hdr: REF header_block,
+    linked_wdb : ref window_data_block,
+    ptype,		!0 (body) or 2 (index)
+    pnum,		!page number relative to type
+    status;
+!
+! Isolate the page number.
+!
+	bind page_num = .two_params[1];
+!
+! Find which doc_block it was.
+!
+!
+IF NOT (status =
+    get_relevant_wdb_docblk (.two_params[0], wdb, docblk, linked_wdb)
+	)
+  THEN RETURN .status;
+
+hdr = .docblk [dkb$a_hdr_address];		!Point to doc header
+
+IF (.hdr [hdr$w_num_body_pages] GEQ page_num)
+  THEN
+    BEGIN
+    ptype = 0;
+    pnum = page_num;
+    END
+  ELSE
+    BEGIN
+    ptype = 2;		!INDEX
+    pnum = page_num - .hdr [hdr$w_num_body_pages];
+    END;
+
+RETURN vsta$$srv_open_doc_new (docblk[$base], .pnum, .ptype);
+END;
+
+ROUTINE generate_doc_body_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates the body VD and calls "write_doc_body_vd" to write it.
+! FORMAL PARAMETERS:
+	(
+	 docblk: REF doc_block
+	,page_num
+	,page_type
+	,returned_vd_id		!Address of returned VD id.
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    linked_wdb : ref window_data_block,
+				!wdb of terminal if wdb is a settings doc.
+    wdb : ref window_data_block,
+				!"relevant" wdb for this doc_block
+    status;
+!
+! Create the VD
+!
+IF NOT vs$$vds_create_vd
+		(.docblk [dkb$w_body_size_y]	!Height
+		,.docblk [dkb$w_body_size_x]	!Width
+		,1			!Z
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Writing color
+		,3			!Text mode (internal)
+		,2			!Graphics (text only)
+		,0			!UIC
+		,0			!Characteristics
+		,0			!Protection
+		,vd_id			!Where to put VD-id
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'document body'
+			);
+
+.returned_vd_id = .vd_id;		!Return the VD-id where he wants it.
+
+!
+! paste it on the PB
+!
+IF NOT vs$$vds_paste_vd_to_pb
+		(.docblk [dkb$l_pb]	!Pb-id
+		,.vd_id			!VD-id
+		,0			!X
+		,0			!Y
+		,0			!On top
+		)
+  THEN RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'document body VD'
+			,string_type, %ASCID 'PB'
+			);
+!
+! Find what wdb is involved, and if this is a settings document, get
+! the linked wdb which represents the terminal itself.
+!
+	wdb = .docblk [dkb$a_wdb];
+
+	if .wdb[wdb$b_window_type] eql wdb$K_wtype_ts
+	then linked_wdb = .wdb [wdb$a_ter_wdb]
+	else linked_wdb = wdb[$base];
+
+IF NOT (status = write_doc_body_vd
+		(
+		wdb[$base]
+		,docblk[$base]
+		,.vd_id
+		,.page_num
+		,.page_type
+		)
+	)
+  THEN
+    BEGIN
+  ! Delete the VD
+    RETURN .status;
+    END;
+
+!
+! Now we can paste the pictures!
+!
+IF NOT (status =
+    paste_pictures (docblk[$base])
+	)
+  THEN RETURN .status;
+!
+! Write initial checkmarks, editable fields if necessary.
+!
+    IF NOT (status =
+	vsta$$srv_intr_write_checks	!Write initial checkmarks
+		(.docblk [dkb$w_num_chk_blks]
+		,.docblk [dkb$a_chk_blk]
+		,.vd_id
+		,linked_wdb[$base]	!"Relevant wdb"
+		)
+	    )
+      THEN RETURN .status;
+
+    IF NOT (status =
+	vsta$$srv_intr_write_edits	!Write stuff into editable fields
+		(.docblk [dkb$w_num_edit_blks]
+		,.docblk [dkb$a_edit_blk]
+		,.vd_id
+		,linked_wdb[$base]	!"relevant" wdb.
+		)
+	    )
+      THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_doc_body_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Generates the document VD for a particular page.
+! FORMAL PARAMETERS:
+	(
+	 wdb : ref window_data_block
+				!Address of relevant window data block
+	,docblk: REF doc_block	!doc block
+	,vd_id			!VD-ID (may not be the one in dkb$l_vd_of_body)
+	,page_num		!Which page
+	,page_type		!Which type of page (0= body, 1=toc, 2=index)
+	) =
+!--
+BEGIN
+LITERAL
+    num_ppes_per_block = 512 / ppe$S_page_ptr_entry;
+LOCAL
+    dochdr: REF header_block,
+    hdr_block_number,	!block number of the header we want
+    buffr: VECTOR [512,BYTE],
+    block_offset,
+    ppe: REF page_ptr_entry,
+    pgent: REF page_entry,
+    lde: REF lindef_entry,
+    num_ldes,			!Number of LDE's defined
+    first_rcal_block,		!First block with RCAL's
+    num_rcal_blocks,		!How many RCAL blocks there are
+    rcal,			!Address of first RCAL
+    num_rcals,			!Number of RCAL's in this block
+    checkoff_block,
+    num_ck_blocks,
+    picture_block,
+    num_pic_blocks,
+    num_ed_blocks,
+    editable_block,
+    status;
+
+dochdr = .docblk [dkb$a_hdr_address];	!Get address of header
+
+hdr_block_number =
+(SELECTONE .page_type OF
+    SET
+    [0]: .dochdr [hdr$w_body_ppe_block];	!Body page
+    [1]: .dochdr [hdr$w_toc_ppe_block];		!TOC
+    [2]: .dochdr [hdr$w_index_ppe_block];	!Index
+    TES
+);
+!
+! Possibly increment hdr_block_number
+!
+block_offset = (.page_num - 1) / num_ppes_per_block;
+hdr_block_number = .hdr_block_number + .block_offset;
+!
+! Now hdr_block_number is the block where the header is.
+! Read it in.
+!
+IF NOT (status =
+    vsta$$srv_read_doc_block
+		(.docblk [dkb$a_fab]		!FAB address
+		,.hdr_block_number		!Block number
+		,buffr				!Addr of buffer
+		)
+	)
+  THEN RETURN .status;
+!
+! Get address of the ppe
+!
+ppe = buffr + ((.page_num - 1 - (.block_offset * num_ppes_per_block))
+		* ppe$S_page_ptr_entry);
+!
+! Read in each block and "execute" it.
+! The first block gives us info about defining lines
+!
+first_rcal_block = .ppe [ppe$w_block];
+num_rcal_blocks = .ppe [ppe$w_num_blocks];
+IF NOT (status =
+    vsta$$srv_read_doc_block
+		(.docblk [dkb$a_fab]		!FAB address
+		,.first_rcal_block		!Block number
+		,buffr				!Addr of buffer
+		)
+	)
+  THEN RETURN .status;
+!
+! Start off by defining the lines using the LDE's.
+!
+num_rcals = .buffr;			!Get # of RCALs
+pgent = buffr + 4;			!Address of page-ent
+num_ldes = .pgent [pe$w_num_ldes];
+checkoff_block = .pgent [pe$w_checkoff_block];
+num_ck_blocks = .pgent [pe$w_num_ck_blocks];
+picture_block = .pgent [pe$w_picture_block];
+num_pic_blocks = .pgent [pe$w_num_pic_blocks];
+editable_block = .pgent [pe$w_editable_block];
+num_ed_blocks = .pgent [pe$w_num_edit_blocks];
+
+!
+! Allocate memory for picture blocks and read them in.
+! Also allocate memory for checkoff blocks and read them in.
+!
+IF (.num_ck_blocks NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$acp_get_vm
+		(%REF (512 * .num_ck_blocks), docblk [dkb$a_chk_blk], 0)
+      THEN RETURN $sysres	(vsta$_getmem
+				,integer_type, (512 * .num_ck_blocks)
+				,string_type, %ASCID 'doc "checkoff" blocks'
+				);
+    INCR i FROM 0 TO .num_ck_blocks - 1 DO
+	BEGIN
+	IF NOT (status =
+	    vsta$$srv_read_doc_block
+			(.docblk [dkb$a_fab]
+			,.checkoff_block + .i
+			,.docblk [dkb$a_chk_blk] + (512 * .i)
+			)
+	 	)
+	  THEN RETURN .status;
+	END;
+    END;
+
+docblk [dkb$w_num_chk_blks] = .num_ck_blocks;	!Remember how many ck blocks
+
+IF (.num_ed_blocks NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$acp_get_vm
+		(%REF (512 * .num_ed_blocks), docblk [dkb$a_edit_blk], 0)
+      THEN RETURN $sysres	(vsta$_getmem
+				,integer_type, (512 * .num_ed_blocks)
+				,string_type, %ASCID 'doc "edit" blocks'
+				);
+    INCR i FROM 0 TO .num_ed_blocks - 1 DO
+	BEGIN
+	IF NOT (status =
+	    vsta$$srv_read_doc_block
+			(.docblk [dkb$a_fab]
+			,.editable_block + .i
+			,.docblk [dkb$a_edit_blk] + (512 * .i)
+			)
+	 	)
+	  THEN RETURN .status;
+	END;
+    END;
+
+docblk [dkb$w_num_edit_blks] = .num_ed_blocks;	!Remember how many ed blocks
+
+IF (.num_pic_blocks NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$acp_get_vm
+		(%REF (512 * .num_pic_blocks), docblk [dkb$a_pic_blk], 0)
+      THEN RETURN $sysres	(vsta$_getmem
+				,integer_type, (512 * .num_pic_blocks)
+				,string_type, %ASCID 'doc "picture" blocks'
+				);
+    INCR i FROM 0 TO .num_pic_blocks - 1 DO
+	BEGIN
+	IF NOT (status =
+	    vsta$$srv_read_doc_block
+			(.docblk [dkb$a_fab]
+			,.picture_block + .i
+			,.docblk [dkb$a_pic_blk] + (512 * .i)
+			)
+	 	)
+	  THEN RETURN .status;
+	END;
+    END;
+
+docblk [dkb$w_num_pic_blks] = .num_pic_blocks;	!Remember how many pic blocks
+
+IF (.num_ldes EQL 0)
+  THEN RETURN SS$_NORMAL;		!No lines; nothing to do.
+
+lde = .pgent + pe$S_page_entry;		!Point at first LDE
+!
+! Add the first set of lines using the first LDE entry
+!
+IF NOT vs$$txt_AddLines
+		(.vd_id    
+		,.lde [lde$w_num_lines]	!Number of lines
+		,.lde [lde$w_lin_size]	!Line height
+		)
+  THEN RETURN $error (vsta$_addlines);
+!
+! Add lines if necessary
+!
+IF (.num_ldes GTR 1)
+  THEN
+    INCR i FROM 2 TO .num_ldes DO
+	BEGIN
+	lde = .lde + lde$S_lindef_entry;	!Go to next LDE
+	IF NOT vs$$txt_addLines
+			(.vd_id
+			,.lde [lde$w_num_lines]
+			,.lde [lde$w_lin_size]
+			)
+	  THEN RETURN $error (vsta$_addlines);
+	END;
+!
+! Set writing color, background color
+!
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+!
+! Lines added - now setup for RCAL loop.
+!
+rcal = .lde + lde$S_lindef_entry;	!RCAL's start right after LDE's
+IF NOT (status =
+    process_rcals (wdb[$base], .docblk, .vd_id, .num_rcals, .rcal)
+	)
+  THEN RETURN .status;
+
+IF (.num_rcal_blocks GTR 1)
+  THEN
+    INCR i FROM 1 TO .num_rcal_blocks-1 DO
+	BEGIN
+	IF NOT (status =
+	    vsta$$srv_read_doc_block
+			(.docblk [dkb$a_fab]		!FAB address
+			,.first_rcal_block + .i		!Block number
+			,buffr				!Addr of buffer
+			)
+		)
+	  THEN RETURN .status;
+	num_rcals = .buffr;
+	rcal = buffr + 4;
+	IF NOT (status =
+	    process_rcals (wdb[$base], .docblk, .vd_id, .num_rcals, .rcal)
+		)
+	  THEN RETURN .status;
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_rcals
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do RCALS to put things on the screen.
+! FORMAL PARAMETERS:
+	(
+	 wdb : ref window_data_block
+				!Address of relevant window data block
+	,docblk			!Address of doc_block
+	,vd_id			!The vd-id
+	,num_rcals		!How many
+	,firstr			!Address of the first RCAL
+	) =
+!--
+BEGIN
+LITERAL
+    ff_right = 1,		!Field is right-justified
+    ff_center = 2;		!Field is centered
+LOCAL
+    rcal: REF rcal_header,
+    rcdeffld: REF rcal_def_field,
+    rcundeff: REF rcal_undef_field,
+    rccen: REF rcal_center_field,
+    rcrj: REF rcal_rj_field,
+    rcins: REF rcal_insert_text,
+    rcapp: REF rcal_append_text,
+    rcsel: REF rcal_set_selectable,
+    rcdeffont: REF rcal_def_font,
+    rcsettf: REF rcal_set_typeface,
+    rcsetts: REF rcal_set_typesize,
+    rcsetr: REF rcal_set_rendition,
+    rcedit: REF rcal_editable,
+    desc_1: VECTOR [2],
+    desc_2: VECTOR [2],
+    status;
+
+rcal = .firstr;			!Get address of first RCAL
+INCR i FROM 1 TO .num_rcals DO
+    BEGIN
+    (CASE .rcal [rcl$w_type] FROM 0 TO doc_rcal$K_mark_field - 1 OF
+	SET
+	[doc_rcal$K_def_field]:
+	    BEGIN
+	    rcdeffld = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_definefield
+			(.vd_id
+			,.rcdeffld [rcl$w_def_fld_line]	!Line
+			,.rcdeffld [rcl$w_def_fstart]	!Starting pos
+			,.rcdeffld [rcl$w_def_fsize]	!Size (pixels)
+			)
+	      THEN RETURN $error (vsta$_deftxtfld);
+	    END;
+	[doc_rcal$K_undef_field]:
+	    BEGIN
+	    rcundeff = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_deleteField
+			(.vd_id
+			,.rcundeff [rcl$w_undef_fld_line]	!Line
+			,1				!Position
+			)
+	      THEN RETURN $error (vsta$_deldeffld);
+	    END;
+	[doc_rcal$K_center_field]:
+	    BEGIN
+	    rccen = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_set_field_format
+			(.vd_id
+			,.rccen [rcl$w_cen_fld_line]	!line
+			,.rccen [rcl$w_cen_fld_id]	!field
+			,ff_center
+			)
+	      THEN RETURN $error (vsta$_setfldfmt);
+	    END;
+	[doc_rcal$K_rj_field]:
+	    BEGIN
+	    rcrj = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_set_field_format
+			(.vd_id
+			,.rcrj [rcl$w_rj_fld_line]	!line
+			,.rcrj [rcl$w_rj_fld_id]	!field
+			,ff_right			!New format
+			)
+	      THEN RETURN $error (vsta$_setfldfmt);
+	    END;
+	[doc_rcal$K_insert_text]:
+	    BEGIN
+	    rcins = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcins [rcl$w_ins_txt_size];
+	    desc_1 [1] = .rcins + rcl$K_ins_txt_str;
+	    IF NOT vs$$txt_insertText
+			(.vd_id
+			,desc_1			!The text string
+			,.rcins [rcl$w_ins_txt_line]	!line
+			,.rcins [rcl$w_ins_txt_fld]	!field
+			,1			!At cpos = 1
+			)
+	      THEN RETURN $error (vsta$_writet
+				,string_type, %ASCID 'text in document'
+				);
+	    END;
+	[doc_rcal$K_append_text]:
+	    BEGIN
+	    rcapp = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcapp [rcl$w_app_txt_size];
+	    desc_1 [1] = .rcapp + rcl$K_app_txt_str;
+	    IF NOT vs$$txt_appendText
+			(.vd_id
+			,desc_1				!Descriptor to text
+			,.rcapp [rcl$w_app_txt_line]	!line
+			,.rcapp [rcl$w_app_txt_fld]	!field
+			)
+	      THEN RETURN $error (vsta$_writet
+				,string_type, %ASCID 'text in document'
+				);
+	    END;
+	[doc_rcal$K_set_selectable]:
+	    BEGIN
+	    rcsel = .rcal + rcl$S_rcal_header;
+	    IF NOT vsta$$rgn_define_region
+			(.vd_id
+			,.rcsel [rcl$w_sel_x_orig]	!X-orig
+			,.rcsel [rcl$w_sel_y_orig]	!Y-orig
+			,.rcsel [rcl$w_sel_x_extent]	!X-extent
+			,.rcsel [rcl$w_sel_y_extent]	!Y-extent
+			)
+	      THEN RETURN $error (vsta$_defrgn);
+  !
+  ! If the link is non-zero and the page number is 0,
+  ! then this is a checkoff item.
+  !
+	    IF ((.rcsel [rcl$w_sel_link] NEQ 0)
+			AND
+		(.rcsel [rcl$w_sel_docpage] EQL 0))
+	      THEN
+		BEGIN
+		LOCAL
+		   cka;
+
+		IF NOT find_checkoff_addr
+				(.docblk, .rcsel [rcl$w_sel_link], cka)
+		  THEN RETURN $bug (vsta$_doc_ckenotfnd);
+
+		IF NOT vsta$$rgn_set_region_selectable
+			(.vd_id
+			,.rcsel [rcl$w_sel_x_orig]
+			,.rcsel [rcl$w_sel_y_orig]
+			,select_checkoff
+			,$two_words (.wdb[wdb$w_id], .rcsel[rcl$w_sel_link])
+						!Pass wdb + link number
+			,0, 0, 0		!No popup-PB
+			,vsta$K_sel_text	!Selectable attribute
+			)
+		  THEN RETURN $error (vsta$_setrgnsel);
+		END
+	      ELSE
+		BEGIN			
+		IF NOT vsta$$rgn_set_region_selectable
+			(.vd_id
+			,.rcsel [rcl$w_sel_x_orig]
+			,.rcsel [rcl$w_sel_y_orig]
+			,select_doc_page
+			,$two_words (.wdb[wdb$w_id],.rcsel [rcl$w_sel_docpage])
+							!Which wdb and page
+			,0, 0, 0			!no popup-PB
+			,vsta$K_sel_text		!Selectable attribute
+			)
+	 	  THEN RETURN $error (vsta$_setrgnsel);
+		END;
+	    END;
+	[doc_rcal$K_def_font]:
+	    BEGIN
+	    rcdeffont = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcdeffont [rcl$w_deffont_fn_len];
+	    desc_1 [1] = .rcdeffont + rcl$K_deffont_fn_str;
+	    desc_2 [0] = .rcdeffont [rcl$w_deffont_tf_len];
+	    desc_2 [1] = .desc_1 [1] + .desc_1 [0];
+	    IF NOT vs$$txt_defineFont
+			(.vd_id
+			,desc_1		!File descriptor
+			,desc_2		!Typeface descriptor
+			,.rcdeffont [rcl$w_deffont_ts]	!Typesize
+			,.rcdeffont [rcl$l_deffont_rend] !rendition
+			)
+	      THEN RETURN $error (vsta$_deffnt_from
+				,string_type, desc_1
+				);
+	    END;
+	[doc_rcal$K_set_typeface]:
+	    BEGIN
+	    rcsettf = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcsettf [rcl$w_typeface_len];
+	    desc_1 [1] = .rcsettf + rcl$K_typeface_str;
+	    IF NOT vs$$txt_setTypeface
+			(.vd_id
+			,desc_1		!Typeface descriptor
+			)
+	      THEN RETURN $error (vsta$_settf
+				,string_type, desc_1
+				);
+	    END;
+	[doc_rcal$K_set_typesize]:
+	    BEGIN
+	    rcsetts = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_setTypesize
+			(.vd_id
+			,.rcsetts [rcl$w_typesize]
+			)
+	      THEN RETURN $error (vsta$_setts);
+	    END;
+	[doc_rcal$K_set_rendition]:
+	    BEGIN
+	    rcsetr = .rcal + rcl$S_rcal_header;
+	    IF NOT vs$$txt_set_Rendition
+			(.vd_id
+			,.rcsetr [rcl$l_rend_off]	!off mask
+			,.rcsetr [rcl$l_rend_on]	!On mask
+			)
+	      THEN RETURN $error (vsta$_setrend);
+	    END;
+	[doc_rcal$K_editable]:
+	    BEGIN
+	    LOCAL
+		flags,
+		ede: REF editable_entry;
+	    rcedit = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		find_ede_addr (.docblk, .rcedit [rcl$w_ed_id] ,ede)
+		    )
+	      THEN RETURN $bug (vsta$_doc_edenotfnd);
+
+	    flags = .ede [ede$l_flags];		!Get edit flags
+	    IF (.flags AND ede$K_flag_center)
+	      THEN
+		BEGIN
+		IF NOT vs$$txt_set_field_format
+				(.vd_id
+				,.ede [ede$w_line]
+				,.ede [ede$w_field]
+				,ff_center
+				)
+		  THEN RETURN $error (vsta$_setfldfmt);
+		END;
+	    IF NOT vsta$$rgn_define_region
+			(.vd_id
+			,.ede [ede$w_field]		!X-orig
+			,.ede [ede$w_y_orig]		!Y-orig
+			,.ede [ede$w_space]		!X-extent
+			,.ede [ede$w_y_extent]		!Y-extent
+			)
+	      THEN RETURN $error (vsta$_defrgn);
+
+	    IF NOT vsta$$rgn_set_region_selectable
+			(.vd_id
+			,.ede [ede$w_field]
+			,.ede [ede$w_y_orig]
+			,select_editable_field
+			,$two_words (.wdb[wdb$w_id], .ede[ede$w_id])
+						!ast parameter is wdb and id
+			,0, 0, 0		!no popup-PB
+			,vsta$K_sel_text	!Selectable attribute
+			)
+	      THEN RETURN $error (vsta$_setrgnsel);
+	    END;
+	TES
+    );
+    rcal = .rcal + .rcal [rcl$w_size];		!Go to next RCAL
+    END;		!Of INCR loop for the RCAL's.
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE paste_pictures
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given the info in the docblk, paste all the pictures for this
+!	page. This routine is only called if there are some to do.
+! FORMAL PARAMETERS:
+	(docblk: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    pich: REF picture_block_header,
+    pic: REF picture_entry,
+    status;
+
+INCR i FROM 1 TO .docblk [dkb$w_num_pic_blks] DO
+    BEGIN
+    pich = .docblk [dkb$a_pic_blk] + (512 * (.i - 1));
+    pic = .pich + pich$S_picture_block_header;	!First picture entry
+    INCR j FROM 1 TO .pich [pich$w_num_ents] DO
+	BEGIN
+	IF NOT vs$$vds_create_vd
+			(.pic [pic$w_y_size]
+			,.pic [pic$w_x_size]
+			,1			!Z
+			,vsta$K_color_white	!Background color
+			,vsta$K_color_black	!Text color
+			,3			!"Text mode" (internal)
+			,2			!"Graphics" (text only)
+			,0			!UIC
+			,0			!Characteristics
+			,0			!Protection
+			,pic [pic$l_vd_id]	!Return vd-id here
+			)
+	  THEN RETURN $error (vsta$_crevd_for
+			,string_type, %ASCID 'picture in document'
+			);
+
+	IF NOT (status =
+	    write_picture (.pic)		!Do the TXT calls.
+		)
+	  THEN RETURN $error (vsta$_writet
+				,string_type, %ASCID 'picture in document'
+				);
+
+  !
+  ! Paste the picture.
+  !
+	IF NOT vs$$vds_paste_vd_to_pb
+		    (.docblk [dkb$l_pb]
+		    ,.pic [pic$l_vd_id]
+		    ,.pic [pic$w_x_origin]
+		    ,.pic [pic$w_y_origin]
+		    ,0				!On top
+		    )
+	  THEN RETURN $error (vsta$_paste_what
+				,string_type, %ASCID 'picture'
+				,string_type, %ASCID 'document'
+				);
+	pic = .pic + pic$S_picture_entry;	!Go to next entry
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_picture
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write a picture VD.
+! FORMAL PARAMETERS:
+	(pic: REF picture_entry
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    vd_x_size,
+    vd_y_size,
+    file_desc: VECTOR [2],
+    status;
+
+vd_id = .pic [pic$l_vd_id];		!Get vd-id out for easy access.
+vd_x_size = .pic [pic$w_x_size];
+vd_y_size = .pic [pic$w_y_size];
+file_desc [0] = .pic [pic$l_file_name_len];	!Get file name descriptor
+file_desc [1] = pic [pic$b_file_str_str];
+
+!
+! Create a line
+!
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1			!1 line
+		,.vd_y_size		!Line height
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+!
+! Get 1 field on line 1 starting at 0.
+! We have to delete the default field that starts at 1
+!
+IF NOT vs$$txt_deleteField (.vd_id, 1, 1)
+  THEN RETURN $error (vsta$_deldeffld);
+
+IF NOT vs$$txt_definefield (.vd_id, 1, 0, .vd_x_size)
+  THEN RETURN $error (vsta$_deftxtfld);
+
+!
+! Set back and writing colors.
+!
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+!
+! Define a font and call the typeface "pic_font".
+!
+IF NOT vs$$txt_defineFont
+		(.vd_id
+		,file_desc
+		,%ASCID 'PIC_FONT'	!Typeface descriptor
+		,0, 0			!Typesize, rendition
+		)
+  THEN RETURN $error (vsta$_deffnt_from
+			,string_type, file_desc
+			);
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'PIC_FONT'
+		)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'PIC_FONT'
+			);
+
+!
+! Write character "0" which is the character.
+!
+IF NOT vs$$txt_insertText
+		(.vd_id
+		,UPLIT (1, UPLIT (0))	!Descriptor to character 0
+		,1, 0, 1		!line, field, cpos
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'Picture character (0)'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE find_checkoff_addr
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given an id, search the checkoff entries and return the address
+!	with the given id. If not found, return status SS$_BADPARAM.
+!	Does NOT call VSTA$$ERROR.
+! FORMAL PARAMETERS:
+	(docblk: REF doc_block
+	,id
+	,raddr		!Place to return address of entry
+	) =
+!--
+BEGIN
+LOCAL
+    ckh: REF checkoff_header,
+    cke: REF checkoff_entry,
+    status;
+
+INCR i FROM 1 TO .docblk [dkb$w_num_chk_blks] DO
+    BEGIN
+    ckh = .docblk [dkb$a_chk_blk] + (512 * (.i - 1));
+    cke = .ckh + ckh$S_checkoff_header;		!Point to first checkoff entry
+    INCR j FROM 1 TO .ckh [ckh$w_num_ents] DO
+	BEGIN
+	IF (.cke [cke$w_id] EQL .id)
+	  THEN
+	    BEGIN			!Found it! Return address
+	    .raddr = .cke;
+	    RETURN SS$_NORMAL
+	    END;
+	cke = .cke + cke$S_checkoff_entry;	!Point to next checkoff entry
+	END;
+    END;
+
+RETURN SS$_BADPARAM
+END;
+
+ROUTINE find_ede_addr
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given an id, search the editable entries and return the address
+!	with the given id. If not found, return SS$_BADPARAM.
+!	Does NOT call VSTA$$ERROR.
+! FORMAL PARAMETERS:
+	(docblk: REF doc_block
+	,id
+	,raddr		!Place to return address of entry
+	) =
+!--
+BEGIN
+LOCAL
+    edh: REF editable_header,
+    ede: REF editable_entry,
+    status;
+
+INCR i FROM 1 TO .docblk [dkb$w_num_edit_blks] DO
+    BEGIN
+    edh = .docblk [dkb$a_edit_blk] + (512 * (.i - 1));
+    ede = .edh + edh$S_editable_header;		!Point to first editable entry
+    INCR j FROM 1 TO .edh [edh$w_num_ents] DO
+	BEGIN
+	IF (.ede [ede$w_id] EQL .id)
+	  THEN
+	    BEGIN			!Found it! Return address
+	    .raddr = .ede;
+	    RETURN SS$_NORMAL
+	    END;
+	ede = .ede + .ede [ede$w_size];	!Point to next editable entry
+	END;
+    END;
+
+RETURN SS$_BADPARAM
+END;
+
+ROUTINE select_checkoff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	A checkoff item was selected.
+! FORMAL PARAMETERS:
+	(
+ two_params : vector [2, word]		! wdb_id, checkoff id
+	) =
+!--
+BEGIN
+LOCAL
+    wdb : ref window_data_block,
+    linked_wdb : ref window_data_block,	! different than wdb if terminal
+					! settings
+    cke : ref checkoff_entry,
+    docblk,
+    status;
+!
+! Call routine with all the parameters it needs.
+!
+IF NOT (status =
+    get_relevant_wdb_docblk (.two_params[0], wdb, docblk, linked_wdb)
+	)
+  THEN RETURN .status;
+!
+! Find checkoff block.
+!
+	IF NOT find_checkoff_addr
+			(.docblk, .two_params[1], cke)
+	  THEN RETURN $bug (vsta$_doc_ckenotfnd);
+
+RETURN vsta$$srv_intr_chk (cke[$base], linked_wdb[$base], .docblk);
+END;
+
+ROUTINE select_editable_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	An editable field was selected.
+! FORMAL PARAMETERS:
+	(two_params : vector [2, word]
+				! wdb_id, editable field id
+	) =
+!--
+BEGIN
+LOCAL
+    ede : ref editable_entry,
+    wdb : ref window_data_block,
+    linked_wdb : ref window_data_block,
+				! different wdb for terminal settings
+    docblk : ref doc_block,
+    status;
+!
+! Call routine with all the parameters it needs.
+!
+IF NOT (status =
+    get_relevant_wdb_docblk (.two_params[0], wdb, docblk, linked_wdb)
+	)
+  THEN RETURN .status;
+!
+! Find the ede for the id. (if not found, then assume this AST
+! crept in after the thing was deleted; forget it).
+!
+IF NOT (status =
+    find_ede_addr (.docblk, .two_params[1], ede)
+	)
+  THEN RETURN .status;
+
+RETURN vsta$$srv_intr_edit (ede[$base], linked_wdb[$base], docblk[$base]);
+END;
+
+ROUTINE get_relevant_wdb_docblk
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Something in a document was selected. Return
+!	the DOCBLK that is important. For the PROFILE
+!	and HELP documents, this is the WDB of the thing itself.
+!	For a terminal settings document, the WDB_U of the TERMINAL
+!	is returned.
+! FORMAL PARAMETERS:
+	(wdb_id		!Which wdb to search for
+	,wdb_adr	!Where to return sought wdb
+	,docblk		!Returned docblk
+	,linked_wdb_adr	!Linked wdb for case of terminal settings, copy
+			!of wdb for others
+	) =
+!--
+BEGIN
+	external jrb_q_hdr : vector [2];
+	label find_wdb;
+LOCAL
+    wdb : ref window_data_block,
+    jrb : ref job_block,
+    wdb_q_hdr,
+    wdb_ter: REF window_data_block,
+    wtype;
+!
+! Find the wdb that goes with the given id.  (The only reason we bother
+! with an id at all instead of address is so we can stuff it AND something
+! else in a single ast parameter).
+!
+jrb = .jrb_q_hdr [0];		!Get ptr to top JRB
+
+find_wdb:
+begin
+WHILE (.jrb NEQ jrb_q_hdr [0]) DO
+    BEGIN
+    wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];
+    wdb = ..wdb_q_hdr;
+    WHILE (.wdb NEQ .wdb_q_hdr) DO
+        BEGIN
+        IF (.wdb [wdb$w_id] eql .wdb_id)
+          THEN leave find_wdb;
+	wdb = .wdb [wdb$a_flink];	!Next WDB
+        END;
+    jrb = .jrb [jrb$a_flink];		!Next JRB
+    END;
+!
+! Couldn't find it.  For now, 0 the wdb to force access violation.
+!
+	wdb = 0
+end;
+!
+! Initialize link to be same wdb.
+!
+	.wdb_adr = wdb[$base];
+	.linked_wdb_adr = wdb[$base];
+!
+! Find which docblk we are talking about. Either it is the terminal
+! settings document (ts_docblk NEQ 0), or the HELP, or PROFILE.
+!
+wtype = .wdb [wdb$b_window_type];
+SELECTONE (.wtype) OF
+    SET
+    [wdb$k_wtype_help]:
+	BEGIN
+	.docblk = help_doc;
+	END;
+    [wdb$K_wtype_prof]:
+	BEGIN
+	.docblk = prof_doc;
+	END;
+    [wdb$K_wtype_ts]:
+	BEGIN
+	wdb_ter = .wdb [wdb$a_ter_wdb];
+	.docblk = .wdb_ter [wdb$a_ts_docblk];
+	.linked_wdb_adr = .wdb_ter;		!Return TERMINAL's WDB!
+	END;
+    [OTHERWISE]:
+	RETURN $bug (vsta$_badwtype);
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

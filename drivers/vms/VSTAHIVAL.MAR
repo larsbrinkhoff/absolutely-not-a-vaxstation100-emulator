@@ -1,0 +1,201 @@
+	.TITLE	VSTA$HI_VALIDATE - module to validate user and password
+	.IDENT	'V00-000'
+
+
+;++
+; FACILITY: VAXstation ACP
+;
+; ABSTRACT:
+;
+;	Lookup the supplied username in the authorization file.  Validate
+;	the password, and return.  The buffer contains the UAF record if 
+;	valid, otherwise the default values.
+;
+; ENVIRONMENT:
+;
+;--
+
+	.SBTTL	DECLARATIONS
+;
+; MACROS:
+;
+	$RMSDEF				; define RMS status codes
+	$SSDEF				; define system status codes
+	$UAFDEF				; define authorization file offsets
+	$LOGDEF				; define logical name masks
+
+;
+; EQUATED SYMBOLS:
+;
+
+	NAMEDSC = 4			; offset to username descriptor
+	PWDDSC = 8			; offset to password string descriptor
+	BUFDSC = 12			; offset to user buffer descriptor
+	MAX_PASSWORD = 80		; Max. allowed password size
+	CVT_MASK = ^B100000		; Lowercase => Uppercase convert mask
+
+	UAF$_NORMAL = 1
+	UAF$_INVUSR = -2
+	UAF$_INVPWD = -4
+
+;
+; OWN STORAGE:
+;
+	.PSECT	_VSTA$DATA	RD,WRT,PIC,NOSHR,LONG,NOEXE
+
+UP_TTABLE:
+	.BYTE	0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,-
+		20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,-
+		40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,-
+		60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,-
+		80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,65,66,67,-
+		68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,-
+		88,89,90,123,124,125,126,127,128,129,130,131,132,133,134,135,-
+		136,137,138,139,140,141,142,143,144,145,146,147,148,149,-
+		150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,-
+		165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,-
+		180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,-
+		195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,-
+		210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,-
+		225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,-
+		240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,-
+		255
+UAF_BUFF:				; Buffer to hold UAF record
+	.BLKB	UAF$K_LENGTH		; use length as defined in $UAFDEF
+
+BUFFDESC:				; UAF Buffer descriptor
+	.LONG	UAF$K_LENGTH		; as defined in $UAFDEF macro
+	.ADDRESS UAF_BUFF
+USERNAME:
+	.BLKB	UAF$S_USERNAME		; Uppercased username string buffer
+USER_DESC:
+	.LONG	UAF$S_USERNAME		; Username string length
+	.ADDRESS USERNAME		; Username buffer address
+PASSWORD:
+	.BLKB	MAX_PASSWORD		; Uppercased password string buffer
+PASS_DESC:
+	.LONG	MAX_PASSWORD		; Password string length
+	.ADDRESS PASSWORD		; Password buffer address
+
+	.PSECT	_VSTA$CODE	RD,NOWRT,PIC,SHR,LONG,EXE
+
+	.SBTTL	VSTA$$HI_VALIDATE - interface routine to LOGINOUT routines
+
+;++
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	Routine to interface between VAXstation user authorization and VMS
+; user validation software. This routine will call the LOGINOUT routine:
+; LGI$VALIDATE to check user access to the system.
+;
+; CALLING SEQUENCE:
+;
+;	CALLS OR CALLG
+;
+; INPUTS:
+;
+;	NAMEDSC - address of the string descriptor for the username string
+;	PWDDSC - address of the string descriptor for the password string
+;
+; IMPLICIT INPUTS:
+;
+;	none
+;
+; OUTPUTS:
+;
+;	none
+;
+; IMPLICIT OUTPUTS:
+;
+;	none
+;
+; ROUTINE VALUE:
+;
+;	SS$_NORMAL - username and password ok
+;	SS$_NOSUCHUSER - username and/or password not valid
+;	RMS error code - error on UAF file
+;
+; SIDE EFFECTS:
+;
+;	none
+;--
+
+VSTA$$HI_VALIDATE::
+	.WORD	^M<R2,R3,R4,R5,R6,R7,R8> ; save mask
+	MOVL	NAMEDSC(AP),R2		; Get username string desc. address
+	MOVAL	USER_DESC,R3		; Get local username string desc.
+	MOVL	(R2),(R3)		; Set the buffer size
+	BLEQ	5$			; Don't move data if none to move
+	MOVTC	(R2),@4(R2),#^A/ /,-	; Convert username to uppercase
+		UP_TTABLE,(R2),@4(R3)	; before validating (case sensitive)
+5$:	MOVL	PWDDSC(AP),R2		; Get password string desc. address
+	MOVAL	PASS_DESC,R3		; Get local password string desc.
+	MOVL	(R2),(R3)		; Set the buffer size
+	BLEQ	10$			; Don't move data if none to move
+	MOVTC	(R2),@4(R2),#^A/ /,-	; Convert password to uppercase
+		UP_TTABLE,(R2),@4(R3)	; before validating (case sensitive)
+10$:	PUSHAL	BUFFDESC		; UAF buffer descriptor address
+	PUSHAL	PASS_DESC		; Password descriptor address
+	PUSHAL	USER_DESC		; Username descriptor address
+	CALLS	#3,LGI$VALIDATE		; Call the LOGINOUT validation routine
+	CMPL	R0,#UAF$_INVUSR		; No such user record found?
+	BNEQ	20$			; Branch if user WAS found
+	MOVZWL	#SS$_NOSUCHUSER,R0	; Replace with 'no user' status
+	RET
+20$:	CMPL	R0,#UAF$_INVPWD		; No such password for user?
+	BNEQ	30$			; Return if password OK
+	MOVZWL	#SS$_NOSUCHUSER,R0	; Replace with 'no user' status
+30$:	RET
+
+	.SBTTL	CVT_UPPER - Convert String to Uppercase
+
+;++
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	Routine to convert a given string into uppercase.
+;
+; CALLING SEQUENCE:
+;
+;	JSB or BSB
+;
+; INPUTS:
+;
+;	R4 = Source buffer address
+;	R5 = Destination buffer address
+;	R6 = String size (bytes)
+;
+; IMPLICIT INPUTS:
+;
+;	none
+;
+; OUTPUTS:
+;
+;	none
+;
+; IMPLICIT OUTPUTS:
+;
+;	none
+;
+; ROUTINE VALUE:
+;
+;	SS$_NORMAL - Always
+;
+; SIDE EFFECTS:
+;
+;	none
+;--
+
+CVT_UPPER:
+5$:	CMPB	(R4),#^A/a/		; Is it less than an "a"
+	BLSS	10$			; Yup. Don't need to convert
+	CMPB	(R4),#^A/z/		; Is it greater than a "z"
+	BGTR	10$			; Yup. Don't need to convert
+	BICB3	#CVT_MASK,(R4)+,(R5)+	; Convert to lowercase and move it
+	BRB	15$			; Go see if we're done
+10$:	MOVB	(R4)+,(R5)+		; Just move it without converting
+15$:	SOBGTR	R6,5$			; If we have more data, go do it
+	RSB				; Done with this string
+
+.END

@@ -1,0 +1,842 @@
+%title 'VS$DRV  --  Driver Interface Routines'
+module VS$DRV ( 
+		addressing_mode (external = general),
+		ident = '1-001'		! Version
+		 ) =
+begin
+
+!++
+! FACILITY:
+!	Workstation Interface Routines to VBDRIVER
+!
+! ABSTRACT:
+!
+! ENVIRONMENT:
+!	Workstation SDAACP routines
+!	Runs in any access mode
+!	AST re-entrant
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+library	'SYS$LIBRARY:STARLET';		! SS,RMS, etc. symbols
+require 'defins:VBDEF.R32';		! VBDRIVER constants, offsets
+
+!
+! PSECTS
+!
+psect	
+	code = _VSE$CODE (read,nowrite,execute,share,pic,concatenate,
+				addressing_mode (word_relative)),
+	plit = _VSE$CODE (read,nowrite,execute,share,pic,concatenate,
+				addressing_mode (word_relative)),
+	own =  _VSE$DATA (read,write,noexecute,noshare,pic,concatenate,
+				addressing_mode (long_relative)),
+	global=_VSE$DATA (read,write,noexecute,noshare,pic,concatenate,
+				addressing_mode (long_relative));
+
+
+forward routine				! Routines defined in this module
+!
+! PRIVATE ROUTINES:
+!
+	VS$$DRV_BITBLT,
+	VS$$DRV_BACKGROUND,
+	VS$$DRV_DRAW_CURVE,
+	VS$$DRV_PRINT_TEXT;
+!
+! EXTERNAL REFERENCES:
+!
+
+global
+	VS$AL_VB_SCREEN_BUFFER: VECTOR [2,LONG] initial (%x'40000',%x'40000'),
+	VS$AL_VC_SCREEN_BUFFER: VECTOR [2,LONG] initial (%x'40000',%x'40000');
+!
+! OWN
+!
+own
+	HALFTONE_SIZE: initial(16),		! Size of each halftone ptrn
+	HALFTONE: vector[15,long] initial	! Halftone cell addresses
+	       (uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'0000')),
+		uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'1111')),
+		uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'5555')),
+		uplit word (rep 4 of (%x'0000',%x'5555',%x'0000',%x'5555')),
+		uplit word (rep 4 of (%x'0000',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'8888',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'AAAA',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'BBBB',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'FFFF',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'FFFF',%x'7777')),
+		uplit word (rep 4 of (%x'FFFF',%x'CCCC',%x'FFFF',%x'7777')),
+		uplit word (rep 4 of (%x'FFFF',%x'FFFF',%x'FFFF',%x'7777'))
+		);
+
+literal
+	BLACK = 0,
+	WHITE = 1,
+	GREY1 = 2,
+	GREY2 = 3,
+	GREY3 = 4,
+	GREY4 = 5,
+	GREY5 = 6,
+	GREY6 = 7,
+	GREY7 = 8,
+	GREY8 = 9,
+	GREY9 = 10,
+	GREY10 = 11,
+	GREY11 = 12,
+	GREY12 = 13,
+	GREY13 = 14,
+	GREY14 = 15;
+
+
+%sbttl	'VS$$DRV_BITBLT  --  Copies a region'
+global routine VS$$DRV_BITBLT(
+				CHANNEL,
+				SRC_ADDR,
+				SRC_SIZE_X,
+				SRC_SIZE_Y,
+				XOFF_SRC,
+				YOFF_SRC,
+				SUBRECT_X,
+				SUBRECT_Y,
+				SOURCE_MAP,
+				DEST_ADDR,
+				XOFF_DEST,
+				YOFF_DEST,
+				NUM_RECTS,
+				RECTS_ADDR
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    own
+	STATUS_BLOCK: vector[4,word],
+	SOURCE_BLOCK: block[P1$K_COP_LENGTH*2,byte],
+	DEST_BLOCK:   block[P2$K_COP_LENGTH*2,byte],
+	MAP_BLK:      block[P3$K_COP_LENGTH*2,byte],
+	RECTANGLE:	ref block[0,byte],
+	SOURCE_PACKET:	ref block[0,byte],
+	SMASK_PACKET:	ref block[0,byte],
+	DEST_PACKET:	ref block[0,byte],
+	DMASK_PACKET:	ref block[0,byte];
+
+    local
+	DESTX,
+	DESTY,
+	STAT;		!
+
+!
+! For Debugging purposes...
+!
+!    DEST_ADDR = %X'40000';
+!    NUM_RECTS = 0;
+
+!
+! Rudimentary Parameter checking
+!
+    if (.SRC_ADDR lss 512) or (.SRC_SIZE_X*.SRC_SIZE_Y eql 0) or
+		(.DEST_ADDR lss 512)
+	then return SS$_BADPARAM;
+!
+! Set up the Source Block
+!
+    if .SRC_ADDR eql .VS$AL_VB_SCREEN_BUFFER [0] then
+	SOURCE_BLOCK[P1$W_COP_SRC_DESC] = VSE$K_SRC_BITMAP +(VSE$K_DISPMEM ^ 8)
+    else
+        SOURCE_BLOCK[P1$W_COP_SRC_DESC] = VSE$K_SRC_BITMAP +(VSE$K_VAXMEM ^ 8);
+
+    SOURCE_BLOCK[P1$W_COP_SMK_DESC] = 
+		VSE$K_SMK_RECTANGLE;
+
+   SOURCE_PACKET = SOURCE_BLOCK[P1$W_COP_SRC];
+	SOURCE_PACKET[SRC$A_BM_ADDR] = .SRC_ADDR;
+	SOURCE_PACKET[SRC$W_BM_SIZE_X] = .SRC_SIZE_X;
+	SOURCE_PACKET[SRC$W_BM_SIZE_Y] = .SRC_SIZE_Y;
+	SOURCE_PACKET[SRC$W_BM_SIZE_Z] = 1;
+
+    SOURCE_BLOCK[P1$W_COP_OFF_X] = .XOFF_SRC;
+    SOURCE_BLOCK[P1$W_COP_OFF_Y] = .YOFF_SRC;
+
+    SMASK_PACKET = SOURCE_BLOCK[P1$W_COP_SMK];
+	SMASK_PACKET[SMK$W_RC_EXT_X] = .SUBRECT_X;
+	SMASK_PACKET[SMK$W_RC_EXT_Y] = .SUBRECT_Y;
+
+!
+! Set up the Destination Block
+!
+!    if .DEST_ADDR eql .VS$AL_VB_SCREEN_BUFFER [0] then
+!	begin
+	DEST_BLOCK[P2$W_COP_DST_DESC] = (VSE$K_DISPMEM ^ 8);
+	DESTX = 960;
+	DESTY = 800;
+!	end
+!    else
+!	begin
+!	DESTX = .SRC_SIZE_X;
+!	DESTY = .SRC_SIZE_Y;
+!	DEST_BLOCK[P2$W_COP_DST_DESC] = (VSE$K_VAXMEM ^ 8);
+!	end;
+
+    DEST_BLOCK[P2$W_COP_DMK_DESC] =
+	(selectone .NUM_RECTS of
+	    set
+	    [0] :	VSE$K_DMK_NONE;
+	    [1] :	VSE$K_DMK_RECTANGLE;
+	    [otherwise]:VSE$K_DMK_RECLIST + (VSE$K_VAXMEM ^ 8);
+	    tes);
+
+    DEST_PACKET = DEST_BLOCK[P2$W_COP_DST];
+	DEST_PACKET[DST$A_BM_ADDR] = .DEST_ADDR;
+	DEST_PACKET[DST$W_BM_SIZE_X] = .DESTX;
+	DEST_PACKET[DST$W_BM_SIZE_Y] = .DESTY;
+	DEST_PACKET[DST$W_BM_SIZE_Z] = 1;
+
+    DEST_BLOCK[P2$W_COP_OFF_X] = .XOFF_DEST;
+    DEST_BLOCK[P2$W_COP_OFF_Y] = .YOFF_DEST;
+
+    DMASK_PACKET = DEST_BLOCK[P2$W_COP_DMK];
+	if (.NUM_RECTS gtr 1) then 
+	    begin
+		DMASK_PACKET[DMK$A_RC_ADDR] = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_RC_COUNT] = .NUM_RECTS;
+	    end;
+	if (.NUM_RECTS eql 1) then
+	    begin
+		RECTANGLE = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_LT_OFF_X] = .RECTANGLE[DMK$W_LT_OFF_X];
+		DMASK_PACKET[DMK$W_LT_OFF_Y] = .RECTANGLE[DMK$W_LT_OFF_Y];
+		DMASK_PACKET[DMK$W_LT_EXT_X] = .RECTANGLE[DMK$W_LT_EXT_X];
+		DMASK_PACKET[DMK$W_LT_EXT_Y] = .RECTANGLE[DMK$W_LT_EXT_Y];
+	    end;
+
+!
+! Set up Map Block
+!
+!    MAP_BLK[P3$W_COP_MAP_DESC] = VSE$K_MAP_IDEN ;
+!    MAP_BLK[P3$W_COP_MAP] = 0;
+    MAP_BLK[P3$W_COP_MAP_DESC] = VSE$K_MAP_SLIT ;
+    MAP_BLK[P3$W_COP_MAP] = .SOURCE_MAP;
+
+!
+! Do the QIO
+!
+
+status_block[0] = 0;
+UNTIL .status_block [0] EQL ss$_normal DO
+
+	if not (STAT = $QIOW (	chan = .CHANNEL,
+					func = IO$_COPY,
+					iosb = STATUS_BLOCK[0],
+					p1   = SOURCE_BLOCK,
+					p2   = DEST_BLOCK,
+					p3   = MAP_BLK	))
+	    then return .STAT;
+RETURN SS$_NORMAL;
+
+    end;			!End of VS$$DRV_BITBLT
+
+%sbttl	'VS$$DRV_BACKGROUND  --  Paints a background color'
+global routine VS$$DRV_BACKGROUND(
+				CHANNEL,
+				COLOR,
+				SRC_SIZE_X,
+				SRC_SIZE_Y,
+				DEST_ADDR,
+				XOFF_DEST,
+				YOFF_DEST,
+				NUM_RECTS,
+				RECTS_ADDR
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    own
+	STATUS_BLOCK: vector[4,word],
+	SOURCE_BLOCK: block[P1$K_COP_LENGTH*2,byte],
+	DEST_BLOCK:   block[P2$K_COP_LENGTH*2,byte],
+	MAP_BLK:      block[P3$K_COP_LENGTH*2,byte],
+	RECTANGLE:	ref block[0,byte],
+	SOURCE_PACKET:	ref block[0,byte],
+	SMASK_PACKET:	ref block[0,byte],
+	DEST_PACKET:	ref block[0,byte],
+	DMASK_PACKET:	ref block[0,byte];
+
+    local
+	DEST_SIZE_X,
+	DEST_SIZE_Y,
+	STAT;		!
+!
+! For Debugging purposes...
+!
+!    DEST_ADDR = %X'40000';
+!    NUM_RECTS = 0;
+     if .COLOR gtr 16 then color = 3;	!To stop accvio from bad color value
+
+!
+! Rudimentary Parameter checking
+!
+    if (.SRC_SIZE_X*.SRC_SIZE_Y eql 0) 
+	then return SS$_BADPARAM;
+
+!
+! Set up the Source Block
+!
+    SOURCE_PACKET = SOURCE_BLOCK[P1$W_COP_SRC];
+    SOURCE_BLOCK[P1$W_COP_SMK_DESC] = VSE$K_SMK_RECTANGLE;
+
+    if (.COLOR eql BLACK) or (.COLOR eql WHITE) then
+	begin
+	    SOURCE_BLOCK[P1$W_COP_SRC_DESC] = VSE$K_SRC_CONSTANT;
+	    SOURCE_PACKET[SRC$W_CN_CONSTANT] = .COLOR;
+	end
+    else			! Halftone 
+	begin
+	    SOURCE_BLOCK[P1$W_COP_SRC_DESC] = 
+			VSE$K_SRC_HALFTONE+(VSE$K_VAXMEM^8);
+	    SOURCE_PACKET[SRC$A_HT_ADDR] = .HALFTONE[.COLOR-GREY1];
+	    SOURCE_PACKET[SRC$W_HT_SIZE_X] = .HALFTONE_SIZE;
+	    SOURCE_PACKET[SRC$W_HT_SIZE_Y] = .HALFTONE_SIZE;
+	    SOURCE_PACKET[SRC$W_HT_SIZE_Z] = 1;
+	end;
+
+    SMASK_PACKET = SOURCE_BLOCK[P1$W_COP_SMK];
+	SMASK_PACKET[SMK$W_RC_EXT_X] = .SRC_SIZE_X;
+	SMASK_PACKET[SMK$W_RC_EXT_Y] = .SRC_SIZE_Y;
+
+!
+! Set up the Destination Block
+!
+    if .DEST_ADDR eql .VS$AL_VB_SCREEN_BUFFER [0] then
+	begin
+	    DEST_BLOCK[P2$W_COP_DST_DESC] = (VSE$K_DISPMEM ^ 8);
+	    DEST_SIZE_X = 960;
+	    DEST_SIZE_Y = 800;
+	end
+    else
+	begin
+	    DEST_BLOCK[P2$W_COP_DST_DESC] = (VSE$K_VAXMEM ^ 8);
+	    DEST_SIZE_X = .SRC_SIZE_X;
+	    DEST_SIZE_Y = .SRC_SIZE_Y;
+	end;
+
+    DEST_BLOCK[P2$W_COP_DMK_DESC] =
+	(selectone .NUM_RECTS of
+	    set
+	    [0] :	VSE$K_DMK_NONE;
+	    [1] :	VSE$K_DMK_RECTANGLE;
+	    [otherwise]:VSE$K_DMK_RECLIST + (VSE$K_VAXMEM ^ 8);
+	    tes);
+
+    DEST_PACKET = DEST_BLOCK[P2$W_COP_DST];
+	DEST_PACKET[DST$A_BM_ADDR] = .DEST_ADDR;
+	DEST_PACKET[DST$W_BM_SIZE_X] = .DEST_SIZE_X;
+	DEST_PACKET[DST$W_BM_SIZE_Y] = .DEST_SIZE_Y;
+	DEST_PACKET[DST$W_BM_SIZE_Z] = 1;
+
+    DEST_BLOCK[P2$W_COP_OFF_X] = .XOFF_DEST;
+    DEST_BLOCK[P2$W_COP_OFF_Y] = .YOFF_DEST;
+
+    DMASK_PACKET = DEST_BLOCK[P2$W_COP_DMK];
+	if (.NUM_RECTS gtr 1) then 
+	    begin
+		DMASK_PACKET[DMK$A_RC_ADDR] = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_RC_COUNT] = .NUM_RECTS;
+	    end;
+	if (.NUM_RECTS eql 1) then
+	    begin
+		RECTANGLE = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_LT_OFF_X] = .RECTANGLE[DMK$W_LT_OFF_X];
+		DMASK_PACKET[DMK$W_LT_OFF_Y] = .RECTANGLE[DMK$W_LT_OFF_Y];
+		DMASK_PACKET[DMK$W_LT_EXT_X] = .RECTANGLE[DMK$W_LT_EXT_X];
+		DMASK_PACKET[DMK$W_LT_EXT_Y] = .RECTANGLE[DMK$W_LT_EXT_Y];
+	    end;
+
+!
+! Set up Map Block
+!
+    MAP_BLK[P3$W_COP_MAP_DESC] = VSE$K_MAP_IDEN;
+    MAP_BLK[P3$W_COP_MAP] = 0;
+
+!
+! Do the QIO
+!
+status_block[0] = 0;
+UNTIL .status_block [0] EQL ss$_normal DO
+
+	if not (STAT = $QIOW (	chan = .CHANNEL,
+					func = IO$_COPY,
+					iosb = STATUS_BLOCK[0],
+					p1   = SOURCE_BLOCK,
+					p2   = DEST_BLOCK,
+					p3   = MAP_BLK	))
+	    then return .STAT;
+RETURN SS$_NORMAL;
+
+    end;			!End of VS$$DRV_BACKGROUND
+
+%sbttl	'VS$$DRV_DRAW_CURVE  --  Draws a series of lines '
+global routine VS$$DRV_DRAW_CURVE(
+				CHANNEL,
+				SRC_ADDR,
+				MASK_ADDR,
+				MASK_X,
+				MASK_Y,
+				SOURCE_MAP,
+				DEST_ADDR,
+				DEST_SIZE_X,
+				DEST_SIZE_Y,
+				XOFF_DEST,
+				YOFF_DEST,
+				NUM_RECTS,
+				RECTS_ADDR,
+				PATH,
+				COUNT,
+				PATTERN
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    own
+	STATUS_BLOCK: vector[4,word],
+	SOURCE_BLOCK: block[P1$K_DRW_LENGTH*2,byte],
+	DEST_BLOCK:   block[P2$K_DRW_LENGTH*2,byte],
+	MAP_BLK:      block[P3$K_DRW_LENGTH*2,byte],
+	PATH_BLOCK:   block[P4$K_DRW_LENGTH*2,byte],
+	PATRN_BLOCK:  block[P5$K_DRW_LENGTH*2,byte],
+!	PATH:	      vector[12,word],
+	RECTANGLE:	ref block[0,byte],
+	SOURCE_PACKET:	ref block[0,byte],
+	SMASK_PACKET:	ref block[0,byte],
+	DEST_PACKET:	ref block[0,byte],
+	DMASK_PACKET:	ref block[0,byte],
+	PATH_PACKET:	ref block[0,byte];
+
+    local
+!	DEST_SIZE_X,
+!	DEST_SIZE_Y,
+	STAT;		!
+!
+! For Debugging purposes...
+!
+!    DEST_ADDR = %X'40000';
+!    NUM_RECTS = 0;
+
+!
+! Rudimentary Parameter checking
+!
+IF .SRC_ADDR GEQ 16 THEN RETURN SS$_BADPARAM;	!ONLY BLACK, WHITE OR HALFTONE
+!
+! Set up the Source Block
+!
+    SOURCE_PACKET = SOURCE_BLOCK[P1$W_DRW_SRC];
+
+    if (.SRC_ADDR eql BLACK) or (.SRC_ADDR eql WHITE) then
+	begin
+	    SOURCE_BLOCK[P1$W_DRW_SRC_DESC] = VSE$K_SRC_CONSTANT;
+	    SOURCE_PACKET[SRC$W_CN_CONSTANT] = .SRC_ADDR;
+	end
+    else			! Halftone 
+	begin
+	    SOURCE_BLOCK [P1$W_DRW_SRC_DESC] = 
+		VSE$K_SRC_HALFTONE+(VSE$K_VAXMEM^8);
+	    SOURCE_PACKET [SRC$A_HT_ADDR] = .HALFTONE [.SRC_ADDR - GREY1];
+	    SOURCE_PACKET [SRC$W_HT_SIZE_X] = .HALFTONE_SIZE;
+	    SOURCE_PACKET [SRC$W_HT_SIZE_Y] = .HALFTONE_SIZE;
+	    SOURCE_PACKET [SRC$W_HT_SIZE_Z] = 1;
+	end;
+
+    SOURCE_BLOCK [P1$W_DRW_SMK_DESC] = VSE$K_SMK_BITMAP + (VSE$K_VAXMEM^8);
+    SOURCE_BLOCK [P1$W_DRW_OFF_X] = 0;
+    SOURCE_BLOCK [P1$W_DRW_OFF_Y] = 0;
+
+    SMASK_PACKET = SOURCE_BLOCK [P1$W_DRW_SMK];
+	SMASK_PACKET [SMK$A_BM_ADDR] = .MASK_ADDR;
+	SMASK_PACKET [SMK$W_BM_SIZE_X] = .MASK_X;
+	SMASK_PACKET [SMK$W_BM_SIZE_Y] = .MASK_Y;
+	SMASK_PACKET [SMK$W_BM_SIZE_Z] = 1;
+	SMASK_PACKET [SMK$W_BM_OFF_X] = 0;
+	SMASK_PACKET [SMK$W_BM_OFF_Y] = 0;
+	SMASK_PACKET [SMK$W_BM_EXT_X] = .MASK_X;
+	SMASK_PACKET [SMK$W_BM_EXT_Y] = .MASK_Y;
+
+!	SMASK_PACKET[SMK$W_RC_EXT_X] = .VP_SIZE_X;
+!	SMASK_PACKET[SMK$W_RC_EXT_Y] = .VP_SIZE_Y;
+
+!
+! Set up the Destination Block
+!
+    if .DEST_ADDR eql .VS$AL_VB_SCREEN_BUFFER [0] then
+	begin
+	    DEST_BLOCK[P2$W_DRW_DST_DESC] = (VSE$K_DISPMEM ^ 8);
+	end
+    else
+	begin
+	    DEST_BLOCK[P2$W_DRW_DST_DESC] = (VSE$K_VAXMEM ^ 8);
+	end;
+
+    DEST_BLOCK[P2$W_DRW_DMK_DESC] =
+	(selectone .NUM_RECTS of
+	    set
+	    [0] :	VSE$K_DMK_NONE;
+	    [1] :	VSE$K_DMK_RECTANGLE;
+	    [otherwise]:VSE$K_DMK_RECLIST + (VSE$K_VAXMEM ^ 8);
+	    tes);
+
+    DEST_PACKET = DEST_BLOCK[P2$W_DRW_DST];
+	DEST_PACKET[DST$A_BM_ADDR] = .DEST_ADDR;
+	DEST_PACKET[DST$W_BM_SIZE_X] = .DEST_SIZE_X;
+	DEST_PACKET[DST$W_BM_SIZE_Y] = .DEST_SIZE_Y;
+	DEST_PACKET[DST$W_BM_SIZE_Z] = 1;
+
+    DEST_BLOCK[P2$W_DRW_OFF_X] = .XOFF_DEST;
+    DEST_BLOCK[P2$W_DRW_OFF_Y] = .YOFF_DEST;
+
+    DMASK_PACKET = DEST_BLOCK[P2$W_DRW_DMK];
+	if (.NUM_RECTS gtr 1) then 
+	    begin
+		DMASK_PACKET[DMK$A_RC_ADDR] = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_RC_COUNT] = .NUM_RECTS;
+	    end;
+	if (.NUM_RECTS eql 1) then
+	    begin
+		RECTANGLE = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_LT_OFF_X] = .RECTANGLE[DMK$W_LT_OFF_X];
+		DMASK_PACKET[DMK$W_LT_OFF_Y] = .RECTANGLE[DMK$W_LT_OFF_Y];
+		DMASK_PACKET[DMK$W_LT_EXT_X] = .RECTANGLE[DMK$W_LT_EXT_X];
+		DMASK_PACKET[DMK$W_LT_EXT_Y] = .RECTANGLE[DMK$W_LT_EXT_Y];
+	    end;
+
+!
+! Set up Map Block
+!
+    MAP_BLK[P3$W_DRW_MAP_DESC] = VSE$K_MAP_IDEN;
+    MAP_BLK[P3$W_DRW_MAP] = 0;
+
+!
+! Set up Path Block
+!
+    PATH_BLOCK[P4$W_DRW_PTH_DESC] = VSE$K_VAXMEM^8;
+
+	!
+	! Load up the path data
+	!
+!	    PATH[0] = .VP_OFF_X;
+!	    PATH[1] = .VP_OFF_Y;
+!	    PATH[2] = 1^1 + 1^3;	! Flags for first point
+!
+!	    PATH[3] = .VP_OFF_X + .VP_SIZE_X;
+!	    PATH[4] = .VP_OFF_Y;
+!	    PATH[5] = 1^1;		! Flags for intermediate point
+!
+!	    PATH[6] = .VP_OFF_X;
+!	    PATH[7] = .VP_OFF_Y + .VP_SIZE_Y;
+!	    PATH[8] = 1^1;		! Flags for intermediate point
+!
+!	    PATH[9] = .VP_OFF_X + .VP_SIZE_X;
+!	    PATH[10] = .VP_OFF_Y + .VP_SIZE_Y;
+!	    PATH[11] = 1^1 + 1^4;	! Flags for last point
+
+    PATH_PACKET = PATH_BLOCK[P4$W_DRW_PTH];
+	PATH_PACKET[PTH$A_PT_ADDR] = .PATH;
+	PATH_PACKET[PTH$W_PT_COUNT] = .COUNT;
+
+!
+! Set up the Pattern Block
+!
+!    PATRN_BLOCK[P5$W_DRW_SIZE] = 0;
+
+!
+! Do the QIO
+!
+status_block[0] = 0;
+UNTIL .status_block [0] EQL ss$_normal DO
+
+	if not (STAT = $QIOW (	chan = .CHANNEL,
+					func = IO$_DRAW,
+					iosb = STATUS_BLOCK[0],
+					p1   = SOURCE_BLOCK,
+					p2   = DEST_BLOCK,
+					p3   = MAP_BLK,
+					p4   = PATH_BLOCK,
+					p5   = .PATTERN ))
+	    then return .STAT;
+RETURN SS$_NORMAL;
+
+    end;			!End of VS$$DRV_DRAW_CURVE
+
+%sbttl	'VS$$DRV_PRINT_TEXT  --  Prints an ASCII string'
+global routine VS$$DRV_PRINT_TEXT(
+				CHANNEL,
+				COLOR,
+				SRC_ADDR,
+				SRC_LEN,
+				FONT_ADDR,
+				DEST_ADDR,
+				DEST_SIZE_X,
+				DEST_SIZE_Y,
+				XOFF_DEST,
+				YOFF_DEST,
+				NUM_RECTS,
+				RECTS_ADDR
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    own
+	STATUS_BLOCK: vector[4,word],
+	SOURCE_BLOCK: block[P1$K_PRT_LENGTH*2,byte],
+	DEST_BLOCK:   block[P2$K_PRT_LENGTH*2,byte],
+	MAP_BLK:      block[P3$K_PRT_LENGTH*2,byte],
+	ASCII_BLOCK:	block[P4$K_PRT_LENGTH*2,byte],
+	CONTROL_BLOCK: block[P5$K_PRT_LENGTH*2,byte],
+	RECTANGLE: ref block[0,byte],
+	SOURCE_PACKET:ref block[0,byte],
+	FONT_PACKET:ref block[0,byte],
+	DEST_PACKET:ref	 block[0,byte],
+	INI_POS_PACKET:ref block[0,byte],
+	DMASK_PACKET:ref block[0,byte],
+	ASCII_PACKET:ref block[0,byte],
+	CONTROL_PACKET:ref block[0,byte];
+
+    local
+	STAT;		!
+!
+! For Debugging purposes...
+!
+!    DEST_ADDR = %X'40000';
+!    NUM_RECTS = 0;
+
+!
+! Rudimentary Parameter checking
+!
+    if (.SRC_ADDR lss 512) or (.SRC_LEN eql 0) or (.FONT_ADDR lss 512) or
+		(.DEST_ADDR lss 512) or (.DEST_SIZE_X*.DEST_SIZE_Y eql 0)
+	then return SS$_BADPARAM;
+
+!
+! Set up the Source Block
+!
+    SOURCE_BLOCK[P1$W_PRT_SRC_DESC] = VSE$K_SRC_CONSTANT;
+    SOURCE_BLOCK[P1$W_PRT_FNT_DESC] = (VSE$K_VAXMEM ^ 8);
+
+    SOURCE_PACKET = SOURCE_BLOCK[P1$W_PRT_SRC];
+!!!	SOURCE_PACKET[SRC$W_CN_CONSTANT] = 1;
+
+    if (.COLOR eql BLACK) or (.COLOR eql WHITE) then
+	begin
+	    SOURCE_BLOCK[P1$W_COP_SRC_DESC] = VSE$K_SRC_CONSTANT;
+	    SOURCE_PACKET[SRC$W_CN_CONSTANT] = .COLOR;
+	end
+    else			! Halftone 
+	begin
+	    SOURCE_BLOCK[P1$W_COP_SRC_DESC] = 
+			VSE$K_SRC_HALFTONE+(VSE$K_VAXMEM^8);
+	    SOURCE_PACKET[SRC$A_HT_ADDR] = .HALFTONE[.COLOR-GREY1];
+	    SOURCE_PACKET[SRC$W_HT_SIZE_X] = .HALFTONE_SIZE;
+	    SOURCE_PACKET[SRC$W_HT_SIZE_Y] = .HALFTONE_SIZE;
+	    SOURCE_PACKET[SRC$W_HT_SIZE_Z] = 1;
+	end;
+
+    SOURCE_BLOCK[P1$W_PRT_OFF_X] = 0;
+    SOURCE_BLOCK[P1$W_PRT_OFF_Y] = 0;
+
+    FONT_PACKET = SOURCE_BLOCK[P1$W_PRT_FNT];
+	FONT_PACKET[FNT$A_FN_ADDR] = .FONT_ADDR;
+
+!
+! Set up the Destination Block
+!
+    if .DEST_ADDR eql .VS$AL_VB_SCREEN_BUFFER [0] then
+	begin
+	    DEST_BLOCK[P2$W_PRT_DST_DESC] = (VSE$K_DISPMEM ^ 8);
+	    DEST_SIZE_X = 960;
+	    DEST_SIZE_Y = 800;
+	end
+    else
+	DEST_BLOCK[P2$W_PRT_DST_DESC] = (VSE$K_VAXMEM ^ 8);
+
+    DEST_BLOCK[P2$W_PRT_INI_DESC] =
+		VSE$K_INI_LITERAL;
+
+    DEST_BLOCK[P2$W_PRT_DMK_DESC] =
+	(selectone .NUM_RECTS of
+	    set
+	    [0] :	VSE$K_DMK_NONE;
+	    [1] :	VSE$K_DMK_RECTANGLE;
+	    [otherwise]:VSE$K_DMK_RECLIST + (VSE$K_VAXMEM ^ 8);
+	    tes);
+
+    DEST_PACKET = DEST_BLOCK[P2$W_PRT_DST];
+	DEST_PACKET[DST$A_BM_ADDR] = .DEST_ADDR;
+	DEST_PACKET[DST$W_BM_SIZE_X] = .DEST_SIZE_X;
+	DEST_PACKET[DST$W_BM_SIZE_Y] = .DEST_SIZE_Y;
+	DEST_PACKET[DST$W_BM_SIZE_Z] = 1;
+
+    INI_POS_PACKET = DEST_BLOCK[P2$W_PRT_INI];
+	INI_POS_PACKET[INI$W_LT_OFF_X] = .XOFF_DEST;
+	INI_POS_PACKET[INI$W_LT_OFF_Y] = .YOFF_DEST;
+
+    DMASK_PACKET = DEST_BLOCK[P2$W_PRT_DMK];
+	if (.NUM_RECTS gtr 1) then 
+	    begin
+		DMASK_PACKET[DMK$A_RC_ADDR] = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_RC_COUNT] = .NUM_RECTS;
+	    end;
+	if (.NUM_RECTS eql 1) then
+	    begin
+		RECTANGLE = .RECTS_ADDR;
+		DMASK_PACKET[DMK$W_LT_OFF_X] = .RECTANGLE[DMK$W_LT_OFF_X];
+		DMASK_PACKET[DMK$W_LT_OFF_Y] = .RECTANGLE[DMK$W_LT_OFF_Y];
+		DMASK_PACKET[DMK$W_LT_EXT_X] = .RECTANGLE[DMK$W_LT_EXT_X];
+		DMASK_PACKET[DMK$W_LT_EXT_Y] = .RECTANGLE[DMK$W_LT_EXT_Y];
+	    end;
+
+!
+! Set up Map Block
+!
+    MAP_BLK[P3$W_PRT_MAP_DESC] = VSE$K_MAP_IDEN;
+    MAP_BLK[P3$W_PRT_MAP] = 0;
+
+!
+! Set up Text String Block
+!
+    ASCII_BLOCK[P4$W_PRT_TXT_DESC] = (VSE$K_VAXMEM ^ 8);
+
+    ASCII_PACKET =    ASCII_BLOCK[P4$W_PRT_TXT];
+	ASCII_PACKET[TXT$A_TX_ADDR] = .SRC_ADDR;
+	ASCII_PACKET[TXT$W_TX_COUNT] = .SRC_LEN;
+
+!
+! Set up Control String Block
+!
+    CONTROL_BLOCK[P5$W_PRT_CTR_DESC] = (VSE$K_VAXMEM ^ 8);
+
+    CONTROL_PACKET =    CONTROL_BLOCK[P5$W_PRT_CTR];
+	CONTROL_PACKET[CTR$A_CN_ADDR] = uplit(1);
+	CONTROL_PACKET[CTR$W_CN_COUNT] = 0;
+
+    CONTROL_BLOCK[P5$W_PRT_INTERCHAR] = 0;
+    CONTROL_BLOCK[P5$W_PRT_SPACE] = 0;
+
+!
+! Do the QIO
+!
+status_block[0] = 0;
+UNTIL .status_block [0] EQL ss$_normal DO
+
+	if not (STAT = $QIOW (	chan = .CHANNEL,
+					func = IO$_PRINT,
+					iosb = STATUS_BLOCK[0],
+					p1   = SOURCE_BLOCK,
+					p2   = DEST_BLOCK,
+					p3   = MAP_BLK,
+					p4   = ASCII_BLOCK,
+					p5   = CONTROL_BLOCK ))
+	    then return .STAT;
+RETURN SS$_NORMAL;
+
+    end;			!End of VS$$DRV_PRINT_TEXT
+
+
+end				!End of module VS$DRV
+eludom

@@ -1,0 +1,231 @@
+! VSGIPP.BLI - VaxStation GIdis Position Processes, Bliss source
+!
+MODULE VSTA$GID_pp(
+    IDENT = 'GIDIS position processes',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This file contains routines for the following Gidis functions:
+!		position( X, Y)
+!		position_push
+!		position_pop
+!		swap_top_of_stack
+!		report_position
+!		save_position( register)
+!		restore_position( register)
+!
+! Environment:
+!
+!	To use this module, require VSGIPP.REQ to declare the routines
+!	and symbols.
+!
+GLOBAL LITERAL GID$$PP_Edit_level = 5;
+!
+!	
+!--
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgicx';			! Gidis coordinate transformer
+LIBRARY 'VSTA$LIBRARY:vsgirm';			! Gidis report manager
+LIBRARY 'VSTA$LIBRARY:vsgipa';			! Pathed processes for positon
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+
+library_file_crock;
+
+$vsta_psect;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_reposition(	! Position drawing point
+    X,					! New X in Gidis addressing
+    Y					! New Y in Gidis addressing
+    ) =		
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+!	hard_pos and soft_pos from the state fetcher
+! Function:
+!		The active drawing position is moved to the
+!		absolute or relative position specified. No
+!		drawing is done.  The position is accurately
+!		tracked for one screen distance beyond the screen
+!		addressing limits in each direction.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ x_soft_pos] = .X;
+    sf[ y_soft_pos] = .Y;
+    sf[ x_hard_pos] = GID$$CX_Map_coordinate( .X); 
+    sf[ y_hard_pos] = GID$$CX_Map_coordinate( .Y);
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_report_position = ! Report drawing point
+! Routine value:
+! Implicit inputs:
+!	x_soft_pos and y_soft_pos from state fetcher.
+! Implicit outputs:
+!	report path through report manager
+! Function:
+!	The current soft X and Y coordinates are passed to the report manager
+!	for return to the caller.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    GID$$RM_report_word( .sf[ x_soft_pos]);
+    GID$$RM_report_word( .sf[ y_soft_pos])
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_position_push =
+! Routine value:
+! Implicit inputs:
+!	x_hard_pos and y_hard_pos from state fetcher
+! Implicit outputs:
+!	Updated position stack
+! Function:
+! Algorithm:
+!	top_of_position_stack always points to the next empty position
+!	in the stack.
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ top_of_position_stack] LSSU 16
+    THEN !	Stack pointer is in range [0,15], okay to push position
+	BEGIN
+	sf[ position_x_stack, .sf[ top_of_position_stack]] =
+	    .sf[ x_soft_pos];
+	sf[ position_y_stack, .sf[ top_of_position_stack]] =
+	    .sf[ y_soft_pos];
+	sf[ top_of_position_stack] = .sf[ top_of_position_stack] + 1;
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PP_position_pop =
+! Routine value:
+! Implicit inputs:
+!	x_hard_pos and y_hard_pos from state fetcher
+! Implicit outputs:
+!	Updated position stack
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ top_of_position_stack] GTR 0
+    THEN !	Stack pointer is in range [1,inf], okay to pop
+	BEGIN
+	sf[ top_of_position_stack] = .sf[ top_of_position_stack] - 1;
+	GID$$PA_position(
+	    .sf[ position_x_stack, .sf[ top_of_position_stack]],
+	    .sf[ position_y_stack, .sf[ top_of_position_stack]]);
+	END;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_swap_top_of_stack =
+! Routine value:
+!	Error status
+! Implicit inputs:
+!	Current position and position stack
+! Implicit outputs:
+!	Updated position and position stack
+! Function:
+!	Swap top of position stack with current position
+! Algorithm:
+!	Pop top of stack into temporary storage, push the current
+!	position, and reset the current position to the values saved in
+!	temporary storage.
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ top_of_position_stack] GTR 0
+    THEN !	Stack pointer is in range [1,inf], okay to pop
+	BEGIN
+	LOCAL
+	    space_for_x_during_swap,
+	    space_for_y_during_swap;
+
+	sf[ top_of_position_stack] = .sf[ top_of_position_stack] - 1;
+	space_for_x_during_swap =
+	    .sf[ position_x_stack, .sf[ top_of_position_stack]];
+	space_for_y_during_swap =
+	    .sf[ position_y_stack, .sf[ top_of_position_stack]];
+
+	GID$$PP_position_push();
+	GID$$PA_position( .space_for_x_during_swap, .space_for_y_during_swap)
+	END
+    ELSE 1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_save_position(
+    reg		! Register to save position in
+    ) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+!	Position registers from state fetcher
+! Function:
+!	Gidis keeps some additional position registers besides the
+!	position stack.  Both XT and Vax Workstation Gidis have 4 such
+!	registers, numbered 0, 1, 2 and 3.  If the register number is
+!	out of range, no action occurs. Save_position saves the active
+!	drawing point in one of these registers.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .reg LSSU 4
+    THEN ! Supplied register is within bounds, put position in it
+	BEGIN
+	sf[ position_x_registers, .reg] = .sf[ x_soft_pos];
+	sf[ position_y_registers, .reg] = .sf[ y_soft_pos];
+	END;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PP_restore_position(
+    reg		! Register to save position in
+    ) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+!	Position registers from state fetcher
+! Function:
+!	Restore the active position from one of the position registers.
+!	The register contents remain unchanged.  
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .reg LSSU 4
+    THEN ! Supplied register is within bounds, take position from it
+	BEGIN
+	GID$$PA_position(
+	    .sf[ position_x_registers, .reg],
+	    .sf[ position_y_registers, .reg]);
+	END;
+    1
+    END;
+
+
+END
+ELUDOM

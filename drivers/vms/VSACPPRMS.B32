@@ -1,0 +1,627 @@
+MODULE VS$ACP_PARAMETERS(
+		IDENT = 'ACP Process Parameterization',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,
+				 NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! STARTACP: VAXstation ACP startup
+!
+! ABSTRACT:
+!
+! This module determines the parameters for the VAXstation ACP process. A
+! simple ASCII data file can override certain default settings such as:
+! base priority, swapability, ast limits, etc. This is to allow easy tuning
+! for a particular system. By default, it is assumed that the VAXstation will
+! be used stand-alone, and the parameters will reflect this.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+!
+! Global routines
+!
+    vsta$$stacp_fill_parameters,	!Determine ACP parameters
+!
+! Private routines
+!
+    init_runtime_defaults,		!Initialize run-time default parameters
+    process_parameter_record,		!Process record from parameter file
+    parse_keyword,			!Parse keyword from record
+    parse_value,			!Parse new parameter from record
+    process_parameter;			!Adjust ACP parameter as specified
+
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';		!System service, RTL, etc..
+!
+! Command types and other internal constants
+!
+LITERAL
+    true = 1,			!"Boolean" true value
+    false = 0,			!"Boolean" false value
+    parameter_size = 80,	!Max. record size in parameter file
+    skip_char = 1,		!Skip-this-character indicator for parse
+    min_astlm = 20,		!Minimum allowed AST limit
+    min_biolm = 6,		!Minimum allowed buffered I/O limit
+    min_diolm = 6,		!Minimum allowed direct I/O limit
+    min_bytlm = 2000,		!Minimum allowed buffered I/O byte count limit
+    prm$smallest = 1,		!Smallest number used
+    prm$baspri = 1,		!Base priority parameter
+    prm$ssrwait = 2,		!Resource wait mode parameter
+    prm$pswapm = 3,		!Inhibit process swapping parameter
+    prm$disaws = 4,		!Disable working set adjustment parameter
+    prm$astlm = 5,		!AST limit parameter
+    prm$biolm = 6,		!Buffered I/O limit parameter
+    prm$diolm = 7,		!Direct I/O limit parameter
+    prm$bytlm = 8,		!Buffered I/O byte count limit parameter
+    prm$pgflquota = 9,		!Paging file quota parameter
+    prm$dislog = 10,		!Disable ACP error/output logging to files
+    prm$wsdefault = 11,		!Default working set quota parameter
+    prm$wsextent = 12,		!Working set extent parameter
+    prm$wsquota = 13,		!Working set quota parameter
+    prm$biggest = 13;		!Biggest number used
+!
+! These should be used by STARTACP to $CREPRC of the ACP, and altered by
+! this module only
+!
+GLOBAL
+	vsta$gl_dislog: INITIAL(0),	!ACP error/output logging NOT disabled
+	vsta$gl_baspri: INITIAL(8),	!ACP base priority = 8
+	vsta$gl_modes: BLOCK[1,LONG]	!ACP modes or status flags
+		INITIAL(
+			PRC$M_SSRWAIT +	!Don't wait for resources
+			PRC$M_HIBER +	!Come up hibernating
+			PRC$M_PSWAPM +  !Prevent process swapping
+			PRC$M_LOGIN +   ! This is the same as (prc$M_NOUAF)
+			PRC$M_DETACH),   ! MAKE THE PROCESS A DETACHED PROCESS
+				
+
+	vsta$gl_quota: BLOCKVECTOR[13,5,BYTE]
+		INITIAL(
+			  byte(PQL$_ASTLM),long(128),
+			  byte(PQL$_BIOLM),long(%x'fff'),
+			  byte(PQL$_BYTLM),long(%X'ffff'),
+			  byte(PQL$_DIOLM),long(%x'fff'),
+			  byte(PQL$_ENQLM),long(%x'fff'),
+			  byte(PQL$_FILLM),long(%x'fff'),
+			  byte(PQL$_PGFLQUOTA),long(10000),
+			  byte(PQL$_PRCLM),long(%x'fff'),
+			  byte(PQL$_TQELM),long(%x'fff'),
+			  byte(PQL$_WSDEFAULT),long(%x'fff'),
+			  byte(PQL$_WSEXTENT),long(%x'fff'),
+			  byte(PQL$_WSQUOTA),long(%x'fff'),
+			  byte(PQL$_LISTEND));
+!
+! Module-wide data
+!
+OWN
+	parse_table: VECTOR[256,BYTE]
+	  INITIAL(BYTE( REP 33 OF (skip_char),	!Control characters and space
+			REP 11 OF (0),		!Non-delimiter characters
+			skip_char,		!Comma character
+			REP 14 OF (0),		!Non-delimiter characters
+			skip_char,		!Semi-colon character
+			REP 67 OF (0),		!Non-delimiter characters
+			skip_char,		!Delete character
+			REP 128 OF (0)));	!All eight-bit characters
+!
+! Internal Macros
+!
+MACRO
+	quota$b_id = 0,0,8,0%,
+	quota$l_value = 1,0,32,0%;
+!
+! External routines
+!
+EXTERNAL ROUTINE
+    str$upcase,			!Convert string to uppercase
+    ots$cvt_ti_l,		!ASCII to integer conversion
+    lib$lookup_key;		!Lookup keyword in a table and identify
+
+
+
+GLOBAL ROUTINE vsta$$stacp_fill_parameters =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Fill in all of STARTACP's $CREPRC parameters for the ACP process.
+! Anything specified in the ascii data file pointed to by VSTA$PARAMETERS:
+! will override the default values. See PARSE_KEYWORD for a list of legal
+! parameter keywords. The file may be free formatted with parameters
+! delimited by spaces, tabs, commas, or semi-colons. The "!" character is
+! used to delimit comments within the file.
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successful completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!--
+BEGIN
+
+OWN
+    parameter_line: VECTOR[parameter_size,BYTE],	!File record buffer
+    uppercase_buffer: VECTOR[parameter_size,BYTE],	!Buffer converted 
+    prmfile_fab: $FAB(					!Parameter file FAB
+			FNM = 'VSTA$PARAMETERS:',
+			FOP = SQO,
+			SHR = GET
+		),
+    prmfile_rab: $RAB(					!Parameter file RAB
+			FAB = prmfile_fab,
+			UBF = parameter_line,
+			USZ = parameter_size
+		);
+LOCAL
+    keyword_value,			!Which parameter to alter
+    uppercase_desc: VECTOR[2],		!Upper-case version of file record
+    parameter_desc: VECTOR[2]		!Descriptor of original file record
+		 INITIAL(parameter_size,parameter_line),
+    status;				!Return status value
+
+!
+! Initialize defaults we have to establish at run-time
+!
+	$CMKRNL( ROUTIN = init_runtime_defaults );
+!
+! If the parameter file isn't there or we can't access it, we're done
+!
+	IF NOT $OPEN( FAB = prmfile_fab ) THEN
+	  RETURN SS$_NORMAL;
+!
+	IF NOT $CONNECT( RAB = prmfile_rab ) THEN
+	  RETURN SS$_NORMAL;
+!
+! Loop through each record in the file, isolate the keyword, and adjust that
+! parameter (if valid)
+!
+	WHILE ($GET( RAB = prmfile_rab )) DO
+	  BEGIN
+	    parameter_desc[0] = uppercase_desc[0] = .prmfile_rab[RAB$W_RSZ];
+	    uppercase_desc[1] = uppercase_buffer;
+!
+	    IF str$upcase(
+			uppercase_desc,
+			parameter_desc) THEN
+	      process_parameter_record(
+			uppercase_desc);
+	  END;
+!
+! Close the parameter file
+!
+	$CLOSE( FAB = prmfile_fab );
+!
+	RETURN SS$_NORMAL;	!Return success indication
+END;				!End of routine vsta$$stacp_fill_parameters
+
+
+ROUTINE init_runtime_defaults =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine initializes all VSACP default parameter settings which
+! were not known at link time. These include any that are based on SYSGEN
+! parameters.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal completion
+!
+! SIDE EFFECTS:
+!
+!	This routine accesses system global parameters and must be called in
+! kernel mode.
+!--
+BEGIN
+
+EXTERNAL
+	sgn$gl_maxvpgct;		!Max. virtual page count for a process
+
+!
+! Initialize all run-time default parameter settings for the VSACP process
+!
+! Paging file quota parameter
+!
+	vsta$gl_quota[6,quota$l_value] = .sgn$gl_maxvpgct;
+!
+	RETURN SS$_NORMAL;		!Return success indication
+END;					!End of routine init_runtime_defaults
+
+
+ROUTINE process_parameter_record
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Take a STARTACP parameter file record descriptor, parse out any
+! recognizable keywords, alter their values when appropriate and ignore
+! comments and illegal keywords. This routine will continue parsing the
+! buffer until either the end of the buffer, the start of a comment, or
+! an illegal entry is detected.
+!
+! FORMAL PARAMETERS:
+	(parameter_desc: REF VECTOR	!Parameter file record descriptor
+	) =
+!--
+BEGIN
+
+LOCAL
+    more: INITIAL(true),			!"Boolean" more keywords flag
+    new_value,					!New value for parameter
+    keyword_value;				!Keyword identifier
+
+!
+! While there are more keywords in the record to process...
+!
+	WHILE .more DO
+	  BEGIN
+!
+! Parse the input string for a legal keyword, and if can't find any, return
+!
+	    IF NOT parse_keyword(
+			parameter_desc[0],
+			keyword_value) THEN
+	      RETURN SS$_NORMAL;
+!
+! If there is a parameter in this record for the keyword, then process it.
+!
+	    IF NOT parse_value(
+			parameter_desc[0],
+			new_value,
+			more) THEN
+	      RETURN SS$_NORMAL;
+!
+	    process_parameter(
+			.keyword_value,
+			.new_value);
+	  END;				!While keywords remain in record
+!
+	RETURN SS$_NORMAL;	!Return success indication
+END;				!End of routine process_parameter_record
+
+
+ROUTINE parse_keyword
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Take the buffer from the VAXstation ACP parameter file and remove
+! the next keyword (if any). A unique keyword identifier will be returned
+! if one is found.
+!
+! FORMAL PARAMETERS:
+	(parameter_desc: REF VECTOR,	!Parameter file record descriptor
+	keyword_value			!Keyword value (if any)
+	) =
+!
+! IMPLICIT INPUTS:
+!
+!	PARSE_TABLE : Translation table for SCANC, SPANC
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1) : Valid keyword found in buffer
+!	false (=0) : No valid keywords found in buffer
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!--
+BEGIN
+
+BUILTIN
+    SCANC,
+    SPANC;
+
+OWN
+    keyword_buffer: VECTOR[parameter_size,BYTE],	!Keyword buffer
+    main_keytable: $LIB_KEY_TABLE(			!Keyword table
+			(BASPRI, prm$baspri),
+			(SSRWAIT, prm$ssrwait),
+			(PSWAPM, prm$pswapm),
+			(DISAWS, prm$disaws),
+			(ASTLM, prm$astlm),
+			(BIOLM, prm$biolm),
+			(DIOLM, prm$diolm),
+			(BYTLM, prm$bytlm),
+			(PGFLQUOTA, prm$pgflquota),
+			(DISLOG, prm$dislog),
+			(WSDEFAULT, prm$wsdefault),
+			(WSEXTENT, prm$wsextent),
+			(WSQUOTA, prm$wsquota)
+				);
+LOCAL
+    keyword_start,				!Keyword start address
+    keyword_desc: VECTOR[2]			!Keyword descriptor
+	INITIAL(parameter_size,keyword_buffer),
+    first_char: REF VECTOR[0,BYTE];		!Arbitrary token address
+
+!
+! Find the first "real" character in the string
+!
+	first_char = SPANC(
+			parameter_desc[0],
+			.parameter_desc[1],
+			parse_table,
+			%REF(skip_char));
+!
+! If there weren't any "real" characters or the record is a comment, return
+! indication
+!
+	IF .first_char EQL 0 THEN
+	  RETURN false;
+!
+	IF .first_char[0] EQL %C'!' THEN
+	  RETURN false;
+!
+! Lets assume that what we've got is the start of a keyword. Find the "end"
+! of the keyword.
+!
+	keyword_start = .first_char;
+	parse_table[%C'='] = skip_char;
+	first_char = SCANC(
+			%REF(.parameter_desc[0] -
+				(.keyword_start - .parameter_desc[1])),
+			.keyword_start,
+			parse_table,
+			%REF(skip_char));
+	parse_table[%C'='] = 0;
+!
+! If we didn't find a token, return indication
+!
+	IF .first_char EQL 0 THEN
+	  RETURN false;
+!
+! Readjust the record descriptor to remove all evidence of the keyword and
+! compute the size of the keyword and return it in the specified buffer
+!
+	parameter_desc[0] = MAX(0,
+		.parameter_desc[0] - (.first_char - .parameter_desc[1]));
+	parameter_desc[1] = .first_char;
+	keyword_desc[0] = .first_char - .keyword_start;
+	CH$MOVE(
+		.keyword_desc[0],
+		.keyword_start,
+		.keyword_desc[1]);
+!
+	RETURN lib$lookup_key(
+			keyword_desc,
+			main_keytable,
+			.keyword_value);
+END;					!End of routine parse_keyword
+
+
+ROUTINE parse_value
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Take the remainder of a record from the VAXstation ACP parameter file
+! after the keyword has been stripped, remove the parameter (if any), and
+! convert it from ascii to integer. This routine also detects if there's more
+! stuff in the record to be looked at for more potential keyword entries.
+!
+! FORMAL PARAMETERS:
+	(parameter_desc: REF VECTOR,	!Parameter file record descriptor
+	parameter_value,		!Address for parameter value
+	more_left			!Address for potential more-stuff flag
+	) =
+!
+! IMPLICIT INPUTS:
+!
+!	PARSE_TABLE : Translation table for SCANC, SPANC
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1) : Valid parameter value found in buffer
+!	false (=0) : No valid parameter values found in buffer
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!--
+BEGIN
+
+BUILTIN
+    SCANC,
+    SPANC;
+
+LOCAL
+    value_desc: VECTOR[2],		!Ascii new value descriptor
+    first_char: REF VECTOR[0,BYTE];	!Arbitrary token address
+
+!
+	.more_left = false;
+!
+! Find the first "real" character in the string
+!
+	first_char = SPANC(
+			parameter_desc[0],
+			.parameter_desc[1],
+			parse_table,
+			%REF(skip_char));
+!
+! If there weren't any "real" characters or the character found is not an
+! equal sign as expected or the equal sign is the last character in the
+! buffer, return indication
+!
+	IF .first_char EQL 0 THEN
+	  RETURN false;
+!
+	IF .first_char[0] NEQ %C'=' THEN
+	  RETURN false;
+!
+	IF (.first_char - .parameter_desc[1] + 1) EQL .parameter_desc[0] THEN
+	  RETURN false;
+!
+! Go looking for the next non-wierd character and assume
+! its the beginning of the parameter value. 
+!
+	first_char = SPANC(
+			%REF(.parameter_desc[0] - 1 -
+				(.first_char - .parameter_desc[1])),
+			.first_char + 1,
+			parse_table,
+			%REF(skip_char));
+
+!
+! If there weren't anymore "real" characters, return indication
+!
+	IF .first_char EQL 0 THEN
+	  RETURN false;
+!
+! Find the end of the alleged parameter value string
+!
+	value_desc[1] = .first_char;
+	parse_table[%C'!'] = skip_char;
+	first_char = SCANC(
+			%REF(.parameter_desc[0] -
+				(.value_desc[1] - .parameter_desc[1])),
+			.value_desc[1],
+			parse_table,
+			%REF(skip_char));
+	parse_table[%C'!'] = 0;
+!
+! If we didn't find a token, then we found the end of the record instead.
+!
+	IF .first_char EQL 0 THEN
+	  first_char = .parameter_desc[0] + .parameter_desc[1]
+	ELSE
+	  .more_left = true;
+!
+! If we can convert this thing to an integer, it must be the parameter value.
+! Otherwise, its not...
+!
+	value_desc[0] = .first_char - .value_desc[1];
+!
+	IF NOT ots$cvt_ti_l(
+			value_desc,
+			.parameter_value,4,0) THEN
+	  RETURN false;
+!
+! If there's more stuff left in this record, adjust the descriptor to
+! point at the token to begin with on the next scanc.
+!
+	IF ..more_left THEN
+	  BEGIN
+	    parameter_desc[0] = (.parameter_desc[0] + .parameter_desc[1])
+					- .first_char;
+	    parameter_desc[1] = .first_char;
+	  END;
+!
+	RETURN SS$_NORMAL;		!Return success indication
+END;					!End of routine parse_value
+
+
+ROUTINE process_parameter
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Take a unique VSACP parameter keyword identifier and the new value
+! for that keyword and alter the appropriate data base entry.
+!
+! FORMAL PARAMETERS:
+	(keyword_id,			!Keyword identifier
+	new_value			!New value for parameter
+	) =
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!--
+BEGIN
+
+!
+! Adjust appropriate ACP parameter with the new value
+!
+	CASE .keyword_id FROM prm$smallest TO prm$biggest OF
+	  SET
+	    [prm$baspri] :		!Base priority parameter
+		vsta$gl_baspri = MIN(31,ABS(.new_value));
+	    [prm$ssrwait] :		!Resource wait mode parameter
+		vsta$gl_modes[PRC$V_SSRWAIT] = (.new_value AND 1);
+	    [prm$pswapm] :		!Inhibit process swapping parameter
+		vsta$gl_modes[PRC$V_PSWAPM] = (.new_value AND 1);
+	    [prm$disaws] :		!Disable working set adjustment parameter
+		vsta$gl_modes[PRC$V_DISAWS] = (.new_value AND 1);
+	    [prm$astlm] :		!AST limit parameter
+		vsta$gl_quota[0,quota$l_value] = MAX(min_astlm,.new_value);
+	    [prm$biolm]	:		!Buffered I/O limit parameter
+		vsta$gl_quota[1,quota$l_value] = MAX(min_biolm,.new_value);
+	    [prm$diolm] :		!Direct I/O limit parameter
+		vsta$gl_quota[3,quota$l_value] = MAX(min_diolm,.new_value);
+	    [prm$bytlm] :		!Buffered I/O byte count limit parameter
+		vsta$gl_quota[2,quota$l_value] = MAX(min_bytlm,.new_value);
+	    [prm$pgflquota] :		!Paging file quota parameter
+		vsta$gl_quota[6,quota$l_value] = .new_value;
+	    [prm$dislog] :		!Disable output/error logging parameter
+		vsta$gl_dislog = (.new_value AND 1);
+	    [prm$wsdefault] :		!Default working set quota parameter
+		vsta$gl_quota[9,quota$l_value] = .new_value;
+	    [prm$wsextent] :		!Working set extent parameter
+		vsta$gl_quota[10,quota$l_value] = .new_value;
+	    [prm$wsquota] :		!Working set quota parameter
+		vsta$gl_quota[11,quota$l_value] = .new_value;
+	  TES;
+!
+	RETURN SS$_NORMAL;		!Return success indication
+END;					!End of routine process_parameter
+
+
+END
+ELUDOM
+

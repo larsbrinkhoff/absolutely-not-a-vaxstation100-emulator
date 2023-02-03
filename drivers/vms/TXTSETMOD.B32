@@ -1,0 +1,354 @@
+module txtsetmod (
+		ADDRESSING_MODE (EXTERNAL = GENERAL,
+				NONEXTERNAL = GENERAL) ) =
+begin
+
+
+! Routines for setting values and modes that affect subsequent text-writing
+! on virtual display.
+
+library 'vsta$library:txtsym';
+library 'vsta$library:termio';
+library 'vsta$library:libmacros';	! symbols like $return_error
+library 'vsta$library:vserrors';	! symbols like integer_type
+
+forward routine!s
+
+	vs$$txt_set_field_format,	! specify what format field is
+	vs$$txt_setBaseLine,		! specify amount to raise characters
+	vs$$txt_setOffset,		! specify lateral shift for characters
+	vs$$txt_setTypeSize,		! specify type size to write with
+	vs$$txt_setTypeface,		! specify what typeface to write with
+	vs$$txt_setBackgroundColor,	! set text background color
+	vs$$txt_setWritingColor,	! set color characters should appear as
+	vs$$txt_set_rendition;		! turn off and on certain rendition bits
+external routine!s
+
+	clone_upcased_string,	! make copy of string in uppercase
+	forgetString,		! release space taken up by string
+	printField;		! refresh a field
+
+$vsta_psect;			! PSECT definitions
+
+
+global routine vs$$txt_set_field_format
+!++
+! Functional description:
+!
+!	Specify what format a particular field should have.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display
+	lineNum,		! which line field is on
+	fieldPos,		! position of field whose format is being changed
+	format			! format to change it to
+ ) =
+!
+! Side effects:
+!
+!	Existing text in the field is redisplayed on the virtual display in
+!	the new format.  Also, the format is remembered for subsequent printing
+!	on the field.
+!--
+
+	begin
+
+	bind
+
+	    ! Get text block for this virtual display, return error if none.
+	    txtBlk = getTextBlock(.id) : text_block,
+
+	    ! Get field block involved, return error if none.
+	    !
+	    fldBlk = getFieldBlock (txtBlk[base], .lineNum, .fieldPos)
+	    : field_block;
+
+	! Give error if new format is undefined.
+	!
+	if .format lss 0 or .format gtr ff_max
+	then $return_error (vsta$_bad_ff, integer_type, .format);
+
+	! Set up new format.
+	fldBlk[fld_format] = .format;
+!
+! Refresh the field so new format takes affect immediately.
+!
+	printField (.id, txtBlk[base], .lineNum, .fieldPos,
+	    1,			! Start with first character.
+	    .fldBlk[fld_nChars],! Display through last.
+	    1,			! Fix left margin.
+	    1,			! Clear old text.
+	    1			! Fix right margin.
+	    );
+!
+! Give success return.
+!
+	true
+
+	end;
+
+global routine vs$$txt_setBaseline
+!++
+! Functional description:
+!
+!	Specify amount to raise subsequently written characters from standard
+!	baseline.
+!
+! Formal parameters:
+ (
+    id,		! which virtual display
+    raise	! amount to raise characters
+		) =
+!--
+
+	begin
+
+	bind
+	    ! Get text block for specified display
+	    txtBlk = getTextBlock(.id):text_block;
+
+	! Remember specified amount.
+	txtBlk[txt_curBase] = .raise;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_setOffset
+!++
+! Functional description:
+!
+!	Specify horizontal distance to shift characters from normal position.
+!
+! Formal parameters:
+ (
+    id,		! which virtual display
+    amount	! amount to shift
+		) =
+!--
+
+	begin
+
+	bind
+	    ! Get text block for specified display
+	    txtBlk = getTextBlock(.id):text_block;
+
+	! Remember specified type size.
+	txtBlk[txt_curOffset] = .amount;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_setTypeSize
+!++
+! Functional description:
+!
+!	Announce which type size subsequent output should be done in
+!
+! Formal parameters:
+ (
+    id,		! which virtual display
+    size	! size being set for subsequent output
+		) =
+!--
+
+	begin
+
+	bind
+	    ! Get text block for specified display
+	    txtBlk = getTextBlock(.id):text_block;
+
+!
+! Mark that this vd's attributes are no longer stable, if we're actually
+! changing the size.
+!
+	if .size neq .txtBlk[txt_curSize]
+	then txtBlk[txt_stab_att] = 0;
+
+	! Remember specified type size.
+	txtBlk[txt_curSize] = .size;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_setTypeface
+!++
+! Functional description:
+!
+!	Announce which typeface subsequent output should be done in
+!
+! Formal parameters:
+ (
+    id,					! which virtual display
+    typefaceDesc:ref string_descriptor	! string descriptor of typeface
+		) =
+!--
+
+	begin
+
+	local s, oldTypeDesc:string_descriptor;
+
+	bind
+	    ! Get text block for specified display
+	    txtBlk = getTextBlock(.id):text_block;
+
+	! Remember old descriptor of typeface
+	!
+	oldTypeDesc[sd_len] = .txtBlk[txt_curTypefaceLen];
+	oldTypeDesc[sd_adr] = .txtBlk[txt_curTypefaceAdr];
+
+	! Make copy of typeface string (in uppercase)
+	!
+	if not (s = clone_upcased_string (
+	    typefaceDesc[sd_len],
+	    txtBlk[txt_curTypefaceLen]
+	    ))
+	then return .s;
+
+	! Forget old descriptor
+	!
+	forgetString (oldTypeDesc[sd_len]);
+!
+! Mark that this vd's attributes are no longer stable.
+!
+	txtBlk[txt_stab_att] = 0;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_setBackgroundColor
+!++
+! Functional description:
+!
+!	Set which color should appear as the text background color.
+!	This routine merely accepts the color as a number and remembers it
+!	for passing on later when sending new text to the screen.
+!
+!	Although the background color's affect is not implemented here, the
+!	idea is for several opaque text backgrounds to be supported, as well
+!	as a transparent background.
+!
+!	In transparent mode, the graphics or general background color shows
+!	up behind the text (i.e. in the hole in o's and 8's), whereas with
+!	opaque background colors, the specified text background color is
+!	all that is seen in the vicinity of the characters.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display
+	color			! number representing background color
+ ) =
+
+	begin
+
+	bind
+
+	    ! Get text block associated with specified id
+	    txtBlk = getTextBlock (.id) : text_block;
+
+!
+! Mark that this vd's attributes are no longer stable, if we're actually
+! changing the color.
+!
+	if .color neq .txtBlk[txt_curBack]
+ 	then txtBlk[txt_stab_att] = 0;
+
+	! Remember the specified color.
+	txtBlk[txt_curBack] = .color;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_setWritingColor
+!++
+! Functional description:
+!
+!	Set which color should be used for writing subsequently-written text
+!	(i.e. does *not* affect color of existing text)
+!
+! Formal parameters:
+ (
+	id,			! which virtual display
+	color			! number representing writing color
+ ) =
+
+	begin
+
+	bind
+
+	    ! Get text block associated with specified id
+	    txtBlk = getTextBlock (.id) : text_block;
+
+!
+! Mark that this vd's attributes are no longer stable, if we're actually
+! changing the color.
+!
+	if .color neq .txtBlk[txt_curInk]
+	then txtBlk[txt_stab_att] = 0;
+
+	! Remember the specified color.
+	txtBlk[txt_curInk] = .color;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_set_rendition
+!++
+! Functional description:
+!
+!	Turn off certain rendition bits, while turning on others.  This call
+!	affects only subsequent output, and doesn't affect existing text.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display
+	off_mask,		! which bits to turn off (done before the on's)
+	on_mask			! which bits to turn on
+ ) =
+
+	begin
+
+	bind
+
+	    ! Get text block for this virtual display.
+	    txtBlk = getTextBlock (.id) : text_block,
+
+	    ! Get address of rendition word.
+	    rend_adr = txtBlk[txt_curRend],
+
+	    ! Get old rendition values.
+	    old_rends = .rend_adr;
+
+	! First, turn off the specified bits.
+	rend_adr = .rend_adr and not .off_mask;
+
+	! Then, turn on the specified bits.
+	rend_adr = .rend_adr or .on_mask;
+!
+! Mark that this vd's attributes are no longer stable.  However ONLY do this
+! if the rendition bits have actually changed.  This check prevents stab_att
+! from being cleared when the vt100 emulator does redundant set-renditions,
+! hence allowing subsequent write-text's to the vt100 to be faster (since
+! stab_att is still on and hence chooseFont needn't be called again)
+!
+	if old_rends neq .rend_adr
+	then txtBlk[txt_stab_att] = 0;
+
+	true
+
+	end;
+
+end
+eludom

@@ -1,0 +1,350 @@
+MODULE DOC$TILDA (
+		IDENT = 'VSTADOC Utility Tilda-sequence translator'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module translates 7-bit ASCII representations of
+!	DEC multinational into the real 8-bit version.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$get_multinational,
+    validate_tilda_seq;
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL
+    doc$gl_cur_line_num,	!Current line number (printed in listing)
+    num_user_errors,		!Number of user errors
+    fatal_error;
+
+OWN
+    tilda_seqs_2: VECTOR [6*2] INITIAL
+		('~', %X'7E'		!Tilda
+		,'!', %X'A1'		!Inverted "!"
+		,'?', %X'BF'		!Inverted "?"
+		,'P', %X'B6'		!Paragraph symbol
+		,'#', 1			!Sharp (in most fonts, will be a 1-pix
+					! character)
+		,'-', 0			!Can break line here.
+		),
+    num_tilda_seqs_2: INITIAL (6),	!# of 2-char tilda sequences
+
+    tilda_seqs_3: VECTOR [78*2] INITIAL
+		('c$', %X'A2'		!Cents sign
+		,'L$', %X'A3'		!British pound sign
+
+		,'Y=', %X'A5'		!yen sign
+
+		,'So', %X'A7'		!Integral sign (fan?)
+		,'o*', %X'A8'		!International currency sign
+		,'co', %X'A9'		!Copyright
+		,'a_', %X'AA'		!Underlined small a
+		,'<<', %X'AB'		!<<
+
+		,'^o', %X'B0'		!Degree symbol
+		,'+-', %X'B1'		!Plus-or-minus
+		,'2^', %X'B2'		!Superscript 2
+		,'3^', %X'B3'		!Superscript 3
+
+		,'ug', %X'B5'		!Greek micro (mu)
+
+		,'.^', %X'B7'		!Middle dot
+
+		,'1^', %X'B9'		!Superscript 1
+		,'o_', %X'BA'		!Underlined small o
+		,'>>', %X'BB'		!>>
+		,'14', %X'BC'		! 1/4
+		,'12', %X'BD'		! 1/2
+
+		,'A`', %X'C0'		!Cap A with grave accent
+		,'A''', %X'C1'		!Cap A with acute accent
+		,'A^', %X'C2'		!Cap A with circumflex
+		,'A~', %X'C3'		!Cap A with tilda
+		,'A:', %X'C4'		!Cap A with diaeresis
+
+		,'Ao', %X'C5'		!Cap A with ring
+		,'AE', %X'C6'		!Cap AE diphong
+		,'C,', %X'C7'		!Cap C with cedilla
+		,'E`', %X'C8'		!Cap E with grave accent
+		,'E''', %X'C9'		!Cap E with acute accent
+
+		,'E^', %X'CA'		!Cap E with circumflex
+		,'E:', %X'CB'		!Cap E with diaeresis
+		,'I`', %X'CC'		!Cap I with grave accent
+		,'I''', %X'CD'		!Cap I with acute accent
+		,'I^', %X'CE'		!Cap I with circumflex
+
+		,'I:', %X'CF'		!Cap I with diaeresis
+		,'N~', %X'D1'		!Cap N with tilda
+		,'O`', %X'D2'		!Cap O with grave accent
+		,'O''', %X'D3'		!Cap O with acute accent
+		,'O^', %X'D4'		!Cap O with circumflex
+
+		,'O~', %X'D5'		!Cap O with tilda
+		,'O:', %X'D6'		!Cap O with diaeresis
+		,'OE', %X'D7'		!Cap oe diphong
+		,'O/', %X'D8'		!Cap O with slash
+		,'U`', %X'D9'		!Cap U with grave accent
+		,'U''', %X'DA'		!Cap U with acute accent
+
+		,'U^', %X'DB'		!Cap U with circumflex
+		,'U:', %X'DC'		!Cap U with diaeresis
+		,'Y:', %X'DD'		!Cap Y with diaeresis
+		,'ss', %X'DF'		!German small sharp S
+		,'a`', %X'E0'		!Small a with grave accent
+
+		,'a''', %X'E1'		!Small a with acute accent
+		,'a^', %X'E2'		!Small a with circumflex
+		,'a~', %X'E3'		!Small a with tilda
+		,'a:', %X'E4'		!Small a with diaeresis
+		,'ao', %X'E5'		!Small a with ring
+
+		,'ae', %X'E6'		!Small ae diphong
+		,'c,', %X'E7'		!Small c with cedilla
+		,'e`', %X'E8'		!Small e with grave accent
+		,'e''', %X'E9'		!Small e with acute accent
+		,'e^', %X'EA'		!Small e with circumflex
+
+		,'e:', %X'EB'		!Small e with diaeresis
+		,'i`', %X'EC'		!Small i with grave accent
+		,'i''', %X'ED'		!Small i with acute accent
+		,'i^', %X'EE'		!Small i with circumflex
+		,'i:', %X'EF'		!Small i with diaeresis
+
+		,'n~', %X'F1'		!Small n with tilda
+		,'o`', %X'F2'		!Small o with grave accent
+		,'o''', %X'F3'		!Small o with acute accent
+		,'o^', %X'F4'		!Small o with circumflex
+		,'o~', %X'F5'		!Small o with tilda
+
+		,'o:', %X'F6'		!Small o with diaeresis
+		,'oe', %X'F7'		!Small oe diphong
+		,'o/', %X'F8'		!Small o with slash
+		,'u`', %X'F9'		!Small u with grave accent
+		,'u''', %X'FA'		!Small u with acute accent
+
+		,'u^', %X'FB'		!Small u with circumflex
+		,'u:', %X'FC'		!Small u with diaeresis
+		,'y:', %X'FD'		!Small y with diaeresis
+
+		),
+    num_tilda_seqs_3: INITIAL (78);	!# of 3-char tilda sequences
+
+GLOBAL ROUTINE doc$$get_multinational
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Translates given string with tilda-sequences into
+!	the equivalent DEC_multinational string, and writes
+!	the result back in the same place.
+!	  Warning: Do not call this routine with a 0-length string.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_1: VECTOR [512,byte],	!Output string holding area.
+    idx1,			!Index into source string
+    idx2,			!Index into dest string
+    tloc,			!Location of tilda in source string
+    rem_desc: VECTOR [2],	!Descriptor to remainder of string
+    len_tilda_seq,		!# chars in tilda sequence
+    temp;
+!
+! Do initial search for tilda's. If there aren't any, return
+! quickly without doing any more work.
+!
+IF ( (tloc = CH$FIND_CH	(.str_desc [0]	!Length
+			,.str_desc [1]	!Ptr
+			,%C'~'		!Tilda
+			)
+     ) EQL 0)
+  THEN RETURN SS$_NORMAL;		!No tilda in string
+!
+! Alright, there are tilda's in this string.
+! Initialize variables.
+
+rem_desc [0] = .str_desc [0];
+rem_desc [1] = .str_Desc [1];
+idx1 = 0;			!Points to next char to copy from source
+idx2 = 0;			!Index into str_1
+
+! Do the following loop:
+!	If tilda sequence is valid,
+!	    copy string up to tilda
+!	    append translated character
+!	    skip over valid tilda sequence in source
+!       else
+!	    copy string up to & including tilda
+!	    give warning.
+!	get position of next tilda in string.
+!	   if none -- exitloop.
+! Copy remainder of string to holding area.
+! Copy holding area back to source and update source descriptor.
+!
+WHILE 1 DO
+    BEGIN	!tloc = char pos of tilda, rem_desc = desc to remainder 
+		! of string, idx1 = index into source, idx2 = index into dest.
+
+    temp = .tloc - .rem_desc [1];	!# chars before tilda
+    rem_desc [0] = .rem_desc [0] - .temp;	!Get descriptor to <tilda>rem.
+    rem_desc [1] = .rem_desc [1] + .temp;	! . .
+    IF NOT (validate_tilda_seq
+			(rem_desc
+			,len_tilda_seq		!Get length of proper seq
+			,str_1 [.idx2] + .temp	!Write char to its proper place
+			)
+	   )
+      THEN
+	BEGIN			!Seq not valid
+	$gen_error ('%ERR: Tilda sequence not valid');
+	CH$MOVE	(1
+		,UPLIT (%C'~')
+		,str_1 [.idx2]
+		);		!Copy the tilda to the dest string
+	idx1 = .idx1 + 1;
+	idx2 = .idx2 + 1;
+	rem_desc [0] = .rem_desc [0] - 1;
+	rem_desc [1] = .rem_desc [1] + 1;
+	END
+      ELSE
+	BEGIN			!Seq is valid, char written to proper place
+	IF (.temp NEQ 0)	!If any chars before tilda seq.
+	  THEN CH$MOVE	(.temp
+			,.str_desc [1] + .idx1
+			,str_1 [.idx2]
+			);
+	idx1 = .idx1 + .temp + .len_tilda_seq;
+	idx2 = .idx2 + .temp + 1;
+	rem_desc [0] = .rem_desc [0] - .len_tilda_seq;
+	rem_desc [1] = .rem_desc [1] +  .len_tilda_seq;
+	END;
+
+    IF (.rem_desc [0] EQL 0) THEN EXITLOOP;
+    IF ( (tloc = CH$FIND_CH	(.rem_desc [0]
+				,.rem_desc [1]
+				,%C'~'
+				)
+	  ) EQL 0)
+      THEN EXITLOOP;
+    END;
+!
+! Done, copy remainder of string
+!
+IF (.rem_desc [0] NEQ 0)
+  THEN
+    BEGIN
+    CH$MOVE	(.rem_desc [0]
+		,.str_desc [1] + .idx1
+		,str_1 [.idx2]
+		);
+    idx2 = .idx2 + .rem_desc [0];	!Get # chars in dest string
+    END;
+!
+! Now idx2 = # chars in dest string
+! Move it to source.
+!
+CH$MOVE	(.idx2
+	,str_1
+	,.str_desc [1]
+	);
+str_desc [0] = .idx2;			!Update length in descriptor
+RETURN SS$_NORMAL
+END;
+
+ROUTINE validate_tilda_seq
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Validates the next tilda sequence.
+!	Returns "True" if valid, else "False".
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,len			!Returned length of valid tilda seq.
+	,char: REF VECTOR [1,BYTE]	!Returned character value.
+	) =
+!--
+BEGIN
+LOCAL
+   adr_ch: REF VECTOR [0,BYTE],
+   found,
+   ch_1,		!First char of tilda seq.
+   ch_2;		!2nd char (if present) of tilda seq.
+
+IF (.str_desc [0] LSS 2)
+  THEN RETURN 0;		!Invalid if less than 2 chars
+
+found = -1;			!Set to index if found
+!
+! Search for a valid 2-character tilda seq.
+!
+adr_ch = .str_desc [1];		!So can ref string a byte at a time
+ch_1 = .adr_ch [1];		!Get first char after tilda
+
+INCR i FROM 0 TO .num_tilda_seqs_2 - 1 DO
+    BEGIN
+    adr_ch = tilda_seqs_2 [.i * 2];
+    IF (.adr_ch [0] EQL .ch_1)
+     THEN
+	BEGIN
+	found = .i;
+	EXITLOOP;
+	END;
+    END;
+
+IF (.found GEQ 0)
+  THEN
+    BEGIN
+    .len = 2;		!2-char seq
+    char[0] = .tilda_seqs_2 [.found * 2 + 1];
+    RETURN SS$_NORMAL;
+    END;
+!
+! Search for a valid 3-char sequence
+!
+IF (.str_desc [0] LSS 3)
+  THEN RETURN 0;		!Invalid if less than 3 chars in string
+
+adr_ch = .str_desc [1];		!So can ref string a byte at a time
+ch_2 = .adr_ch [2];		!Get 2nd char after tilda
+
+INCR i FROM 0 TO .num_tilda_seqs_3 - 1 DO
+    BEGIN
+    adr_ch = tilda_seqs_3 [.i * 2];
+    IF ((.adr_ch [0] EQL .ch_1) AND (.adr_ch [1] EQL .ch_2))
+     THEN
+	BEGIN
+	found = .i;
+	EXITLOOP;
+	END;
+    END;
+
+IF (.found GEQ 0)
+  THEN
+    BEGIN
+    .len = 3;		!3-char seq
+    char[0] = .tilda_seqs_3 [.found * 2 + 1];
+    RETURN SS$_NORMAL;
+    END;
+
+RETURN 0;		!Not found
+END;
+
+END
+ELUDOM

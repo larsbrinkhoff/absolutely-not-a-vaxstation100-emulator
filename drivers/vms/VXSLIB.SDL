@@ -1,0 +1,161 @@
+module VSTA$LIB;
+
+/*+++
+/* Facility:
+/*
+/*	VAX/VMS VAXstation Programmer Interface Library
+/*
+/* Abstract:
+/*
+/*   This module contains all the sharable library routines and data relevent to
+/*   dealing with the VAXstation entities in the context of a VAX workstation
+/*   running the associated workstation display software; an implementation of
+/*   the System Display Architecture.
+/*
+/*   Operations have been provided to allow the manipulation of paste_boards,
+/*   which in turn provide the basic application mechanism for specifying
+/*   spatial relationships between native displays and virtual terminals
+/*   and provide a mechanism for the application to specify what parts of those
+/*   native displays and terminals can be made visible through the use of
+/*   windows. The number of allowable objects is limited only by the machine's
+/*   memory capacity.
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one
+/*   ONYX/AGATE/OPAL graphics subsystem.
+/*
+/*---
+
+/*
+/* Internal constants
+/*
+/*
+    CONSTANT(
+	generic_mode,
+	vt100_mode,
+	tek4014_mode
+	) EQUALS 0 INCREMENT 1 PREFIX vsta$;
+    CONSTANT
+    	vsta$k_generic_chars EQUALS 3;		/*Text and graphics device
+    CONSTANT
+	vsta$k_generic_background EQUALS 1;	/*Standard background color
+    CONSTANT
+	vsta$k_generic_foreground EQUALS 0;	/*Standard foreground color
+    CONSTANT
+	vsta$k_generic_cols_norm EQUALS 80;	/*Standard number of columns
+    CONSTANT
+	vsta$k_generic_cols_wide EQUALS 132;	/*Wide number of columns
+    CONSTANT
+	vsta$k_generic_rows EQUALS 24;		/*Standard number of rows
+    CONSTANT
+	vsta$k_generic_char_height EQUALS 13;	/*Standard character height
+    CONSTANT
+	vsta$k_vt100_length EQUALS 640;
+    CONSTANT
+    	vsta$k_vt100_height EQUALS 312;
+    CONSTANT
+    	vsta$k_vt100_bitplanes EQUALS 1;	/*Number of bitplanes
+    CONSTANT
+    	vsta$k_vt100_line_height EQUALS 13;	/*Text line height
+    CONSTANT
+    	vsta$k_vt100_chars EQUALS 2;		/*Text only device
+    CONSTANT
+	vsta$k_vt100_background EQUALS 1;	/*Standard background color
+    CONSTANT
+	vsta$k_vt100_foreground EQUALS 2;	/*Standard foreground color
+    CONSTANT
+	vsta$k_vt100_cols_norm EQUALS 80;	/*Standard number of columns
+    CONSTANT
+	vsta$k_vt100_cols_wide EQUALS 132;	/*Wide number of columns
+    CONSTANT
+	vsta$k_vt100_cols_max EQUALS 132;	/*Maximum number of columns
+    CONSTANT
+	vsta$k_vt100_cols_min EQUALS 1;		/*Minimum number of columns
+    CONSTANT
+	vsta$k_vt100_rows EQUALS 24;		/*Standard number of rows
+    CONSTANT
+	vsta$k_vt100_rows_max EQUALS 54;	/*Maximum number of rows
+    CONSTANT
+	vsta$k_vt100_rows_min EQUALS 1;		/*Minimum number of rows
+    CONSTANT
+	vsta$k_tek4014_length EQUALS 790;	/* Keep in this proportion
+    CONSTANT
+	vsta$k_tek4014_height EQUALS 605;	/* . .
+    CONSTANT
+    	vsta$k_tek4014_bitplanes EQUALS 1;	/*Number of bitplanes
+    CONSTANT
+    	vsta$k_tek4014_line_height EQUALS 13;	/*Text line height
+    CONSTANT
+	vsta$k_tek4014_chars EQUALS 3;		/*Text and Graphics device
+    CONSTANT
+	vsta$k_tek4014_background EQUALS 1;	/*Standard background color
+    CONSTANT
+	vsta$k_tek4014_foreground EQUALS 2;	/*Standard foreground color
+    CONSTANT
+	vsta$k_tek4014_char_bits EQUALS %X200;	/*Standard characteristics
+    CONSTANT
+	vsta$k_tek4014_char_mask EQUALS %XFFFF;	/*Standard characteristics on
+    CONSTANT
+	vsta$k_font_name_length EQUALS 128;	/*Max. file specification size
+    CONSTANT
+	vsta$k_type_name_length EQUALS 128;	/*Max. typeface name size
+    CONSTANT
+	vsta$k_number_of_renditions EQUALS 4;	/*Number of allowable renditions
+    CONSTANT
+	vsta$k_default_pb_color EQUALS 1;	/*Standard background color
+    CONSTANT
+	vsta$k_window_name_size EQUALS 31;	/*Max. allowed window name size
+    CONSTANT
+	vsta$k_max_bitplanes EQUALS 16;		/*Max. no. of color bitplanes
+/*
+/* VMS Ascii String Descriptor block
+/*
+    AGGREGATE ascii_desc STRUCTURE PREFIX vsta$ad_;
+	size			WORD UNSIGNED;	/*Length of ascii string
+	type			WORD UNSIGNED;	/*Type of ascii string descriptor
+	string			ADDRESS;	/*Ascii string address
+	CONSTANT "length" EQUALS .;		/*Length of PP block
+	END ascii_desc;
+/*
+/* VAXstation Per-Process Information
+/*
+    AGGREGATE pp_block STRUCTURE PREFIX vsta$;
+	tty_info		ADDRESS;	/*Ptr to TTY char. linked list
+	tty_info_back		ADDRESS;	/*Ptr to TTY char. list end
+	curr_tty_ptr		ADDRESS;	/*Ptr to "current" TTY list
+	curr_tty_ptr_back	ADDRESS;	/*Ptr to "current" TTY list end
+	color_spec		LONGWORD UNSIGNED;/*Color specification for all
+	CONSTANT "pp_length" EQUALS .;		/*Length of PP block
+	END pp_block;
+/*
+/* Terminal characteristics data block
+/*
+    AGGREGATE ct_block STRUCTURE PREFIX vsta$ct_;
+	next_ptr	 ADDRESS;		/*Ptr to next CT block in list
+	back_ptr	 ADDRESS;		/*Ptr to last CT block in list
+	size		 WORD UNSIGNED;		/*CT block size
+	type		 BYTE UNSIGNED;		/*CT block type (for VMS)
+	tty_type	 BYTE UNSIGNED;		/*CT virtual terminal type
+	tty_chan	 LONGWORD UNSIGNED;	/*"Current" terminal channel no
+	vd_id		 LONGWORD UNSIGNED;	/*Virtual Display ID
+	lognam_size	 LONGWORD UNSIGNED;	/*Logical name size
+	lognam		 ADDRESS;		/*Logical name string address
+	logical_name	 BYTE UNSIGNED;		/*Logical name string start
+	CONSTANT "ct_length" EQUALS .;		/*Length of CT block
+	END ct_block;
+/*
+/* Selected terminal block
+/*
+    AGGREGATE st_block STRUCTURE PREFIX vsta$st_;
+	next_ptr	ADDRESS;		/*Ptr to next ST block in list
+	back_ptr	ADDRESS;		/*Ptr to last ST block in list
+	size		WORD UNSIGNED;		/*ST block size
+	type		WORD UNSIGNED;		/*ST block type (for VMS)
+	curr_tty	ADDRESS;		/*Ptr to "current" TTY
+	CONSTANT "st_length" EQUALS .;		/*Length of ST block
+	END st_block;
+/*
+/*
+/* End of module VSTA$LIB
+/*
+END_MODULE;

@@ -1,0 +1,176 @@
+MODULE VS$EMUL (
+                      IDENT = 'Common emulator routines',
+                      ADDRESSING_MODE (EXTERNAL = GENERAL,
+                                       NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Virtual Terminal Emulator Common Routines
+!
+! ABSTRACT:
+! 
+! This module contains some common routines used by all terminal emulators.
+!
+! ENVIRONMENT:
+!
+! VSACP process running under VMS
+!
+!--
+
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$emul_create_bezel,		!Create bezel for emulator
+    create_bezel_vd_stuff;		!Create the stuff for the bezel VD
+
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';		!Defs of SS$_NORMAL, etc.
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!native graphics defs.
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!HI Parameter defs.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Common VSTA symbols
+
+!
+! PSECT Definitions
+!
+$vsta_psect;
+
+!
+EXTERNAL ROUTINE!s			!routines for the emulator but external
+					!to this file
+    vs$$vds_create_vd,			!Create a virtual display
+    vs$$vds_delete_vd,			!Delete virtual display
+    vs$$txt_addLines,			!Add text lines to VD
+    vs$$txt_setTypeface,		!Set typeface
+    vs$$txt_setWritingColor,		!Set writing color
+    vs$$txt_setBackgroundColor,		!Set background color
+    vsta$$rgn_define_region,		!Create new region
+    vsta$$rgn_set_region_selectable,	!Set a region selectable.
+    vsta$$error;			!Report an error
+
+
+GLOBAL ROUTINE vsta$$emul_create_bezel
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates the bezel VD, and returns the vd-id, width and length of the
+!	bezel border (as seen by the human), and black-line-width.
+! FORMAL PARAMETERS:
+	(body_width		!Width of terminal body
+	,body_height		!Height of terminal body
+	,bezel_vd_id		!Address of where to store returned Vd-id
+	,bezel_width		!address of where to store visible width
+	,bezel_height		!Address of where to store visible height
+	,black_line_width	!Address of where to store black line width
+	,help_keyword		!Keyword for terminal border help request
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id;
+
+IF NOT vs$$vds_create_vd
+		(.body_height + (2 * vsta$K_window_border_size)
+		,.body_width + (2 * vsta$K_window_border_size)
+		,1			!Single bitplane for now
+		,vsta$K_window_border_color !Color
+		,vsta$K_color_black	!Foreground color
+		,3			!"Internal VD"
+		,2			!Indicate text only
+		,0			!UIC
+		,1			!Permanent
+		,0			!UIC protection code
+		,vd_id			!Place to put vd-id
+		,.help_keyword		!Help keyword for terminal border
+		)
+  THEN RETURN $error (vsta$_crevd_for	!?Can't create vd
+			,string_type, %ASCID 'terminal bezel'
+			);
+
+IF NOT create_bezel_vd_stuff
+		(.vd_id
+		,.body_width + (2 * vsta$K_window_border_size)
+		,.body_height + (2 * vsta$K_window_border_size)
+		)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.vd_id);		!Delete the VD
+    RETURN $error	(vsta$_writet	!?can't write..
+			,string_type, %ASCID 'terminal bezel VD'
+			);
+    END;
+
+.bezel_vd_id = .vd_id;			!Return vd-id
+.bezel_height = vsta$K_window_border_size;
+.bezel_width = vsta$K_window_border_size;
+.black_line_width = 2;		!Width of black line between bezel and footer
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_bezel_vd_stuff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does the TXT calls to create the bezel VD
+! FORMAL PARAMETERS:
+	(vd_id			!Passed VD-id
+	,vd_width		!Width of VD
+	,vd_height		!Height of VD
+	) =
+BEGIN
+!
+! Define region on bezel.
+!
+IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,0
+		,0
+		,.vd_width
+		,.vd_height
+		)
+  THEN RETURN $error (vsta$_defrgn);
+!
+! Define one big line
+!
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1		!Number of text lines
+		,.vd_height	!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+!
+! Set text writing and background colors
+!
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+!
+! Set typeface to write the LEDs
+!
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'LEDS'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'LEDS'
+			);
+!
+! we are done. Let the emulator write what it wants into the bezel.
+!
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

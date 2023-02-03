@@ -1,0 +1,181 @@
+module $TTYDEFS;
+/*
+/*	Version 'V03-002'
+/*
+/*++
+/*
+/*	This module represents the definitions of $TTYRBDEF, $TTYTADEF, and
+/*  $TTYVECDEF from SYS$LIBRARY:LIB.MLB which (for some strange reason) have
+/*  not been defined for BLISS in SYS$LIBRARY:LIB.L32. Note that when VMS
+/*  finally updates the BLISS libraries, these symbols will be multiply defined.
+/*
+/*  Note: 
+/*      Current as of VMS4.4
+/*--           
+
+
+/*++
+/* Read buffer definitions
+/*
+/*	This buffer is allocated everytime a read is issued.  The
+/* buffer contains all the information necessary to perform this read.
+/*
+/*--
+
+    aggregate TTYRB structure prefix TTY$;
+
+	RB_TXT		longword unsigned;	/* Address of the first character of
+						/* the read data.
+	RB_UVA		longword unsigned; 	/* READ BUFFER - USER VIRTUAL ADDR
+	RB_SIZE		word unsigned;
+	RB_TYPE		word unsigned; 		/* READ BUFFER - BLOCK SIZE
+	RB_ECHLEN	word unsigned;		/* NUMBER OF CHARACTERS TO ECHO
+						/* WHEN OUTPUTTING FROM ECHSTR
+	RB_SPARE2	word unsigned;
+	RB_ECHOAREA	quadword unsigned;	/* WORDS TO ECHO CHARACTERS FROM
+	RB_ECHSTR	longword unsigned;	/* ADDRESS OF THE FIRST CHARACTER
+						/* TO OUTPUT DURING EDITECHOING.
+	RB_PIC		longword unsigned;	/* ADDRESS OF THE PICTURE STRING
+						/* FOR READ VERIFY
+	RB_TERM		longword unsigned;	/* THE ADDRESS OF THE TERMINATOR BITMASK
+	RB_MOD		longword unsigned;	/* MODIFIER LONGWORD
+	RB_AES		longword unsigned;	/* ADDRESS OF THE AES STRING
+	RB_AESLEN	word unsigned;		/* THE LENGTH OF THE AESSTRING
+
+	RB_RDSTATE_OVERLAY union fill;
+	    RB_RDSTATE	word unsigned;		/* Read state information word
+	    RB_RDSTATE_BITS structure fill prefix TTY$;
+		RS_WRAP	  bitfield mask;	/* THE READ HAS WRAPPED EITHER IN THE PROMPT OR INITIAL STRING
+	    end RB_RDSTATE_BITS;
+	end RB_RDSTATE_OVERLAY;
+
+	RB_LIN		longword unsigned;	/* ADDRESS OF THE FIRST CHARACTER ON
+						/* THIS LINE.
+	RB_LINOFF	word unsigned;		/* OFFSET FROM THE BEGINNING OF THE
+						/* LINE TO THE CURSOR POSITION.
+	RB_LINREST	word unsigned;		/* NUMBER OF CHARACTERS TO THE RIGHT
+						/* OF THE CURSOR POSITION, USED BY
+						/* INPUT EDITING
+	RB_PRMLEN	word unsigned;		/* LENGTH IN BYTES OF THE PROMPT STRING
+	RB_TIMOS	word unsigned;	 	/* READ BUFFER - TIMEOUT SECONDS
+	RB_CPZCUR	word unsigned;		/* CURRENT CURSOR POSITION
+	RB_CPZORG	word unsigned;	 	/* READ BUFFER - ORIGONAL HORIZON
+	RB_TXTOFF	word unsigned;		/* OFFSET FROM THE BEGINNING OF THE
+						/* DATA TO THE LOCATION OF THE NEXT CHARACTER
+	RB_PICLEN	word unsigned;		/* the length of the picture string
+	RB_TXTSIZ	word unsigned;		/* THE LENGTH OF THE READ.
+	RB_TXTECH	word unsigned;		/* AMOUNT OF INITIAL STRING TO ECHO
+	RB_MODE		word unsigned;		/* VALUE INDICATING READ EDIT MODE
+	RB_RVFCLR	byte unsigned;		/* CLEAR CHARACTER FOR READ VERIFY
+	RB_RVFFIL	byte unsigned;		/* READ VERIFY FILL CHARACTER
+	RB_ESCTKN	word unsigned;		/* ESCAPE TOKEN CHARACTER
+	RB_TXTONLYSIZ	word unsigned;
+	RB_PRM_OVERLAY union fill;
+	    RB_PRM	address;		/* ADDRESS OF BEGINNING OF THE PROMPT
+	    RB_DATA	longword unsigned; 	/* READ BUFFER  - DATA
+	end RB_PRM_OVERLAY;
+
+    end TTYRB;
+
+/*++
+/*
+/* Terminal driver write packet (TWP)
+/*
+/*--
+
+    aggregate TTYWB structure prefix TTY$;
+
+	WB_FLINK	longword unsigned;	/*
+	WB_BLINK	longword unsigned;	/*
+	WB_SIZE		word unsigned;		/* 
+	WB_TYPE		byte unsigned;		/* 
+	WB_FIPL		byte unsigned;		/* 
+	WB_FPC		longword unsigned;	/*
+	WB_FR3		longword unsigned;	/*
+	WB_FR4		longword unsigned;	/*
+	WB_MAP		longword unsigned;	/*
+	WB_NEXT		longword unsigned;	/*
+	WB_END		longword unsigned;	/*
+	WB_IRP		longword unsigned;	/*
+	WB_STATUS	word unsigned;		/* 
+	WB_BCNT		word unsigned;		/* 
+	WB_RETADDR 	longword unsigned;	/* 
+
+	constant WB_LENGTH equals . tag K;	/* LENGTH
+	constant WB_LENGTH equals . tag C;	/* LENGTH
+
+	WB_DATA		longword unsigned;	/*
+
+    end TTYWB;
+
+/*++
+/* TYPEAHEAD BUFFER
+/*
+/* DESCRIPTION:
+/*	THIS BUFFER IS USED TO STORE CHARACTERS BEFORE PROCESSING AND
+/* MOVING THEM INTO THE USERS READ BUFFER.
+/*	ALLOCATED ON UNSOLICITED DATA OR THE FIRST READ POSTED ON A TERMINAL
+/* LINE.  
+/*--
+
+    aggregate TTYTADEF structure prefix TTY$;
+
+	#rcllen = 256;			/* THE LENGTH OF THE RECALL BUFFER
+
+	TA_PUT		longword unsigned; 	/* PUT POINTER
+	TA_GET		longword unsigned; 	/* GET POINTER
+	TA_SIZE		word unsigned; 		/* BLOCK SIZE
+	TA_TYPE		byte unsigned;		/* 
+	TA_SPARE1	byte unsigned;
+	TA_INAHD	word unsigned;		/* COUNT OF CHARS IN BUFFER
+	TA_RCLOFF	word unsigned;		/* NUMBER OF CHARACTERS IN THE RECALL
+						/* BUFFER USED.
+	TA_END		longword unsigned; 	/* END ADDRESS
+	TA_RCLSIZ	word unsigned;		/* THE SIZE OF THE RECALL STRING
+	TA_SPARE2	word unsigned;
+	TA_RCL		character length #rcllen tag "A"; /* TYPEAHEAD BUFFER - RECALL BUFFER
+	TA_DATA		longword unsigned; 	/* TYPEAHEAD BUFFER - DATA START
+
+	constant TA_RCLLEN equals #rcllen tag K; /* LENGTH OF RECALL
+
+    end TTYTADEF;
+/*
+/* Define class driver vector offsets for service routines, etc.
+/*
+	aggregate CLASS_DEF structure PREFIX "CLASS";
+	    GETNXT 	longword unsigned tag "";	/*
+	    PUTNXT  	longword unsigned tag "";	/* 
+	    SETUP_UCB  	longword unsigned tag "";	/* 
+	    DS_TRAN  	longword unsigned tag "";	/* 
+	    DDT  	longword unsigned tag "";	/* 
+	    READERROR  	longword unsigned tag "";	/* 
+	    DISCONNECT  longword unsigned tag "";	/* 
+	    FORK  	longword unsigned tag "";	/* 
+	    POWERFAIL 	longword unsigned tag "";	/* 
+	    TABLES	longword unsigned tag "";	/* 
+	end CLASS_DEF;
+/*
+/* Define port driver vector offsets for service routines, etc.
+/*
+	aggregate PORT_DEF structure PREFIX PORT;
+	    STARTIO 	longword unsigned tag "";	/* 
+	    DISCONNECT 	longword unsigned tag "";	/* 
+	    SET_LINE 	longword unsigned tag "";	/* 
+	    DS_SET 	longword unsigned tag "";	/* 
+	    XON 	longword unsigned tag "";	/* 
+	    XOFF 	longword unsigned tag "";	/* 
+	    STOP 	longword unsigned tag "";	/* 
+	    STOP2 	longword unsigned tag "";	/* 
+	    ABORT 	longword unsigned tag "";	/* 
+	    RESUME 	longword unsigned tag "";	/* 
+	    SET_MODEM 	longword unsigned tag "";	/* 
+	    _DMA 	longword unsigned tag "";	/* 
+	    MAINT 	longword unsigned tag "";	/* 
+	    FORKRET 	longword unsigned tag "";	/* 
+            FDT		longword unsigned tag "";
+
+	    constant "LENGTH" equals . tag "";		/*  must be at end.
+
+	end PORT_DEF;
+
+end_module $TTYDEFS;

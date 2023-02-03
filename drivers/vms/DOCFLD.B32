@@ -1,0 +1,274 @@
+MODULE DOC$FLD (
+		IDENT = 'VSTADOC Utility GENERATE Field routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module does FIELD manipulation during GENERATE.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$fld_init,		!Initialize the FLD module (start generate)
+    doc$$gen_ts,		!Set tab stops (supersede old ones)
+    doc$$gen_tab,		!Tab from current position to next tab stop
+    doc$$gen_skip,		!Skip n pixels from current position
+    doc$$change_fld,		!Change attribute of field
+    doc$$add_fld;		!Add field to this line
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$error,			!Report an error
+    doc$$gen_error,		!Report a GENERATE error (in listing)
+    doc$$type_line,		!Type out a line on TTY
+    doc$$gen_add_irb,		!Add an IRB (RCALL) to this line
+    lib$get_vm,			!Get VM
+    lib$free_vm;		!Free VM
+
+EXTERNAL
+    last_pagex,			!Last pagesize command X
+    lineb: REF txt_line_block,	!Current line-block
+    fatal_error,
+    num_user_errors;		!Number of user errors processed
+
+OWN
+    ts_buf_len,			!Number of tab stops defined
+    ts_buf: VECTOR [256,WORD];
+
+
+GLOBAL ROUTINE doc$$fld_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initializes the FLD module for the start of generate.
+!--
+BEGIN
+
+ts_buf_len = 0;		!No tab stops defined
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_ts
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets tab-stops.
+! FORMAL PARAMETERS:
+	(how_many
+	,bufadr: REF VECTOR[,WORD]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+ts_buf_len = .how_many;
+IF (.how_many NEQ 0)
+  THEN
+    CH$MOVE	(.ts_buf_len * 2
+		,.bufadr
+		,ts_buf
+		);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_tab =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Tab over to next tab stop.
+!	If none, do nothing.
+!--
+BEGIN
+LOCAL
+    status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_skip
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Skip over n pixels.
+! FORMAL PARAMETERS:
+	(n
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! See if there is any room there...
+!
+IF ((.lineb [lin$w_leftmargin] + .lineb [lin$w_space_used] + .n)
+		GEQ
+	.lineb [lin$w_rightmargin])
+  THEN
+    BEGIN
+    $gen_error ('%ERR: No room on line to tab over');
+    RETURN SS$_BADPARAM    
+    END;
+!
+! Define a field.
+!
+
+IF NOT (status =
+    doc$$add_fld (.lineb [lin$w_space_used] + .n + .lineb [lin$w_leftmargin])
+	)
+  THEN RETURN .status;
+
+lineb [lin$w_space_used] = .lineb [lin$w_space_used] + .n;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$change_fld
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Changes a field attribute.
+! FORMAL PARAMETERS:
+	(field_idx	!0 = primary field, 1= first extra field, etc..
+	,new_attrib	!e.g. doc$K_ff_center
+	) =
+!--
+BEGIN
+LOCAL
+    fld: REF fld_block,
+    status;
+
+IF (.field_idx EQL 0)
+  THEN
+    BEGIN			!Change primary field attribute.
+    lineb [lin$l_fld0_attrib] = .new_attrib;
+    RETURN SS$_NORMAL
+    END;
+
+fld = .lineb [lin$a_fld_block] + ((.field_idx - 1) * fld$S_fld_block);
+fld [fld$l_attrib] = .new_attrib;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$add_fld
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Adds a field to this line.
+!	Puts a field marker on the line at this position.
+! FORMAL PARAMETERS:
+	(start_pos		!starting position
+	) =
+!--
+BEGIN
+LOCAL
+    idx1,
+    fld: REF fld_block,
+    last_field_start,		!Place where last field started.
+    irmarkf: ir_markf,		!Mark field IRB
+    status;
+!
+! If the last field started in this same place, then don't do anything.
+!
+IF (.lineb [lin$w_num_extra_flds] EQL 0)
+  THEN
+    last_field_start = .lineb [lin$w_leftmargin]
+  ELSE
+    BEGIN
+    fld = .lineb [lin$a_fld_block] + ((.lineb [lin$w_num_extra_flds] - 1)
+					* fld$S_fld_block);
+    last_field_start = .fld [fld$w_start];
+    END;
+
+IF (.last_field_start EQL .start_pos)
+  THEN RETURN SS$_NORMAL;
+!
+! While we have this computed, check for "impossible" condition.
+!
+IF (.last_field_start GTR .start_pos)
+  THEN
+    BEGIN
+    $gen_error ('?Attempt to start field before last field on line');
+    RETURN SS$_BADPARAM			!VSTADOC bug!
+    END;
+
+idx1 = .lineb [lin$w_num_extra_flds];
+IF ((.idx1 / 5 * 5) EQL .idx1)
+  THEN
+    BEGIN			!Create FLD block
+    IF NOT (status =
+	lib$get_vm	(%REF (fld$S_fld_block * (.idx1 + 1) * 5), fld)
+	    )
+      THEN
+	BEGIN
+	fatal_error = 1;
+	$typeline ('? Can''t get memory for fld blocks');
+	RETURN doc$$error (.status);
+	END;
+  !
+  ! If there was an old FLD block, copy the data and release its memory
+  !
+    IF (.lineb [lin$a_fld_block] NEQ 0)
+      THEN
+	BEGIN
+	CH$MOVE	((.idx1 * 5) * fld$S_fld_block
+		,.lineb [lin$a_fld_block]
+		,.fld
+		);
+	IF NOT (status =
+	    lib$free_vm	(%REF (.idx1 * 5 * fld$S_fld_block), .lineb [lin$a_fld_block])
+		)
+	  THEN
+	    BEGIN
+	    $typeline ('% Can''t release memory for old FLD block');
+	    doc$$error (.status);
+	    END;
+	END;
+
+    lineb [lin$a_fld_block] = .fld;	!Remember addr of new field block
+    END;
+!
+! Set FLD = address of this field block
+!
+fld = .lineb [lin$a_fld_block] + (.idx1 * fld$S_fld_block);
+
+lineb [lin$w_num_extra_flds] = .lineb [lin$w_num_extra_flds] + 1;
+
+!
+! Initialize FLD block
+!
+fld [fld$w_start] = .start_pos;
+fld [fld$l_attrib] = 0;			!No attributes yet.
+
+!
+! Put a field marker in rcal list.
+!
+irmarkf [irb$w_markf_cidx] = .lineb [lin$w_cidx];
+
+IF NOT (status =
+    doc$$gen_add_irb
+		(doc_rcal$K_mark_field
+		,irb$S_ir_markf
+		,irmarkf
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

@@ -1,0 +1,4417 @@
+	.title	VBDRIVER - VAX/VMS VAXstation Display Device Driver
+	.ident	'VSTA V1.2-001.'
+
+;++
+;
+; Facility:
+;
+;	VAX/VMS VAXstation Display Device Driver
+;		Devices Supported:
+;			VS100
+;
+;--
+
+	.sbttl	External and local symbol definitions
+
+;
+; Driver version number
+;
+	VB$K_MAJOR	= ^d2
+	VB$K_MINOR	= ^d0
+  	VB$K_EDIT	= ^d4
+	VB$K_VERSION	= <VB$K_MAJOR@12>!<VB$K_MINOR@8>!VB$K_EDIT
+;
+; External symbols
+;
+	$ADPDEF				; Adapter control block
+	$CANDEF				; Cancel I/O symbols
+	$CDRPDEF			; CDRP block
+	$CRBDEF				; Channel request block
+	$DCDEF				; Device classes and types
+	$DDBDEF				; Device data block
+	$DEVDEF				; Device characteristics
+	$DYNDEF				; VMS block types
+	$EMBDEF				; Error logging symbols
+	$IDBDEF				; Interrupt data block
+	$IODEF				; I/O function codes
+	$IPLDEF				; Hardware IPL definitions
+	$IRPDEF				; I/O request packet
+	$IRPEDEF			; I/O request packet extension
+  	$PCBDEF				; Process control block offsets - (V4)
+  	$PDTDEF				; Port Descriptor table - (V4)
+	$SSDEF				; System status codes
+	$UBADEF				; UBA definitions
+	$UBMDDEF			; UMR buffer descriptor
+	$UCBDEF				; Unit control block
+  	$VADEF				; Virtual addres offsets
+	$VECDEF				; Interrupt vector block
+
+;
+; Define Device Class and Types until included in VMS DCDEF macro
+;
+	.IF NDF DC$_WORKSTATION
+	DC$_WORKSTATION = 70
+	.ENDC
+
+	.IF NDF DT$_VS100
+	DT$_VS100 = 1
+	.ENDC
+
+;	.IF NDF DT$_VS125
+;	DT$_VS125 = 2
+;	.ENDC
+;
+;	.IF NDF DT$_VS300
+;	DT$_VS300 = 3
+;	.ENDC
+
+	; VAXstation Unknown Device Type
+	.IF NDF DT$_VSUNKN
+	DT$_VSUNKN = 0
+	.ENDC
+
+
+;
+; Local symbols
+;
+	$VBDEF				; Device specific definitions
+	$VSTADEF			; VAXstation definitions
+;
+; Other constants
+;
+	SVAPTE		= 0
+	BOFF		= SVAPTE+4
+	BCNT		= SVAPTE+8
+	MAPREG		= SVAPTE-20
+	NUMREG		= SVAPTE-18
+
+	IRPE$W_MAPREG1	= IRP$W_SIZE+16
+	IRPE$B_NUMREG1	= IRP$W_SIZE+18
+	IRPE$W_MAPREG2	= IRP$W_SIZE+28
+	IRPE$B_NUMREG2	= IRP$W_SIZE+30
+
+	IRP$W_CMD_MAPREG	= IRP$L_SEGVBN
+	IRP$B_CMD_NUMREG	= IRP$L_SEGVBN+2
+
+	IRP$L_CMD_BLK		= IRP$L_IOST1
+	IRP$L_CMD_COUNT		= IRP$L_IOST2
+
+	IRP$L_PIO_PTR		= IRP$L_IOST1
+	IRP$L_PIO_TYPE		= IRP$L_IOST2
+
+	IRP$L_PIO_PKT		= IRP$L_SEGVBN
+
+	CDRP$L_CMD_BLK		= CDRP$L_IOST1
+
+	Assume	IRP$L_FQFL eq -CDRP$L_IOQFL		; check to see if relationship
+							; between IRP and CDRP is correct
+
+	.sbttl	Standard tables
+;
+; Driver prologue table
+;
+	DPTAB	-				; DPT creation macro
+		END=VB_END,-			; End of driver label
+		ADAPTER=UBA,-			; Adapter type
+;		FLAGS=<DPT$M_SCS>,-		; Load SCS code (for CDRP only)
+		UCBSIZE=<UCB$K_VB_LENGTH>,-	; Length of VB UCB
+  		MAXUNITS=1,-			; 1 unit on a controller
+		NAME=VBDRIVER			; Driver name
+
+
+	DPT_STORE INIT				; Start of load
+						;
+	DPT_STORE UCB,UCB$B_DEVCLASS,B,-	; Workstation device
+		DC$_WORKSTATION			;
+	DPT_STORE UCB,UCB$B_DEVTYPE,B,-		; Device type 
+		DT$_VSUNKN			; - not sure until the device
+						;   reports status.
+						;
+	DPT_STORE UCB,UCB$B_FIPL,B,8		; Device fork IPL
+	DPT_STORE UCB,UCB$B_DIPL,B,21		; Device interrupt IPL
+	DPT_STORE UCB,UCB$L_DEVCHAR,L,<-	; Device characteristics
+		DEV$M_IDV!-			;   input device
+		DEV$M_ODV!-			;   output device
+		DEV$M_ELG!-			;   error logging device
+		DEV$M_SHR!-			;   sharable
+  		DEV$M_AVL>			;   available
+
+	DPT_STORE REINIT			; Start of reload
+	DPT_STORE UCB,UCB$W_VB_DRIVER,W,-	; Driver version number
+		VB$K_VERSION
+	DPT_STORE DDB,DDB$L_DDT,D,VB$DDT	; DDT addr
+	DPT_STORE CRB,CRB$L_INTD+4,D,-		; Interrupt service routine
+		VB_INTERRUPT
+	DPT_STORE CRB,-				; Device unit init routine
+		CRB$L_INTD+VEC$L_UNITINIT,-
+		D,VB_UNIT_INIT
+
+	DPT_STORE END				; End of DPT init
+
+;
+; Driver dispatch table
+;
+;	error log buffer size = 4 (for register count) +
+;				4 * 9 (number of registers saved) +
+;				EMB$L_DV_REGSAV (for system overhead)
+;
+;	diagnostics buffer size = ?
+;
+;
+	DDTAB	-				; DDT creation macro
+		DEVNAM=VB,-			; Name of device
+		START=VB_START,-		; Start I/O routine
+		FUNCTB=VB_FUNCTABLE,-		; FDT address
+		ERLGBF=<4+EMB$L_DV_REGSAV+36>,-	; Error log buffer size
+		DIAGBF=<40+24+12+12>,-		; Diagnostic buffer size
+		REGDMP=VB_REGDMP,-		; Register dump routine
+		CANCEL=VB_CANCEL		; Cancel I/O routine
+
+;
+; Function decision table
+;
+VB_FUNCTABLE:					; FDT for driver
+	FUNCTAB	,-				; Valid I/O functions
+		<COPY,-				;  copy area
+		DRAW,-				;  draw curve
+		PRINT,-				;  print text
+		FLOOD,-				;  flood area
+		FILL,-				;  fill area
+		PIO_PACKET,-			;  PIO packets
+		LOADCUR,-			;  load cursor shape
+		SETCUR,-			;  set cursor position
+		ATTCUR,-			;  set pointing device
+		GETCUR,-			;  get cursor position
+		VB_KEYBOARD,-			;  set keyboard parameters
+		VB_STATUS,-			;  report characteristics
+		VB_BUTTON,-			;  button ast
+		VB_FIBER,-			;  fiber control
+		VB_MOVE,-			;  movement ast
+		VB_GETPOS,-			;  get saved cursor position
+		MOVEOBJ,-			;  move object
+		VB_FUNC,-			;  function handler
+		REPORT,-			;  report status
+		GETMOUSE,-			;  get mouse position
+		SETMOUSE,-			;  set mouse characteristics
+		GETTAB,-			;  get tablet position
+		SETEVENT,-			;  set event reporting
+		NOOP,-				;  no operation
+		VB_DEBUG,-			;  debug functions
+		VB_PIO,-			;  PIO functions
+		VB_SAVE_SCREEN>			;  save screen function
+						;
+
+	FUNCTAB	,				; No buffered functions
+	FUNCTAB	VB$FDT_COPY,-			; FDT routines
+		<COPY>				;  copy area
+	FUNCTAB	VB$FDT_DRAW,-
+		<DRAW>				;  draw curve
+	FUNCTAB	VB$FDT_PRINT,-
+		<PRINT>				;  print text
+	FUNCTAB	VB$FDT_FLOOD,-
+		<FLOOD>				;  flood area
+	FUNCTAB	VB$FDT_FILL,-
+		<FILL>				;  fill area
+  					
+  						;  PIO packet doesn't go through
+  						;  FDT routines
+	FUNCTAB VB$FDT_MOVEOBJ,-
+		<MOVEOBJ>			;  move object
+	FUNCTAB	VB$FDT_FUNC,-
+		<VB_FUNC>			;  function handler
+	FUNCTAB	VB$FDT_LOADCUR,-
+		<LOADCUR>			;  load cursor shape
+	FUNCTAB	VB$FDT_SETCUR,-
+		<SETCUR>			;  set cursor position
+	FUNCTAB	VB$FDT_ATTCUR,-
+		<ATTCUR>			;  set pointing device
+	FUNCTAB	VB$FDT_GETCUR,-
+		<GETCUR>			;  get cursor position
+	FUNCTAB	VB$FDT_KEYBOARD,-
+		<VB_KEYBOARD>			;  set keyboard parameters
+	FUNCTAB	VB$FDT_STATUS,-
+		<VB_STATUS>			;  set character ast
+	FUNCTAB	VB$FDT_BUTTON,-
+		<VB_BUTTON>			;  button ast
+	FUNCTAB	VB$FDT_FIBER,-
+		<VB_FIBER>			;  fiber control
+	FUNCTAB	VB$FDT_MOVE,-
+		<VB_MOVE>			;  movement ast
+	FUNCTAB	VB$FDT_GETPOS,-
+		<VB_GETPOS>			;  get saved cursor position
+	FUNCTAB	VB$FDT_REPORT,-
+		<REPORT>			;  report status
+	FUNCTAB	VB$FDT_GETMOUSE,-
+		<GETMOUSE>			;  get mouse position
+	FUNCTAB	VB$FDT_SETMOUSE,-
+		<SETMOUSE>			;  set mouse characteristics
+	FUNCTAB	VB$FDT_GETTAB,-
+		<GETTAB>			;  get tablet position
+	FUNCTAB	VB$FDT_SETEVENT,-
+		<SETEVENT>			;  set event reporting
+	FUNCTAB	VB$FDT_NOOP,-
+		<NOOP>				;  no operation
+	FUNCTAB	VB$FDT_DEBUG,-
+		<VB_DEBUG>			;  debug function
+	FUNCTAB	VB$FDT_PIO,-
+		<VB_PIO>			;  PIO functions
+  	FUNCTAB VB$FDT_SAVE_SCREEN,-		
+  		<VB_SAVE_SCREEN>		;  save screen function
+
+
+	.sbttl	Internal function table
+
+;
+; VB_FUNCTION:
+;
+; This macro generates two tables. On the first set of invokations it
+; generates a table of legal I/O function codes for the driver. On
+; the second set of invokations it generates a case instruction branch
+; table. It also defines the constant VB$K_MAXFUNC which is the number
+; of functions the driver understands.
+;
+	.macro	VB_FUNCTION	FUNC,ROU
+	.if not_defined VB_FLAG_'FUNC
+	.if not_defined VB$K_MAXFUNC
+	VB$K_MAXFUNC	= 0
+VB_FUNC_TABLE:
+	.endc
+	.byte	IO$_'FUNC
+	VB_FLAG_'FUNC	= 0
+	VB$K_MAXFUNC	= VB$K_MAXFUNC+1
+	.if_false
+	.if not_defined VB_FLAG_PASS2
+	VB_FLAG_PASS2	= 0
+	VB_CASE_BASE	= .
+	.endc
+	.word	VB_'ROU-VB_CASE_BASE
+	.endc
+	.endm
+;
+; Invoke VB_FUNCTION for the first time. This will generate a legal function
+; table with indices of the corresponding action routine table. The table
+; has the format:
+;
+;    VB_FUNC_TABLE:
+;	.byte	IO$_xxx     ---->	VB_COMMAND
+;	.byte	IO$_yyy     ---->	VB_zzz
+;	.byte	   .        ---->	   .
+;	.byte	   .        ---->	   .
+;	.byte	   .        ---->	   .
+;
+
+;
+; VB Function Table
+;
+;
+	VB_FUNCTION COPY,COMMAND
+	VB_FUNCTION DRAW,COMMAND
+	VB_FUNCTION PRINT,COMMAND
+	VB_FUNCTION FLOOD,COMMAND
+	VB_FUNCTION FILL,COMMAND
+	VB_FUNCTION PIO_PACKET,PIO_START
+	VB_FUNCTION LOADCUR,COMMAND
+	VB_FUNCTION SETCUR,COMMAND
+	VB_FUNCTION ATTCUR,COMMAND
+	VB_FUNCTION GETCUR,COMMAND
+	VB_FUNCTION MOVEOBJ,COMMAND
+	VB_FUNCTION VB_FUNC,FUNCTION
+	VB_FUNCTION VB_FIBER,FIBER_CONTROL
+	VB_FUNCTION REPORT,COMMAND
+	VB_FUNCTION GETMOUSE,COMMAND
+	VB_FUNCTION SETMOUSE,COMMAND
+	VB_FUNCTION GETTAB,COMMAND
+	VB_FUNCTION SETEVENT,COMMAND
+	VB_FUNCTION NOOP,COMMAND
+	VB_FUNCTION VB_PIO,PIO_FUNCTION
+  	VB_FUNCTION VB_SAVE_SCREEN, SAVE_SCREEN
+
+	.sbttl	VB_UNIT_INIT, Unit initialization routine
+
+;++
+; VB_UNIT_INIT, Readies unit for I/O operations
+;
+; Functional description:
+;
+;	This routine initializes various UCB fields the device CSR's
+;	and readies the device for commands.
+;	
+;	If this routine is entered through power fail recovery
+;	it does the following:
+;		- clear CSR 0,1,3,4
+;		- put interrupt vector in CSR7
+;		- clear UCB$V_POWER bit
+;		- invalidate firmware and link 
+;		- increment link off count
+;		- deliver link transition AST
+;		- set device on line
+;		- enable interrupt
+;
+;
+; Inputs:
+;
+;	R4	- address of the CSR (controller status register)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	Various UCB fields and device CSR's are initialized. Register
+;	r0 and r1 is destroyed.
+;
+;--
+
+VB_UNIT_INIT:				; Initialize unit
+;
+; Set up the device registers
+;
+	movl	#200,r1			; Counter
+	clrw	VB_CSR(r4)		; Clear CSR0
+5$:	decl	r1			; Decrement counter
+	beql	6$			; Branch if counter exhausted
+					; and treat as unit not powerred up
+					;
+	bitw	#VB$M_CSR_LINK_AVAIL,-	; Has the link gone away?
+		VB_CSR(r4)		;
+	bneq	5$			; No --  try again
+					; Yes -- 
+6$:					;
+	bicw	#VB$M_CSR_LINK_TRANS,-	; Clear link transition
+		VB_CSR(r4)
+	clrw	VB_IRR(r4)		; Clear interrupt reason register
+	clrw	VB_PR1(r4)		; Clear function parameter reg 1
+	clrw	VB_PR2(r4)		; Clear function parameter reg 2
+
+;
+; Set up Controller block
+;
+	movl	UCB$L_CRB(r5),r0	; Get CRB
+	movl	CRB$L_INTD+VEC$L_IDB(r0),r0 ; get IDB
+	movl	r5,IDB$L_OWNER(r0)	; Set permanent owner
+
+	movzbl	IDB$B_VECTOR(r0),r0	; Get vector
+	ashl	#2,r0,r0		; Fix it
+  					;
+	movw	r0,VB_IVR(r4)		; Save it in interrupt vector register
+
+  	bbcc	#UCB$V_POWER, -		; Are we recovering from power fail?
+  		UCB$W_STS(r5), -	; Yes -- clear the power fail flag
+  		2$			; No -- go to normal init part
+  					;
+  	bicl	#<VB$M_MCVALID!VB$M_LINK_AVAIL>, -
+  		UCB$L_DEVDEPEND(r5)	; invalidate firmware and link
+
+  	incl	UCB$L_VB_LIGHT_OFF(r5)	; increment link turned off count
+  					;
+  	bsbw	DELIVER_LINK_AST	; deliver link transition AST
+					;
+  	brw	9$			; go setting device on line, 
+					; ... enabling interrupt and then
+  					; ... return
+
+2$:	clrl	UCB$L_DEVDEPEND(R5)	; clear device dependent information
+;
+; Setup PIO queues and counters
+;
+  	clrl	UCB$L_VB_PIO_OWNER (r5)		; no process can issue PIO command
+  						; until enabled
+
+	moval	UCB$A_VB_PIO_WCP_FL(r5),-	; init WCP queue header
+		UCB$A_VB_PIO_WCP_FL(r5)	;
+	moval	UCB$A_VB_PIO_WCP_FL(r5),-	;
+		UCB$A_VB_PIO_WCP_BL(r5)	;
+						;
+	clrw	UCB$W_VB_PIO_WCP_CT(r5)		; clear WCP counters
+	clrw	UCB$W_VB_PIO_WCP_CMR(r5)	;
+	clrw	UCB$W_VB_PIO_WCP_CIU(r5)	;
+	clrw	UCB$W_VB_PIO_WCP_CMIU(r5)	;
+	clrl	UCB$L_VB_PIO_WCP_CNA(r5)	;
+	clrl	UCB$L_VB_PIO_WCP_CTR(r5)	;
+						;
+	moval	UCB$A_VB_PIO_DBD_FL(r5),-	; init data buffer queue header
+		UCB$A_VB_PIO_DBD_FL(r5)	;
+	moval	UCB$A_VB_PIO_DBD_FL(r5),-	;
+		UCB$A_VB_PIO_DBD_BL(r5)	;
+						;
+	clrw	UCB$W_VB_PIO_DB_CT(r5)		; clear data buffer counters
+	clrw	UCB$W_VB_PIO_DB_CMR(r5)	;
+						;
+	moval	UCB$L_VB_PIO_POST_FL(r5),-	; init PIO post processing queue header
+		UCB$L_VB_PIO_POST_FL(r5)	;
+	moval	UCB$L_VB_PIO_POST_FL(r5),-	;
+		UCB$L_VB_PIO_POST_BL(r5)	;
+	clrl	UCB$L_VB_PIO_CNT(r5)		; clear PIO command counter
+	clrw	UCB$W_VB_PIO_TIMEOUT (r5)	; clear PIO timeout counter
+;
+; Clear Misc counters
+;
+  	clrw	UCB$W_VB_CMD_SS_CNT (r5)	; status send counter
+	clrw	UCB$W_VB_ABORT_CMD_CNT (r5)	; abort command counter
+  	clrw	UCB$W_VB_FO_SHUTDOWN_CNT (r5)	; fiber optic shutdown counter
+  	clrw	UCB$W_VB_ABORT_WHAT_CNT (r5)	; abort what counter
+  	clrw	UCB$W_VB_UMR_ALLOC_FAIL (r5)	; UMR allocation failure counter
+
+;
+; Clear AST lists
+;
+	clrl	UCB$A_VB_KB_FULL_AST(r5); Keyboard full ast
+	clrl	UCB$A_VB_KB_WAKE_AST(r5); Keyboard wake ast
+	clrl	UCB$A_VB_MOUSE_BUTTON(r5) ; Mouse button ast
+	clrl	UCB$A_VB_TABLET_BUTTON(r5) ; Mouse button ast
+	clrl	UCB$A_VB_MOUSE_MOVE(r5)	; Cursor move ast
+	clrl	UCB$A_VB_TABLET_MOVE(r5); Tablet move ast
+	clrl	UCB$A_VB_EXIT_IDLE(r5)	; Exit idle loop ast
+	clrl	UCB$A_VB_LINK_AST(r5)	; Fiber link on transition ast
+  	clrl	UCB$A_VB_SAVE_SCREEN_AST(r5)	; Save screen AST
+	clrl	UCB$A_VB_KB_SYSRTN(r5)	; system routine address
+;
+; Set up initial keyboard state
+;
+	clrl	UCB$L_VB_KB_OWNER(r5)	; Set KB to no owner
+	clrl	UCB$A_VB_KB_BUFFER(r5)	; Clear up keyboard buffer pointer
+	clrw	UCB$W_VB_KB_SIZE(r5)	; Set up keyboard buffer size
+;
+;
+; Setup FO Link On_Exit (Channel deassign) 
+;
+	clrl	UCB$L_VB_LINK_ONEXIT_PID(r5)
+;
+;
+; Clear statistics counters
+;
+	clrl	UCB$L_VB_UNSOL(r5)	; Clear unsolicited interrupt counter
+	clrl	UCB$L_VB_UNKNOWN(r5)	; Clear unknown interrupt counter
+	clrl	UCB$L_VB_LINK_ERROR(r5)	; Clear link error counter
+	clrl	UCB$L_VB_FLASH(r5)	; Clear link flash counter
+	clrl	UCB$L_VB_LIGHT_ON(r5)	; Clear link on counter
+	clrl	UCB$L_VB_LIGHT_OFF(r5)	; Clear link off counter
+;
+; Put device on line
+;
+9$:	bisw	#UCB$M_ONLINE, -	; Set unit online
+		UCB$W_STS(r5)
+
+;  	bisl 	#DEV$M_AVL, - 		; Say device is available
+;  		UCB$L_DEVCHAR(r5)  	; set this bit at DPT_STORE 
+
+	bisw	#VB$M_CSR_IE,VB_CSR(r4)	; Set interrupt enable
+10$:	rsb				; Return
+
+
+	.sbttl	VB_START, Start I/O routine
+
+;++
+; VB_START - Start a transmit, receive, or set mode operation
+;
+; Functional description:
+;
+;	This routine decodes I/O functions and dispatches to the correct
+;	routine. 
+;
+;	This routine executes in KERNEL MODE, IPL>=8, on KERNEL or
+;	INTERRUPT stack.
+;	
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; 	Kernel mode, IPL = 8, Kernel or interrupt stack, 
+;
+; Outputs:
+;
+;	R0	- 1st longword of I/O status
+;	R1	- 2nd longword of I/O status
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;
+;
+;
+;
+;--
+
+VB_START:				; Process an I/O packet
+					;
+	movl	IRP$L_WIND(r3),-	; restore PID - PID was changed 
+		IRP$L_PID(r3)		; in the FDT routines to delay 
+					; VMS Cancel I/O cleanup. 
+					; Now we have control or IRP.
+					;
+	extzv	#IO$V_FCODE,#IO$S_FCODE,- ; Extract function code into r1
+		IRP$W_FUNC(r3),r1
+	locc	r1,#VB$K_MAXFUNC,-	; Find function in table
+		VB_FUNC_TABLE
+	extzv	#IO$V_FCODE,#IO$S_FCODE,- ; Reload the function code
+		IRP$W_FUNC(r3),r1
+	subl3	r0,#VB$K_MAXFUNC,r0	; Get offset from table start
+;
+; Go to action routine based on function code tabel index
+;
+	caseb	r0,#0,#VB$K_MAXFUNC-1	; Go to action routine
+		VB_FUNCTION COPY,COMMAND
+		VB_FUNCTION DRAW,COMMAND
+		VB_FUNCTION PRINT,COMMAND
+		VB_FUNCTION FLOOD,COMMAND
+		VB_FUNCTION FILL,COMMAND
+		VB_FUNCTION PIO_PACKET,PIO_START
+		VB_FUNCTION LOADCUR,COMMAND
+		VB_FUNCTION SETCUR,COMMAND
+		VB_FUNCTION ATTCUR,COMMAND
+		VB_FUNCTION GETCUR,COMMAND
+		VB_FUNCTION MOVEOBJ,COMMAND
+		VB_FUNCTION VB_FUNC,FUNCTION
+		VB_FUNCTION VB_FIBER,FIBER_CONTROL
+		VB_FUNCTION REPORT,COMMAND
+		VB_FUNCTION GETMOUSE,COMMAND
+		VB_FUNCTION SETMOUSE,COMMAND
+		VB_FUNCTION GETTAB,COMMAND
+		VB_FUNCTION SETEVENT,COMMAND
+		VB_FUNCTION NOOP,COMMAND
+		VB_FUNCTION VB_PIO,PIO_FUNCTION
+  	  	VB_FUNCTION VB_SAVE_SCREEN, SAVE_SCREEN
+					;
+					;
+					;
+VB_RET_ILLEGAL:				; return error
+	movzwl	#SS$_ILLIOFUNC,r0	; Illegal function code
+	brb	COMPLETE_IO		; Exit
+					;
+
+;
+; Driver exit path for error and successful returns to I/O postprocessing
+;	R0 - first longword of IOSB
+;	R1 - second longword of IOSB
+;
+					;
+					;
+VB_RET_NORMAL:				;
+	clrl	r1			; No extra info returned
+					;
+VB_RETURN:
+	movzwl	#SS$_NORMAL,r0		; Normal success code
+					;
+COMPLETE_IO:				; Driver processing is finished
+	REQCOM				; Complete I/O
+					;
+COMPLETE_IO_ALT:			; Alternate Driver done processing
+	clrl	r1			; No extra info returned
+	brb	COMPLETE_IO		;
+
+
+	.sbttl	VB_COMMAND, Process a graphics command
+
+;++
+; VB_COMMAND - Process one or more WGA commands
+;
+; Functional description:
+;
+;	This routine will process WGA graphic commands.
+;	It does this by:
+;
+;	    1. Lock command packet
+;	    2. Lock operand buffers
+;	    3. Perform command specific processing
+;	    4. Set up device registers
+;	    5. Start device and wait for completion
+;	    6. Return status to user
+;		
+; Inputs:
+;
+;	R1	- I/O function code
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	(This routine must preserve all registers except R0-R2 and R4)
+;
+;--
+
+VB_COMMAND:				; Process graphics command
+
+;
+; Verify valid microcode
+;
+	bbs	#VB$V_LINK_AVAIL,-	; Is the link available?
+		UCB$L_DEVDEPEND(r5),1$	;
+	bsbw	REL_CMDBLK		; No - release IRP blocks
+	movzwl	#SS$_DEVOFFLINE,r0	; error code
+	brw	COMPLETE_IO		; Exit
+					;
+1$:	bbs	#VB$V_MCVALID,-		; Microcode valid?
+		UCB$L_DEVDEPEND(r5),5$	;
+					; No - might be a special
+					; command (MOVEOBJ or REPORT)
+					;
+	tstl	UCB$A_VB_UNIBUS(r5)	; Is Unibus offset defined ?
+	beql	2$			; The offset must be defined before
+					; we can issue any WGA commands
+					; (Non-zero if defined)
+					; 
+	cmpw	r1,#IO$_MOVEOBJ		; Is this a move object?
+	beql	5$			; Yes -- go on
+					;
+	cmpw	r1,#IO$_REPORT		; Is this a report command ?
+	beql	5$			; Yes -- go on
+					; no -
+2$:	bsbw	REL_CMDBLK		; Can't issue command 
+					;  -- release IRP blocks
+	movzwl	#SS$_MCNOTVALID,r0	; Error code
+	brw	COMPLETE_IO		; Exit
+					;
+					;
+;
+;  Check to see if the CMD_PKT needs to be mapped
+;
+5$:	movl	IRP$L_CMD_BLK(r3),r1	;
+	movl	CMD$A_CMD(r1),r1	; address of CMD_PKT
+					;
+	cmpw	#WCP$K_TYPE_PIO, -	             ;  Is the CMD_PKT a
+		WCP$W_TYPE - WCP$K_HEADER_LENGTH(r1) ;  OR or PIO type ?
+	beql	7$				     ;
+; 
+;  CMD_PKT is an OR (On Request) type so map it and store mapping
+;  info in IRP so we can unmap it later and compute the Unibus address
+;  of the packet.
+;
+	REQMPR				; Get UBA registers for command packet
+	jsb	g^IOC$LOADUBAMAPA	; Load the UBA mapping registers
+					;
+	movl	UCB$L_CRB(r5),r2	; Get the CRB
+	movw	CRB$L_INTD+VEC$W_MAPREG(r2),- ; Save the MAPREG
+		IRP$W_CMD_MAPREG(r3)	      ;
+	movb	CRB$L_INTD+VEC$B_NUMREG(r2),- ; Save the NUMREG
+		IRP$B_CMD_NUMREG(r3)	      ;
+					;
+	brb	9$			;
+;
+;  CMD_PKT is a PIO so move mapping info into IRP so we compute
+;  the Unibus address of the CMD_PKT the same way we do it for
+;  an OR type packet.
+;
+7$:	movw	WCP$W_MAPREG - WCP$K_HEADER_LENGTH(r1),-;
+		IRP$W_CMD_MAPREG(r3)			;
+	movb	WCP$W_NUMREG - WCP$K_HEADER_LENGTH(r1),-;
+		IRP$B_CMD_NUMREG(r3)			;
+							;
+;
+;  Map Operands
+;
+9$:	brw	MAP_OPERANDS		; Map the buffers
+MAP_OPERANDS_RET:			; return address
+
+;
+; Load translated address into command packet
+;
+	bsbw	LOAD_ADDRESS		; Load the address's
+;
+; Start the device operating on a command packet and wait for an interrupt
+;
+START_COMMAND:
+;
+; Compute Unibus address of command packet and load in to function
+; parameter registers
+;
+;
+; Now get value from UCB - routine MAP_OPERAND uses field IRP$W_BOFF
+;	movzwl	IRP$W_BOFF(r3),r0	; Get byte offset
+;
+	movzwl	UCB$W_BOFF(r5),r0	; Get byte offset
+	movw	IRP$W_CMD_MAPREG(r3),r1	; Get MAPREG
+10$:	insv	r1,#9,#9,r0 		; Insert map number
+	addl2	UCB$A_VB_UNIBUS(r5),r0	; Add Unibus offset
+	movl	UCB$L_CRB(r5),r2	; Get CRB
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r4 ; Get base CSR
+	DSBINT	UCB$B_DIPL(r5)		; Disable device interrupts
+	movw	r0,VB_PR1(r4)		; Load low address of packet
+	ashl	#-16,r0,r0		; Get high word
+	movw	r0,VB_PR2(r4)		; Load high address of packet
+	bicw	#VB$M_CSR_FUNCTION,-	; Clear the function bits
+		VB_CSR(r4)
+	movl	#VB$K_TIMEOUT,r0	; Default device timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; In debug microcode mode?
+		UCB$L_DEVDEPEND(r5),20$
+	ashl	#16,#1,r0		; Yes -- set a long timeout
+20$:	bisw	#VB$K_FUN_SEND,VB_CSR(r4); Send packet to the device
+	bisw	#VB$M_CSR_GO,VB_CSR(r4)	; Start device
+					;
+	bisl	#VB$M_CMD_IP,-		; Set Command In Progess
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	WFIKPCH	EXCPT=VB_CMD_TIMEOUT,-	; Wait for device interrupt
+		TIME=r0
+					;
+	bicl	#VB$M_CMD_IP,-		; Clear Command In Progess
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	bsbw	SAVE_ELG_INFO		; Save state info for IOC$DIAGBUFILL
+
+  					; We should exit screen saver mode when
+  					; a command is send to the VS100, so
+  	bsbw	CHECK_SCREEN		; deliver exit screen save mode AST
+  					; if there is one outstanding
+
+	IOFORK				; Change to fork level
+;	brw	COMMAND_COMPLETE	; Complete command processing
+
+	.sbttl	COMMAND_COMPLETE, Command completion processing
+
+;++
+; COMMAND_COMPLETE - Command completion processing routine
+;
+; Functional description:
+;
+;	This routine is executed upon device completion of some
+;	output function. The routine will save device information,
+;	unmap buffers, and return user status.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	r0	- user status
+;	r1	- extra info
+;	UCB	- various fields saved
+;
+;--
+
+COMMAND_COMPLETE:
+
+
+DONE_COMMAND:
+
+;
+; Perform any command post-processing if necessary
+;
+	jsb	g^IOC$DIAGBUFILL	; Fill diagnostic buffer if one
+					;
+	clrl	UCB$L_DEVDEPND2(r5)	; Clear Status Field
+					;
+	blbc	UCB$W_DEVSTS(r5),20$	; Done if error
+					;
+	cmpw	UCB$W_VB_COMMAND(r5),-	; Was command a report map?
+		#VSTA$K_REPORT		;
+	beql	30$			; Yes -- go process results
+					;
+	movl	#VB$W_GET_X,r1		; No -- cursor position offset
+	cmpw	UCB$W_VB_COMMAND(r5),-	; Was command a get cursor position?
+		#VSTA$K_GETCUR		;
+	beql	10$			; Yes -- get position from packet
+					;
+	movl	#VB$W_GMO_X,r1		; No -- mouse position offset
+	cmpw	UCB$W_VB_COMMAND(r5),-	; Was command a get mouse position?
+		#VSTA$K_GETMOUSE	;
+	beql	10$			; Yes -- get position from packet
+					;
+	movl	#VB$W_GTB_X,r1		; No -- tablet position offset
+	cmpw	UCB$W_VB_COMMAND(r5),-	; Was command a get tablet position?
+		#VSTA$K_GETTAB		;
+	bneq	20$			; No -- go on
+					;
+10$:	movl	IRP$L_CMD_BLK(r3),r0	; Yes -- get position from packet
+	addl2	CMD$A_CMD(r0),r1	;
+	movl	(r1),UCB$L_DEVDEPND2(r5); 
+					;
+20$:	bsbw	UNMAP_IRP		; Unmap command and data buffers
+					;
+	movw	UCB$W_DEVSTS(r5),r0	; Get command completion code
+	insv	UCB$W_VB_CC_REASON(r5),- ; Get specific completion code
+		#16,#16,r0		;
+					;
+	movl	UCB$L_DEVDEPND2(r5),r1	; Extra info
+	clrl	UCB$L_DEVDEPND2(r5)	; Clear extra info
+	brw	COMPLETE_IO		; Return
+;
+; The command was a report map command which is performed only by system code
+; via a IO$_REPORT function. This means the command buffer is in system space
+; and is directly accessable. Copy the data to the UCB fields.
+;
+30$:	movl	IRP$L_CMD_BLK(r3),r0	; Get command descriptor block
+	movl	CMD$A_CMD(r0),r0	; Get command packet address
+	movl	VB$L_REP_TYPE(r0),-	;  device type
+		UCB$L_VB_DEV_TYPE(r5)
+	movw	VB$W_REP_VERSION(r0),-	;  device version
+		UCB$W_VB_DEV_VERSION(r5)
+	movw	VB$W_REP_MCODE(r0),-	;  microcode version
+		UCB$W_VB_MCODE(r5)
+	movl	VB$A_REP_SCREEN(r0),-	;  screen address
+		UCB$A_VB_SCREEN(r5)
+	movw	VB$W_REP_SCN_X(r0),-	;  screen size x
+		UCB$W_VB_SCREEN_X(r5)
+	movw	VB$W_REP_SCN_Y(r0),-	;  screen size y
+		UCB$W_VB_SCREEN_Y(r5)
+	movw	VB$W_REP_SCN_Z(r0),-	;  screen size z
+		UCB$W_VB_SCREEN_Z(r5)
+	movl	VB$A_REP_FRAME(r0),-	;  free frame buffer address
+		UCB$A_VB_FRAME(r5)
+	movl	VB$L_REP_FSIZE(r0),-	;  free frame buffer size
+		UCB$L_VB_FRAME_SIZE(r5)
+	movl	VB$A_REP_PROGRAM(r0),-	;  free program buffer address
+		UCB$A_VB_PROGRAM(r5)
+	movl	VB$L_REP_PSIZE(r0),-	;  free program buffer size
+		UCB$L_VB_PROGRAM_SIZE(r5)
+	movl	VB$A_REP_UNIBUS(r0),-	;  unibus address
+		UCB$A_VB_UNIBUS(r5)
+	movl	VB$L_REP_USIZE(r0),-	;  unibus size
+		UCB$L_VB_UNIBUS_SIZE(r5)
+					;
+					; Check device type
+40$:	cmpl	#VB$K_DT_VS100, -	; VS100 ?
+		UCB$L_VB_DEV_TYPE(r5)	;
+	bneq	48$			;
+	movb	#DT$_VS100, - 		; yes - set device type
+		UCB$B_DEVTYPE(r5)	;
+	brb	50$			;
+					;
+;
+;  VS125 and VS300 are unsupported devices
+;
+;42$:	cmpl	#VB$K_DT_VS125, -	; VS125 ?
+;		UCB$L_VB_DEV_TYPE(r5)	;
+;	bneq	48$			;
+;	movb	#DT$_VS125, - 		; yes - set device type
+;		UCB$B_DEVTYPE(r5)	;
+;	brb	50$			;
+;					;
+;44$:	cmpl	#VB$K_DT_VS300, -	; VS300 ?
+;		UCB$L_VB_DEV_TYPE(r5)	;
+;	bneq	48$			;
+;	movb	#DT$_VS300, - 		; yes - set device type
+;		UCB$B_DEVTYPE(r5)	;
+;	brb	50$			;
+					;
+48$:	movb	#DT$_VSUNKN, -		; Unknown device type
+		UCB$B_DEVTYPE(r5)	;
+					;
+50$:	brw	20$			; Done
+					;
+
+	.sbttl	VB_CMD_TIMEOUT, Interrupt timeout service routine
+
+;++
+; VB_CMD_TIMEOUT - Device interrupt timeout service routine
+;
+; Functional description:
+;
+;	This routine is executed when the device does not complete an
+;	output function in some specifed amount of time.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_CMD_TIMEOUT:				; Timeout service routine
+	;
+	; IPL 21
+	; CMD_IP, INTR_EXP flags set
+	;
+	movw	#VB$K_SCMAX,-		; Max number of Status requests
+		UCB$W_VB_SCNT(r5)	;
+					;
+	clrw	UCB$W_VB_SPRG(r5)	; Status Progress value
+					;
+	brw	VB_STATUS_SEND		; Request Status
+					;
+
+	.sbttl	VB_STATUS_SEND, Send Status Request Routine
+
+;++
+; VB_STATUS_SEND - Send Status Request Routine
+;
+; Functional description:
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_STATUS_SEND:
+	;
+	; IPL 21
+	; CMD_IP, INTR_EXP flags set
+	;
+					;
+	;
+	; TEMPORARY Counter
+	;
+	incw	UCB$W_VB_CMD_SS_CNT(r5)	; count of status send
+					;
+	bbc	#UCB$V_CANCEL,-		; I/O Canceled ?
+		UCB$W_STS(r5),-		;
+		5$			; no - continue
+	brw	50$			; yes - abort command
+					;
+5$:	bbs	#VB$V_MCVALID,-		; Microcode (FW) still 
+		UCB$L_DEVDEPEND(r5),-	; valid ?
+		6$			; yes - continue
+	brw	50$			; no  - abort command
+					;
+					;
+					;
+6$:	bicw	#VB$M_CSR_FUNCTION,-	; clear function code
+		VB_CSR(r4)		;
+					;
+	bisw	#VB$K_FUN_STATUS,-	; set Status function code
+		VB_CSR(r4)		;
+					;
+	bisw	#VB$M_CSR_GO,-		; set GO bit
+		VB_CSR(r4)		;
+					;
+	bisl	#VB$M_STATUS_IP,-	; Status Request In Progress
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	movl	#VB$K_TIMEOUT,r0	; compute Timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; are we in Debug mode ?
+		UCB$L_DEVDEPEND(r5),-	;
+		10$			; no
+	ashl	#16,#1,r0		; yes
+					;
+10$:	DSBINT	UCB$B_DIPL(r5)		; Disable Interrupts
+					; DSBINT stores the current IPL
+					; on the stack - used by WFIKPCH
+					;
+	WFIKPCH	Excpt=60$,-		; Wait for interrupt
+		Time=r0			;
+					;
+					; Interrupt Restored
+	bicl	#VB$M_STATUS_IP,-	; clear In Progress flag
+		UCB$L_DEVDEPEND(r5)	; 
+					;
+	cmpw	#VB$K_CC_STATUS,-	; Status Interrupt ?
+		UCB$W_VB_CC_REASON(r5)	;
+	beql	20$			; yes - status interrupt
+					;
+	bicl	#VB$M_CMD_IP,-		; no - command completion
+		UCB$L_DEVDEPEND(r5)	; clear In Progress flag
+					;
+  	bsbw	SAVE_ELG_INFO		; store information away for register
+  					; dump routine
+  					;
+	IOFORK				; time to fork
+					;
+	brw	COMMAND_COMPLETE	; complete command and
+					; cleanup
+					;	
+	;
+	; Status Returned
+	;
+					;
+20$:	cmpw	UCB$W_VB_SPRG(r5),-	; Making Progress ?
+		UCB$W_VB_SPRGU(r5)	;
+	beql	50$			; no - abort command
+					;
+	movw	UCB$W_VB_SPRGU(r5),-	; yes - save new progress
+		UCB$W_VB_SPRG(r5)	; value
+					;
+	bbs	#UCB$V_CANCEL,-		; I/O Canceled ?
+		UCB$W_STS(r5),-		;
+		50$			; yes - abort command
+					;
+	bbc	#VB$V_MCVALID,-		; Microcode (FW) still 
+		UCB$L_DEVDEPEND(r5),-	; valid ?
+		50$			; no - abort command
+					;
+					;
+	movl	#VB$K_TIMEOUT,r0	; compute timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; in Debug mode ?
+		UCB$L_DEVDEPEND(r5),-	;
+		30$			; no
+	ashl	#16,#1,r0		; yes
+					;
+30$:	;
+	; Delay before we check the status again
+	;
+					;
+	DSBINT	UCB$B_DIPL(r5)		; Disable Interrupts
+					; stores current IPL on stack
+					; which WFIKPCH uses
+					;
+	WFIKPCH Excpt=40$,-		; Wait for timeout
+		Time=r0			;
+					;
+	;
+	; Command Completion
+	;
+					;
+	bicl	#VB$M_CMD_IP,-		; clear In Progress flag
+		UCB$L_DEVDEPEND(r5)	;
+					;
+  	bsbw	SAVE_ELG_INFO		; store information away for register
+  					; dump routine
+  					;
+	IOFORK				; time to fork
+					;
+	brw	COMMAND_COMPLETE	; complete command and
+					; and cleanup
+					;
+	;
+	; Delay Over - request status
+	;
+					;
+40$:	tstw	UCB$W_VB_SCNT(r5)	; count non-zero ?
+	beql	50$			; no - ranout of times
+					; to request status.
+					;
+	decw	UCB$W_VB_SCNT(r5)	;
+					;
+	brw	VB_STATUS_SEND		; no - request status again !
+					;
+					;
+					;
+	;
+	; Abort Command (detected while in Status Loop)
+	;	IPL 21
+	;	CMD_IP, INTR_EXP flags set
+	;
+					;
+50$:	brw	VB_ABORT_CMD		;
+					;
+					;
+	;
+	; Status Request Timeout
+	;	IPL:	DIPL
+	;	CMD_IP, STATUS_IP, INTR_EXP flags set
+	;
+					;
+60$:	bicw	#VB$M_CSR_GO,-		; clear Go bit
+		VB_CSR(r4)		;
+					;
+	bicl	#VB$M_STATUS_IP,-	; clear Status In Progress
+		UCB$L_DEVDEPEND(r5)	; flag
+					;
+	brw	VB_ABORT_CMD		; abort command
+					;
+					;
+
+
+	.sbttl	VB_ABORT_CMD - Abort Command Routine
+
+;++
+; VB_ABORT_CMD - Abort Command Routine
+;
+; Functional description:
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_ABORT_CMD:
+	;
+	; IPL 21
+	; CMD_IP, INTR_EXP flags set
+	;
+					;
+	;
+	; TEMPORARY Counter
+	;
+	incw	UCB$W_VB_ABORT_CMD_CNT(r5)	; Abort Command count
+					;
+					;
+	bbs	#VB$V_MCVALID,-		; Microcode (FW) still 
+		UCB$L_DEVDEPEND(r5),-	; valid ?
+		5$			; yes - continue
+	brw	60$			; no  - return status to user
+					;
+5$:	bicw	#VB$M_CSR_FUNCTION,-	; clear function code
+		VB_CSR(r4)		;
+					;
+	bisw	#VB$K_FUN_ABORT,-	; set Abort function code
+		VB_CSR(r4)		;
+					;
+	bisw	#VB$M_CSR_GO,-		; set GO bit
+		VB_CSR(r4)		;
+					;
+	bisl	#VB$M_ABORT_IP,-	; Abort In Progress
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	movl	#VB$K_TIMEOUT,r0	; compute Timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; are we in Debug mode ?
+		UCB$L_DEVDEPEND(r5),-	;
+		10$			; no
+	ashl	#16,#1,r0		; yes
+					;
+10$:	DSBINT	UCB$B_DIPL(r5)		; Disable Interrupts
+					; DSBINT stores the current IPL
+					; on the stack - used by WFIKPCH
+					;
+	WFIKPCH	Excpt=50$,-		; Wait for interrupt
+		Time=r0			;
+					;
+					; Interrupt Restored
+	bicl	#VB$M_ABORT_IP,-	; clear In Progress flag
+		UCB$L_DEVDEPEND(r5)	; 
+					;
+	bicl	#VB$M_CMD_IP,-		; clear CMD in Progress
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	cmpw	#VB$K_CC_ABORT,-	; Abort Interrupt ?
+		UCB$W_VB_CC_REASON(r5)	;
+	beql	20$			; yes - status interrupt
+					;
+	;
+	; Command Completion
+	;
+  					;
+  	bsbw	SAVE_ELG_INFO		; store information away for register
+  					; dump routine
+  					;
+	IOFORK				; no - time to fork
+					;
+	brw	COMMAND_COMPLETE	; complete command and
+					; cleanup
+					;	
+					;
+	;
+	; Abort Returned
+	;
+					;
+20$:	cmpw	#VB$K_CCS_SUCCESS,-	; check Sub-Status of 
+		UCB$W_VB_SUB_STATUS(r5)	; Abort Completion
+	beql	30$			; success - cleanup
+					;
+	cmpw	#VB$K_CCS_FAILURE,-	;
+		UCB$W_VB_SUB_STATUS(r5)	;
+	beql	40$			; failure - shutdown
+					;
+					;
+	;
+	; Abort - BAD SUB-STATUS
+	;
+					;
+	BUG_CHECK	INCONSTATE,FATAL; major problems !
+					; sub-status not 'Failure'
+					; or 'Success' - could be
+					; 'What' but should not restore
+					; driver then.
+					;
+					;
+	;
+	; Abort Successful
+	;
+					;
+30$:	movw	#SS$_TIMEOUT,-		; set completion code
+		UCB$W_DEVSTS(r5)	;
+					;
+  	bsbw	SAVE_ELG_INFO		; store information away for register
+  					; dump routine
+  					;
+	IOFORK				; time to cleanup
+					;
+	brw	COMMAND_COMPLETE	;
+					;
+					;
+	;
+	; Abort Failure
+	;
+					;
+40$:	bsbw	VB_SHUTDOWN		; shutdown link to VS100
+					;
+	brw	30$			; cleanup now
+					;
+
+	;
+	; Abort Timeout
+	;
+					;
+50$:	bbc	#VB$V_MCVALID,-		; Microcode (FW) still 
+		UCB$L_DEVDEPEND(r5),-	; valid ?
+		60$			; no - return status to user
+					;
+	bicl	#VB$M_ABORT_IP,-	; clear In Progress flag
+		UCB$L_DEVDEPEND(r5)	; 
+					;
+	bicl	#VB$M_CMD_IP,-		; clear CMD in Progress
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	bicw	#UCB$M_INT,-		; clear Interrupt Excepted
+		UCB$W_STS(r5)		; flag
+					;
+	brw	40$			; abort failed - shutdown
+					;
+	;
+	; Microcode (FW) not valid
+	; so clean up and return status to user.
+	;	IPL: DIPL
+	;	CMD_IP, INTR_EXP  flags set
+	;
+					;
+60$:	bicl	#VB$M_CMD_IP,-		; clear Command
+		UCB$L_DEVDEPEND(r5)	; In Progress
+					;
+	bicw	#UCB$M_INT,-		; clear Interrupt Excepted
+		UCB$W_STS(r5)		; flag
+					;
+	movw	#SS$_MCNOTVALID,-	; return Status
+		UCB$W_DEVSTS(r5)	; to user
+					;
+  	bsbw	SAVE_ELG_INFO		; store information away for register
+  					; dump routine
+  					;
+	IOFORK				;
+					; 
+	brw	COMMAND_COMPLETE	; time to cleanup
+					;
+
+
+	.sbttl	VB_SHUTDOWN - Shutdown VS100 Link Routine
+
+;++
+; VB_SHUTDOWN - Shutdown VS100 Link Routine
+;
+; Functional description:
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_SHUTDOWN:
+	;
+	; IPL:	DIPL
+	;
+	; The following things happen:
+	;	- turn off FO link
+	;	- clear LA (link available) and MCVALID flags
+	;	- deliver Link ASTs
+	;	- log error (CMD Timeout)
+	;
+					;
+	;
+	; TEMPORARY Counter
+	;
+	incw	UCB$W_VB_FO_SHUTDOWN_CNT(r5)	; F/O shutdown count
+					;
+					;
+	bicw	#VB$M_CSR_XMIT_ON,-	; turn off FO link
+		VB_CSR(r4)		;
+					;
+	bicl	#VB$M_LINK_AVAIL,-	; Clear LA flag
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	bicl	#VB$M_MCVALID,-		; Clear MCVALID flag
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	bsbw	DELIVER_LINK_AST	; deliver Link ASTs
+					;
+	movw	#VB$K_ELG_BREAK_LINK,r0	; Log Error
+					; Command Timeout
+	;
+	; do we need to save CSRs or load internal registers ???
+	;
+					;
+	bsbw	VB_ERRLOG		;
+					;
+	rsb				;
+					;
+					;
+
+	.sbttl	VB_PIO_START,   Performance oriented I/O
+
+;++
+; VB_PIO_START - Process a WGA command thru the PIO interface
+;
+; Functional description:
+;
+;	This routine will process WGA graphic commands.
+;	It does this by:
+;
+;	    1. Set up device registers
+;	    2. Start device and wait for completion
+;	    3. Return status to user  (non-AST)
+;		
+; Inputs:
+;
+;	R1	- I/O function code
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	(This routine must preserve all registers except R0-R2 and R4)
+;
+;--
+
+VB_PIO_START:				; Process graphics command
+
+;
+; Verify valid microcode
+;
+	incl	UCB$L_VB_PIO_CNT(r5)	; PIO counter
+					;
+	bbs	#VB$V_LINK_AVAIL,-	; Is the link available?
+		UCB$L_DEVDEPEND(r5),1$	;
+	movzwl	#SS$_DEVOFFLINE,r0	; error code
+	brw	PIO_POST		; Exit
+					;
+1$:	bbs	#VB$V_MCVALID,-		; Microcode valid?
+		UCB$L_DEVDEPEND(r5),5$	;
+	movzwl	#SS$_MCNOTVALID,r0	; no - Error code
+	brw	PIO_POST		; Exit
+					;
+;
+; Start the device operating on a command packet and wait for an interrupt
+;
+5$:
+	movl	IRP$L_PIO_PKT(r3),r0	; get CMD PKT addr
+					;
+	movl	UCB$L_CRB(r5),r2	; Get CRB
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r4 ; Get base CSR
+					;
+	DSBINT	UCB$B_DIPL(r5)		; Disable device interrupts
+					;
+	movw	r0,VB_PR1(r4)		; Load low address of packet
+	ashl	#-16,r0,r0		; Get high word
+	movw	r0,VB_PR2(r4)		; Load high address of packet
+	bicw	#VB$M_CSR_FUNCTION,-	; Clear the function bits
+		VB_CSR(r4)
+	movl	#VB$K_TIMEOUT,r0	; Default device timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; In debug microcode mode?
+		UCB$L_DEVDEPEND(r5),20$
+	ashl	#16,#1,r0		; Yes -- set a long timeout
+20$:	bisw	#VB$K_FUN_SEND,VB_CSR(r4); Send packet to the device
+	bisw	#VB$M_CSR_GO,VB_CSR(r4)	; Start device
+					;
+	bisl	#VB$M_CMD_IP,-		; Set Command In Progess
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+;*********************************************************************
+; The VB_PIO_TIMEOUT has to be rewritten to get the benefits of the 
+; extended timeout originally designed into VB_CMD_TIMEOUT. The routines
+; support the extended timeout need to be restructured for VB_PIO_TIMEOUT.
+;
+	WFIKPCH	EXCPT=VB_PIO_TIMEOUT,-	; Wait for device interrupt
+		TIME=r0
+					;
+	bicl	#VB$M_CMD_IP,-		; Clear Command In Progess
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	IOFORK				; Change to fork level
+					;
+					;
+	movw	UCB$W_DEVSTS(r5),r0	; Get command completion code
+	insv	UCB$W_VB_CC_REASON(r5),- ; Get specific completion code
+		#16,#16,r0		;
+	clrl	UCB$L_DEVDEPND2(r5)	; Clear extra info
+					;
+	incl	UCB$L_OPCNT(r5)		; operation count
+					;
+					;
+PIO_POST:			;
+					;
+	movl	r0,IRP$L_IOST1(r3)	; IOSB status
+	clrl	IRP$L_IOST2(r3)		; 
+					;
+;	TSTL	L^PMS$GL_IOPFMPDB	;DATA COLLECTION ENABLED?
+;	BNEQ	60$			;BRANCH IF YES
+					;
+50$:	INSQUE	(R3), -			;
+		@UCB$L_VB_PIO_POST_BL(r5)	;INSERT PACKET IN POST PROCESS QUEUE
+					;
+	REMQUE	@UCB$L_IOQFL(R5),R3	;REMOVE I/O PACKET FROM DEVICE UNIT QUEUE
+	BVS	55$			; If VS then queue empty
+	JMP	g^IOC$INITIATE		;IF VC INITIATE NEXT FUNCTION
+					;
+55$:	BICW	#UCB$M_BSY,UCB$W_STS(R5) ;CLEAR UNIT BUSY
+
+	JMP	g^IOC$RELCHAN		; release channels, This routine checks
+  					; CRB$V_BSY bit, if clear it'll do a 
+  					; rsb. This is the case for us because
+  					; each VB device owns a controller and
+  					; CRB$V_BSY is always clear
+;60$:	JSB	PMS$END_IO		;INSERT END OF I/O TRANSACTION MESSAGE
+;	BRB	50$			;REJOIN COMMON CODE
+					;
+					;
+					;
+
+	.sbttl	VB_PIO_TIMEOUT, Interrupt timeout service routine
+;
+;
+; VB_PIO_TIMEOUT - Device interrupt timeout service routine
+;
+; Functional description:
+;
+;	This routine is executed when the device does not complete an
+;	output function in some specifed amount of time.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;
+VB_PIO_TIMEOUT:				; Timeout service routine
+					;
+	incw	UCB$W_VB_PIO_TIMEOUT(r5); increment the counter
+	bicw	#UCB$M_INT,UCB$W_STS(r5); Clear interrupt expected bit
+	bicl	#VB$M_CMD_IP,-		; Clear Command In Progress
+		UCB$L_DEVDEPEND(r5)	; Flag
+					;
+	SETIPL	UCB$B_FIPL(r5)		; Lower IPL
+					;
+	movzwl	#SS$_TIMEOUT,r0		; Set completion code
+	movw	r0,UCB$W_DEVSTS(r5)	;
+					;
+	brw	PIO_POST		; Exit
+
+
+
+	.sbttl	VB_FUNCTION, Process an device function command
+
+;++
+; VB_FUNCTION - Process an device specific function command
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_FUNCTION:				; Process function command
+
+	bbs	#VB$V_LINK_AVAIL,-	; Is the link available?
+		UCB$L_DEVDEPEND(r5),10$
+	movzwl	#SS$_DEVOFFLINE,r0	; No -- error code
+	brw	COMPLETE_IO		; Exit
+					;
+10$:	movl	UCB$L_CRB(r5),r2	; Get CRB
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r4 ; Get base CSR
+	DSBINT	UCB$B_DIPL(r5)		; Disable device interrupts
+	bicw	#VB$M_CSR_FUNCTION,-	; Clear the function bits
+		VB_CSR(r4)
+	bbs	#IO$V_VB_RESET,-	; Reset function?
+		IRP$W_FUNC(r3),FNC_RESET
+	bbs	#IO$V_VB_STARTM,-	; No -- start microcode function?
+		IRP$W_FUNC(r3),FNC_STARTM
+	bbs	#IO$V_VB_POWERUP,-	; No -- powerup function?
+		IRP$W_FUNC(r3),FNC_POWERUP
+	bbs	#IO$V_VB_INFINITE,-	; No -- set infinite retry function?
+		IRP$W_FUNC(r3),FNC_INFINITE
+	bbs	#IO$V_VB_FINITE,-	; No -- set finite retry function?
+		IRP$W_FUNC(r3),FNC_FINITE
+	bbs	#IO$V_VB_ENABBA,-	; No -- enable BBA function?
+		IRP$W_FUNC(r3),FNC_ENABBA
+	bbs	#IO$V_VB_DISBBA,-	; No -- disable BBA function?
+		IRP$W_FUNC(r3),FNC_DISBBA
+FNC_ERROR:
+	ENBINT				; No -- command error
+	movzwl	#SS$_DEVCMDERR,r0	; Error code
+	brw	COMPLETE_IO		; Exit
+					;
+FNC_RESET:
+	bisw	#VB$K_FUN_INIT,VB_CSR(r4); Reset the device
+	brb	START_FUNCTION		; Do the function
+FNC_STARTM:
+	bbs	#VB$V_MCVALID,-		; Is microcode valid?
+		UCB$L_DEVDEPEND(r5),-
+		FNC_ERROR
+	movl	IRP$L_MEDIA(r3),r0	; No -- get the start address
+	movw	r0,VB_PR1(r4)		; Load the low half
+	ashl	#-16,r0,r0		; Get high half
+	movw	r0,VB_PR2(r4)		; Load high half
+	bisw	#VB$K_FUN_START,VB_CSR(r4); Start the device
+	brb	START_FUNCTION		; Do the function
+FNC_POWERUP:
+	bisw	#VB$K_FUN_PWRUP,VB_CSR(r4); Powerup reset the device
+	brb	START_FUNCTION		; Do the function
+FNC_INFINITE:
+	bisw	#VB$K_FUN_INFINITE,VB_CSR(r4); Set infinite retries
+	brb	START_FUNCTION		; Do the function
+FNC_FINITE:
+	bisw	#VB$K_FUN_FINITE,VB_CSR(r4); Set finite retries
+	brb	START_FUNCTION		; Do the function
+FNC_ENABBA:
+	bisw	#VB$K_FUN_ENABBA,VB_CSR(r4); Enable the BBA
+	brb	START_FUNCTION		; Do the function
+FNC_DISBBA:
+	bisw	#VB$K_FUN_DISBBA,VB_CSR(r4); Disable the BBA
+	brb	START_FUNCTION		; Do the function
+;
+; Start the device executing the function command
+;
+START_FUNCTION:
+	movl	#<VB$K_TIMEOUT+20>,r0	; set timeout to 30 seconds
+	bbc	#VB$V_DEBUG_MCODE,-	; In debug microcode mode?
+		UCB$L_DEVDEPEND(r5),10$
+	ashl	#16,#1,r0		; Yes -- set a long timeout
+10$:	bisw	#VB$M_CSR_GO,VB_CSR(r4)	; Do it
+	WFIKPCH	EXCPT=VB_FUN_TIMEOUT,-	; Wait for device interrupt
+		TIME=r0
+
+	bsbw	SAVE_ELG_INFO		; Save state info for IOC$DIAGBUFILL
+
+  					; We should exit screen saver mode when
+  					; a function is sent to the VS100, so
+  	bsbw	CHECK_SCREEN		; deliver exit screen save mode AST
+  					; if there is one outstanding
+
+	IOFORK				; Change to fork level
+	jsb	g^IOC$DIAGBUFILL	; Fill diagnostic buffer if one
+					;
+	movw	UCB$W_DEVSTS(r5),r0	; Get command completion code
+	insv	UCB$W_VB_CC_REASON(r5),- ; Get specific completion code
+		#16,#16,r0		;
+ 	brw	COMPLETE_IO_ALT		; Exit
+
+	.sbttl	VB_FUN_TIMEOUT, Interrupt timeout service routine
+
+;++
+; VB_FUN_TIMEOUT - Device interrupt timeout service routine
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_FUN_TIMEOUT:				; Timeout service routine
+
+	bsbw	SAVE_CSR_TO_UCB		; save the csr contents
+	movw	#VB$K_ELG_FUN_TIME,-	; Set error logging reason
+		UCB$W_VB_ERROR(r5)
+  	bsbw	SAVE_ELG_INFO		; Save UCB fields for error logging
+					;
+	bicw	#UCB$M_INT,UCB$W_STS(r5); Clear interrupt expected bit
+					;
+	SETIPL	UCB$B_FIPL(r5)		; Lower IPL
+					;
+	jsb	g^ERL$DEVICTMO		; Error log it
+					;
+	movzwl	#SS$_TIMEOUT,r0		; Set completion code
+	movw	r0,UCB$W_DEVSTS(r5)	;
+					;
+	brw	COMPLETE_IO_ALT		; Exit
+
+	.sbttl	VB_FIBER_CONTROL, Process a fiber control command
+
+;++
+; VB_FIBER_CONTROL - Process a fiber control command
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_FIBER_CONTROL:			; Process fiber command
+
+	movl	UCB$L_CRB(r5),r2	; Get CRB
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r4 ; Get base CSR
+	DSBINT	UCB$B_DIPL(r5)		; Disable device interrupts
+					;
+	bicl	#VB$M_LINK_AVAIL,-	; Set questionable link state
+		UCB$L_DEVDEPEND(r5)
+	bitw	#IO$M_VB_LIGHT_ON,-	; Turn xmit on?
+		IRP$W_FUNC(r3)
+	beql	10$			; No -- go clear it
+	bisw	#VB$M_CSR_XMIT_ON,-	; Yes -- set it
+		VB_CSR(r4)
+	bitw	#VB$M_CSR_LINK_AVAIL,-	; Is the FO light on?
+		VB_CSR(r4)
+	beql	20$			; No -- go to common code
+	bisl	#VB$M_LINK_AVAIL,-	; Yes -- set link state
+		UCB$L_DEVDEPEND(r5)
+	brb	30$			; Done
+10$:	bicw	#VB$M_CSR_XMIT_ON,-	; Clear it
+		VB_CSR(r4)
+	bitw	#VB$M_CSR_LINK_AVAIL,-	; Is the FO light on?
+		VB_CSR(r4)
+	beql	30$			; No -- done
+	bisl	#VB$M_LINK_AVAIL,-	; Yes -- set link state
+		UCB$L_DEVDEPEND(r5)
+20$:	bitw	#IO$M_VB_WAIT,IRP$W_FUNC(r3) ; Should we wait for transition?
+	beql	30$			; No -- go on
+	bisl	#VB$M_TRANS_EXP,-	; Yes -- Set fiber transition expected bit
+		UCB$L_DEVDEPEND(r5)
+	movl	#VB$K_TIMEOUT,r0	; Default device timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; In debug microcode mode?
+		UCB$L_DEVDEPEND(r5),25$
+	ashl	#16,#1,r0		; Yes -- set a long timeout
+25$:	WFIKPCH	EXCPT=VB_FIB_TIMEOUT,-	; Wait for device interrupt
+		TIME=r0
+
+	bsbw	SAVE_ELG_INFO		; Save state info for IOC$DIAGBUFILL
+					;
+	bicl	#VB$M_TRANS_EXP,-	; Clear fiber transition expected bit
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	IOFORK				; Change to fork level
+					;
+	jsb	g^IOC$DIAGBUFILL	; Fill diagnostic buffer if one
+	brw	VB_RET_NORMAL		; Exit
+					;
+30$:	ENBINT				;
+	brw	VB_RET_NORMAL		; Exit
+
+	.sbttl	VB_FIB_TIMEOUT, Interrupt timeout service routine
+
+;++
+; VB_FIB_TIMEOUT - Device interrupt timeout service routine
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_FIB_TIMEOUT:				; Timeout service routine
+
+	bsbw	SAVE_CSR_TO_UCB		; save the csr contents
+	movw	#VB$K_ELG_LINK_TIME,-	; Set error logging reason
+		UCB$W_VB_ERROR(r5)
+  	bsbw	SAVE_ELG_INFO		; Save some UCB fields for error logging
+					;
+	bicw	#UCB$M_INT,UCB$W_STS(r5); Clear interrupt expected bit
+	bicl	#VB$M_TRANS_EXP,-	; Clear fiber transition expected bit
+		UCB$L_DEVDEPEND(r5)	;
+					;
+	SETIPL	UCB$B_FIPL(r5)		; Lower IPL
+					;
+	jsb	g^ERL$DEVICTMO		; Error log it
+					;
+	movzwl	#SS$_TIMEOUT,r0		; Set completion code
+	movw	r0,UCB$W_DEVSTS(r5)	;
+					;
+	brw	COMPLETE_IO_ALT		; Exit
+
+
+  	.sbttl 	SAVE_CSR_TO_UCB,  store CSR0 through CSR6 to UCB
+
+;++
+; SAVE_CSR_TO_UCB: Store CSR0 through CSR6 to UCB
+;
+; Functional Description:
+;	This routine is called at the beginning of the timeout routines
+;	to save CSRs into UCB
+;
+; Inputs:
+;	R5	- address of the UCB
+;
+; Outputs:
+;	R4	- address of CSR
+;	R5	- address of UCB
+;
+
+SAVE_CSR_TO_UCB:
+
+	movl	UCB$L_CRB(r5),r4		; fetch CSR address
+	movl	@CRB$L_INTD+VEC$L_IDB(r4),r4	;
+  	;
+	; store CSRs into UCB
+  	; Note: We follow the save CSR order in VB_INTERRUPT.
+  	;	Read the note in that routine
+	;
+	movw	VB_KRR(r4),	UCB$W_VB_KEY_REG(r5)	; CSR2
+	movw	VB_PR1(r4),	UCB$W_VB_CSR3(r5)	; CSR3
+	movw	VB_PR2(r4),	UCB$W_VB_CSR4(r5)	; CSR4
+	movw	VB_CXR(r4),	UCB$W_VB_XPOS_REG(r5)	; CSR5
+	movw	VB_CYR(r4),	UCB$W_VB_YPOS_REG(r5)	; CSR6
+	movw	VB_CSR(r4),	UCB$W_VB_CSR_REG(r5)	; CSR0
+	movw	VB_IRR(r4),	UCB$W_VB_INT_REASON(r5) ; CSR1
+	rsb
+
+
+	.sbttl	VB_PIO_FUNCTION,  Process a PIO Function
+
+;++
+; VB_PIO_FUNCTION - Process a PIO Function
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_PIO_FUNCTION:
+	ffs	#IO$V_FMODIFIERS, -
+		#IO$S_FMODIFIERS, - 	; find the function modifier bit
+		IRP$W_FUNC(r3),r1	;  position
+	subl2	#IO$V_VB_PIO_CREATE_WCP, r1
+  					; get the selector for the case instr
+
+	casel	r1, #0, #3
+case_table:
+	.word	10$ - case_table	; create wcp
+	.word	20$ - case_table	; delete wcp
+	.word	30$ - case_table	; create DB
+	.word	40$ - case_table	; delete DB
+
+	;
+	; command modifier error
+	;
+	movzwl	#SS$_DEVCMDERR, r0
+	brw	COMPLETE_IO
+
+
+10$:	; Map WCP
+					;
+	;
+  	; Ther reason that we use the standard method rather than the new UMR
+	; allocation scheme
+  	; to request UMRs is based on the understanding that the ACP will 
+  	; never request data buffers larger than 10K bytes.
+  	;
+	REQMPR				; request Unibus mapping registers
+	jsb  g^IOC$LOADUBAMAPA		; load Unibus mapping registers
+					;
+	movl	IRP$L_PIO_PTR(R3),R1	; r1 <- WCP address
+	movl	UCB$L_CRB(R5),R2	; r2 <- CSR address
+						;
+	movw	CRB$L_INTD+VEC$W_MAPREG(R2), -	; Save starting map register
+		WCP$W_MAPREG(R1)		;
+	movzbw	CRB$L_INTD+VEC$B_NUMREG(R2), -	; Save number of map registers
+		WCP$W_NUMREG(R1)		;
+						; cleanup so won't unmap
+	clrw	CRB$L_INTD+VEC$W_MAPREG(R2) 	;
+	clrb	CRB$L_INTD+VEC$B_NUMREG(R2) 	;
+						;
+					;
+					; Initialize WCP header
+	movl	r1,WCP$A_IOQFL(r1)	; Queue header 
+	movl	r1,WCP$A_IOQBL(r1)	;
+					;
+	movw	#WCP$K_TYPE_PIO, -	; Type and Flags
+		WCP$W_TYPE(R1)		;
+	clrw	WCP$W_FLAGS(R1)		;
+					;
+	clrl	WCP$A_DAADDR(R1)	; Data Area 
+	clrw	WCP$W_DAS(R1)		;
+	clrw	WCP$W_DAU(R1)		;
+					;
+	clrl	WCP$L_SPARE_1(R1)	; Spare
+					;
+						;
+	insque	(R1),@UCB$A_VB_PIO_WCP_BL(R5)	; insert packet on end of queue
+					;
+	incw	UCB$W_VB_PIO_WCP_CT(R5); increment count of packets
+	addl2	WCP$W_NUMREG(R1), -	; add in number of UMRs
+		UCB$W_VB_PIO_WCP_CMR(R5);
+					;
+					;
+	clrl	IRP$L_SVAPTE(R3)	; cleanup - so IOPOST won't unlock
+					;
+	brw	VB_RET_NORMAL		; return
+
+
+20$:	; delete WCP
+  	;
+
+30$:	; Map DB
+	;
+  	; Ther reason that we use the standard method rather than the new UMR
+	; allocation scheme
+  	; to request UMRs is based on the understanding that the ACP will 
+  	; never request data buffers larger than 10K bytes.
+  	;
+					;
+	REQMPR				; request Unibus mapping registers
+	jsb  g^IOC$LOADUBAMAPA		; load Unibus mapping registers
+					;
+	movl	IRP$L_PIO_PTR(R3),R1	; r1 <- DBD address
+	movl	UCB$L_CRB(R5),R2	; r2 <- CRB address
+
+	movw	CRB$L_INTD+VEC$W_MAPREG(R2), -	; Save starting map register
+		DBD$W_MAPREG(R1)		;
+	movzbw	CRB$L_INTD+VEC$B_NUMREG(R2), -	; Save number of map registers
+		DBD$W_NUMREG(R1)		;
+
+	clrw	CRB$L_INTD+VEC$W_MAPREG(R2) 	;
+	clrb	CRB$L_INTD+VEC$B_NUMREG(R2) 	;
+						;
+					;
+					; Initialize DBD header
+	movl	R1,DBD$A_IOQFL(R1)	; Queue header 
+	movl	R1,DBD$A_IOQBL(R1)	;
+					;
+	clrw	DBD$W_TYPE(R1)		; Type and Flags
+	clrw	DBD$W_FLAGS(R1)		;
+					;
+	movzwl	DBD$W_BOFF(R1),R0	; Calculate GP_ADDR
+	movw	DBD$W_MAPREG(R1),R2	;
+	insv	R2,#9,#9,R0		;
+	addl2	UCB$A_VB_UNIBUS(R5),R0	;
+	movl	R0,DBD$A_GP_ADDR(R1)	;
+					;
+	
+	insque	(R1),@UCB$A_VB_PIO_DBD_BL(R5)	
+  					; insert data buffer descriptor 
+  					; on end of queue
+					;
+	incw	UCB$W_VB_PIO_DB_CT(R5)	; increment count of Data buffers
+	addw2	DBD$W_NUMREG(R1), -	; add in number of UMRs
+		UCB$W_VB_PIO_DB_CMR(R5);
+					;
+	clrl	IRP$L_SVAPTE(R3)	; cleanup - so IOPOST won't unlock DB
+					;
+	movl	R0,R1			; return GP_ADDR in second longword
+					; of IOSB so place address in R1
+	brw	VB_RETURN		; 
+
+40$:	; delete DB
+  	;
+
+  	; Search IRP queue to see if there are any outstanding PIO requests
+  	; If yes, queue the IRP to the PIO post processing queue with status
+  	; cancel
+
+	movab	UCB$L_IOQFL (r5), r2	; get I/O queue list head
+	movl	r2, r4			; 
+41$:	movl	IRP$L_IOQFL (r4), r4	; get the next entry address
+	cmpl	r4, r2			; if end of list
+	beql	50$			;  then start unmap the DB
+					;  else
+
+	cmpl	IRP$W_FUNC (r4), #IO$_PIO_PACKET; If this is not a PIO packet
+	bneq	41$				;  then keep on searching
+
+45$:	; queue this PIO packet to the PIO post processing queue
+	;
+	movzwl	#SS$_CANCEL, IRP$L_IOST1(r4)	; IOSB status
+	clrl	IRP$L_IOST2(r4)		; 
+
+	insque	(r4), -			;
+		@UCB$L_VB_PIO_POST_BL(r5)	; insert packet in pio post 
+						; processing queue
+	brw	41$
+
+50$:	bsbw	UNMAP_DB
+
+	brw	VB_RET_NORMAL		; return
+
+	.sbttl	UNMAP_DB,  Unmap data buffer
+
+;++
+; UNMAP_DB - Unmap Data Buffer
+;
+; Functional description:
+;
+;	This routine does the following:
+;		1. returns the UMRs previously allocated to the Data Buffer
+;		2. unlock the data buffer pages
+;		3. return DBD to the nonpaged pool
+;		4. unlink  the DBD from the UCB queue.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;	
+;
+
+UNMAP_DB:
+
+	; save registers
+	;
+	pushr	#^m <r0, r1, r2, r3>
+
+	;
+  	; return the UMRs
+  	;
+	movl	UCB$A_VB_PIO_DBD_FL (r5), r0	; r0 <- DBD address
+
+	movl	UCB$L_CRB (r5), r2		; r2 <- CRB address
+
+	movw	DBD$W_MAPREG (r0), -	    ; restore UMR info
+		CRB$L_INTD+VEC$W_MAPREG(r2) ;
+	movb	DBD$W_NUMREG (r0), -     ;
+		CRB$L_INTD+VEC$B_NUMREG(r2) ;
+	RELMPR				    ; release UMRs allocated to DB
+	
+	movl	UCB$A_VB_PIO_DBD_FL (r5), r0	
+  					; r0 <- DBD address, r0 gets 
+  					;   trashed by IOC$RELMAPREG
+	movl	DBD$L_BCNT(r0),r1	; GET BYTE COUNT
+	movzwl	DBD$W_BOFF(r0),r2	; GET BYTE OFFSET IN PAGE
+	movab	511(r1)[r2],r1		; COMBINE OFFSET AND COUNT AND ROUND
+	ashl	#-VA$S_BYTE,r1,r1	; CONVERT TO NUMBER OF PAGES
+	movl	DBD$L_SVAPTE (r0), r3	; r3 <- SVAPTE of the first page
+	jsb	g^MMG$UNLOCK		; UNLOCK PAGES
+
+
+	;
+	; return DBD to the nonpaged pool, r0 contains the DBD address
+	;
+	movl	UCB$A_VB_PIO_DBD_FL (r5), r0	
+  					; r0 <- DBD address, r0 gets 
+  					;   trashed by MMG$UNLOCK
+	jsb	g^COM$DRVDEALMEM
+
+	; break the link of DBD to UCB
+	;
+	movab	UCB$A_VB_PIO_DBD_FL (r5), -
+		UCB$A_VB_PIO_DBD_FL (r5)
+
+	movab	UCB$A_VB_PIO_DBD_FL (r5), -
+		UCB$A_VB_PIO_DBD_BL (r5)
+
+	; restore registers
+	;
+	popr	#^m <r0, r1, r2, r3>
+
+	rsb
+
+	.sbttl	VB_SAVE_SCREEN, Process the save screen function
+
+;++
+; VB_SAVE_SCREEN - Process the save screen function
+;
+; Functional description:
+;
+;	This routine sends out the save screen functoin
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;
+;	The routine must preserve all registers except R0-R2 and R4.
+;
+;--
+
+VB_SAVE_SCREEN:				; Process save screen function
+
+	bbs	#VB$V_LINK_AVAIL,-	; Is the link available?
+		UCB$L_DEVDEPEND(r5),10$
+	movzwl	#SS$_DEVOFFLINE,r0	; No -- error code
+	brw	COMPLETE_IO		; Exit
+					;
+10$:	movl	UCB$L_CRB(r5),r2	; Get CRB
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r4 ; Get base CSR
+	DSBINT	UCB$B_DIPL(r5)		; Disable device interrupts
+	bicw	#VB$M_CSR_FUNCTION,-	; Clear the function bits
+		VB_CSR(r4)
+	bisw	#VB$K_FUN_SAVE_SCREEN,-
+  		VB_CSR(r4)		; Set the function code
+;
+; Start the device to execute the function command
+;
+	movl	#<VB$K_TIMEOUT+10>,r0	; Default device timeout
+	bbc	#VB$V_DEBUG_MCODE,-	; In debug microcode mode?
+		UCB$L_DEVDEPEND(r5),20$
+	ashl	#16,#1,r0		; Yes -- set a long timeout
+20$:	bisw	#VB$M_CSR_GO,VB_CSR(r4)	; Do it
+	WFIKPCH	EXCPT=VB_FUN_TIMEOUT,-	; Wait for device interrupt
+		TIME=r0
+
+	bsbw	SAVE_ELG_INFO		; Save state info for IOC$DIAGBUFILL
+
+	IOFORK				; Change to fork level
+	jsb	g^IOC$DIAGBUFILL	; Fill diagnostic buffer if one
+					;
+	movw	UCB$W_DEVSTS(r5),r0	; Get command completion code
+  					;
+	insv	UCB$W_VB_CC_REASON(r5),- ; Get specific completion code
+		#16,#16,r0		;
+  					;
+ 	brw	COMPLETE_IO_ALT		; Exit
+
+
+	.sbttl	MAP_OPERANDS, Map IRPE data buffers
+
+;++
+; MAP_OPERANDS - Request and load Unibus mapping registers for IRPE buffers
+;
+; Functional description:
+;
+;   This routine request and load UMRs for IRPE buffers. The UMR allocation
+;   procedure is as follows:
+;
+;The new UMR allocation solution is implemented in routine MAP_OPERANDS  and
+;it goes like this
+;
+;     A.  calculate the number of operands
+;
+;     B.  loop through the operands, for each operand
+;
+;         1.  Calculate the number of UMR required and put it in R3
+;
+;         2.  jsb g^IOC$ALOUBAMAPN
+;
+;         3.  Check R0 see if we succeed
+;
+;         4.  if we succeed then
+;
+;              .  bsbw LOADUBAMAPA
+;
+;              .  save UMR descriptor in IPRE
+;
+;              .  brw to step 5.  if all the operands are mapped, else go to
+;                 step 1.
+;
+;
+;         5.  compute graphics processor address:  form a loop to  calculate
+;             the graphics processor address for all the operands and put it
+;             in CMD$A_ADDRESS array.  bsbw MAP_OPERANDS_RET  when  all  the
+;             addresses are computed.
+;
+;         6.  if we failed then
+;
+;              .  Increment the retry count, if it does not exceed the max
+;
+;                  o  Deallocate the previouly allocated UMRs
+;
+;                  o  Set UCB$W_BCNT = 1,  UCB$W_BOFF  =  0  (i.e.   fake  a
+;                     request for UMRs for a 1 byte transfer)
+;
+;                  o  Save the fork context into UCB
+;
+;                  o  Put the address of the retry handler into UCB$L_FPC
+;
+;                  o  Queue the UCB to ADP
+;
+;                  o  RSB
+;
+;
+;              .  If the retry max is exceeded, go to COMPLETE_IO with R0  =
+;                 SS$_INSFMAPREG.
+;
+;     C.  When we were notified that the UMRs for the  1  byte  transfer  is
+;         allocated to us by VMS
+;
+;          -  deallocate the UMRs for the 1 byte xfer
+;
+;          -  go to step 1.
+;
+;
+;
+;	Note:  Buffer alignment (word vs non-word) is not changed.
+;
+;
+;      IRP
+; +------------+    +------------+    +------------+    +------------+
+; |   extend   |--->|   extend   |--->|   extend   |--->|   extend   |---> 0
+; +------------+    +------------+    +------------+    +------------+
+; |            |    |            |    |            |    |            |
+; +------------+    +------------+    +------------+    +------------+
+; | cmd svapte |    |opn1 svapte1|    |opn3 svapte1|    |opn5 svapte1|
+; +------------+    +------------+    +------------+    +------------+
+; |  cmd boff  |    | opn1 boff1 |    | opn3 boff1 |    | opn5 boff1 |
+; +------------+    +------------+    +------------+    +------------+
+; |  cmd bcnt  |    | opn1 bcnt1 |    | opn3 bcnt1 |    | opn5 bcnt1 |
+; +------------+    +------------+    +------------+    +------------+
+; |            |    |opn2 svapte2|    |opn4 svapte2|    |opn6 svapte2|
+; +------------+    +------------+    +------------+    +------------+
+; |  cmd_blk   |    | opn2 boff2 |    | opn4 boff2 |    | opn6 boff2 |
+; +------------+    +------------+    +------------+    +------------+
+; |            |    | opn2 bcnt2 |    | opn4 bcnt2 |    | opn6 bcnt2 |
+; +------------+    +------------+    +------------+    +------------+
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	R0,R1,R2 and R4 are destroyed.
+;	IRPE$W_MAPREG1	- starting map register number for operand 1
+;	IRPE$B_NUMREG1	- number of map registers for operand 1
+;	IRPE$W_MAPREG2	- starting map register number for operand 2
+;	IRPE$B_NUMREG2	- number of map registers for operand 2
+;
+;--
+
+MAP_OPERANDS:				; map IRPE buffers
+  					;
+  	clrw	UCB$W_VB_UMR_RETRY(r5)	; clear retry counter
+
+MAP_BEGIN:
+  	pushr	#^m<r6, r7, r8, r9> ; save registers
+  	; 
+  	; any buffer to map?
+  	;
+	movl	IRP$L_CMD_BLK(r3), r6	; get CMD_BLK address
+	tstl	CMD$L_OPERAND(r6)	; any buffer to map?
+  	beql	MAP_END			; NO, return
+
+	;
+	; loop through operands, for each operand do the following
+	;	1. calculate the number of UMRs required
+	;	2. request the UMRs
+	;	3. if succeed, load UMRs.
+	; 	4. if fail, 
+	;		- increment retry count and return SS$_INSFMAPREG
+  	;		  if retry count exceed the max value
+	;		- if we can still retry, deallocate the previously
+  	;		  allocated UMRs
+	;		- prepare to request UMR for 1 byte transfer
+	;		- save the fork context and return address into UCb
+  	;		- queue UCB to ADP
+	;		- suspend the fork process
+	;
+
+	movl	#1, r4			; set up loop counter. Note:
+  					; CMD$A_ADDRESS and CMD$W_OFFSET arrays
+  					; store their elements from slot 1 
+  					; rather than 0.
+	;
+	; get address of buffer descriptor in IRPE
+	;
+10$:	movl	CMD$A_ADDRESS(r6)[r4], r7
+  	bneq	20$			; This slot should have some address in
+  					; it. Abort the command if its not the
+  					; case
+  	bsbw	RELEASE_UMR		; release previously acquired UMRs
+	brw	ABORT_CMD		; abort the command
+
+20$:
+  	;
+	; get buffer descriptor information
+	;
+	movl	SVAPTE(r7), UCB$L_SVAPTE(r5) ; get SVAPTE of the transfer
+	movl	BCNT(r7), r8		; get transfer byte count
+	movzwl	BOFF(r7), r9		; get byte offset
+	;
+	; calculate the requirement of UMRs
+	;
+  	pushl	r3			; save away IRP address
+	movab	^x3FF(r8)[r9], r3	; calculate highest relative byte and round
+	ashl	#-9, r3, r3		; calculate required # of UMRs
+	jsb	g^IOC$ALOUBAMAPN	; request UMR, r2->ADP at its output
+  	popl	r3			; restore IRP address
+	blbc	r0, MAP_FAIL		; if failed go to MAP_FAIL
+
+  	;
+	; load UMRs
+	;
+	bsbw	LOADUBAMAPA
+
+	;
+	; save UMR descriptor into IRPE
+	;
+  	movl	UCB$L_CRB(r5), r8	; get the CRB address
+  	movw	CRB$L_INTD+VEC$W_MAPREG(r8), MAPREG(r7)
+  					; store starting UMR
+  	movb	CRB$L_INTD+VEC$B_NUMREG(r8), NUMREG(r7)	
+					; stroe # of UMRs
+
+	aobleq	CMD$L_OPERAND(r6), r4, 10$	; any more buffer to process?
+
+	;
+	; all buffers have their share of UMRs
+	;
+  	;
+  	; compute graphics processor address of buffer
+	; graphics processor address = unibus address + unibus offset
+	;
+  	movl	#1, r4			; set up loop counter
+
+COMPUTE:
+	movl	CMD$A_ADDRESS(r6)[r4], r7 ; get buffer address
+  	movzwl	BOFF(r7), r9		; get byte offset
+	insv	MAPREG(r7), #9, #9, r9	; compute UNIBUS address
+	addl3	UCB$A_VB_UNIBUS(r5), -	; add in UNIBUS offset and store it
+		r9, - 			;
+  		CMD$A_ADDRESS(r6)[r4] ; in CMD$A_ADDRESS array
+  	aobleq	CMD$L_OPERAND(r6), -	;
+  		r4, - 			;
+  		COMPUTE			; all done?
+
+MAP_END:
+	popr	#^m<r6, r7, r8, r9>	; restore registers
+	brw	MAP_OPERANDS_RET	; return 
+
+MAP_FAIL:
+  	incw	UCB$W_VB_UMR_ALLOC_FAIL(r5)	; increment the counter
+	;
+	; request UMR failed, release all the previously acquired UMRS
+	;
+	bsbw RELEASE_UMR
+	;
+	; increment retry counter, if exceed the max (currently set to 5), 
+  	; abort the command
+	;
+	aobleq #5, UCB$W_VB_UMR_RETRY(r5), RETRY
+
+	;
+	; retry overflowed 
+	;
+ABORT_CMD:
+	;
+  	; unmap CMD_PKT 
+  	;
+	movl	IRP$L_CMD_BLK(r3),r1	; get address of CMD_BLK
+	movl	CMD$A_CMD(r1),r1	; get address of CMD_PKT
+					;
+	cmpw	#WCP$K_TYPE_PIO, -	; Is the CMD_PKT a PIO or
+		WCP$W_TYPE - WCP$K_HEADER_LENGTH(r1) ; OR Type ?
+	beql	DEALLOC_CMD_BLK_AND_PKT ; PIO type, don't unmap it
+					    ; OR (on request) Type
+	movl	UCB$L_CRB(r5),r2	    ; Unmap CMD_PKT
+	movw	IRP$W_CMD_MAPREG(r3), -	    ; restore UMR info
+		CRB$L_INTD+VEC$W_MAPREG(r2) ;
+	movb	IRP$B_CMD_NUMREG(r3), -     ;
+		CRB$L_INTD+VEC$B_NUMREG(r2) ;
+	RELMPR				    ; release UMRs of CMD_PKT
+
+DEALLOC_CMD_BLK_AND_PKT:	
+
+	movl	IRP$L_CMD_BLK(r3),r0	;
+	movl	CMD$A_CMD(r0),r0	; address of CMD_PKT
+					;
+	cmpw	#WCP$K_TYPE_PIO, -	; Is the CMD_PKT a PIO or
+		WCP$W_TYPE - WCP$K_HEADER_LENGTH(r0) ; OR Type ?
+	beql	30$			;
+					; OR (on request) Type
+	subl	#WCP$K_HEADER_LENGTH,r0	; Deallocate CMD_PKT
+	jsb	g^COM$DRVDEALMEM	;
+	brb	40$			;
+					;
+30$:						; PIO Type
+	subl	#WCP$K_HEADER_LENGTH,r0		; requeue PIO CMD_PKT
+	insque	(r0),@UCB$A_VB_PIO_WCP_BL(r5) 	;
+	decw	UCB$W_VB_PIO_WCP_CIU(r5)	; In Use Counter
+						;
+40$:					; General Cleanup
+	clrl	IRP$L_SVAPTE(r3)	; so VMS will not unlock it
+					;
+	movl	IRP$L_CMD_BLK(r3),r0	; Deallocate CMD_BLK
+	jsb	g^COM$DRVDEALMEM	;
+					;
+	popr	#^m<r6, r7, r8, r9>
+  	movzwl	#SS$_INSFMAPREG, r0
+	brw	COMPLETE_IO_ALT
+
+RETRY:  	
+	;
+	; prepare to request UMRs for 1 byte transfer
+	;
+  	movw	#1, UCB$W_BCNT(r5)	; say the buffer size is 1 byte long
+  	clrw	UCB$W_BOFF(r5)		; byte offset = 0
+
+	;
+	; save the fork process context into the fork block in UCB
+	;
+  	movq	r3, UCB$L_FR3(r5)	; save r3 and r4 
+  					;
+  	movab	DEALLOC1, UCB$L_FPC(r5)	; Save return address
+  					;
+  	movl	UCB$L_CRB(r5), r2	; get CRB address
+  	movl	CRB$L_INTD+VEC$L_ADP(r2), -
+  		r2			; get ADP address
+	insque	UCB$L_FQFL(r5), -	; queue UCB to ADP
+		@ADP$L_MRQBL(r2) 
+
+	popr	#^m<r6, r7, r8, r9>
+
+  	cmpw	UCB$W_VB_UMR_RETRY(r5), #1 
+					; is this the first retry
+	beql	50$			; yes, control will be returned to
+					; EXE$INIQIO
+					; No,
+	; since we were called by IOC$RELMAPREG and we don't want to return
+	; to it, so we clean up the stack to return to the caller of 
+	; IOC$RELMAPREG
+	;
+	tstl	(sp)+			; skip over the return address to
+					; IOC$RELMAPREG
+	movq	(sp)+, r5		; restore r5, r6
+	movq	(sp)+, r3		; restore r3, r4
+	;
+	; suspend the fork process
+	;
+50$:	rsb
+
+DEALLOC1:
+	;
+	; we were notified when the UMRs for 1 byte transfer (2 UMRs) are 
+  	; allocated to us
+	;
+	; deallocate the UMRs for the 1 byte transfer
+	;
+	RELMPR
+
+	;
+	; try to get the UMRs for the command again
+	;
+	brw MAP_BEGIN
+
+
+	.SBTTL	LOADUBAMAPA, LOAD UNIBUS ADAPTER MAP REGISTERS
+;+
+; LOADUBAMAPA - LOAD UNIBUS ADAPTER MAP REGISTERS
+;
+; This is a copy of the VMS routine IOC$LOADUBAMAPA except where noted.
+; We can not use the VMS routine because we need to use longword byte count.
+;
+; INPUTS:
+;
+;	R5 = UCB ADDRESS OF UNIT TRANSFER IS TO OCCUR ON.
+;
+;	R8 = transfer byte count (change from VMS)
+;
+;	R9 = byte offset (change from VMS)
+;
+;	IT IS ASSUMED THAT THE DATAPATH AND MAP REGISTERS HAVE BEEN PREVIOUSLY
+;	ASSIGNED.
+;
+; OUTPUTS:
+;
+;	EACH MAP REGISTER IS LOADED WITH THE APPROPRIATE PAGE FRAME NUMBER
+;	MERGED WITH THE DATAPATH DESIGNATOR AND BYTE OFFSET BIT. ONE ADDITIONAL
+;	MAP REGISTER IS LOADED AS INVALID TO STOP THE TRANSFER IF A HARDWARE
+;	FAILURE SHOULD OCCUR.
+;
+;	R3 IS PRESERVED ACROSS CALL.
+;-
+
+;IOC$LOADUBAMAPA::		
+
+LOADUBAMAPA:				; load UMR 
+
+	MOVQ	R3,-(SP)		;SAVE R3 and R4
+;	MOVZWL	UCB$W_BOFF(R5),R1	;GET BYTE OFFSET IN PAGE
+;	MOVZWL	UCB$W_BCNT(R5),R2	;GET TRANSFER BYTE COUNT
+  	
+  	; change from VMS
+  	;
+  	MOVZWL	r9, r1			;Get byte offset 
+  	MOVL	r8, r2			;Get transfer byte count
+
+	MOVL	UCB$L_CRB(R5),R3	;GET ADDRESS OF CRB
+	EXTZV	#VEC$V_DATAPATH,-	;GET DATAPATH
+		#VEC$S_DATAPATH,-	; NUMBER
+		CRB$L_INTD+VEC$B_DATAPATH(R3),R4
+
+10$:	BISW	#^X400,R4		;MERGE VALID WITH BYTE OFFSET AND DATAPATH
+	BBC	#VEC$V_LWAE,-		;BRANCH IF LONGWORD ACCESS NOT ENABLED
+		CRB$L_INTD+VEC$B_DATAPATH(R3),15$
+	BISB	#^X20,R4		;ELSE SET LWAE FOR MAP REG
+15$:	MOVAB	^X1FF(R2)[R1],R2	;CALCULATE HIGHEST RELATIVE BYTE AND ROUND
+	ASHL	#-9,R2,R2		;CALCULATE NUMBER OF MAP REGISTERS TO LOAD
+	CMPB	R2,CRB$L_INTD+VEC$B_NUMREG(R3) ;ENOUGH MAP REGISTERS ASSIGNED?
+	BGEQU	40$			;IF GEQU NO
+	MOVL	@CRB$L_INTD+VEC$L_ADP(R3),R1 ;GET ADDRESS OF CONFIGURATION REGISTER
+	EXTZV	#VEC$V_MAPREG,-		;GET STARTING REGISTER
+		#VEC$S_MAPREG,-
+		CRB$L_INTD+VEC$W_MAPREG(R3),R0
+	MOVAL	UBA$L_MAP(R1)[R0],R1	;GET ADDRESS OF FIRST MAP REGISTER TO LOAD
+	MOVL	UCB$L_SVAPTE(R5),R0	;GET ADDRESS OF PAGE TABLE
+20$:	MOVL	(R0)+,R3		;GET NEXT PAGE TABLE ENTRY
+	BLSS	30$			;IF LSS VALID PAGE TABLE ENTRY
+
+  	jsb	g^IOC$PTETOPFN		;Get PFN from invalid PTE (Change from VMS)
+;	BSBB	IOC$PTETOPFN		;GET PFN FROM INVALID PTE
+
+30$:	INSV	R4,#21,#11,R3		;INSERT VALID, BYTE OFFSET, AND DATAPATH
+	MOVL	R3,(R1)+		;LOAD UBA MAP REGISTER
+	SOBGTR	R2,20$			;ANY MORE TO LOAD?
+	CLRL	(R1)			;LOAD INVALID MAP ENTRY
+	MOVQ	(SP)+,R3		;RESTORE REGISTERS
+	RSB				;
+40$:	BUG_CHECK UBMAPEXCED,FATAL	;UNIBUS MAP REGISTER ALLOCATION EXCEEDED
+
+  	.sbttl	RELEASE_UMR, release the UMRs held in IRPE
+
+;++
+; RELEASE_UMR - release UMRs held in the IRPE
+;
+; Functional descriptor:
+;	This routine examines the buffers in IRPEs backwards from the buffer 
+;	right preceeding the current one whose request for UMRs fails
+;
+; Input
+;	R4 = operand number in the IRPE list whose UMR request didn't
+;	     get through
+;
+;	R6 = CMD_BLK address
+;
+; Output
+;
+;	UMRs held in IRPEs are all returned
+;	R4 destroyed
+;--
+
+RELEASE_UMR:
+	pushr	#^m<r6, r7, r8>
+
+;	movl	IRP$L_CMD_BLK(r3), r6	; get CMD_BLK address
+	movl	UCB$L_CRB(r5), r8	; get CRB address
+	decl	r4			; how many to unmap
+	beql	20$			; no buffer to unmap
+
+  	;
+	; loop backwards through the IRPE list to deallocate UMRs 
+	;
+
+10$:
+	;
+	; any buffer to unmap
+	;
+	movl	CMD$A_ADDRESS(r6)[r4], r7 ; get address of buffer descriptor
+					;
+	movb	NUMREG(r7), -		; how many UMR to deallocate
+		CRB$L_INTD+VEC$B_NUMREG(r8)
+					;
+	movw	MAPREG(r7), -		; from which UMR to deallocate
+		CRB$L_INTD+VEC$W_MAPREG(r8)
+					;
+	RELMPR				; release the UMRs
+					;
+  	sobgtr	r4, 10$			; anymore operand to unmap?
+
+20$:	popr	#^m<r6, r7, r8>
+	rsb
+
+
+
+	.sbttl	LOAD_ADDRESS, Load an address into command packet
+
+;++
+; LOAD_ADDRESS - Load a translated address into a command packet
+;
+; Functional description:
+;
+;	T.B.S.
+;
+;                +-------------------+
+;                |smb_dest | smb_src |
+;                +-------------------+
+;  CMD$W_OFFSET: |opn 1 off|         |
+;                +---------+---------+
+;                |opn 3 off|opn 2 off|
+;                +-------------------+
+;                |opn n off|   ...   |
+;                +-------------------+
+; CMD$A_ADDRESS: |  opn 1 GP addr    |
+;                +-------------------+
+;                |  opn 2 GP addr    |
+;                +-------------------+
+;                |        ...        |
+;                +-------------------+
+;                |  opn n GP addr    |
+;                +-------------------+
+;		
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+LOAD_ADDRESS:				; Load  address
+
+	pushr	#^m<r6,r7,r8,r9>	; Save registers
+	movl	IRP$L_CMD_BLK(r3),r6	; Get command descriptor block
+	movw	CMD$W_FUNCTION(r6),-	; Save current command
+		UCB$W_VB_COMMAND(r5)
+	movl	CMD$A_CMD(r6),r8	; Get command packet address
+
+;
+; Fix the command opcode for rom based operations
+;
+10$:	bbs	#VB$V_MCVALID,-		; Is the microcode valid?
+		UCB$L_DEVDEPEND(r5),20$ ; Yes - go on
+					; No - check to see if command
+					; can be ROM based command
+	extzv	#IO$V_FCODE,#IO$S_FCODE,- ; Get the function code
+		IRP$W_FUNC(r3),r9
+	addl3	#VB$L_OPCODE,r8,r1	; Setup opcode offset
+					;
+	cmpw	r9,#IO$_MOVEOBJ		; Is this a move object?
+	bneq	12$			; No -- go on
+	movl	#VB$K_OPC_MOVEROM,(r1)	; Yes - setup rom based move opcode
+	brb	20$			;
+12$:	cmpw	r9,#IO$_REPORT		; Is this a report command ?
+	bneq	20$			; No - go on
+	movl	#VB$K_OPC_REPORTROM,(r1) ; Yes - setup rom based command opcode
+;
+; Load the address into the command packet
+;
+20$:	movl	CMD$L_OPERAND(r6),r4	; Get operand index
+	beql	40$			; No operands to map
+30$:	movzwl	CMD$W_OFFSET(r6)[r4],r1	; Get the offset in the command packet
+	beql	40$			; No translated address here - error ***
+	addl3	r1,r8,r1		; Get where to write the address
+	movl	CMD$A_ADDRESS(r6)[r4],(r1) ; write addr in packet
+	decl	r4			; Are we done?
+	bneq	30$			; No -- do next one
+;
+; Now check to see if we have the special case where the source and 
+; destination bitmaps are the same.   SBM_SRC contains the operand 
+; number of the source and SBM_DEST contains the offset into the 
+; command packet.  If SBM_DEST is zero then we don't have the special
+; case.
+;
+40$:	tstw	CMD$W_SBM_DEST(r6)	; Do we have a special case ?
+	beql	50$			; No - done loading addresses
+					;
+	movzwl	CMD$W_SBM_SRC(r6),r4	; source operand index
+	beql	50$			; invalid index ***Error***
+					;
+	movzwl	CMD$W_SBM_DEST(r6),r1	; destination command block offset
+	addl3	R1,R8,R1		; calculate address
+	movl	CMD$A_ADDRESS(r6)[r4],(r1) ; store addr in command block
+					;
+					;
+50$:	popr	#^m<r6,r7,r8,r9>	; Restore registers
+	rsb				; Done
+
+
+	.sbttl	UNMAP_IRP, Unmap IRP and IRPE data buffers
+
+;++
+; UNMAP_IRP - Release Unibus mapping registers for command and data buffers
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	R0,R1, and R2 are destroyed.
+;
+;--
+
+UNMAP_IRP:				; Unmap the IRP and IRPE buffers
+					; if needed
+					;
+	movl	IRP$L_CMD_BLK(r3),r1	;
+	movl	CMD$A_CMD(r1),r1	; address of CMD_PKT
+					;
+	cmpw	#WCP$K_TYPE_PIO, -	; Is the CMD_PKT a PIO or
+		WCP$W_TYPE - WCP$K_HEADER_LENGTH(r1) ; OR Type ?
+	beql	10$			;
+					    ; OR (on request) Type
+	movl	UCB$L_CRB(r5),r2	    ; Unmap CMD_PKT
+	movw	IRP$W_CMD_MAPREG(r3), -	    ; restore UMR info
+		CRB$L_INTD+VEC$W_MAPREG(r2) ;
+	movb	IRP$B_CMD_NUMREG(r3), -     ;
+		CRB$L_INTD+VEC$B_NUMREG(r2) ;
+	RELMPR				    ; release UMRs
+					    ;
+10$:	; Unmap Operands
+	bsbw	UNMAP_IRPE		;
+					;
+					;
+REL_CMDBLK:				; Entry point to release IRP blocks
+	movl	IRP$L_CMD_BLK(r3),r0	;
+	movl	CMD$A_CMD(r0),r0	; address of CMD_PKT
+					;
+	cmpw	#WCP$K_TYPE_PIO, -	; Is the CMD_PKT a PIO or
+		WCP$W_TYPE - WCP$K_HEADER_LENGTH(r0) ; OR Type ?
+	beql	30$			;
+					; OR (on request) Type
+	subl	#WCP$K_HEADER_LENGTH,r0	; Deallocate buffer
+	jsb	g^COM$DRVDEALMEM	;
+	brb	40$			;
+					;
+30$:						; PIO Type
+	subl	#WCP$K_HEADER_LENGTH,r0		; requeue PIO CMD_PKT
+	insque	(r0),@UCB$A_VB_PIO_WCP_BL(r5) 	;
+	decw	UCB$W_VB_PIO_WCP_CIU(r5)	; In Use Counter
+						;
+40$:					; General Cleanup
+	clrl	IRP$L_SVAPTE(r3)	; so VMS will not unlock it
+					;
+	movl	IRP$L_CMD_BLK(r3),r0	; Deallocate CMD_BLK
+	jsb	g^COM$DRVDEALMEM	;
+					;
+	rsb				;
+
+	.sbttl	UNMAP_IRPE, Unmap IRPE data buffers
+
+;++
+; UNMAP_IRPE - Release Unibus mapping registers for data buffers
+;
+; Functional description:
+;
+;	T.B.S.
+;		
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	R0,R1, and R2 are destroyed.
+;
+;--
+
+UNMAP_IRPE:				; Map IRPE buffers
+
+	bbc	#IRP$V_EXTEND,-		; Are there any buffers to unmap?
+		IRP$W_STS(r3),20$
+	movl	IRP$L_EXTEND(r3),r4	; Yes -- get first IRPE
+10$:	movl	UCB$L_CRB(r5),r2	; Get the CRB
+	movw	IRPE$W_MAPREG1(r4),-	; Restore MAPREG
+		CRB$L_INTD+VEC$W_MAPREG(r2)
+	movb	IRPE$B_NUMREG1(r4),-	; Restore NUMREG
+		CRB$L_INTD+VEC$B_NUMREG(r2)
+	RELMPR				; Release the mapping registers
+;	tstw	IRPE$L_BCNT2(r4)	; Is there another buffer?
+  	tstw	IRPE$L_SVAPTE2(r4)	; Is there another buffer?
+	beql	20$			; No -- then done
+	movl	UCB$L_CRB(r5),r2	; Yes -- get the CRB
+	movw	IRPE$W_MAPREG2(r4),-	; Restore MAPREG
+		CRB$L_INTD+VEC$W_MAPREG(r2)
+	movb	IRPE$B_NUMREG2(r4),-	; Restore NUMREG
+		CRB$L_INTD+VEC$B_NUMREG(r2)
+	RELMPR				; Release the mapping registers
+	bbc	#IRPE$V_EXTEND,-	; Any more IRPE's?
+		IRPE$W_STS(r4),20$
+	movl	IRPE$L_EXTEND(r4),r4	; Yes -- get the next IRPE
+	brb	10$			; Map these buffers
+20$:	rsb				; Return
+
+	.sbttl	VB_INTERRUPT, Interrupt service routine
+
+;++
+; VB_INTERRUPT - Analyzes interrupts, processes solicited interrupts
+;
+; Functional description:
+;
+; Inputs:
+;
+;	 0(SP)	- pointer to the address of the IDB (interrupt data
+;		  block)
+;	 4(SP)	- saved R0
+;	 8(SP)	- saved R1
+;	12(SP)	- saved R2
+;	16(SP)	- saved R3
+;	20(SP)	- saved R4
+;	24(SP)	- saved R5
+;	28(SP)	- saved PSL (program status longword)
+;	32(SP)	- saved PC
+;
+;	The IDB contains the CSR address and the UCB address.
+;
+; Outputs:
+;
+;	The routine must preserve all registers except R0-R5.
+;
+;--
+
+VB_INTERRUPT:				; Service device interrupt
+
+	movl	@(sp)+,r4		; Get address of IDB from stack
+	movl	IDB$L_OWNER(r4),r5	; Get address of device owner's UCB
+	movl	IDB$L_CSR(r4),r4	; Get address of device's CSR
+;
+; Get the device specific information from csr's
+;
+ 
+  	;
+  	; Note: we must keep the following order
+	;	in reading the CSRs. Otherwise, the session will not start
+	; 	even if the mouse button is pressed.
+	;
+
+	movw	VB_KRR(r4),-		; Save keyboard character register
+		UCB$W_VB_KEY_REG(r5)
+	movw	VB_PR1(r4),-		; Save packet low address
+		UCB$W_VB_CSR3(r5)
+	movw	VB_PR2(r4),-		; Save packet high address
+		UCB$W_VB_CSR4(r5)
+	movw	VB_CXR(r4),-		; Save x position register
+		UCB$W_VB_XPOS_REG(r5)
+	movw	VB_CYR(r4),-		; Save y position register
+		UCB$W_VB_YPOS_REG(r5)
+	movw	VB_CSR(r4),-		; Save control status register
+		UCB$W_VB_CSR_REG(r5)
+	movw	VB_IRR(r4),-		; Save interrupt reason
+		UCB$W_VB_INT_REASON(r5)
+
+	beql	5$			; Any interrupt reason?
+	clrw	VB_IRR(r4)		; Yes -- clear interrupt reason
+5$:	tstw	UCB$W_VB_CSR_REG(r5)	; Was there a link transition?
+	bgeq	10$			; No -- go on
+	brw	VB_INT_FIBER		; Yes -- service it
+10$:	movw	UCB$W_VB_INT_REASON(r5),r0 ; Get the interrupt reason
+	beql	UNSOL_INTERRUPT		; Unexpected interrupt
+	bgeq	20$			; Was there an error?
+	brw	VB_INT_ERROR		; Yes -- check it
+;
+; Dispatch to interrupt reason specific code
+;
+20$:	clrl	r1			; Interrupt condition index
+	ffs	r1,#16,r0,r1		; Find interrupt condition
+	caseb	r1,#0,#16-1		; Dispatch to handler
+100$:	.word	VB_INT_INIT-100$	;  init
+	.word	VB_INT_DONE-100$	;  send packet
+	.word	VB_INT_START-100$	;  start microcode
+	.word	VB_INT_KEY-100$		;  key character received
+	.word	VB_INT_CURSOR-100$	;  cursor movement received
+	.word	VB_INT_TABMOVE-100$	;  tablet movement received
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	.word	VB_INT_PWRUP-100$	;  powerup complete
+	.word	VB_INT_ABORT-100$	;  abort request  complete
+	.word	VB_INT_STATUS-100$	;  status request complete 
+	.word	VB_INT_DONE-100$	;  save screen complete
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	.word	UNKNOWN_INTERRUPT-100$	;  
+	brb	UNKNOWN_INTERRUPT
+;
+; Restore control to the main driver then exit interrupt
+;
+RESTORE_DRIVER:				; Jump to main driver code
+	bbcc	#UCB$V_INT,-		; Are we expecting this interrupt?
+		UCB$W_STS(r5),-
+		EXIT_INTERRUPT
+					;
+RESTORE_DRIVER_ALT:			;
+					;
+	movw	UCB$W_VB_TEMP_DEVSTS(r5),- ; save Device Status
+		UCB$W_DEVSTS(r5)	;
+	movw	UCB$W_VB_INT_REASON(r5),-  ; save Interrupt Reason
+		UCB$W_VB_CC_REASON(r5)	;
+					;
+	movl	UCB$L_FR3(r5),r3	; Restore driver's R3
+	jsb	@UCB$L_FPC(r5)		; Call driver at interrupt
+
+EXIT_INTERRUPT:
+	popr	#^M<r0,r1,r2,r3,r4,r5>	; Restore R0-R5
+	rei				; Return from interrupt.
+;
+; Dismiss the unsolicited interrupt
+;
+UNSOL_INTERRUPT:			; Dismiss unsolicited interrupt
+	incl	UCB$L_VB_UNSOL(r5)	; Count it
+	movw	#VB$K_ELG_VAX_SPUR,r0	; Set error logging reason
+	bsbw	VB_ERRLOG		; Error log it
+	brb	EXIT_INTERRUPT		; Return from interrupt
+;
+; Dismiss the unknown interrupt
+;
+UNKNOWN_INTERRUPT:			; Dismiss unknown interrupt
+	incl	UCB$L_VB_UNKNOWN(r5)	; Count it
+	movw	#VB$K_ELG_VAX_SPUR,r0	; Set error logging reason
+	bsbw	VB_ERRLOG		; Error log it
+	brb	EXIT_INTERRUPT		; Return from interrupt
+
+	.sbttl	VB_INT_INIT, Init command done
+
+;++
+; VB_INT_INIT - Init command hanler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_INIT:				; Service init done
+
+	bicl	#VB$M_MCVALID,-		; Set microcode invalid
+		UCB$L_DEVDEPEND(r5)
+	movw	VB_PR2(r4),r0		; Get high half of Unibus offset
+	ashl	#16,r0,r0		; Put in high word
+	movw	VB_PR1(r4),r0		; Get low half of Unibus offset
+	movl	r0,UCB$A_VB_UNIBUS(r5)	; Save Unibus offset
+	movw	VB_CXR(r4),UCB$W_VB_ROM(r5) ; Save ROM version number
+					;
+	movzwl	#SS$_NORMAL,r0		; Set command completion code
+					;
+	bbc	#VB$M_CMD_IP,-		; Was there a command in progress ?
+		UCB$L_DEVDEPEND(r5),-	;
+		10$			; No  -- go on
+	movzwl	#SS$_MCNOTVALID,r0	; Yes -- abort it
+					;
+10$:	movw	r0,UCB$W_VB_TEMP_DEVSTS(r5) ; Set completion code
+	brw	RESTORE_DRIVER		; Continue the main driver
+
+	.sbttl	VB_INT_PWRUP, Powerup reset command done
+
+;++
+; VB_INT_PWRUP - Powerup reset command hanler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_PWRUP:				; Service powerup done
+
+	bicl	#VB$M_MCVALID,-		; Set microcode invalid
+		UCB$L_DEVDEPEND(r5)
+					;
+	movzwl	#SS$_NORMAL,r0		; Set command completion code
+					;
+	bbc	#VB$M_CMD_IP,-		; Was there a command in progress ?
+		UCB$L_DEVDEPEND(r5),-	;
+		10$			; No  -- go on
+	movzwl	#SS$_MCNOTVALID,r0	; Yes -- abort it
+					;
+10$:	movw	r0,UCB$W_VB_TEMP_DEVSTS(r5) ; Set completion code
+	brw	RESTORE_DRIVER		; Continue the main driver
+
+	.sbttl	VB_INT_DONE, Command packet done
+
+;++
+; VB_INT_DONE - Command packet done handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_DONE:				; Service command done
+
+	movw	#SS$_NORMAL,-		; Set command completion code
+		UCB$W_VB_TEMP_DEVSTS(r5)
+					;
+	brw	RESTORE_DRIVER		; Continue the main driver
+
+	.sbttl	VB_INT_START, Start command done
+
+;++
+; VB_INT_START - Start microcode command done handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_START:				; Service start function done
+
+	clrw	UCB$W_VB_KB_STATE(r5)	; Clear keyboard state
+	clrw	UCB$W_VB_MOUSE_STATE(r5); Clear mouse buttons state
+	clrw	UCB$W_VB_TABLET_STATE(r5) ; Clear tablet buttons state
+	bisl	#VB$M_MCVALID,-		; Set microcode valid bit
+		UCB$L_DEVDEPEND(r5)
+					;
+	movzwl	#SS$_NORMAL,r0		; Set command completion code
+					;
+	bbc	#VB$M_CMD_IP,-		; Was there a command in progress ?
+		UCB$L_DEVDEPEND(r5),-	;
+		10$			; No  -- go on
+	movzwl	#SS$_MCNOTVALID,r0	; Yes -- abort it
+					;
+10$:	movw	r0,UCB$W_VB_TEMP_DEVSTS(r5) ; Set completion code
+	brw	RESTORE_DRIVER		; Continue the main driver
+
+
+	.sbttl	VB_INT_STATUS, Status Command Handler
+
+;++
+; VB_INT_STATUS - Status command handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_STATUS:
+					;
+	bbc	#VB$V_STATUS_IP,-	; Status Request 
+		UCB$L_DEVDEPEND(r5),-	; In Progress ?
+		10$			; no 
+					; yes
+	movw	UCB$W_VB_XPOS_REG(r5),-	; save Sub-Status
+		UCB$W_VB_SUB_STATUS(r5)	;
+					;
+	movw	UCB$W_VB_YPOS_REG(r5),-	; save Progress Value
+		UCB$W_VB_SPRGU(r5)	;
+					;
+	movw	#SS$_TIMEOUT,-		; set completion
+		UCB$W_VB_TEMP_DEVSTS(r5); status
+					;
+	brw	RESTORE_DRIVER_ALT	;
+					;
+10$:	brw	EXIT_INTERRUPT		;
+					;
+
+	.sbttl	VB_INT_ABORT,  Abort Command Handler
+
+;++
+; VB_INT_ABORT - Abort command handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_ABORT:
+					;
+	bbc	#VB$V_ABORT_IP,-	; Abort Request 
+		UCB$L_DEVDEPEND(r5),-	; In Progress ?
+		10$			; no 
+					; yes
+	movw	UCB$W_VB_XPOS_REG(r5),-	; save Sub-Status
+		UCB$W_VB_SUB_STATUS(r5)	;
+					;
+  	cmpw	#VB$K_CCS_SUCCESS, -	; abort succeed?
+		UCB$W_VB_SUB_STATUS(r5) ;
+					;
+	beql	5$			; yes
+					; no ...
+	cmpw	#VB$K_CCS_FAILURE, -	;  abort fail?
+		UCB$W_VB_SUB_STATUS(r5)	;
+					;
+	beql	5$			; yes
+					; no ...
+	incw	UCB$W_VB_ABORT_WHAT_CNT(r5)	
+  					;  count how many times we get 
+					;  abort_what and other garbage status
+	brw	10$			;  dismiss the interrupt
+					;
+5$:	movw	#SS$_TIMEOUT,-		; set completion
+		UCB$W_VB_TEMP_DEVSTS(r5); status
+					;
+	brw	RESTORE_DRIVER		; done with interrupt
+					;
+10$:	brw	EXIT_INTERRUPT		;
+					;
+
+	.sbttl	VB_INT_KEY, Receive character interrupt
+
+;++
+; VB_INT_KEY - Receive character handler
+;
+; Functional description:
+;
+;	This routine is entered when a button is pressed on the keyboard,
+;	mouse, or table. This routine takes the device code and dispatches
+;	to the correct handler.
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_KEY:				; Service Receive character
+
+;
+; Now, someone has hit a key/button, check if the screen was being saved
+; If Yes, deliver the AST to the high level software so it knows that
+; the VS100 is reactivated.
+;
+  	bsbw	CHECK_SCREEN
+
+	extzv	#VB$V_KRR_DEV,-		; Get device code
+		#VB$S_KRR_DEV,-
+		UCB$W_VB_KEY_REG(r5),r0
+	caseb	r0,#0,#16-1		; Dispatch to handler
+10$:	.word	VB_INT_NODEV-10$	;  no device
+	.word	VB_INT_MOUSE-10$	;  mouse button
+	.word	VB_INT_KEYBOARD-10$	;  keyboard character
+	.word	VB_INT_TABLET-10$	;  tablet button
+	.word	VB_INT_NODEV-10$	;  aux device
+	.word	VB_INT_NODEV-10$	;  console
+	.word	VB_INT_NODEV-10$	;  reserved 1
+	.word	VB_INT_NODEV-10$	;  reserved 2
+	.word	VB_INT_NODEV-10$	;  reserved 3
+	.word	VB_INT_NODEV-10$	;  reserved 4
+	.word	VB_INT_NODEV-10$	;  reserved 5
+	.word	VB_INT_NODEV-10$	;  reserved 6
+	.word	VB_INT_NODEV-10$	;  reserved 7
+	.word	VB_INT_NODEV-10$	;  reserved 8
+	.word	VB_INT_NODEV-10$	;  reserved 9
+	.word	VB_INT_NODEV-10$	;  reserved 10
+
+VB_INT_NODEV:				; Unknown device code
+	brw	UNKNOWN_INTERRUPT	; Exit
+
+	.sbttl	VB_INT_KEYBOARD, Receive character interrupt
+
+;++
+; VB_INT_KEYBOARD - Receive character handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_KEYBOARD:			; Service receive keyboard character
+
+	tstl	UCB$A_VB_KB_BUFFER(r5)	; Is there a keyboard buffer?
+	bneq	5$			; Yes -- go on
+	brw	EXIT_INTERRUPT		; No -- done
+;
+; Save current key state of capital lock, shift, control, and symbol. This
+; state will be set into the upper byte of a word with the character code
+; in the lower byte. Capital lock is slightly special in that an up transition
+; does not clear its state but a second down transition will.
+;
+5$:	clrl	r0			; Clear out r0
+	bicw	#^c<VB$M_CHAR_CODE!VB$M_CHAR_TRAN>,- ; Clear out upper bits
+		UCB$W_VB_KEY_REG(r5)
+	cmpb	UCB$W_VB_KEY_REG(r5),-	; Is character a capital lock?
+		#VB$K_CHAR_CAPS
+	bneq	10$			; No -- go on
+	bitw	#VB$M_CHAR_TRAN,-	; Yes -- is it an up transition?
+		UCB$W_VB_KEY_REG(r5)
+	beql	45$			; Yes -- done processing
+	movw	#VB$M_CHAR_CAPS,r0	; No -- set its bit
+	bitw	r0,UCB$W_VB_KB_STATE(r5); Is it already on?
+	beql	40$			; No -- do common stuff
+	bicw	#VB$M_CHAR_TRAN,-	; Yes -- change character to an up
+		UCB$W_VB_KEY_REG(r5)
+	brb	40$			; Do common code
+10$:	cmpb	UCB$W_VB_KEY_REG(r5),-	; Is character a shift?
+		#VB$K_CHAR_SHFT
+	bneq	20$			; No -- go on
+	movw	#VB$M_CHAR_SHFT,r0	; Yes -- set its bit
+	brb	40$			; Do common code
+20$:	cmpb	UCB$W_VB_KEY_REG(r5),-	; Is character a control?
+		#VB$K_CHAR_CNTL
+	bneq	30$			; No -- go on
+	movw	#VB$M_CHAR_CNTL,r0	; Yes -- set its bit
+	brb	40$			; Do common code
+30$:	cmpb	UCB$W_VB_KEY_REG(r5),-	; Is character a symbol?
+		#VB$K_CHAR_SYM
+	bneq	60$			; No -- go on
+	movw	#VB$M_CHAR_SYM,r0	; Yes -- set its bit
+40$:	bitw	#VB$M_CHAR_TRAN,-	; Is it an up transition?
+		UCB$W_VB_KEY_REG(r5)
+	bneq	50$			; No -- then set state
+	bicw	r0,UCB$W_VB_KB_STATE(r5); Yes -- then clear state
+45$:	brw	EXIT_INTERRUPT		; Continue the system
+50$:	bisw	r0,UCB$W_VB_KB_STATE(r5);
+	brw	EXIT_INTERRUPT		; Continue the system
+;
+; Place the character into the keyboard ring buffer.
+;
+60$:	bisw	UCB$W_VB_KB_STATE(r5),-	; Set in state
+		UCB$W_VB_KEY_REG(r5)
+	movl	UCB$A_VB_KB_BUFFER(r5),r0 ; Get keyboard buffer
+	movzwl	VB$W_KB_TAIL(r0),r1	; Get tail pointer
+	incl	r1			; Point to next free slot
+	cmpw	r1,UCB$W_VB_KB_SIZE(r5)	; Is it past the end of the buffer?
+	blss	70$			; No -- go on
+	clrl	r1			; Yes -- reset tail pointer
+70$:	cmpw	r1,VB$W_KB_HEAD(r0)	; Is the buffer full?
+	bneq	80$			; No -- go on to save character
+	movw	VB$W_KB_TAIL(r0),r1	; Yes -- backup the tail to save character at buffer end
+80$:	movw	UCB$W_VB_KEY_REG(r5),-	; Save character
+		VB$W_KB_BUFF(r0)[r1]
+	movw	r1,VB$W_KB_TAIL(r0)	; Update tail pointer
+
+;
+; See if there is a system routine to be called
+;
+	tstl	UCB$A_VB_KB_SYSRTN(r5)	; Is there a system routine
+	beql 	85$			; No -- go on to check wake AST
+	jsb	@UCB$A_VB_KB_SYSRTN(r5)	; Yes -- go execute that routine
+  	brw	100$			; When done, go check KB full AST
+;
+; See if there is a wake ast and if wake threshold(in number of characters)
+; satisfied.
+;
+85$:	tstl	UCB$A_VB_KB_WAKE_AST(r5); Is there a wake ast?
+	beql	100$			; No -- go on
+	movw	VB$W_KB_HEAD(r0),r3	; Yes -- get head pointer
+;
+; Calculate the number of characters in the ring buffer
+;
+	cmpw	r3,r1			; Is the head after the tail?
+	blss	90$			; No -- go on
+	addw2	UCB$W_VB_KB_SIZE(r5),r1	; Yes -- correct for it
+90$:	subw3	r3,r1,r3		; Find number of characters in the buffer
+	cmpw	r3,UCB$W_VB_KB_WAKE_THRESH(r5) ; Enough characters?
+	blss	100$			; No -- go on
+	moval	UCB$A_VB_KB_WAKE_AST(r5),r4 ; Yes -- inform owner
+	jsb	g^COM$DELATTNAST	; Do ast
+;
+; See if there is a full ast and if buffer full threshold (in number of
+; remaining buffer slots) satisfied.
+;
+100$:	tstl	UCB$A_VB_KB_FULL_AST(r5); Is there a buffer full ast?
+	beql	120$			; No -- done
+	movw	VB$W_KB_HEAD(r0),r3	; Yes -- get head pointer
+;
+; Calculate the number of remaining slots in the ring buffer
+;
+	cmpw	r3,r1			; Is the head after the tail?
+	bgtr	110$			; Yes -- go on
+	addw2	UCB$W_VB_KB_SIZE(r5),r3	; No -- correct for it
+110$:	subw3	r1,r3,r3		; Find the number of remaining slots
+	decw	r3			; Fix off by one
+	cmpw	r3,UCB$W_VB_KB_FULL_THRESH(r5) ; Full past threshold?
+	bgtr	120$			; No -- done
+	moval	UCB$A_VB_KB_FULL_AST(r5),r4 ; Yes -- inform owner
+	jsb	g^COM$DELATTNAST	; Do ast
+120$:	brw	EXIT_INTERRUPT		; Continue the system
+
+	.sbttl	VB_INT_MOUSE, Receive mouse button interrupt
+
+;++
+; VB_INT_MOUSE - Receive mouse button handler
+;
+; Functional description:
+;
+;	This routine executes when a mouse button has been pressed
+;	or released. It performs the following functions:
+;
+;		1. Save mouse button state
+;		2. See if this an idle loop button pressing
+;		3. Search mouse button ast list for matching button mask
+;		4. Create list of ACB's with matching masks
+;		5. Scan list of ACBs and check action flags
+;		6. Queue ast's to user
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_MOUSE:				; Service receive mouse button
+					;
+	movw	UCB$W_VB_XPOS_REG(r5),-	; Save cursor x position
+		UCB$W_VB_MOUSE_X(r5)	;
+	movw	UCB$W_VB_YPOS_REG(r5),-	; Save cursor y position
+		UCB$W_VB_MOUSE_Y(r5)	;
+					;
+;
+; Convert the button number to a mask save in current button state mask.
+; Set bits denote down buttons while clear bits denote up buttons.
+;
+	clrl	r1			; Button mask
+	movzwl	UCB$W_VB_KEY_REG(r5),r0	; Get button state
+	bicl	#^c^x0f,r0		; Get button number
+	bbss	r0,r1,10$		; Convert button number to mask
+10$:	bitw	#VB$M_KRR_TRAN,-	; Up or down transition?
+		UCB$W_VB_KEY_REG(r5)
+	bneq	20$			; Down -- go on
+	addl2	#16,r0			; Up -- point to 2nd word
+	bicw	r1,UCB$W_VB_MOUSE_STATE(r5) ; Clear button state
+	brb	30$			; Go on
+20$:	bisw	r1,UCB$W_VB_MOUSE_STATE(r5) ; Set button state
+;
+; Convert the button number into a mask.
+;
+30$:	clrl	r1			; Button mask
+	bbss	r0,r1,40$		; Convert button number to mask
+;
+; If the microcode is invalid then the device is executing out of rom,
+; a button interrupt in this state means a user has requested access
+; to the device. If there is an exit idle loop ast defined send it.
+;
+40$:	bbc	#VB$V_MCVALID,-		; Is microcode invalid?
+		UCB$L_DEVDEPEND(r5),-
+		90$
+;
+; The microcode is valid so search the ACB list for a matching button mask.
+;
+	moval	UCB$A_VB_MOUSE_BUTTON(r5),r2 ; Yes -- get list head
+	moval	UCB$A_VB_MOUSE_LIST(r5),r4 ; Get mouse ast list address
+	clrl	(r4)			; Empty list
+45$:	movl	r2,r0			; Get previous pointer
+	movl	(r2),r2			; Is there an ACB?
+	beql	60$			; No -- done
+46$:	bitl	r1,ACB$L_MASK(r2)	; Is this one it?
+	beql	45$			; No -- go to next
+50$:	movl	r2,(r4)			; Yes -- link ACB in list
+	movl	r2,r4			; Update end pointer
+	movl	(r2),(r0)		; Dequeue ACB
+	movl	(r2),r2			; Get next ACB
+	clrl	(r4)			; End list
+	tstw	r2			; List empty?
+	bneq	46$			; No -- check it
+					;
+;
+; Scan list of ASTs to be deliveried and check
+; action flag to see what should be returned.
+;
+60$:	moval	UCB$A_VB_MOUSE_LIST(r5),- ;  
+		r4			;
+					;
+65$:	movl	(r4),r4			; get next block
+	beql	75$			; end of list ?
+					; 
+	movl	ACB$L_FLAG(r4),r0	; no - check action flag
+	beql	65$			; no action - default
+					; return AST param.
+					;
+	bbc	#ACB_FLAG$V_RETBUT,-	; return button state ?
+		r0,70$			;
+	movw	UCB$W_VB_KEY_REG(r5),-	; yes
+		ACB$L_TASTPRM(r4)	;
+	movw	UCB$W_VB_MOUSE_STATE(r5),- ;
+		ACB$L_TASTPRM+2(r4)	;
+	brb	65$			;
+					;
+70$:	bbc	#ACB_FLAG$V_RETPOS,-	; return position ?
+		r0,65$			;
+	movl	UCB$W_VB_MOUSE_X(r5),-	; yes
+		ACB$L_TASTPRM(r4)	;
+	brb	65$			;
+					;
+	assume	UCB$W_VB_MOUSE_X+2 eq UCB$W_VB_MOUSE_Y
+					;
+;
+; Queue all the ast's to the user.
+;
+75$:	moval	UCB$A_VB_MOUSE_LIST(r5),r4 ; Get mouse ast list address
+	beql	85$			; No matches in list
+
+80$:	jsb	g^COM$DELATTNAST	; Go do them
+85$:	brw	EXIT_INTERRUPT		; Continue the system
+;
+; The microcode is invalid so check for exit idle loop ast.
+;
+90$:	tstl	UCB$A_VB_EXIT_IDLE(r5)	; Is there an exit idle loop ast?
+	beql	85$			; No -- done
+	moval	UCB$A_VB_EXIT_IDLE(r5),r4 ; Set ast pointer
+	brb	80$			; Go queue ast
+
+	.sbttl	VB_INT_TABLET, Receive tablet button interrupt
+
+;++
+; VB_INT_TABLET - Receive tablet button handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_TABLET:				; Service receive tablet button
+					;
+	movw	UCB$W_VB_XPOS_REG(r5),-	; Save tablet x position
+		UCB$W_VB_TABLET_X(r5)	;
+	movw	UCB$W_VB_YPOS_REG(r5),-	; Save tablet y position
+		UCB$W_VB_TABLET_Y(r5)	;
+					;
+;
+; Convert the button number to a mask save in current button state mask.
+; Set bits denote down buttons while clear bits denote up buttons.
+;
+	clrl	r1			; Button mask
+	movzwl	UCB$W_VB_KEY_REG(r5),r0	; Get button state
+	bicl	#^c^x0f,r0		; Get button number
+	bbss	r0,r1,10$		; Convert button number to mask
+10$:	bitw	#VB$M_KRR_TRAN,-	; Up or down transition?
+		UCB$W_VB_KEY_REG(r5)
+	bneq	20$			; Down -- go on
+	addl2	#16,r0			; Up -- point to 2nd word
+	bicw	r1,UCB$W_VB_TABLET_STATE(r5) ; Clear button state
+	brb	30$			; Go on
+20$:	bisw	r1,UCB$W_VB_TABLET_STATE(r5) ; Set button state
+;
+; Convert the button number into a mask.
+;
+30$:	clrl	r1			; Button mask
+	bbss	r0,r1,40$		; Convert button number to mask
+;
+; Search the ACB list for a matching button mask.
+;
+40$:	moval	UCB$A_VB_TABLET_BUTTON(r5),r2 ; Yes -- get list head
+	moval	UCB$A_VB_TABLET_LIST(r5),r4 ; Get tablet ast list address
+	clrl	(r4)			; Empty list
+45$:	movl	r2,r0			; Get previous pointer
+	movl	(r2),r2			; Is there an ACB?
+	beql	60$			; No -- done
+46$:	bitl	r1,ACB$L_MASK(r2)	; Is this one it?
+	beql	45$			; No -- go to next
+50$:	movl	r2,(r4)			; Yes -- link ACB in list
+	movl	r2,r4			; Update end pointer
+	movl	(r2),(r0)		; Dequeue ACB
+	movl	(r2),r2			; Get next ACB
+	clrl	(r4)			; End list
+	tstw	r2			; List empty?
+	bneq	46$			; No -- check it
+					;
+;
+; Scan list of ASTs to be deliveried and check
+; action flag to see what should be returned.
+;
+60$:	moval	UCB$A_VB_TABLET_LIST(r5),- ;  
+		r4			;
+					;
+65$:	movl	(r4),r4			; get next block
+	beql	75$			; end of list ?
+					; 
+	movl	ACB$L_FLAG(r4),r0	; no - check action flag
+	beql	65$			; no action - default
+					; return AST param.
+					;
+	bbc	#ACB_FLAG$V_RETBUT,-	; return button state ?
+		r0,70$			;
+	movw	UCB$W_VB_KEY_REG(r5),-	; yes
+		ACB$L_TASTPRM(r4)	;
+	movw	UCB$W_VB_TABLET_STATE(r5),- ;
+		ACB$L_TASTPRM+2(r4)	;
+	brb	65$			;
+					;
+70$:	bbc	#ACB_FLAG$V_RETPOS,-	; return position ?
+		r0,65$			;
+	movl	UCB$W_VB_TABLET_X(r5),-	; yes
+		ACB$L_TASTPRM(r4)	;
+	brb	65$			;
+					;
+	assume	UCB$W_VB_TABLET_X+2 eq UCB$W_VB_TABLET_Y
+					;
+;
+; Queue all the ast's to the user.
+;
+75$:	moval	UCB$A_VB_TABLET_LIST(r5),r4 ; Get mouse ast list address
+	beql	80$			; No matches in list
+	jsb	g^COM$DELATTNAST	; Go do them
+80$:	brw	EXIT_INTERRUPT		; Continue the system
+
+	.sbttl	VB_INT_CURSOR,  Receive mouse movement interrupt
+
+;++
+; VB_INT_CURSOR - Receive mouse movement handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_CURSOR:				; Service  movement interrupt
+;
+; Now someone has moved the mouse, check if the screen was being saved
+; If Yes, deliver the AST to the high level software so it knows that
+; the VS100 is reactivated.
+;
+  	bsbw	CHECK_SCREEN
+					;
+	movw	UCB$W_VB_XPOS_REG(r5),-	; Save cursor x position
+		UCB$W_VB_MOUSE_X(r5)	;
+	movw	UCB$W_VB_YPOS_REG(r5),-	; Save cursor y position
+		UCB$W_VB_MOUSE_Y(r5)	;
+					;
+	movl	UCB$A_VB_MOUSE_MOVE(R5),R2 ; Scan list of outstanding
+					;    ASTs and see if we need to
+					;    fill in the position.
+					; Are there any outstanding ASTs ?
+	beql	30$			; No - done
+					; Yes - check list
+					;
+;
+; Scan list of ASTs to be deliveried and check
+; the action flag.
+;
+10$:	movl	ACB$L_FLAG(r2),r0	; check action flag
+	beql	20$			; eql - default -
+					; return AST param.
+					;
+	bbc	#ACB_FLAG$V_RETPOS,-	; return position ?
+		r0,15$			;
+	movl	UCB$W_VB_MOUSE_X(r5),-	; yes
+		ACB$L_TASTPRM(r2)	;
+	brb	20$			;
+					;
+	assume	UCB$W_VB_MOUSE_X+2 eq UCB$W_VB_MOUSE_Y
+					;
+15$:	bbc	#ACB_FLAG$V_RETBUT,-	; return button
+		r0,20$			; state ?
+	clrw	ACB$L_TASTPRM(r2)	; no button event
+	movw	UCB$W_VB_MOUSE_STATE(r5),- ; to report,
+		ACB$L_TASTPRM+2(r2)	; only state
+					;
+					;
+20$:	movl	(R2),R2			; Another in the list ?
+	bneq	10$			; Yes- 	
+					; No 
+					;
+	moval	UCB$A_VB_MOUSE_MOVE(r5),r4 ; Yes -- get address
+	jsb	g^COM$DELATTNAST	; Queue it
+30$:	brw	EXIT_INTERRUPT		; Continue the system
+
+	.sbttl	VB_INT_TABMOVE, Receive tablet movement interrupt
+
+;++
+; VB_INT_TABMOVE - Receive tablet movement handler
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_TABMOVE:				; Service tablet movement
+					;
+;
+; Now someone has moved the tablet. Check if the screen was being saved
+; If Yes, deliver the AST to the high level software so it knows that
+; the VS100 in reactivated.
+;
+  	bsbw	CHECK_SCREEN
+
+	movw	UCB$W_VB_XPOS_REG(r5),-	; Save tablet x position
+		UCB$W_VB_TABLET_X(r5)	;
+	movw	UCB$W_VB_YPOS_REG(r5),-	; Save tablet y position
+		UCB$W_VB_TABLET_Y(r5)	;
+					;
+					;
+	movl	UCB$A_VB_TABLET_MOVE(R5),R2 ; Scan list of outstanding
+					;    ASTs and see if we need to
+					;    fill in the position.
+					; Are there any outstanding ASTs ?
+	beql	30$			; No - done
+					; Yes - check list
+					;
+;
+; Scan list of ASTs to be deliveried and check
+; the action flag.
+;
+10$:	movl	ACB$L_FLAG(r2),r0	; check action flag
+	beql	20$			; eql - default -
+					; return AST param.
+					;
+	bbc	#ACB_FLAG$V_RETPOS,-	; return position ?
+		r0,15$			;
+	movl	UCB$W_VB_TABLET_X(r5),-	; yes
+		ACB$L_TASTPRM(r2)	;
+	brb	20$			;
+					;
+	assume	UCB$W_VB_TABLET_X+2 eq UCB$W_VB_TABLET_Y
+					;
+15$:	bbc	#ACB_FLAG$V_RETBUT,-	; return button
+		r0,20$			; state ?
+	clrw	ACB$L_TASTPRM(r2)	; no button event
+	movw	UCB$W_VB_TABLET_STATE(r5),- ; to report,
+		ACB$L_TASTPRM+2(r2)	; only state
+					;
+20$:	movl	(R2),R2			; Another in the list ?
+	bneq	10$			; Yes- 	
+					; No 
+					;
+	moval	UCB$A_VB_TABLET_MOVE(r5),r4 ; Yes -- get address
+	jsb	g^COM$DELATTNAST	; Queue it
+30$:	brw	EXIT_INTERRUPT		; Continue the system
+
+  	.sbttl CHECK_SCREEN, check if a save screen AST exists
+;++
+; CHECK_SCREEN - check if a save screen AST exists
+;
+; Functional description:
+;
+;	This routine checks if a save screen AST exists
+;	
+;	If yes, it means the screen was in save state, so deliver the AST to
+;	let the high level software know that the screen is being reactivated.
+;
+;	If no, it means either the screen is active or the high level software
+;	did not specify an AST address, so return.
+;
+; Inputs:
+;
+;	r5 - UCB address
+;
+; Outputs:
+;
+;	UCB$A_VB_SAVE_SCREEN_AST will be cleared by COM$DELATTNAST
+;
+;--
+CHECK_SCREEN:
+
+  	tstl	UCB$A_VB_SAVE_SCREEN_AST(r5)	; Is there a save screen AST
+  	beql	10$				; No, return
+  	moval	UCB$A_VB_SAVE_SCREEN_AST(r5), - ;
+  		r4				; get AST list header address
+  	jsb	g^COM$DELATTNAST		; deliver the AST
+10$:	rsb
+
+
+	.sbttl	VB_INT_ERROR, Error handler
+
+;++
+; VB_INT_ERROR - Analyzes device errors
+;
+; Functional description:
+;
+; Inputs:
+;
+; Outputs:
+;
+;--
+
+VB_INT_ERROR:				; Service device errors
+
+10$:	movw	UCB$W_VB_INT_REASON(r5), r0 ; Get error code
+
+;
+; Is this a WGA hardware error?
+;
+  	cmpw	r0, #VB$K_ELG_WGA_ERR_NYI ; Is error code less than the 
+  		   			  ; smallest WGA hardware error code?
+  	blssu	40$			  ; Yes -- something is very wrong
+  	cmpw	r0, #VB$K_ELG_WGA_ERR_TFE ; No -- Is this a WGA hardware error?
+  	bgtru	20$			  ; No -- go see if it's a powerup error
+  	movw	#VB$K_ELG_WGA_HW, r0	  ; Yes -- set error log reason
+  	bsbw	VB_ERRLOG		  ; log it
+  	cmpw	UCB$W_VB_INT_REASON(r5), -
+  		#VB$K_ELG_WGA_ERR_BNI	  ; Does this error terminate command?
+  	blssu	30$			  ; Yes -- go cleaning up
+  	brw	EXIT_INTERRUPT		  ; No -- dismiss the interrupt
+;
+; Is this a WGA Powerup Error?
+;
+20$:	cmpw	r0, #VB$K_ELG_WGA_ERR_REG ; Is the error code less than the 
+  			   		   ; smallest WGA powerup error code?
+  	blssu	30$			   ; Yes -- must be an software error
+        cmpw	r0, #VB$K_ELG_WGA_ERR_RLB  ; No --  Is it a powerup error?
+  	bgtru	30$			   ; No -- must be an software error
+  	movw	#VB$K_ELG_WGA_POWERUP, r0  ; Yes -- set error log reason
+  	bsbw	VB_ERRLOG		   ; error log it
+30$:	movw	#SS$_ABORT,-		   ; Set command completion code
+		UCB$W_VB_TEMP_DEVSTS(r5)   ;
+	brw	RESTORE_DRIVER		   ; Continue the main driver
+40$:	BUG_CHECK INCONSTATE,FATAL	; something inconsistant happened
+
+
+	.sbttl	VB_INT_FIBER, Fiber optics handler
+
+;++
+; VB_INT_FIBER - Analyzes fiber optic link transitions
+;
+; Functional description:
+;
+;	This routine will handle link transtion interrupts. The transitions
+;	occur for two reasons, the first is link errors and the second is
+;	link available transitions. In the case of link errors an error
+;	count is kept, for link available the state of the link is saved,
+;	ast's are delivered, and any command in progress is resumed. In
+;	both cases the link transition bit is cleared. After the LT bit is
+;	cleared this routine loops till it actually does clear. Note: LE bit 
+;	gets cleared by the hardware when the LT bit is cleared (ie. clearing
+;	the LT bit implicitly clears the LE bit). The following
+;	is a flow chart of this routine:
+;
+;    clear restore flag
+;    clear loop count
+;    loop:
+;        increment loop count
+;        loop count exceeded? y-> deliver AST
+;                                 restore flag? y-> exit via RESTORE_DRIVER
+;                                               n-> exit via EXIT_INTERRUPT
+;        LT? n-> restore flag? y-> exit via RESTORE_DRIVER
+;            |                 n-> exit via EXIT_INTERRUPT
+;            y-> LE? y-> count error, clear LT
+;                check LA
+;                 |
+;                 +-> no change-> go to loop
+;                 |               
+;                 |
+;                 +-> off to on-> expected? y-> set restore flag
+;                 |                         n-> deliver AST
+;                 |               go to loop
+;                 |               
+;                 |
+;                 +-> on to off-> expected? y-> set restore flag
+;                                           n-> deliver AST
+;                                               command? y-> set restore flag
+;                                 go to loop
+;
+; Inputs:
+;
+;	R4	- address of the CSR (controller status register)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	UCB$L_VB_LINK_ERROR incremented if link error
+;	UCB$W_VB_TEMP_DEVSTS set to SS$_MCNOTVALID if command in progress
+;	UCB$L_VB_FLASH incremented if no change in link
+;	UCB$L_VB_LIGHT_ON incremented if link on
+;	UCB$L_VB_LIGHT_OFF incremented if link off
+;	VB$M_LINK_AVAIL in UCB$L_DEVDEPEND set to current link available state
+;	VB$M_CSR_LINK_TRANS in VB_CSR cleared
+;	UCB$A_VB_LINK_AST cleared if AST delivered
+;	r0,r1,r2 destroyed
+;--
+
+VB_INT_FIBER:				; Service fiber transitions
+
+	clrl	r1			; Exit path flag
+	clrl	r2			; Loop count
+;
+; Loop processing the LT bit here while it is set
+;
+CHECK_LT:
+	incl	r2			; Increment loop count
+	cmpl	r2,#100			; Are we past threshold?
+	bleq	10$			; No -- go on to check LT
+	bsbw	DELIVER_LINK_AST	; Yes -- inform controlling process
+	brb	20$			; Go on to exit interrupt
+10$:	bitw	#VB$M_CSR_LINK_TRANS,-	; Is the LT bit clear?
+		VB_CSR(r4)
+	bneq	40$			; No -- go on to process transition
+20$:	tstl	r1			; Yes -- check exit path flag
+	bneq	30$			; Determine routine exit path
+	brw	EXIT_INTERRUPT		; Exit via default path
+30$:	brw	RESTORE_DRIVER		; Exit via RESTORE_DRIVER
+;
+; There was a link transtion, process it
+;
+40$:	bitw	#VB$M_CSR_LINK_ERR,-	; Was there a link error?
+		VB_CSR(r4)
+	beql	50$			; No -- go on to LA processing
+	incl	UCB$L_VB_LINK_ERROR(r5)	; Yes -- count link error
+	movw	#VB$K_ELG_LINK_ERR,r0	; set error logging reason
+	bsbw	VB_ERRLOG		; Error log it
+50$:	bicw	#VB$M_CSR_LINK_TRANS, - ; Clear LT bit. LE is also cleared by
+  		VB_CSR(r4)		; the hardware.
+        bsbw	CHECK_LA		; Check the link available state
+	tstl	r0			; Did the LA state change?
+  	beql	CHECK_LT		; No -- go to loop
+	cmpl	r0,#1			; Yes -- was it from off to on
+	bneq	80$			; No -- go on to process on to off
+;
+; -- The link transitioned from off to on --
+;
+	bitl	#VB$M_TRANS_EXP,-	; Expecting a link transition?
+		UCB$L_DEVDEPEND(r5)
+	bneq	60$			; Yes -- go on to set restore flag
+	bsbw	DELIVER_LINK_AST	; No -- inform controlling process
+	brb	70$			; Go on to clear LT
+60$:	incl	r1			; Set restore flag
+70$:	brw	CHECK_LT		; Go to CHECK_LT
+;
+; -- The link transitioned from on to off --
+;
+80$:	bitl	#VB$M_TRANS_EXP,-	; Expecting a link transition?
+		UCB$L_DEVDEPEND(r5)
+	bneq	60$			; Yes -- go on to set restore flag
+	bsbw	DELIVER_LINK_AST	; No -- inform controlling process
+					;
+	bbc	#VB$M_CMD_IP,-		; Was there a command in progress ?
+		UCB$L_DEVDEPEND(r5),-	;
+		70$			; No - go on to CHECK_LT
+	movw	#SS$_MCNOTVALID,-	; Yes -- set completion status
+		UCB$W_VB_TEMP_DEVSTS(r5);
+	brb	60$			; Go on to set restore flag
+
+	.sbttl	CHECK_LA, Link state determination routine
+
+;++
+; CHECK_LA - Determines link available transition state
+;
+; Functional description:
+;
+;	This routine will compare the current link state with that of
+;	the previous state and return a flag of the result. Also
+;	it saves the current state for later use. The following is a
+;	flowchart of this routine:
+;
+;    LA? y-> was LA? y-> count flash; return no change flag
+;        |           n-> set link available; return off to on flag
+;        |
+;        n-> was LA? y-> set link unavailable; return on to off flag
+;                    n-> count flash; return no change flag
+;
+; Inputs:
+;
+;	R4	- address of the CSR (controller status register)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	R0	- link transition state (0=no change,1=off to on,2=on to off)
+;	UCB$L_VB_FLASH incremented if no change in link
+;	UCB$L_VB_LIGHT_ON incremented if link on
+;	UCB$L_VB_LIGHT_OFF incremented if link off
+;	VB$M_LINK_AVAIL in UCB$L_DEVDEPEND set to current link available state
+;
+;--
+
+CHECK_LA:				; Determine the link state change
+
+;
+; Find the current state of the link
+;
+
+;	bitw	#VB$M_CSR_LINK_AVAIL,-	; Is the link available?
+;		VB_CSR(r4)
+
+	bitw	#VB$M_CSR_LINK_AVAIL,-	; Is the link available?
+		UCB$W_VB_CSR_REG(r5)
+	beql	30$			; No -- go on to link unavailable
+;
+; -- The link is currently available --
+;
+	bitl	#VB$M_LINK_AVAIL,-	; Yes -- was the link available?
+		UCB$L_DEVDEPEND(r5)
+	beql	20$			; No -- go on to link from off to on
+;
+; The link flashed, it either went from on to off to on or 
+; from off to on to off.
+;
+10$:	incl	UCB$L_VB_FLASH(r5)	; Yes -- count link flashes
+	clrl	r0			; Set link nochange flag
+	rsb				; Return to caller
+;
+; The link went from off to on
+;
+20$:	bisw	#VB$M_LINK_AVAIL,-	; Set link available state
+		UCB$L_DEVDEPEND(r5)
+	incl	UCB$L_VB_LIGHT_ON(r5)	; Count the occurrance
+	bisw	#UCB$M_ONLINE, -	; Set unit online
+		UCB$W_STS(r5)
+	movl	#1,r0			; Set link on flag
+	rsb				; Return to caller
+;
+; -- The link is currently unavailable --
+;
+30$:	bitl	#VB$M_LINK_AVAIL,-	; Was the link available?
+		UCB$L_DEVDEPEND(r5)
+	beql	10$			; No -- go on to flash handler
+;
+; The link went from on to off
+;
+	bicw	#VB$M_LINK_AVAIL,-	; Yes -- set link available state
+		UCB$L_DEVDEPEND(r5)
+	incl	UCB$L_VB_LIGHT_OFF(r5)	; Count the occurrance
+	movl	#2,r0			; Set link on flag
+	rsb				; Return to caller
+
+	.sbttl	CLEAR_LT, Link transtion clearer
+
+;++
+;
+; CLEAR_LT - Determines link error status and clears link transition
+;
+; Functional description:
+;
+;	This routine will clear the link transition bit in the device
+;	CSR. First it will check to see if there a link error occurred
+;	during the link available transition processing, if so the error
+;	is counted. The following is a flowchart of this routine:
+;
+;
+;    LE? y-> count error
+;    clear LT
+;    goto CHECK_LT
+;
+; Inputs:
+;
+;	R4	- address of the CSR (controller status register)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	USB$L_VB_LINK_ERROR incremented if there was an error
+;	VB$M_CSR_LINK_TRANS in VB_CSR cleared
+;
+;--
+
+CLEAR_LT:				; Clear link transition bit
+
+;
+; See if there was a link error during link transition processing, if
+; so then count it.
+;
+	bitw	#VB$M_CSR_LINK_ERR,-	; Was there a link error?
+		VB_CSR(r4)
+	beql	10$			; No -- go on to clear LT
+	incl	UCB$L_VB_LINK_ERROR(r5)	; Yes -- count link error
+;
+; Clear the link transtion bit and go back to check that it really cleared.
+;
+10$:	bicw	#VB$M_CSR_LINK_TRANS,-	; Clear the LT bit
+		VB_CSR(r4)
+	brw	CHECK_LT		; Go make sure it cleared
+
+	.sbttl	DELIVER_LINK_AST, Deliver link transition ast routine
+
+;++
+; DELIVER_LINK_AST - Delivers link transtion ast to controlling process
+;
+; Functional description:
+;
+;	This routine delivers a link transition ast to some controlling
+;	process.
+;
+; Inputs:
+;
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	UCB$A_VB_LINK_AST cleared if AST delivered
+;
+;--
+
+DELIVER_LINK_AST:			; Deliver link transition ast
+;
+; First check if the link changes state within session
+; session starts -> MCVALID bit is set
+; session ends	 -> MCVALID bit is cleared
+;
+
+  	bbc	#VB$V_MCVALID, -
+  		UCB$L_DEVDEPEND(r5), -	; if we are NOT in a session
+		25$			;  then just deliver AST.
+  					;  else log the transiton as error
+	cmpw	#1,r0			; Off to on transtion?
+	beql	10$			; Yes -- go on
+	movw	#VB$K_ELG_LINK_OFF,r0	; No -- assume it's on to off transition
+  	bsbw	VB_ERRLOG		; error log it
+	bicl    #VB$M_MCVALID, -	; invalid the microcode, we do this after
+  		UCB$L_DEVDEPEND(r5)	; VB_ERRLOG to show in SYE report that 
+  					; we are in a session. This is flagged
+  					; by MCVALID bit set.
+
+  	clrl	UCB$A_VB_SAVE_SCREEN_AST(r5)
+  					; Clear the exit screen saver mode
+  					; AST, so it won't be delivered
+  					; accidentaly later.
+
+	brb	25$			; Go to common code
+10$:	movw	#VB$K_ELG_LINK_ON,r0	; Set error logging reason
+	bsbw	VB_ERRLOG		; Error log it
+25$:	pushr	#^m<r1,r2,r4>		; Save some registers
+	movl	UCB$A_VB_LINK_AST(r5),r0; Get ACB
+	beql	30$			; No ACB exists
+
+; The following line is commented out because we shouldn't wipe out
+; the AST parameter.
+;	
+;	movzwl	VB_CSR(r4),ACB$L_TASTPRM(r0) ; save current link state 
+;  					; as AST paremeter
+
+	moval	UCB$A_VB_LINK_AST(r5),r4; Get link ast
+	jsb	g^COM$DELATTNAST	; Deliver ast
+30$:	popr	#^m<r1,r2,r4>		; Restore some registers
+	rsb				; Return to caller
+
+	.sbttl	VB_CANCEL, Cancel I/O routine
+
+;++
+; VB_CANCEL, Cancels an I/O operation in progress
+;
+; Functional description:
+;
+;	This routine calls IOC$CANCELIO to set the cancel bit in the
+;	UCB status word if:
+;
+;		the device is busy,
+;		the IRP's process ID matches the cancel process ID,
+;		the IRP channel matches the cancel channel.
+;
+;	If IOC$CANCELIO sets the cancel bit, then this driver routine
+;	does device-dependent cancel I/O fixups.
+;
+; Inputs:
+;
+;	R2	- negated value of the channel index number
+;	R3	- address of the current IRP (I/O request packet)
+;	R4	- address of the PCB (process control block) for the
+;		  process canceling I/O
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	The routine must preserve all registers except R0-R3.
+;
+;	The routine may set the UCB$V_CANCEL bit in UCB$W_STS.
+;
+;--
+
+VB_CANCEL:				; Cancel an I/O operation
+;
+;
+; Cancel any outstanding I/O for this Process and Channel
+; that is queue waiting to be executed.   The logical for
+; this code is taken from the VMS routine: EXE$CANCEL.
+; Because VMS tries to cleanup the queue before we are called,
+; we had to fake out VMS so we could do the proper cleanup.
+; The way we fake out VMS is to change the PID in the IRP.
+; The correct PID is stored in the WIND field.
+;
+;	Input:
+;		r2 = channel number
+;		r3 = current IRP
+;		r4 = PCB
+;		r5 = UCB
+;
+					;
+	pushl	r3			; Save registers
+					;
+	movab	UCB$L_IOQFL(r5),r1	; IO Queue listhead
+	movl	r1,r0			;
+					;
+6$:	movl	IRP$L_IOQFL(r0),r0	; get next entry
+	cmpl	r0,r1			; end of list ?
+	beql	9$			; yes - done 
+					;
+	bbs	#IRP$V_VIRTUAL,-	; Virtual I/O ?
+		IRP$W_STS(r0),7$	; yes - error
+					;
+	cmpw	IRP$W_CHAN(r0),r2	; channel match ?
+	bneq	6$			; no - get next
+					;
+	tstw	IRP$L_PID+2(r0)		; test upper word of PID
+	bneq	6$			; if non-zero then not
+					; a special case - get next
+					;
+	cmpl	IRP$L_WIND(r0),-	; Real PID stored in WIND
+		PCB$L_PID(r4)		; PIDs match ?
+	bneq	6$			;
+					; We need to cleanup this IRP
+	movl	IRP$L_IOQBL(r0),r0	; remove IRP
+	remque	@IRP$L_IOQFL(r0),r3	;
+					;
+	bbs	#IRP$V_BUFIO,-		; check for buffered I/O
+		IRP$W_STS(r3),8$	; if true then problems
+					;
+	movl	IRP$L_WIND(r3),-	; restore PID
+		IRP$L_PID(r3)		;
+					;
+	cmpw	IRP$W_FUNC (r3), -	; is this a PIO packet
+		#IO$_PIO_PACKET
+
+	bneq	30$
+
+	movzwl	#SS$_CANCEL, -		; set status code
+		IRP$L_IOST1 (r3)	;
+					;
+	clrl	IRP$L_IOST2 (r3)	;
+
+	insque	(r3), -			; put it in the PIO post processing queue
+		@UCB$L_VB_PIO_POST_BL (r5)
+
+	brb	6$			; process the next IRP
+
+30$:	pushr	#^m<r0,r1,r2>		;
+	bsbw	REL_CMDBLK		; cleanup our stuff
+					;
+	movzwl	#SS$_CANCEL,-		; set completion status
+		IRP$L_MEDIA(r3)		;
+					;
+	movl	#IOC$GL_PSBL,r0		; address of queue header tail
+	insque	IRP$L_IOQFL(r3),-	; insert IRP on Post
+		@(r0)			; Processing queue
+					;
+	softint	#IPL$_IOPOST		; initiate SW interrupt
+					;
+	popr	#^m<r0,r1,r2>		;
+	brb	6$			; get next IRP
+					;
+					;
+7$:	BUG_CHECK  INCONSTATE,FATAL	; Virtual I/O
+8$:	BUG_CHECK  INCONSTATE,FATAL	; Bufferred I/O
+					;
+					;
+9$:	popr	#^M<r3>			; done with special case
+					; cleanup
+;
+; Flush any outstanding ast's
+;
+	pushr	#^m<r2,r6,r7>		; Save registers
+	movl	r2,r6			; Copy channel
+	movab	UCB$A_VB_KB_FULL_AST(r5),r7 ; Keyboard buffer full ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_KB_WAKE_AST(r5),r7 ; Read wake ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_MOUSE_BUTTON(r5),r7 ; Mouse button ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_TABLET_BUTTON(r5),r7 ; Mouse button ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_MOUSE_MOVE(r5),r7; Cursor move ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_TABLET_MOVE(r5),r7; Tablet move ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_EXIT_IDLE(r5),r7; Exit Idle loop ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	movab	UCB$A_VB_LINK_AST(r5),r7 ; Link on ast
+	jsb	g^COM$FLUSHATTNS	; Flush them
+	popr	#^m<r2,r6,r7>		; Restore registers
+
+;
+; Cancel any outstanding i/o
+;
+	jsb	G^IOC$CANCELIO		; Set cancel bit if appropriate.
+;	bbc	#UCB$V_CANCEL,-		; If the cancel bit is not set,
+;		UCB$W_STS(r5),10$	; just return.
+
+	cmpl	#CAN$C_DASSGN,R8	; Called because process was 
+					; deassigning a channel ?
+	bneq	40$			; No - only cancel 
+					;
+;
+; Keyboard Cleanup
+;
+	movl	PCB$L_PID(R4),R0	; Yes
+	cmpl	UCB$L_VB_KB_OWNER(R5),R0 ; Is process owner of the KB ?
+	bneq	10$			; No
+					; Yes - invalidate keyboard
+	DSBINT	UCB$B_DIPL(r5)		; set IPL to device IPL because
+  					; the following two fields are accessed
+					; by interrupt service routine at device
+  					; IPL
+	clrl	UCB$A_VB_KB_BUFFER(R5)	; 
+	clrl	UCB$L_VB_KB_OWNER(R5)	;
+  					;  	
+  	ENBINT				; lower IPL back
+10$:					;
+;
+; Turn off the FO link if requested by the process who is deassigning
+; the channel to the device.    
+;
+						;
+	cmpl	PCB$L_PID(r4), -		; Same process that request
+		UCB$L_VB_LINK_ONEXIT_PID(r5)	; the cleanup ?
+	bneq	20$				; no 
+						;
+	clrl	UCB$L_VB_LINK_ONEXIT_PID(r5)	; yes - only cleanup once
+						;
+	movl	UCB$L_CRB(r5),r2		; fetch CSR address
+	movl	@CRB$L_INTD+VEC$L_IDB(r2),r2	;
+  	
+	DSBINT	UCB$B_DIPL(r5)		; set IPL to device IPL because
+					; the CSRs are accessed
+					; by interrupt service routine at device
+					; IPL
+	bicw	#VB$M_CSR_XMIT_ON,VB_CSR(r2)	
+  					; clear XMIT bit
+					;
+	ENBINT				; Enable device interrupts
+
+20$:
+;
+; clean up Data Buffer if there is any DBD hanging off UCB
+;
+  	movab 	UCB$A_VB_PIO_DBD_FL (r5), r0	; get DBD queue header address
+  	cmpl	UCB$A_VB_PIO_DBD_FL (r5), r0	; if the queue empty just return
+  	beql	40$
+  	movl	UCB$A_VB_PIO_DBD_FL (r5), r0	;  else, get DBD address
+	cmpl	PCB$L_PID (r4), -
+  		DBD$L_CREATOR (r0)		; if process is not the creator of DB
+  	bneq	40$				;  then return
+	bsbw	UNMAP_DB
+40$:
+  	clrl	UCB$L_VB_PIO_OWNER (r5)		; disable the process from
+  						; issuing more PIO commands
+;
+; Finally, the return
+;
+	rsb				; Return
+
+	.SBTTL	VB_ERRLOG, Fork level error log routine
+
+;++
+; VB_ERRLOG, Calls the error logger to log a device error at non-fork level
+;
+; Functional description:
+;
+;	This routine will fork down to device fork ipl from interrupt
+;	interrupt level and call the error logger.
+;
+; Inputs:
+;
+;	R0	- error logging reason
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;--
+
+VB_ERRLOG:				; Log device errors
+
+	bitl	#VB$M_ERRLOG_IP,-	; Error logging in progress?
+		UCB$L_DEVDEPEND(r5)	;
+	beql	2$			; No - continue
+					;
+	incl	UCB$L_VB_ERROR_LOST(r5)	; Yes - increment lost count
+	brb	20$			; can't log error - just return
+					;
+2$:	bisl	#VB$M_ERRLOG_IP,-	; No -- set in progress flag
+		UCB$L_DEVDEPEND(r5)
+	movw	r0,UCB$W_VB_ERROR(r5)	; Set error log reason
+  	bsbw	SAVE_ELG_INFO		; Save some UCB fields for error logging
+	pushr	#^m<r3,r4,r5>		; Save some registers
+	pushab	b^10$			; Return address
+	movl	r5,UCB$L_VB_FELG_FR5(r5) ; Save UCB pointer
+	movb	UCB$B_FIPL(r5),-	; Set fork IPL
+		UCB$B_VB_FELG_FIPL(r5)
+	bbc	#UCB$V_INT,-		; Command in progress?
+		UCB$W_STS(r5),30$
+;
+; A command is in progress, log error as a device error
+;
+	movab	UCB$L_VB_FELG_FLINK(r5),r5 ; Yes -- point to error log fkb
+	FORK				; Create fork process
+	movl	FKB$K_FR5(r5),r5	; Restore UCB pointer
+	jsb	g^ERL$DEVICERR		; Go log the error
+5$:	bicl	#VB$M_ERRLOG_IP,-	; Clear in progress flag
+		UCB$L_DEVDEPEND(r5)
+	rsb				; Return
+10$:	popr	#^m<r3,r4,r5>		; Restore registers
+20$:	rsb				; Return
+;
+; A command is not in progress, log error as an attention
+;
+30$:	movab	UCB$L_VB_FELG_FLINK(r5),r5 ; Point to error log fkb
+	FORK				; Create fork process
+	movl	FKB$K_FR5(r5),r5	; Restore UCB pointer
+	jsb	g^ERL$DEVICEATTN	; Go log the error
+	brb	5$			; Done
+
+
+	.sbttl	SAVE_ELG_INFO
+;++
+; SAVE_ELG_INFO - Save error logging information
+;
+; Functional Description:
+;	This routine saves information relavent to the error just occurred
+;	in the UCB$W_VB_ELG_XXX fields for use by the register dump routine.
+;	This is necessary because the register dump routine executes at fork
+;	IPL. The information we want to write to the error buffer may have
+;	been changed by another interrupt that comes after the error and
+;	before the execution of the register dump routine.
+;
+; input:
+; 	IPL = 21
+; 	r5 = UCB address
+;
+;		
+; output:
+;	ucb$l_vb_elg_xxx fields in ucb are loaded with 
+;	corresponding UCB fields
+;
+;--
+
+SAVE_ELG_INFO:
+  	;
+  	; save device dependend information for error logging
+  	;
+  	movw	UCB$L_DEVDEPEND(r5), 	UCB$W_VB_ELG_DEVDEPEND(r5)
+						; device dependent information
+  	movw	UCB$W_VB_ERROR(r5), 	UCB$W_VB_ELG_REASON(r5)
+						; error logging reason
+  	movw	UCB$W_STS(r5), 		UCB$W_VB_ELG_STS(r5)
+						; device status
+	movw	UCB$W_VB_COMMAND(r5),	UCB$W_VB_ELG_COMMAND(r5)
+						; command code
+  	movw	UCB$L_VB_UNSOL(r5), 	UCB$W_VB_ELG_UNSOL(r5)
+						; unsolicit interrupt count
+  	movw	UCB$L_VB_UNKNOWN(r5), 	UCB$W_VB_ELG_UNKNOWN(r5)
+						; unknown interrupt count
+  	movw	UCB$L_VB_LINK_ERROR(r5), UCB$W_VB_ELG_LINK_ERROR(r5)
+						; link error count
+  	movw	UCB$L_VB_FLASH(r5), 	UCB$W_VB_ELG_FLASH(r5)
+						; link flash count
+  	movw	UCB$L_VB_LIGHT_ON(r5),	UCB$W_VB_ELG_LIGHT_ON(r5)
+						; light turned on count
+	movw	UCB$L_VB_LIGHT_OFF(r5),	UCB$W_VB_ELG_LIGHT_OFF(r5)
+						; light turned off count
+	movw	UCB$L_VB_ERROR_LOST(r5),UCB$W_VB_ELG_DROPPED_ERROR(r5)
+						; dropped error count
+  	;
+	; save CSRs' contents for error logging
+	;
+	movw	UCB$W_VB_CSR_REG(r5),	UCB$W_VB_ELG_CSR0(r5)
+	movw	UCB$W_VB_INT_REASON(r5),UCB$W_VB_ELG_CSR1(r5)
+	movw	UCB$W_VB_KEY_REG(r5),	UCB$W_VB_ELG_CSR2(r5)
+	movw	UCB$W_VB_CSR3(r5),	UCB$W_VB_ELG_CSR3(r5)
+	movw	UCB$W_VB_CSR4(r5),	UCB$W_VB_ELG_CSR4(r5)
+	movw	UCB$W_VB_XPOS_REG(r5),	UCB$W_VB_ELG_CSR5(r5)
+	movw	UCB$W_VB_YPOS_REG(r5),	UCB$W_VB_ELG_CSR6(r5)
+
+	rsb
+
+
+	.SBTTL	VB_REGDMP, Device register dump routine
+
+;++
+; VB_REGDMP, Dumps the contents of some ucb fields to a buffer
+;
+; Functional description:
+;
+;	Write the contents of some UCB fields to a diagnostic or error buffer.
+;	The format of the buffer is as follows:
+;
+;	  longword #	high order word		low order word
+;	  ----------	----------------	--------------
+;	      1					9
+;	      2		ucb$w_vb_elg_reason, 	ucb$w_vb_elg_devdepend
+;	      3	   ucb$w_vb_elg_dropped_error,	ucb$w_vb_elg_sts
+;	      4		ucb$w_vb_elg_unknown, 	ucb$w_vb_unsol
+;	      5		ucb$w_vb_elg_flash,	ucb$w_vb_elg_link_error
+;	      6		ucb$w_vb_elg_light_off,	ucb$w_vb_elg_light_on
+;	      7		ucb$w_vb_elg_csr0,	ucb$w_vb_elg_command
+;	      8		ucb$w_vb_elg_csr2,	ucb$w_vb_elg_csr1
+;	      9		ucb$w_vb_elg_csr4,	ucb$w_vb_elg_csr3
+;	     10		ucb$w_vb_elg_csr6,	ucb$w_vb_elg_csr5
+;
+;
+; Inputs:
+;
+;	R0	- address of the output buffer
+;	R4	- address of the CSR (controller status register)
+;	R5	- address of the UCB (unit control block)
+;
+; Outputs:
+;
+;	The routine must preserve all registers except R1-R3.
+;
+;	The output buffer contains the current contents of the UCB ELG fields.
+;	R0 contains the address of the next empty longword in the output 
+;	buffer.
+;
+;--
+
+VB_REGDMP:				; Dump device registers
+
+	movzbl	#9,(r0)+		; Store device register count
+
+	movw	UCB$W_VB_ELG_DEVDEPEND(r5),(r0)+	
+					; contents of UCB$L_DEVDEPEND at error
+	movw	UCB$W_VB_ELG_REASON(r5),(r0)+	
+					; error log reason
+	movw	UCB$W_VB_ELG_STS(r5),(r0)+
+					; Contents of UCB$W_STS at error
+	movw	UCB$W_VB_ELG_DROPPED_ERROR(r5),(r0)+
+					; Number of dropped error at error
+	movw	UCB$W_VB_ELG_UNSOL(r5),(r0)+
+					; Unsolicit interrupt count at error
+	movw	UCB$W_VB_ELG_UNKNOWN(r5),(r0)+
+					; Unknown interrupt count at error
+	movw	UCB$W_VB_ELG_LINK_ERROR(r5),(r0)+
+					; Link error count at error
+	movw	UCB$W_VB_ELG_FLASH(r5),(r0)+
+					; Link flash count at error
+	movw	UCB$W_VB_ELG_LIGHT_ON(r5),(r0)+
+					; Link turned on count at error
+	movw	UCB$W_VB_ELG_LIGHT_OFF(r5),(r0)+
+					; Link turned off count at error
+	movw	UCB$W_VB_ELG_COMMAND(r5),(r0)+
+					; Command code at error
+	movw	UCB$W_VB_ELG_CSR0(r5), (r0)+
+					; Contents of CSR0 at error
+	movw	UCB$W_VB_ELG_CSR1(r5), (r0)+
+					; Contents of CSR1 at error
+	movw	UCB$W_VB_ELG_CSR2(r5), (r0)+
+					; Contents of CSR2 at error
+	movw	UCB$W_VB_ELG_CSR3(r5), (r0)+
+					; Contents of CSR3 at error
+	movw	UCB$W_VB_ELG_CSR4(r5), (r0)+
+					; Contents of CSR4 at error
+	movw	UCB$W_VB_ELG_CSR5(r5), (r0)+
+					; Contents of CSR5 at error
+	movw	UCB$W_VB_ELG_CSR6(r5), (r0)+
+					; Contents of CSR6 at error
+	rsb				; Return
+
+
+	.end
+

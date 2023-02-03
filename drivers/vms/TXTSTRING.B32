@@ -1,0 +1,928 @@
+module txtstrings (addressing_mode (external = general, nonexternal = general))
+= begin
+
+
+! Routines for manipulating the strings which comprise fields.
+
+forward routine!s . . .
+
+	updateEnds,		! fix values of str_beg, str_end
+	mergeStrings,		! merge two string blocks
+	connect,		! connect two string blocks
+	truncate,		! truncate a string in a string block
+	sameAttributes,		! decide if two strings are of same attributes
+
+	findLeft,		! find fringe strings
+	findRight,
+	cloneString,		! make copy of string
+	clone_upcased_string,	! make new copy of string, upcased
+	cloneStringBlock,	! Make new string block with same attributes as old
+	insertStringsAfter,	! insert new strings in field block
+	releaseStringsBetween,	! release strings from field block
+	string_intersects,	! test for string intersecting another
+	measure_string_width;	! measure width of a string block
+
+external routine!s . . .
+
+	alcbyt,			! allocate string (or other byte array)
+	deallocateBytes,	! release a specified number of bytes
+	alcful,			! allocate block
+	addElements,		! add elements to list
+	deleteElements,		! delete elements from a list
+	deallocateStringBlock,	! release a string block and its string
+	fibReference,		! count up fib
+	findfib,		! get fib for a font id
+	forgetString,		! deallocate a string
+	vsta$$txt_measure_width;! measure length of substring
+
+library 'vsta$library:txtsym';
+library 'sys$library:starlet';	! things like dsc$b_class
+library 'vsta$library:libmacros';	! things like $string_descriptor
+library 'vsta$library:termio';
+
+$vsta_psect;			! PSECT definitions
+
+
+global routine updateEnds
+!++
+! Functional description:
+!
+!	Recalculate ends of strings, used after new strings have been added.
+!	Also, update tally of total number of characters in field.
+!
+!	Update total field used width, as computed as sum of string widths.
+!
+! Formal parameters:
+ (
+    fldBlk:ref field_block,		! field being updated
+    field_used_width			! new width for field, or 0 if
+					! we should compute it.
+	   ) =
+!
+! Implicit outputs:
+!
+!	String beginning and ending ranks, and field used width are updated.
+!--
+
+	begin
+	local previousEnd;
+	bind
+	    ! Get list of strings for this field and number of strings
+	    strLst = .fldBlk[fld_strings]:vector,
+	    nStrings = .fldBlk[fld_nStrings];
+
+	! Initialize to cause first string to start at position 1.
+	previousEnd = 1;
+
+	! Store new field used width, or 0 for recomputation.
+	!
+	fldBlk[fld_used_width] = .field_used_width;
+
+	! Loop through each string.  Set beginning of each string to be
+	! same as end of previous one.
+	! Set end to beginning plus length.
+	! Compute field used width if asked to.
+	!
+	incr i from 1 to nStrings do
+	    begin
+	    bind
+		! Get string block
+		strBlk = .strLst[.i]:string_block,
+
+		! Get string's length
+		thisLength = .strBlk[str_len],
+
+		! Derive string's start from previous end
+		thisBeg = .previousEnd;
+		
+	    if .field_used_width eql 0
+	    then fldBlk[fld_used_width] = .fldBlk[fld_used_width] +
+		.strBlk[str_width];
+
+	    strBlk[str_beg] = thisBeg;
+	    previousEnd = (strBlk[str_end] = thisBeg + thisLength)
+	    end;
+
+	! Update total number of characters in field
+	fldBlk[fld_nChars] = .previousEnd - 1
+
+	end;
+
+global routine mergeStrings
+!++
+! Functional description:
+!
+!	Merge left and right string.
+!
+!	This has several steps:
+!
+!	1)
+!	use the keepLeft arg, which if 1 means the left
+!	string's characters are kept at the position of the overlap, with
+!	the righthand string's characters truncated.  If keepLeft is 0,
+!	we're NOT keeping all of the left string, it's rightmost characters
+!	will be truncated.
+!
+!	2)
+! 	Attempt to join the two strings, which is possible when the two
+!	strings have the same attributes.
+!	Upon joining, the righthand string is deallocated.
+!
+! Formal parameters:
+ (
+    left:ref string_block,	! string block for string on the left
+    right:ref string_block,	! string block for one on the right
+    keepleft,			! whether to keep all of left string or not
+    verdict			! where to write result
+	     ) =
+!--
+
+	begin
+
+	local s;
+
+	bind
+	    leftLen = .left[str_len],
+	    leftEnd = .left[str_end],
+	    rightBeg = .right[str_beg],
+	    overlap = leftEnd - rightBeg;
+
+	! There may be no truncation, as in
+	!
+	! _______________________________
+	! |   left 			|
+	! ---------------------------------------------------------
+	!				|   right		  |
+	!				---------------------------
+	!
+	! Truncation may be partial (with area to be deleted shown with ////,
+	! although keepLeft is needed to determine which string gets
+	! truncated).
+	!
+	! _______________________________
+	! |   left 			|
+	! -------------------------------
+	!			/////////
+	!			---------------------------
+	!			| right			  |
+	!			---------------------------
+	!
+	if .keepLeft
+	then
+	    begin
+	    if not (s = truncate(.right, 1, overlap))
+	    then return .s
+	    end
+	else
+	    begin
+	    if not (s = truncate(.left, leftLen-overlap+1, leftLen))
+	    then return .s
+	    end;
+
+	! See if strings are of same attributes.
+	! If so, merge and return true.
+	! If not, return false.
+	if sameAttributes(.left,.right)
+	then
+	    begin
+	    if not (s = connect( .left, .right))
+	    then return .s;
+	    .verdict = true
+	    end
+	else .verdict = false;
+
+	! Give success return from routine
+	true
+
+	end;
+
+global routine connect
+!++
+! Functional description:
+!
+!	Connect two blocks known to have the same attributes.
+!	Don't update the beginning and end parameters, as these will be updated
+!	later.
+!
+! Formal parameters:
+ (
+    leftBlock:ref string_block,
+    rightBlock:ref string_block
+	) =
+!
+! Side effects:
+!
+!	The string that is being lengthened gets its width value updated.
+!	Callers must take responsibility for updating field widths.
+!
+!--
+
+	begin
+	bind
+
+	    ! Get lengths for original two strings.
+	    !
+	    leftLen = .leftBlock[str_len],
+	    rightLen = .rightBlock[str_len],
+
+	    ! Get widths of originals.
+	    !
+	    left_width = .leftBlock[str_width],
+	    right_width = .rightBlock[str_width],
+
+	    ! get source pointers for original strings
+	    leftPtr = .leftBlock[str_ptr],
+	    rightPtr = .rightBlock[str_ptr],
+
+	    ! get total length and width for merged string.  Note that unlike
+	    ! a geometric shape for which length and width are x and y
+	    ! measurements, for strings length and width are both x measurements
+	    ! with length being number of characters, and width being physical
+	    ! width taken up on screen.
+	    !
+	    length = leftLen + rightLen,
+	    width = left_width + right_width,
+
+	    ! Allocate an area for the merged string
+	    newStr = allocateBytes(length);
+
+	! concatentate the two original strings into one
+	ch$copy(leftLen, leftPtr, rightLen, rightPtr, 0, length, newStr);
+
+	! Deallocate original lefthand string.
+	forgetString (leftBlock[str_len]);
+
+	! Store the new long string in the block being kept
+	!
+	leftBlock[str_ptr] = newStr;
+	leftBlock[str_len] = length;
+	leftBlock[str_width] = width;
+
+	! Give success return
+	true
+
+	end;
+
+global routine truncate
+!++
+! Functional description:
+!
+!	Truncate the string in a string block.
+!
+! Formal parameters:
+ (
+    strblk:ref string_block,	! which string to truncate
+    firstPos,			! position of first character to delete
+    secondPos			! position of last character to delete
+    ) =
+!--
+
+	begin
+	local srcPtr, newStr, s;
+
+	bind
+	    ! number of characters being truncated
+	    delLen = .secondPos - .firstPos + 1,
+
+	    ! old length
+	    oldLen = .strBlk[str_len],
+
+	    ! address of old string
+	    oldAdr = .strBlk[str_ptr],
+
+	    ! length after truncation
+	    newLen = oldLen - delLen,
+
+	    ! length of left portion being kept
+	    leftLen = .firstPos - 1,
+
+	    ! length of portion being shoved to left to fill gap
+	    rightLen = oldLen - leftLen - delLen,
+
+	    ! address just beyond whole string
+	    oldBeyondAdr = oldAdr + oldLen,
+
+	    ! address of right portion being moved
+	    rightAdr = oldBeyondAdr - rightLen,
+
+	    ! Allocate new area for truncated string.  We'd really like to
+	    ! move characters in place, and deallocate part of the string.  However,
+	    ! the run-time library does some quad-word rounding that screws things
+	    ! up.
+	    !
+	    newAdr = allocateBytes (newLen);
+
+	! This routine should never be used to delete an entire string, since
+	! in such a case the string block should be released.
+	!
+	if delLen geq oldLen
+	then $return_bug (vsta$_trnct_err);
+
+	! Copy the left and right pieces into new string to compose what's left
+	! after the deletion.
+	!
+	ch$copy (leftLen, oldAdr, rightLen, rightAdr, 0, newLen, newAdr);
+
+	! Deallocate entire old string.
+	forgetString (strBlk[str_len]);
+
+	! Remember new length and address
+	strBlk[str_len] = newLen;
+	strBlk[str_ptr] = newAdr;
+
+	! Update width of resultant string.
+	!
+	if not (s = measure_string_width (strBlk[base], strBlk[str_width]))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine sameAttributes
+!++
+! Functional description:
+!
+!	Compare two string blocks, returning true or false according to whether
+!	they represent strings of the same attributes or not.
+!
+! Formal parameters:
+ (
+    first:ref string_block,
+    second:ref string_block
+	       ) =
+!--
+
+	begin
+
+	macro 
+
+	    ! Macro to produce 1 iff specified portion of string block for
+	    ! both strings matches.
+	    !
+	    s (portion) =
+
+		(.first[portion] eql .second[portion])
+
+	    % ;
+
+	    bind
+
+		! Get pointers to typefaces.
+		!
+		first_typeface_len = .first[str_typeface_len],
+		first_typeface_adr = .first[str_typeface_adr],
+		second_typeface_len = .second[str_typeface_len],
+		second_typeface_adr = .second[str_typeface_adr];
+
+	s (str_size) and s (str_base) 
+!
+! "str_height" currently commented out because no code anywhere sets up
+! this slot right now.
+!
+!	    and s (str_height) 
+	    and s (str_fid) and
+	    s (str_rendition) and s (str_backgroundColor) and
+	    s (str_inkColor) and
+	    ch$eql (first_typeface_len, first_typeface_adr,
+		second_typeface_len, second_typeface_adr)
+
+	end;
+
+global routine findLeft
+!++
+! Functional description:
+!
+!	Find left fringe string of current string being written, i.e. the
+!	string which abutts the new string on the left.
+!
+!	Some possible configurations, showing existent, and new strings of a
+!	field, identifying which is the left fringe
+!
+! _______________________________________________________________________
+! |   		|  left fringe	|   	  	 |			|
+! -----------------------------------------------------------------------
+!	 		|	new string	|
+!			-------------------------
+!
+! _______________________________________________________________________
+! |   		|  left fringe	 |   	  	 |			|
+! -----------------------------------------------------------------------
+!	 	  | new string |
+!		  --------------
+!
+! _______________________________________________________________________
+! |		|  left fringe	| 	 	  |			|
+! -----------------------------------------------------------------------
+! 				|  new string |
+!				---------------
+! no left fringe here:
+! _______________________________________________________________________
+! |  		 |		|  		|  			|
+! -----------------------------------------------------------------------
+! |  new string		|
+! -----------------------
+!
+! Formal parameters:
+ (
+    curFieldBlock:ref field_block,
+    curPos
+	 ) =
+!--
+
+	begin
+	local found;
+	bind
+	    ! get address of list of string blocks
+	    stringList = .curFieldBlock[fld_strings]:vector;
+	found = 0;		! haven't found a left fringe string yet
+	! look at all strings from left to right
+	incr i from 1 to .curFieldBlock[fld_nStrings] do
+	    begin
+	    bind
+		! get address of next string block
+		nextString = .stringList[.i]:string_block,
+		! get extent of this string
+		thisEnd = .nextString[str_end];
+	    if thisEnd geq .curPos then
+		! found left fringe, unless it's completely obliterated, in
+		! which case there is no left fringe
+		begin
+		bind thisBeg = .nextString[str_beg];
+		if thisBeg lss .curPos then found = .i;
+		exitLoop
+		end
+	    end;
+	.found			! return 0 or rank of left fringe string
+	end;
+
+global routine findRight
+!++
+! Functional description:
+!
+! Find right fringe string which, scanning from the rightmost string of
+! the current field, is the first one encountered that abutts or overlaps
+! the new string being written.  The rank of the right fringe string is
+! returned.
+!
+! Here are some possible cases, showing which string is the right fringe
+! string:
+!
+!
+! _______________________________________________________________________
+! |		|		|   right fringe  |			|
+! -----------------------------------------------------------------------
+! 	|	new string	|
+!	-------------------------
+!
+! _______________________________________________________________________
+! |   		|  right fringe	 |   	  	 |			|
+! -----------------------------------------------------------------------
+!	 	  | new string |
+!		  --------------
+!
+! _______________________________________________________________________
+! |		|		| right fringe 	  |			|
+! -----------------------------------------------------------------------
+! 			|  new string	  |
+!			-------------------
+!
+! no right fringe:
+! _______________________________________________________________________
+! |		|		|  		|  			|
+! -----------------------------------------------------------------------
+! 					|		  new string	|
+!					---------------------------------
+!
+! Formal parameters:
+ (
+    curFieldBlock:ref field_block,
+    newPos
+	  ) =
+!--
+
+	begin
+	local found;
+	bind
+	    ! get address of list of string blocks
+	    stringList = .curFieldBlock[fld_strings]:vector,
+
+	    ! Get total number of strings to scan.
+	    nStrings = .curFieldBlock[fld_nStrings];
+
+	! If no real fringe seen, fringe is off the right.
+	found = 1 + nStrings;
+
+	! look at all strings from right to left
+	decr i from nStrings to 1 do
+	    begin
+	    bind
+		! get address of next string block
+		nextString = .stringList[.i]:string_block,
+		! see what position this string starts at
+		thisPos = .nextString[str_beg];
+	    if thisPos leq .newPos then
+		! found right fringe.
+		begin
+		bind thisEnd = .nextString[str_end];
+		if thisEnd gtr .newPos
+		then found = .i;! only valid if a right fringe sticks out
+		exitLoop
+		end
+	    end;
+	.found			! return rank of right fringe string
+	end;
+
+global routine cloneString
+!++
+! Functional description:
+!
+!	Generate copy of string
+!
+! Formal parameters:
+ (
+	srcDsc:ref string_descriptor,
+				! address of source descriptor
+	dstDsc:ref string_descriptor	! address of destination descriptor
+ ) = 
+! Output:
+!
+!	The destination descriptor is filled in with the length of the string,
+!	and the new location
+!
+! Completion codes:
+!
+!	True, or failure code from memory manager
+!--
+
+	begin
+
+	bind
+
+	    ! Get length of string.
+	    strLen = .srcDsc[sd_len];
+
+	local s;
+
+	! Allocate storage for the string, but don't bother if length 0, which
+	! can occur when no current typeface has been established and a string
+	! block is being set up in write-text.
+	!
+	if strLen neq 0 then
+	    if not (s = alcbyt(strLen, dstDsc[sd_adr]))
+	    then return .s;
+
+	! Copy source string into new destination
+	!
+	ch$move (strLen, .srcDsc[sd_adr], .dstDsc[sd_adr]);
+
+	! Copy length
+	!
+	dstDsc[sd_len] = strLen;
+
+	true
+	end;
+
+global routine clone_upcased_string
+!++
+! Functional description:
+!
+!	Generate copy of string in all uppercase.  This is useful for
+!	situations where "case doesn't matter".  It's more efficient to
+!	always STORE strings in uppercase and COMPARE them for exactness,
+!	rather than STORE them exactly and then do a more complex comparison.
+!
+! Formal parameters:
+ (
+	srcDsc : ref $string_descriptor,
+				! address of source descriptor
+	dstDsc : ref $string_descriptor	! address of destination descriptor
+ ) = 
+! Output:
+!
+!	The destination descriptor is filled in with the length of the string,
+!	and the new location
+!
+! Completion codes:
+!
+!	True, or failure code from memory manager or str$upcase
+!--
+
+	begin
+
+	external routine
+
+	    str$upcase;
+
+	bind
+
+	    ! Get length of string.
+	    strLen = .srcDsc[sd$w_len];
+
+	local s;
+
+	! Allocate storage for the string, but don't bother if length 0, which
+	! can occur when no current typeface has been established and a string
+	! block is being set up in write-text.
+	!
+	if strLen neq 0 then
+	    if not (s = alcbyt(strLen, dstDsc[sd$a_adr]))
+	    then return .s;
+
+	! Copy length, init class (str$upcase is uppity about the class)
+	!
+	dstDsc[dsc$b_class] = dsc$k_class_s;
+	dstDsc[sd$w_len] = strLen;
+
+	! Copy source string into new destination, in all uppercase
+	!
+	if not (s = str$upcase (
+	    dstDsc[sd$w_len],		! destination descriptor address.
+	    srcDsc[sd$w_len]		! source descriptor address.
+	    ))
+	then return .s;
+
+	true
+	end;
+
+global routine cloneStringBlock
+!++
+! Functional description:
+!
+!	Clone a string block.  That is, create a new string block with the same
+!	attributes as a given one.
+!
+! Formal parameters:
+ (
+    model:ref string_block,	! block to model new one after
+    fillIn			! where to write the address of the new block
+		 ) =
+!
+! Side effects:
+!
+!	The fib whose id is copied is counted up
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get length of string for new block
+	    strLen = .model[str_len],
+
+	    ! Get descriptor of source string.
+	    oldDsc = model[str_len],
+
+	    ! Allocate a new block.
+	    !
+	    new = allocateFullwords(string_block_length):string_block;
+
+	local s;
+
+	! Initialize all values in new block to those in old
+	ch$move(string_block_length*4, .model, new);
+
+	! copy typeface string into new block.
+	!
+	if not (s = cloneString (model[str_typeface_len], new[str_typeface_len]))
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    return .s
+	    end;
+
+	! copy the string into new block.
+	!
+	if not (s = cloneString (oldDsc, new[str_len]))
+	then return .s;
+
+	! Count up the fib so it doesn't go away prematurely
+	if not (s = fibReference(.new[str_fid]))
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    return .s
+	    end;
+
+	! Fill in address of new block
+	.fillin = new;
+
+	! Give success return
+	true
+
+	end;
+
+global routine insertStringsAfter
+!++
+! Functional description:
+!
+!	Insert string blocks into a field, after a string block of a given rank
+!
+! Formal parameters:
+ (
+    fieldBlk:ref field_block,	! address of field block we're adding string to
+    after,			! rank of string we're adding new one after
+
+    new1:ref string_block,	!      \
+    new2:ref string_block,	!	\	new string blocks
+!	. . .			!	/	being added
+    newN:ref string_block	!      /
+		    ) =
+!--
+
+	begin
+	local stringList:ref vector, s;
+	builtin actualParameter, actualCount;
+	bind
+	    ! Get number of strings in list before reduction
+	    oldCount = .fieldBlk[fld_nStrings],
+
+	    ! Calculate number of strings being added by seeing how many args
+	    ! are passed to us beyond static ones.
+	    nStatic = 2,
+	    nStrings = actualCount() - nStatic;
+
+	! Make room for new string in list.
+	if not (s =
+	    addElements(oldCount, fieldBlk[fld_strings], .after, nStrings))
+	then return .s;
+
+	! Get address of list
+	stringList = .fieldBlk[fld_strings];
+
+	! Put new strings in list
+	incr i from 1 to nStrings do
+	stringList[.i + .after] = actualParameter(nStatic + .i);
+
+	! Update number of strings in field to reflect increase
+	fieldBlk[fld_nStrings] = oldCount + nStrings;
+
+	! Give success return
+	true
+
+	end;
+
+global routine releaseStringsBetween
+!++
+! Functional description:
+!
+!	Release strings from a field, such as when they get overwritten by
+!	another string, or when the field gets deleted
+!
+! Formal parameters:
+ (
+    fieldBlk:ref field_block,	! field strings are being deleted from
+    left,			! rank of string to left of first being deleted
+    right			! rank of one to right of last being deleted
+		      ) =
+!--
+
+	! Don't do anything unless some strings are really between the two
+	! specified.  This happens if there is exactly one existing string
+	! during writeText, and the new one being written is being appended
+	! onto the end.  In this case, left=1 and right=2.
+	if .right - .left leq 1
+	then true
+	else
+	begin
+
+	local s;
+
+	bind
+
+	    ! Get address of list of strings
+	    stringList = .fieldBlk[fld_strings]:vector,
+
+	    first = .left + 1,	! get rank of first and last involved
+	    last = .right - 1,
+
+	    ! Get number of strings in list before reduction
+	    oldCount = .fieldBlk[fld_nStrings],
+
+	    ! Calculate how many strings will be left after deletion
+	    newCount = oldCount - last + first - 1;
+
+	! release space allocated for each string block
+	incr i from first to last do deallocateStringBlock(.stringList[.i]);
+
+	! Update number of strings in field to reflect decrease
+	fieldBlk[fld_nStrings] = newCount;
+
+	! Move strings in list to close gap.
+	! Bug here!  If deleteElements fails, strings have been deallocated
+	! but they're still taking up room.  Perhaps deleteElements should
+	! be designed to never fail, and it should never even return any
+	! status code.
+	if not (s = deleteElements(oldCount, fieldBlk[fld_strings], first, last))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine string_intersects
+!++
+! Functional description:
+!
+!	Given a string block (which contains beginning and end points) and
+!	a second set of end points, determine if the second segment overlaps
+!	the first, and if so, where.
+!
+! Formal parameters:
+ (
+	strBlk : ref string_block,	! string block
+	first_other,			! beginning of other string
+	last_other,			! end of other string
+	first_adr,			! where to write first rank of string
+					! in block that overlaps, 0 means don't
+					! return the info
+	last_adr			! where to write last overlapping rank,
+					! or 0 if not wanted
+ ) =
+!
+! Value:
+!
+!	True or false is returned, according to whether the strings
+!	overlap.
+!
+! Implicit outputs:
+!
+!	The addresses, if not 0, are filled in with the first and last ranks
+!	of the string that overlap the ranks given.
+
+	begin
+
+	bind
+
+	    ! Get rank of first char of string, and rank BEYOND last rank.
+	    !
+	    strBeg = .strBlk[str_beg],
+	    strEnd = .strBlk[str_end];
+
+	! Strings don't overlap if the beginning of the first is to the right of
+	! the end of the second, or if the end of the first is to the left of
+	! the beginning of the second.
+	!
+	if not (.first_other geq strEnd or .last_other lss strBeg)
+	then
+
+	    begin
+	
+	    ! There's an overlap.  Tell caller the bounds if she asked.
+	    !
+	    if .first_adr neq 0
+	    then .first_adr = max (strBeg, .first_other);
+
+	    if .last_adr neq 0
+	    then .last_adr = min (strEnd-1, .last_other);
+
+	    true
+
+	    end
+	else false
+
+	end;
+
+global routine measure_string_width
+!++
+! Functional description:
+!
+!	Given a string block address, measure the width taken up by the string
+!	on the screen.  This routine should only be called if the fib address
+!	is not known, since if it is, this routine wastes some time by
+!	recomputing it.  If the fib is known, use vsta$$txt_measure_width.
+!
+! Formal parameters:
+ (
+	strBlk : ref string_block,	! which string block to measure
+	result				! where to write answer
+ ) =
+
+	begin
+
+	local s, fiBlk : ref fib;
+
+	! Get fib for string.
+	!
+	if not (s = findFib (.strBlk[str_fid], fiBlk, 0))
+	then return .s;
+
+	! Get result.
+	if not (s = vsta$$txt_measure_width (
+	    .strBlk[str_len],
+	    .strBlk[str_ptr],
+	    fiBlk[base],
+	    .result
+	    ))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+end
+eludom

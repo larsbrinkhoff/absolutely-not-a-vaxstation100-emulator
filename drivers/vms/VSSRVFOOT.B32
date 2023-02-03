@@ -1,0 +1,3013 @@
+MODULE VS$SRV_FOOT (
+		IDENT = 'HI SERVER Workstation Footer Module'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)) =
+		! Does the "right-hand utility area".
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!	This module creates the Workstation footer and displays or removes
+!	it upon command from the Human Interface's main command routines.
+!
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$foot_init,		! Init routine (start session).
+    cleanup_rutil,		! Cleanup from error (or at end session)
+    vsta$$foot_end_session,	! End session with footer module.
+    setup_username,		! Setup username display.
+    delete_username_vd,		! Delete username display.
+    vsta$$srv_write_truncated,	! Write string into field, truncated.
+    setup_clock,		! Setup and start clock.
+    no_more_clock,		! Delete the clock vd.
+    create_blank_vd,		! Create "blank" VD
+    write_icon_vd,		! Initially write an ICON VD
+    vsta$$foot_appear,		! Display the footer.
+    vsta$$foot_disappear,	! Undisplay the footer.
+    ast_clock_update,		! AST Routine called when timer runs out.
+    ss_exit_ast,		! Screen-saver mode exit AST
+    vsta$$foot_clock_update,	! Update the clock display.
+    display_new_clock,		! Display new date and time on clock
+    vsta$$foot_update_date,	! Update the date field
+    cvt_month,			! Convert "MMM" to mm (ascii --> integer)
+    xpn_month,			! Expand mm to long month name
+    change_clock_lines,		! Change number of lines on the clock display
+    vsta$$foot_update_time,	! Update the time field
+    vsta$$foot_which_slot,	! Which slot am I pointing at?
+    vsta$$foot_chk_slot_empty,	! Check to see if a slot is empty.
+    vsta$$foot_find_empty_slot,	! Find first empty slot.
+    vsta$$foot_empty_slot,	! Erase a slot.
+    vsta$$foot_jrb_deleted,	! Called when a JRB is deleted.
+    vsta$$get_jobslot_icon,	! Create and paste a job icon VD.
+    put_on_nonblank_vd,		! Paste a non-blank VD in a slot.
+    get_icon_graphics,		! Get the graphics plane for an icon.
+    get_divided_text,		! Break job name into 2 shorter strings
+				!  if necessary
+    meas_pelluc,		! Measure 1 string
+    meas_trunc,			! Find truncation of a string that will fit
+    next_breakup,		! Figure out a way to break up a string
+    meas_score,			! Measure string for breakup; get a score.
+    meas_nobrk,			! Routine to deal with no breaks.
+    remove_leading_blanks,	! Remove leading blanks from a string
+    vsta$$foot_attn_notices,	! Change notices icon to "Attention"
+				! (and ring bell).
+    vsta$$foot_notice_store,	! Put up notice icon
+    vsta$$foot_help_store,	! Put up help icon
+    vsta$$foot_prof_store,	! Put up profile icon
+    vsta$$foot_newun1,		! User name 1 changed.
+    vsta$$foot_newun2;		! User name 2 changed.
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white...
+LIBRARY 'VSTA$LIBRARY:VSTAMACS';	!$vstaprint
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application global symbols
+LIBRARY 'VSTA$LIBRARY:VSTADEF';		!vsta$K_vaxmem
+LIBRARY 'VSTA$LIBRARY:TXTSYM';		!To get "fib" defs for $VSTAPRINT call.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+LITERAL
+    slot_gap = 2,
+    start_slot_x = slot_gap,
+    username_height = 32,	! Display height for Username
+    clock_height = 48,		! Display height for Date/Time
+    neutral = 9,		! 50% grey color
+    foot_pb_height = 864,	! Some size values
+    slot_vd_size_x = 125,	! Size of each slot.
+    slot_vd_size_y = 63,	! Size of each slot.
+    interior_job_icon = 76,	! Space for text within the job icon
+    interior_doc_icon = 78,	! Space for text within the document icon
+    job_icon_width = 100,	! Width of the job icon character
+    job_icon_height = 50,	! Height of the job icon character
+    foot_pb_width = slot_gap + slot_gap + slot_vd_size_x,
+    num_slots = 12,		! Number of slots.
+    hi_num_slots_reserved = 3,	! How many bottom slots are used by HI
+    num_job_slots = num_slots - hi_num_slots_reserved;
+
+!
+! Print error message if it doesn't come out right.
+!
+%IF (foot_pb_height NEQ (slot_gap + username_height
+			+ clock_height + slot_gap
+			+ num_slots * (slot_vd_size_y + slot_gap)))
+  %THEN %ERROR ('foot_pb_height is WRONG!!');
+%FI
+
+GLOBAL
+    srv$gl_clock_efn,			!EFN assigned at ACP startup for
+					! the 1-minute timer.
+    vsta$gl_footer_start_x,		!VS x-coor where footer starts
+    vsta$gl_footer_pb_id,
+    vsta$gl_icon_vd_width: INITIAL (slot_vd_size_x),
+    vsta$gl_icon_vd_height: INITIAL (slot_vd_size_y),
+    vsta$gl_notice_vd_id,		!Vd-id of the notices icon
+    vsta$gl_prof_vd_id,			!Vd-id of the profile icon
+    vsta$gl_help_vd_id,			!vd-id of the HELP icon
+    vsta$gl_footer_vp_id,
+    vsta$gl_footer_displayed,		!=1 if footer is being displayed.
+    vsta$gl_notice_slot: INITIAL (num_slots - 2),!Which slot NOTICE icon is in
+    vsta$gl_help_slot: INITIAL (num_slots - 1),	!Which slot HELP doc. is in
+    vsta$gl_prof_slot: INITIAL (num_slots),	!Which slot the PROFILE is in
+    vsta$gb_notices_on: BYTE,			!Flag = 1 if attn is on
+    vsta$gb_notices_in: BYTE,			!Flag = 1 if notices is in slot
+    vsta$gl_prev_mm;			!Previous month index displayed.
+
+OWN					! Own storage for this module
+    clock_vd_id,			! VD_ID for the clock display.
+    clock_num_lines,			! Number of text lines on clock_vd
+    curr_date_len,			! Current length of date
+    last_date_buffer: VECTOR [20,BYTE],
+    curr_time_len,			! Current length of time buffer
+    last_time_buffer: VECTOR [20,BYTE],
+    username_vd_id,			! Vd-id for the username
+    footer_window_id,			! ID of the footer's window
+    vd_in_slot: VECTOR [num_slots],	!VD's showing in the slots.
+    blank_vd: VECTOR [num_slots],	!One blank one for each slot.
+    ss_mode: INITIAL($false),		!Screen-saver mode flag
+    notice_slot_num_lines;		!# text line used for notices
+
+
+EXTERNAL
+    srv$gl_menu_key_region_x,		! Origin of Menu key region.
+    srv$gl_menu_key_region_y,		! " "
+    srv$gl_symb_vd_id,			! VD ID for symbol bar.
+    srv$gl_utility_area_displayed,	! =0 to supress footer at session start
+    help_doc: doc_block,		!"document block" for the help doc
+    srv_vs_id,				!Virtual screen id
+    vs$gl_oem_flags,			!OEM mode flags
+    vs$gw_vbchan: WORD,			!Needed to ring the bell
+
+    srv$gl_username_desc: VECTOR [2],	!User name descriptor
+    srv$gl_user_1_name_len,		!Length of customized user name
+    srv$gl_user_1_name,			!User's first name itself.
+    srv$gl_user_2_name_len,		!Length of 2nd line of customized name
+    srv$gl_user_2_name,			!User's 2nd name itself.
+    srv$gl_date_format,
+	prof$K_datef_monthdd19yy,	!March 15, 1983
+	prof$K_datef_mmsddsyy,		!3/15/83
+	prof$K_datef_ddhmonhyy,		!15-Mar-83
+	prof$K_datef_ddmonth19yy,	!15 March 1983
+	prof$K_datef_ddsmmsyy,		!15.3.83
+    srv$gl_time_format,			! What time format is wanted
+	prof$K_timef_12hr,		!12-hr time format
+	prof$K_timef_24hr,		!24-hr time format
+	prof$K_timef_eur,		!European format
+    srv$gl_help_jrb: REF job_block,	!JRB of the HELP document.
+					! (to find out SLOT).
+    srv_gl_ignore_delw,			!=1 tells the VSS module that this
+					! was not a user window.
+    vsta$gl_screen_size_x,		!Pixels available in X-dimension.
+    srv$gl_main_menu: hi_menu_block;	!The main menu info.
+!
+! Error codes referenced.
+!
+EXTERNAL
+    vsta$_wrt_no_rm;		!"No room in field for that string"
+
+EXTERNAL ROUTINE
+    vs$$post_ast_request,		!Do work at non-AST level.
+    vsta$$error,
+    vsta$$error_logger,
+    vs$$vss_create_vp,			! VSS create VP routine.
+    vs$$vss_delete_vp,			! VSS delete VP routine.
+    vs$$vds_create_pb,			!Create a pasteboard
+    vs$$vds_create_term_window,		!Create window on PB
+    vs$$vds_create_vd,			!Create a virtual display
+    vs$$vds_paste_vd_to_pb,		!Paste VD to PB
+    vs$$vds_unpaste_vd_from_pb,		!Unpaste a VD from a PB
+    vs$$txt_Measure_text,		!Measure text string
+    vs$$txt_addLines,			!add lines to virtual display
+    vs$$txt_removeLines,		!Remove lines from virtual display
+    vs$$txt_defineFont,			!Define a font
+    vs$$txt_setTypeface,		! . .
+    vs$$txt_setTypesize,		! . .
+    vs$$txt_setWritingColor,		! . .
+    vs$$txt_setBackgroundColor,		! . .
+    vs$$txt_deleteField,		! Delete the default field
+    vs$$txt_defineField,		! Define a field
+    vs$$txt_set_field_format,		! Set the "format" of a field
+    vs$$txt_writetext,			! . .
+    vs$$txt_deleteCharacters,		! Delete characters in field
+    vs$$txt_get_font_address,		!(for $VSTAPRINT call)
+    vs$$txt_change_rendition,		!Change rendition
+    findFib,				!(for $VSTAPRINT call)
+    vs$$vds_delete_vd,			!Delete a virtual display
+    vs$$vds_delete_pb,			!Delete a pasteboard (& window, if any)
+    vsta$$rgn_define_region,		!Define a region
+    vsta$$rgn_delete_region,		!Delete a region
+    vsta$$rgn_set_region_selectable,	!Make a region selectable
+    vsta$$nat_draw_curve,		!Native graphics to virtual display
+    vsta$$set_pb_help,			!Specify help rtn and prm for pb
+    vsta$$set_rgn_help,			!Specify help routine and param for rgn
+    vsta$$kbrd_sound_bell,		!Ring the bell
+    vsta$$srv_disp_help_kwd,		!Display page from help document
+    vsta$$symb_disappear,		! Undisplay the menu.
+    vsta$$srv_help_icon_selected,	!Called when the HELP icon is selected
+    vsta$$srv_prof_icon_selected,	!Called when the PROF icon is selected
+    vsta$$srv_notice_icon_selected,	!Called when the NOTICES icon is sel'd
+    vsta$$srv_jobslot_selected,		!Called when a JOBSLOT icon is selected
+    vsta$$srv_get_message_text;		!Get text for message number
+
+
+GLOBAL ROUTINE vsta$$foot_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!     This is a routine that gets called to initialize the Footer
+! mechanism.  It creates the SDA objects (PB, Window, VP)
+! for  the display. It also creates the VD's and text fields
+! used  to  define the slots on the screen. A slot is seperated from
+! the  background by the fact that the VD background differs from that
+! of the PB.
+!   This is a startup time routine.  Errors do not return to the user.
+!
+! IMPLICIT OUTPUTS:
+!	SDA objects for the footer mechanism.
+!
+! ROUTINE VALUE
+!   Returns "ss$_normal" if successful, or
+!	VS facility error status code
+!--
+
+BEGIN
+LOCAL
+    vd_id_temp,
+    temp,
+    string: VECTOR[2],
+    help_char_code,		!%C'H' or -1
+    help_is_out,		!Flag = 0 if help doc not opened now.
+    status;			! Return status
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create the PB for the display.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT (status =
+    vs$$vds_create_pb
+		(vsta$gl_footer_pb_id	! Address of returned id
+		,1		! owned by ACP
+		,neutral	! Color
+		,foot_pb_width	! Width
+		,foot_pb_height	! height
+		,0		! UIC
+		,1		! Permanent
+		,vsta$k_default_protection
+				! UIC Protection
+		)
+	)
+  THEN RETURN $error	(vsta$_crepb_for
+			,string_type, %ASCID 'Right utility area'
+			);
+!
+! Establish which help page describes the general utility area.
+!
+IF NOT (status = vsta$$set_pb_help (
+	    .vsta$gl_footer_pb_id,	! which pb
+	    vsta$$srv_disp_help_kwd,	! routine that puts help page up
+	    %ascid 'Screen layout'	! specify keyword identifying page
+	    ))
+  THEN $log_error (SS$_NORMAL);
+
+!
+! Create VD's for the slots.
+!
+INCR i FROM 1 TO num_slots DO
+    BEGIN
+    IF NOT (status =
+	create_blank_vd
+		(blank_vd [.i - 1]	!Where to put VD-id
+		,0			!No vd HELP
+		,0			!No graphics
+		)
+	    )
+      THEN
+	BEGIN
+	cleanup_rutil ();
+	RETURN .status;
+	END;
+    END;
+!
+! Create the HI icon VD's.
+!
+IF NOT (status =
+    create_blank_vd (vsta$gl_notice_vd_id, %ASCID 'Notices icon', 1)
+	)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    create_blank_vd (vsta$gl_prof_vd_id, %ASCID 'Profile icon',1)
+	)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    create_blank_vd (vsta$gl_help_vd_id, %ASCID 'Help icon',1)
+	)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN .status;
+    END;
+
+!
+! Write the icon VD's.
+!
+IF NOT write_icon_vd
+		(%C'N'			!Notices
+		,.vsta$gl_notice_vd_id	!Vd-id
+		,vsta$$srv_notice_icon_selected	!Selected routine
+		,notice_slot_num_lines	!# text lines used.
+		)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_ntc_iconvd);	!"error writing notices icon vd"
+    END;
+
+IF NOT write_icon_vd
+		(%C'P'		!Profile
+		,.vsta$gl_prof_vd_id
+		,vsta$$srv_prof_icon_selected
+		,0
+		)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_prof_iconvd);
+    END;
+
+!
+! Maybe the HELP document is open at this point. If so, don't
+! write in the VD.
+!
+IF NOT write_icon_vd
+		(%C'H'		!HELP document
+		,.vsta$gl_help_vd_id
+		,vsta$$srv_help_icon_selected
+		,0
+		)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_help_iconvd);
+    END;
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Put a window over the pasteboard.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+IF NOT vs$$vds_create_term_window
+		(.vsta$gl_footer_pb_id		!Pasteboard id
+		,footer_window_id	!Module-wide storage for window id.
+		,%REF (0)		!Name desc.
+		,0			!x-origin
+		,0			!Y-origin
+		,foot_pb_width		!Width -- to be same as PB.
+		,foot_pb_height 	!height
+		)
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_crewin_for
+		,string_type, %ASCID 'Right utility area'
+		);
+    END;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Put the VD's on the PB
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+! Create and write Username VD.
+!
+IF NOT setup_username ()
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_setusn);
+    END;
+
+!
+! Create a VD for the clock and start it.
+!
+IF NOT setup_clock ()
+  THEN
+    BEGIN
+    cleanup_rutil ();
+    RETURN $error (vsta$_set_clk_rutil);
+    END;
+!
+! Paste the VD's in the right slots.
+!
+INCR i FROM 0 TO num_job_slots-1 DO
+    vd_in_slot [.i] = .blank_vd [.i];
+
+!
+! If the HELP document is out, then put the blank VD in its slot.
+!
+help_is_out = 0;		!Assume HELP should be put in
+IF .help_doc [dkb$l_vd_of_body] NEQ 0
+  THEN
+    IF (.srv$gl_help_jrb [jrb$l_slot] EQL 0)
+      THEN help_is_out = 1;
+
+temp = username_height + clock_height + (2 * slot_gap);	!Place to put 1st one.
+INCR i FROM 0 TO (num_slots - 1) DO
+    BEGIN
+    IF NOT vs$$vds_paste_vd_to_pb
+		(.vsta$gl_footer_pb_id	!PB-id
+		,.blank_vd [.i]		!VD-id
+		,start_slot_x		!X
+		,.temp			!Y
+		,0			!On top
+		)
+      THEN
+	BEGIN
+	cleanup_rutil ();
+	RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'a blank VD'
+			,string_type, %ASCID 'Right utility area'
+			);
+	END;
+
+    temp = .temp + slot_vd_size_y + slot_gap;	!Place to put next one.
+    END;		!Of INCR loop
+
+!
+! Initial store of Notices, PROFILE, maybe HELP.
+!
+vsta$$foot_notice_store ();
+
+vsta$$foot_prof_store ();
+IF NOT .help_is_out
+  THEN vsta$$foot_help_store ();
+
+!	Maybe make the footer appear
+
+IF .srv$gl_utility_area_displayed THEN vsta$$foot_appear ()
+	ELSE    vsta$$symb_disappear();		! Undisplay the symbol bar.
+
+
+
+! Added this code here to make the [Menu] key on the symbol bar selectable.
+! Do this here, so that we know that the Main Menu is legal. (Not Authorization
+! time.
+IF NOT vsta$$rgn_set_region_selectable
+		(.srv$gl_symb_vd_id
+		,.srv$gl_menu_key_region_x
+		,.srv$gl_menu_key_region_y
+		,0, 0			!No astadr, astprm
+		,.srv$gl_main_menu [hmb$l_pb]	!popup pb
+		,.srv$gl_main_menu [hmb$w_def_x]
+		,.srv$gl_main_menu [hmb$w_def_y]
+		,vsta$K_sel_area	!Selectable area
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+RETURN SS$_NORMAL;		!return success
+END;	! of entire routine vsta$$foot_init
+
+ROUTINE cleanup_rutil =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called if error setting up, or at end session,
+!	to delete all the HI SDA objects we created for the right utility area.
+!--
+BEGIN
+
+IF (.vsta$gl_footer_pb_id EQL 0)
+  THEN RETURN SS$_NORMAL;	!No PB-id created yet, nothing to do.
+
+!
+! He must have gotten past authorization and footer creation.
+! Delete the stuff.
+!
+srv_gl_ignore_delw = 1;		!Tell VSS module to ignore the window delete..
+vs$$vds_delete_pb (.vsta$gl_footer_pb_id);	!Any window gets deleted too.
+vsta$gl_footer_pb_id = 0;	!Remember there's no footer now...
+srv_gl_ignore_delw = 0;
+
+!
+! Delete the notice, help, profile icon VD's.
+!
+IF (.vsta$gl_notice_vd_id NEQ 0)
+  THEN vs$$vds_delete_vd (.vsta$gl_notice_vd_id);
+IF (.vsta$gl_help_vd_id NEQ 0)
+  THEN vs$$vds_delete_vd (.vsta$gl_help_vd_id);
+IF (.vsta$gl_prof_vd_id NEQ 0)
+  THEN vs$$vds_delete_vd (.vsta$gl_prof_vd_id);
+vsta$gb_notices_in = 0;		!Notices no longer in slot.
+vsta$gb_notices_on = 0;		!Notices is now OFF.
+vsta$gl_notice_vd_id = 0;
+vsta$gl_help_vd_id = 0;
+vsta$gl_prof_vd_id = 0;
+vd_in_slot [.vsta$gl_notice_slot - 1] = 0;
+vd_in_slot [.vsta$gl_help_slot - 1] = 0;
+vd_in_slot [.vsta$gl_prof_slot - 1] = 0;
+
+!
+! Delete all icon VD's.
+!
+INCR i FROM 0 TO num_slots - 1 DO
+    BEGIN
+    IF (.vd_in_slot [.i] NEQ 0)
+      THEN
+	BEGIN
+	IF (.vd_in_slot [.i] NEQ .blank_vd [.i])
+	  THEN vs$$vds_delete_vd (.vd_in_slot [.i]);
+	vd_in_slot [.i] = 0;
+	END;
+
+    IF (.blank_vd [.i] NEQ 0)
+      THEN
+	BEGIN
+	vs$$vds_delete_vd (.blank_vd [.i]);
+	blank_vd [.i] = 0;
+	END;
+
+    END;		!INCR loop
+
+no_more_clock ();		!Get rid of the clock VD.
+delete_username_vd ();		!Get rid of the user name VD.
+
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_end_session =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete footer objects (which vary from user to user),
+!	and get things into a state where we can call vsta$$foot_init
+!	again.
+!--
+BEGIN
+LOCAL
+    status;
+
+vsta$gl_footer_displayed = 0;	!Make sure this gets cleared
+vsta$gl_footer_start_x = 0;	!re-init this to 0 for vp center'er.
+
+cleanup_rutil ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_clock =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create VD and start up the clock. Pastes the VD on the PB.
+! IMPLICIT INPUTS:
+!	vsta$gl_footer_pb_id
+!--
+BEGIN
+LOCAL
+    vd_id,
+    status;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create the VD
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_create_vd
+		(clock_height		! Height
+		,slot_vd_size_x		! Width
+		,1			! 1 Bitplane
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,2			!indicate Text only
+		,0			!UIC
+		,1			!Permanent VD
+		,0			! UIC Protection
+		,vd_id			!Place to put VD_id
+		,%ascid 'Time'		!Help keyword
+		)
+  THEN
+    RETURN $error (vsta$_crevd_for
+		,string_type, %ASCID 'utility area clock display'
+		);
+
+clock_vd_id = .vd_id;			!Remember the VD id
+
+IF ((.srv$gl_date_format EQL prof$K_datef_monthdd19yy)
+	OR
+   (.srv$gl_date_format EQL prof$K_datef_ddmonth19yy))
+  THEN clock_num_lines = 3
+  ELSE clock_num_lines = 2;
+
+IF NOT vs$$txt_addlines
+		(.vd_id
+		,.clock_num_lines	!Number of text lines
+		,clock_height / .clock_num_lines !Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+!
+! Make the default field center things.
+!
+INCR i FROM 1 TO .clock_num_lines DO
+    BEGIN
+    IF NOT vs$$txt_set_field_format
+			(.vd_id
+			,.i		! Line
+			,1		! Field begining.
+			,ff_center	! Format
+			)
+      THEN RETURN $error (vsta$_setfldfmt);
+    END;
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'PELLUCIDA' 	! Font to use.
+		)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'PELLUCIDA'
+			);
+
+IF NOT vs$$txt_setTypesize (.vd_id, 15)
+  THEN RETURN $error (vsta$_setts);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Paste the VD to the PB
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_paste_vd_to_pb
+		(.vsta$gl_footer_pb_id		!PB-id
+		,.vd_id			!VD-id
+		,start_slot_x		! Paste coordinates.
+		,username_height + slot_gap
+		,0			!On top
+		)
+  THEN
+    RETURN $error (vsta$_paste_what
+		,string_type, %ASCID 'Date/time VD'
+		,string_type, %ASCID 'Right utility area'
+		);
+
+curr_date_len = 0;			!No date written yet
+curr_time_len = 0;			!No time written yet
+vsta$gl_prev_mm = 0;			!No month written yet
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Call the self-repeating clock routine
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vsta$$foot_clock_update ()
+  THEN
+    BEGIN
+    $error (vsta$_clkupd);
+!
+! Actually, the ACP will run fine without this working...
+! So don't return bad status.
+    END;
+
+RETURN SS$_NORMAL
+END;		! of routine setup_clock
+
+ROUTINE no_more_clock =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete the clock VD, and stop the clock AST's.
+!--
+BEGIN
+LOCAL
+    status;
+
+$cantim (REQIDT = 4321);	!Stop the clock timer, if set.
+
+ss_mode = $false;
+IF (.clock_vd_id NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.clock_vd_id);
+    clock_vd_id = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+ROUTINE setup_username =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create VD and write the User's name into it.
+!--
+BEGIN
+LOCAL
+    uname_desc: VECTOR [2],	!Gets descriptor to user-specified name
+    len_wrote,			!# chars written in string
+    customized,			!Flag - set to 1 if username is customized
+    status;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create the VD
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_create_vd
+		(username_height	! Size info.
+		,slot_vd_size_x
+		,1			!1 Bitplane
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,2			!indicate Text only
+		,0			!UIC
+		,1			!Permanent
+		,0			!UIC Protection
+		,username_vd_id		!Place to put VD_id
+		)
+  THEN RETURN $error (vsta$_crevd_for
+			,string_type, %ASCID 'User''s name'
+			);
+
+IF NOT vs$$txt_addLines
+		(.username_vd_id
+		,1			!Number of text lines
+		,username_height - 16	!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_addlines
+		(.username_vd_id
+		,1			!# lines to add
+		,16			!height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_setWritingColor
+		(.username_vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.username_vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+!
+! Make the default field center things.
+!
+IF NOT vs$$txt_set_field_format	(.username_vd_id
+				,1		! Line
+				,1		! Field begining.
+				,ff_center	! Format
+				)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+IF NOT vs$$txt_set_field_format	(.username_vd_id
+				,2		! Line
+				,1		! Field begining.
+				,ff_center	! Format
+				)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+IF NOT vs$$txt_setTypeface
+			(.username_vd_id
+			,%ASCID 'PELLUCIDA' ! Font to use.
+			)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'PELLUCIDA'
+			);
+IF NOT vs$$txt_setTypesize (.username_vd_id, 15)
+  THEN RETURN $error (vsta$_setts);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Paste the VD to the PB
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_paste_vd_to_pb
+		(.vsta$gl_footer_pb_id	!PB-id
+		,.username_vd_id	!VD-id
+		,start_slot_x		! Paste coordinates.
+		,slot_gap
+		,0			!On top
+		)
+  THEN
+    RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'User''s name display'
+			,string_type, %ASCID 'Right utility area'
+			);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Write some text for now.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+! If the user's profile specified a name, use that. Otherwise use the username
+! specified when he logged in.
+!
+IF ((.srv$gl_user_1_name_len NEQ 0) OR (.srv$gl_user_2_name_len NEQ 0))
+  THEN customized = 1		!User specified a customized name
+  ELSE customized = 0;
+
+IF (.customized NEQ 0)
+  THEN
+    BEGIN
+    uname_desc [0] = .srv$gl_user_1_name_len;
+    uname_desc [1] = srv$gl_user_1_name;
+    END
+  ELSE
+    BEGIN
+    uname_desc [0] = .srv$gl_username_desc [0];
+    uname_desc [1] = .srv$gl_username_desc [1];
+    END;
+
+IF (.uname_desc [0] NEQ 0)
+  THEN
+    IF NOT (status =
+	vsta$$srv_write_truncated
+			(.username_vd_id
+			,uname_desc	!The text to write
+			,1, 1		!Line, field
+			,slot_vd_size_x - 1 !width of field
+			,len_wrote	!returned # chars written
+			)
+	)
+      THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'User''s name line 1'
+			);
+
+IF (.customized EQL 0)
+  THEN RETURN SS$_NORMAL;		!Done if not customized.
+
+!
+! Write 2nd line if any.
+!
+IF (.srv$gl_user_2_name_len EQL 0)
+  THEN RETURN SS$_NORMAL;		!No 2nd line.
+
+uname_desc [0] = .srv$gl_user_2_name_len;
+uname_desc [1] = srv$gl_user_2_name;
+
+IF NOT (status =
+    vsta$$srv_write_truncated
+		(.username_vd_id
+		,uname_desc
+		,2, 1		!Line, field
+		,slot_vd_size_x - 1	!Field width
+		,len_wrote
+		)
+        )
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'User''s name line 2'
+			);
+
+RETURN SS$_NORMAL
+END;		! of routine setup_username
+
+ROUTINE delete_username_vd =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the username vd.
+!--
+BEGIN
+
+IF (.username_vd_id NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.username_vd_id);
+    username_vd_id = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_write_truncated
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This is a general purpose routine to write as much of a string
+!	in a field as will fit. The number of characters actually
+!	written are returned.
+! FORMAL PARAMETERS:
+	(vd_id
+	,str_desc: REF VECTOR [2]
+	,line
+	,field_id
+	,field_width
+	,len_wrote		!Returned length written
+	) =
+!--
+BEGIN
+LOCAL
+    whole_len: WORD,
+    attempted_str_desc: VECTOR [2],
+    meas_x, meas_y,
+    status;
+
+whole_len = .str_desc [0];	!Just get length
+attempted_str_desc [0] = .whole_len;
+attempted_str_desc [1] = .str_desc [1];
+
+WHILE 1 DO
+    BEGIN
+    IF NOT vs$$txt_Measure_text
+		(.vd_id		!Vd-id
+		,.attempted_str_desc [0]	!Length of string..
+		,.attempted_str_desc [1]	!The text to measure
+		,0, 0		!Current typeface
+		,0, 0		!Current typesize
+		,0, 0		!Current rendition
+		,meas_x, meas_y
+		)
+      THEN RETURN $error (vsta$_meastxt_for
+			,string_type, %ASCID 'string'
+			);
+
+    IF (.meas_x LEQ .field_width)
+      THEN
+	BEGIN
+	IF NOT vs$$txt_writeText
+		(.vd_id
+		,attempted_str_desc
+		,.line
+		,.field_id
+		,1		!CPOS
+		)
+	  THEN RETURN .status;	!Let caller tell what he couldn't write.
+	.len_wrote = .attempted_str_desc [0];
+	RETURN SS$_NORMAL;
+	END;
+
+    attempted_str_desc [0] = .attempted_str_desc [0] - 1;
+    IF (.attempted_str_desc [0] EQL 0)
+      THEN RETURN $error (vsta$_wrt_no_rm);	!Not even 1 char will fit!
+
+    END;	!While 1 do...
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_blank_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create a blank VD to use when nothing is in a slot
+! FORMAL PARAMETERS:
+	(ret_vd_id
+	,help_keyword		!0 if no help keyword
+	,graphics_flag		!=1 if graphics wanted.
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT vs$$vds_create_vd
+		(slot_vd_size_y		! Size info.
+		,slot_vd_size_x
+		,1			!1 Bitplane
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,2 + .graphics_flag	!indicate Text or text+graphics
+		,0			!UIC
+		,1			!Permanent
+		,0			!UIC Protection
+		,.ret_vd_id		!Place to put VD_id
+		,.help_keyword		!Help keyword, if any
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'blank slot in utility area'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_icon_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initially writes an ICON vd:
+!	Defines a text block, sets typeface to "icons",
+!	Gets the text to write, defines the text lines, puts up graphics.
+!	and text.
+! FORMAL PARAMETERS: (all input)
+	(char_code		!Char index %C'N', 'P', or 'H'
+	,vd_id			!Virtual display created for the icon
+	,sel_routine		!Routine to call if icon is selected.
+	,num_Lines		!Where to put # of lines written
+	) =
+!--
+BEGIN
+LOCAL
+    text_num,
+    text_desc: VECTOR [2],
+    text_str: VECTOR [128,BYTE],
+    text_len,
+    line1_desc: VECTOR [2],
+    line2_desc: VECTOR [2],
+    nlines,		!# of lines
+    size_free,
+    size_on_top,
+    len_written,
+    status;
+
+get_icon_graphics (.vd_id, %ASCID 'I');	!Graphics for an icon.
+
+text_num = (SELECTONE .char_code OF
+    SET
+    [%C'N']: 701;	!NOTICES
+    [%C'H']: 700;	!HELP
+    [%C'P']: 702;	!PROFILE
+    [OTHERWISE]: 703;	!??? UNKNOWN ???
+    TES
+    );
+
+text_desc [0] = 128;
+text_desc [1] = text_str;
+IF NOT vsta$$srv_get_message_text
+		(.text_num
+		,text_desc		!Descriptor to output string
+		,text_len		!Output length
+		)
+  THEN RETURN $error (vsta$_msgtxt, integer_type, .text_num);
+text_desc [0] = .text_len;
+
+get_divided_text (text_desc	!Text to fit
+		,interior_doc_icon !# pixels maximum
+		,nlines		!Number of lines
+		,line1_desc	!Line1 descriptor
+		,line2_desc	!Line2 descriptor
+		);
+
+size_free = slot_vd_size_y - (.nlines * 16);	!Blank space
+size_on_top = (.size_free / 2) + 16;	!Include line 1
+
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1		!Number of text lines
+		,.size_on_top	!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+!
+! Add lines if more than 1 line
+!
+IF (.nlines NEQ 1)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_addlines
+		(.vd_id
+		,.nlines - 1
+		,16
+		)
+      THEN RETURN $error (vsta$_addlines);
+    END;
+!
+! Make the default field center things.
+!
+INCR i FROM 1 TO .nlines DO
+    BEGIN
+    IF NOT vs$$txt_set_field_format
+			(.vd_id
+			,.i		! Line
+			,1		! Field begining.
+			,ff_center	! Format
+			)
+      THEN RETURN $error (vsta$_setfldfmt);
+    END;
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT vs$$txt_setTypeface
+			(.vd_id
+			,%ASCID 'PELLUCIDA'
+			)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'PELLUCIDA'
+			);
+
+vs$$txt_setTypesize (.vd_id, 12);	!PELLUC12
+
+!
+! Define a region on the VD that can be made selectable.
+!
+IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,0		!X
+		,0		!Y
+		,slot_vd_size_x
+		,slot_vd_size_y
+		)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,0		!The region at (0,0)
+		,0
+		,.sel_routine	!Routine to call if selected
+		,0		!No ASTPRM needed
+		,0, 0, 0	!No popup-pasteboard
+		,vsta$K_sel_area	!Selectability attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+!
+! Write the text.
+!
+IF NOT vsta$$srv_write_truncated
+		(.vd_id
+		,line1_desc	!The text to write
+		,1		!Line
+		,1		!Field
+		,slot_vd_size_x - 1	!Field width
+		,len_written	!Length written
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Icon line 1'
+			);
+IF (.nlines GEQ 2)
+  THEN
+    BEGIN
+    IF NOT vsta$$srv_write_truncated
+		(.vd_id
+		,line2_desc
+		,2		!Line
+		,1		!Field
+		,slot_vd_size_x - 1	!Field width
+		,len_written		!Length written
+		)
+      THEN RETURN $error(vsta$_writet
+			,string_type, %ASCID 'Icon line 2'
+			);
+    END;
+
+IF .num_lines NEQ 0			!Unless caller passed 0 for address..
+  THEN .num_lines = .nlines;		!Return # lines written
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_appear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Displays the footer.
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! We don't necessarily want a utility area if OEM mode is active
+!
+IF .vs$gl_oem_flags
+  THEN RETURN SS$_NORMAL;
+
+IF NOT vs$$vss_create_vp		!Create viewport..
+		(.footer_window_id	!Module-wide storage for window id.
+		,.srv_vs_id		!Virtual screen id
+		,vsta$gl_footer_vp_id	!Addr of Returned vp id
+		,.vsta$gl_screen_size_x - foot_pb_width !VS X coordinate
+		,0			!VS Y coordinate
+		,0			!Put it on top
+		)
+  THEN RETURN $error (vsta$_crevp_for
+			,string_type, %ASCID 'Right utility area'
+			);
+
+vsta$gl_footer_start_x = .vsta$gl_screen_size_x - foot_pb_width;
+vsta$gl_footer_displayed = 1;		!Remember the footer is displayed.
+RETURN SS$_NORMAL
+END;		! of routine put_up_footer
+
+GLOBAL ROUTINE vsta$$foot_disappear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Removes the footer from the screen.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT vs$$vss_delete_vp (.vsta$gl_footer_vp_id)
+  THEN RETURN $error (vsta$_vpnotdel);
+
+!
+! Pretend footer starts just off screen.
+! This allows simpliciations in the SEL module.
+!
+vsta$gl_footer_start_x = .vsta$gl_screen_size_x;
+vsta$gl_footer_displayed = 0;		!Remember no longer displaying footer
+
+RETURN SS$_NORMAL
+END;		! of routine take_down_footer
+
+ROUTINE ast_clock_update =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	    Called at AST level when a timer runs out, to check if the
+!	VAXstation clock needs updating.
+!	    Every minute it checks how many direct input/output operations
+!	were performed, guesses if there has been no user activity and if not
+!	after dio_check_quantum minutes saves the screen and purges the
+!	working set.
+!--
+BEGIN
+
+LITERAL
+    dio_check_quantum = 30,		!Minutes of inactivity for screen save
+    fudge_factor = 2,			!DIOs per clock update
+    fudge_constant = 3;			!Fencepost error + change of day update
+LOCAL
+    min_dio_required;			!Minimum required DIO count
+
+EXTERNAL
+    vs$gw_channel;			!Channel number to VAXstation
+OWN
+    dio_last_check: INITIAL(0),		!Total direct I/Os as last look
+    dio_total: INITIAL(0),		!Total direct I/Os by ACP
+    minute_counter: INITIAL(0),		!Count the minutes
+    item_list: VECTOR[4]		!$GETJPI item list
+	  INITIAL(JPI$_DIRIO^16+4,dio_total,0,0);
+
+! Actually update the clock at non-ast level if we need to
+!
+	vs$$post_ast_request (vsta$$foot_clock_update);
+
+	minute_counter = .minute_counter + 1;
+!
+! See if the clock is displayed. If not, then DIOs were for the user's activity
+!
+	min_dio_required = ( IF NOT .vsta$gl_footer_displayed THEN 1
+		 ELSE ( fudge_factor * .minute_counter) + fudge_constant );
+
+	IF $GETJPI( ITMLST = item_list ) THEN	!Find total DIO operations
+	  BEGIN
+	    IF .dio_total - .dio_last_check GTR .min_dio_required THEN
+		BEGIN				!Not just clock activity
+		  minute_counter = 0;		!Reset inactivity timer
+		  dio_last_check = .dio_total;
+		  RETURN SS$_NORMAL;
+		  END;
+
+! If we've used less than our minumum required DIOs over the dio_check_quantum
+! and havn't already done it, then purge the ACP's working set to free up some
+! physical memory for others to use and enter screen-saver mode.
+!
+	    IF (.minute_counter GEQ dio_check_quantum) AND NOT .ss_mode THEN
+		BEGIN
+		  ss_mode = true;
+		  $QIOW(
+			CHAN = .vs$gw_channel,
+			FUNC = IO$_VB_SAVE_SCREEN,
+			P3   = ss_exit_ast);
+		  $PURGWS( INADR = UPLIT(0,%X'7fffffff') );
+		  END;
+	    IF .ss_mode THEN
+	    	BEGIN
+		  minute_counter = 0;		!Reset inactivity timer so we
+		  dio_last_check = .dio_total;	!don't save every minute.
+		  END;
+		  
+	    END;
+!
+	RETURN SS$_NORMAL;
+END;
+
+ROUTINE ss_exit_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This AST routine is invoked to indicate that we are exiting from
+! screen-saver mode. This means that anything we weren't doing because we
+! were in screen-saver mode, we can do now.
+!--
+BEGIN
+!
+! Set flag to permit future clock updates
+!
+    ss_mode = false;
+!
+! We don't know how long we've been asleep. So fix the clock.
+!
+    vs$$post_ast_request( display_new_clock );
+!
+	RETURN SS$_NORMAL;
+END;
+
+ROUTINE vsta$$foot_clock_update =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for updating the time display on the
+! VAXstation clock virtual display and reinitiating the wakeup AST for
+! future clock updates.
+!
+!--
+BEGIN
+LITERAL
+    vsta$k_update_interval = 60;	!Clock update interval (seconds)
+
+OWN
+    delta_time: VECTOR[2]		 !System delta time interval
+	  INITIAL(vsta$k_update_interval * -10000000, -1);
+
+LOCAL
+    status;				 !Return status value
+
+display_new_clock();
+!
+! Schedule timer ASTs for whatever the hardcoded delta time interval is.
+!
+IF NOT (status = 
+    $setimr	(DAYTIM = delta_time
+		,ASTADR = ast_clock_update
+		,EFN = .srv$gl_clock_efn
+		,REQIDT = 4321
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_setimr);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE display_new_clock =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for updating the time display on the
+! VAXstation clock virtual display.
+!
+!--
+BEGIN
+
+IF NOT .ss_mode
+THEN
+  BEGIN
+    vsta$$foot_update_date ();
+    vsta$$foot_update_time ();
+  END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_update_date =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update the date in the clock display (if it needs to be)
+!--
+BEGIN
+OWN
+    mon_desc: VECTOR [2],
+    date_buffer: VECTOR [11,BYTE];
+LITERAL
+    dd_offset = 0,
+    mmm_offset = 3,
+    yyyy_offset = 7,
+    yy_offset = 9;
+LOCAL
+    date_desc: VECTOR [2],
+    built_date_buf_1: VECTOR [20,BYTE],
+    built_date_desc_1: VECTOR [2],
+    built_date_buf_2: VECTOR [4,BYTE],
+    built_date_desc_2: VECTOR [2],
+    date_buf_len,		!Length of built_date_buf_1
+    mm,
+    now_offset,
+    len_wrote,			!# chars written
+    num_Lines_requested,	!# of text lines required in this VD
+    status;
+
+IF (.clock_vd_id EQL 0)
+  THEN RETURN SS$_NORMAL;		!No clock VD-- forget it.
+
+date_desc[0] = 11;			! Setup the descriptor properly.
+date_desc[1] = date_buffer;
+built_date_desc_1 [1] = built_date_buf_1;
+built_date_desc_2 [0] = 0;		!Assume no 2nd line needed.
+
+IF NOT (status =
+    $asctim	(TIMBUF = date_desc)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report ASCTIM error code.
+    RETURN $error (vsta$_asctim);
+    END;
+!
+! Build a date buffer in the right format
+!
+(SELECTONE .srv$gl_date_format OF
+    SET
+    [prof$K_datef_monthdd19yy]:		!March 15, 1983
+	BEGIN
+	cvt_month (date_buffer + mmm_offset, mm); !Get number of the mon.
+	IF (.mm NEQ .vsta$gl_prev_mm)
+	  THEN xpn_month (.mm, mon_desc);	!Get expanded month
+	CH$MOVE	(.mon_desc [0]
+		,.mon_desc [1]
+		,built_date_buf_1
+		);
+	now_offset = .mon_desc [0];	!Variable offset
+	built_date_buf_1 [.now_offset] = %C' ';
+	IF (.date_buffer [dd_offset] EQL %C' ')
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [.now_offset + 1] = .date_buffer [dd_offset + 1];
+	    now_offset = .now_offset + 2;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [.now_offset + 1] = .date_buffer [dd_offset];
+	    built_date_buf_1 [.now_offset + 2] = .date_buffer [dd_offset + 1];
+	    now_offset = .now_offset + 3;
+	    END;
+	built_date_buf_1 [.now_offset] = %C',';
+	built_date_desc_1 [0] = .now_offset + 1;	!Total length of buffer
+	CH$MOVE	(4
+		,date_buffer + yyyy_offset
+		,built_date_buf_2		!put "1983" in 2nd line buffer
+		);
+	built_date_desc_2 [0] = 4;		!Length...
+	built_date_desc_2 [1] = built_date_buf_2;
+	END;
+    [prof$K_datef_mmsddsyy]:
+	BEGIN
+	cvt_month (date_buffer + mmm_offset, mm); !Get number of the mon.
+	IF (.mm LSS 10)
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [0] = .mm + %C'0';
+	    now_offset = 1;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [0] = %C'1';
+	    built_date_buf_1 [1] = .mm - 10 + %C'0';
+	    now_offset = 2;
+	    END;
+	built_date_buf_1 [.now_offset] = %C'/';
+
+	IF (.date_buffer [dd_offset] EQL %C' ')
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [.now_offset + 1] = .date_buffer [dd_offset + 1];
+	    now_offset = .now_offset + 2;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [.now_offset + 1] = .date_buffer [dd_offset];
+	    built_date_buf_1 [.now_offset + 2] = .date_buffer [dd_offset + 1];
+	    now_offset = .now_offset + 3;
+	    END;
+
+	built_date_buf_1 [.now_offset] = %C'/';
+
+	CH$MOVE	(2
+		,date_buffer + yy_offset
+		,built_date_buf_1 [.now_offset + 1]
+		);
+	built_date_desc_1 [0] = .now_offset + 3;	!Total length of buffer
+	END;
+    [prof$K_datef_ddhmonhyy]:		!15-Mar-1983 (DEC format)
+	BEGIN
+	CH$MOVE	(11
+		,date_buffer
+		,built_date_buf_1
+		);
+	built_date_desc_1 [0] = 11;
+	END;
+    [prof$K_datef_ddmonth19yy]:		!15 March 1983
+	BEGIN
+	cvt_month (date_buffer + mmm_offset, mm); !Get number of the mon.
+	IF (.mm NEQ .vsta$gl_prev_mm)
+	  THEN xpn_month (.mm, mon_desc);	!Get expanded month
+	IF (.date_buffer [dd_offset] EQL %C' ')
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [0] = .date_buffer [dd_offset + 1];
+	    now_offset = 1;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [0] = .date_buffer [dd_offset];
+	    built_date_buf_1 [1] = .date_buffer [dd_offset + 1];
+	    now_offset = 2;
+	    END;
+	built_date_buf_1 [.now_offset] = %C' ';
+	CH$MOVE	(.mon_desc [0]
+		,.mon_desc [1]
+		,built_date_buf_1 + .now_offset + 1
+		);
+	built_date_desc_1 [0] = .now_offset + 1 + .mon_desc [0];
+    ! 2nd line is date.
+	CH$MOVE	(4
+		,date_buffer + yyyy_offset
+		,built_date_buf_2
+		);
+	built_date_desc_2 [0] = 4;	!date on 2nd line
+	built_date_desc_2 [1] = built_date_buf_2;
+	END;
+    [prof$K_datef_ddsmmsyy]:		!15.3.83
+	BEGIN
+	cvt_month (date_buffer + mmm_offset, mm); !Get number of the month
+	IF (.date_buffer [dd_offset] EQL %C' ')
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [0] = .date_buffer [dd_offset + 1];
+	    now_offset = 1;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [0] = .date_buffer [dd_offset];
+	    built_date_buf_1 [1] = .date_buffer [dd_offset + 1];
+	    now_offset = 2;
+	    END;
+	built_date_buf_1 [.now_offset] = %C'.';
+	now_offset = .now_offset + 1;
+
+	IF (.mm LSS 10)
+	  THEN
+	    BEGIN
+	    built_date_buf_1 [.now_offset] = .mm + %C'0';
+	    now_offset = .now_offset + 1;
+	    END
+	  ELSE
+	    BEGIN
+	    built_date_buf_1 [.now_offset] = %C'1';
+	    built_date_buf_1 [.now_offset + 1] = .mm - 10 + %C'0';
+	    now_offset = .now_offset + 2;
+	    END;
+
+	built_date_buf_1 [.now_offset] = %C'.';
+	CH$MOVE	(2
+		,date_buffer [yy_offset]
+		,built_date_buf_1 [.now_offset + 1]
+		);
+	built_date_desc_1 [0] = .now_offset + 3;	!Total length of buffer
+	END;
+    [OTHERWISE]:
+	BEGIN
+	RETURN $bug (vsta$_unkdatef);
+	END;
+    TES
+);
+!
+! Write the date if it changed since the last time.
+!
+IF (.built_date_desc_2 [0] NEQ 0)
+  THEN num_lines_requested = 3		!1 for time; 2 for date
+  ELSE num_lines_requested = 2;		!1 for time, 1 for date
+
+IF (.num_lines_requested NEQ .clock_num_lines)
+  THEN change_clock_lines (.num_Lines_requested);
+
+IF NOT (CH$EQL	(.built_date_desc_1 [0]
+		,built_date_buf_1
+		,.curr_date_len
+		,last_date_buffer
+		)
+	)
+  THEN
+    BEGIN
+  ! Clear field if number of chars is smaller now.
+    IF (.built_date_desc_1 [0] LSS .curr_date_len)
+      THEN
+	BEGIN
+	IF NOT vs$$txt_DeleteCharacters
+		(.clock_vd_id
+		,2, 1, 1	!line, field, cpos
+		,0		!all
+		)
+	  THEN RETURN $error (vsta$_delchs);
+	END;
+    curr_date_len = .built_date_desc_1 [0];
+    CH$MOVE	(.curr_date_len
+		,built_date_buf_1
+		,last_date_buffer
+		);
+    IF NOT vs$$txt_WriteText
+			(.clock_vd_id
+			,built_date_desc_1
+			,2,1,1			! Line, fld, cpos
+			)
+      THEN $error (vsta$_writet
+			,string_type, %ASCID 'Date (line 2) in right utility area'
+			);
+
+    IF (.built_date_Desc_2 [0] NEQ 0)		!is there a 3rd line?
+      THEN
+	BEGIN
+	IF NOT vs$$txt_writeText
+			(.clock_vd_id
+			,built_date_Desc_2
+			,3,1,1			!Line, fld, cpos
+			)
+	  THEN $error (vsta$_writet
+			,string_type, %ASCID 'Date (line 3) in right utility area'
+			);
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cvt_Month
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Converts MMM to numeric value.
+! FORMAL PARAMETERS:
+	(mmm_addr: REF VECTOR [,BYTE]	!Address of "MMM"
+	,mm				!Place to write the number
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+.mm =
+(SELECTONE .mmm_addr [0] OF
+    SET
+    [%C'J']:	!JAN, JUN, JUL
+	BEGIN
+	IF (.mmm_addr [1] EQL %C'A')
+	  THEN 1
+	  ELSE
+	    BEGIN
+	    IF (.mmm_addr [2] EQL %C'N')
+	      THEN 6
+	      ELSE 7
+	    END
+	END;
+    [%C'F']:	!FEB
+	2;
+    [%C'M']:	!MAR, MAY
+	BEGIN
+	IF (.mmm_addr [2] EQL %C'R')
+	  THEN 3
+	  ELSE 5
+	END;
+    [%C'A']:	!APR, AUG
+	BEGIN
+	IF (.mmm_addr [1] EQL %C'P')
+	  THEN 4
+	  ELSE 8
+	END;
+    [%C'S']:	!SEP
+	9;
+    [%C'O']:	!OCT
+	10;
+    [%C'N']:	!NOV
+	11;
+    [%C'D']:	!DEC
+	12;
+    [OTHERWISE]: 0;	!??? Where did we get this ???
+    TES
+);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE xpn_Month
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Convert numeric month value to expanded string.
+!	Remembers previous "mm" converted in vsta$gl_prev_mm.
+! FORMAL PARAMETERS:
+	(mm
+	,mon_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+OWN
+    this_month: VECTOR [30,BYTE];
+LOCAL
+    m_desc: VECTOR [2],
+    msgnum,
+    ret_len;
+
+IF ((.mm LSS 1) OR (.mm GTR 12))
+  THEN
+    RETURN $error (SS$_BADPARAM);
+
+m_desc [0] = 30;			!Set up descriptor to receive text
+m_desc [1] = this_month;		!  . .
+msgnum = 750 + .mm - 1;			!Get message number for this month
+IF NOT vsta$$srv_get_message_Text	!Go get the string in the appropriate
+			(.msgnum	! language
+			,m_desc
+			,ret_len
+			)
+  THEN RETURN $error (vsta$_msgtxt, integer_type, .msgnum);
+
+mon_desc [0] = .ret_len;
+mon_desc [1] = this_month;
+vsta$gl_prev_mm = .mm;			!Remember which "mm" we have converted.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE change_clock_lines
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create a clock display with a different number of lines.
+!	call vsta$$foot_update_time to get the time back.
+! FORMAL PARAMETERS:
+	(num_lines_requested
+	) =
+! IMPLICIT OUTPUTS:
+!	clock_num_lines - new number of lines on the VD.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT vs$$txt_removeLines
+		(.clock_vd_id			!VD-ID
+		,.clock_num_lines		!Number of lines to remove
+		)
+  THEN RETURN $error (vsta$_remlines);
+
+IF NOT vs$$txt_addLines
+		(.clock_vd_id				!vd-id
+		,.num_Lines_requested			!# of lines
+		,clock_height / .num_Lines_requested	!Height of each line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+clock_num_lines = .num_Lines_requested;	!Remember we have this many lines now.
+
+!
+! Make the default field center things.
+!
+INCR i FROM 1 TO .clock_num_lines DO
+    BEGIN
+    IF NOT vs$$txt_set_field_format
+			(.clock_vd_id
+			,.i		! Line
+			,1		! Field begining.
+			,ff_center	! Format
+			)
+      THEN RETURN $error (vsta$_setfldfmt);
+    END;
+
+curr_time_len = 0;		!Forget what we knew about time
+curr_date_len = 0;		! and date (so we'll write them again)
+vsta$$foot_update_time ();	!Update the time field now.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_update_time =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update the time in the clock display (if it needs to be)
+!--
+BEGIN
+LITERAL
+    hh_offset = 0,
+    mm_offset = 3;
+LOCAL
+    time_buffer: VECTOR[11,BYTE],	!Ascii time buffer
+    time_desc: VECTOR [2],
+    built_time_buffer: VECTOR [20,BYTE],
+    built_time_desc: VECTOR [2],
+    hr,					!The integer hour number
+    pm_flag,				!=1 if PM not AM
+    now_offset,
+    status;
+
+IF (.clock_vd_id EQL 0)
+  THEN RETURN SS$_NORMAL;		!No clock VD-- forget it.
+
+time_desc[0] = 11;
+time_desc[1] = time_buffer;
+built_time_desc [1] = built_time_buffer;
+
+IF NOT (status =
+    $asctim	(TIMBUF = time_desc
+		,CVTFLG = 1	!Want time only
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_asctim);
+    END;
+
+time_desc[0] = 5;	! Trim descriptor to HH:MM only.
+
+!
+! Convert to requested format
+!
+(SELECTONE .srv$gl_time_format OF
+    SET
+    [prof$K_timef_12hr]:		!1:56 PM
+	BEGIN
+	hr = (.time_buffer [0] - %C'0') * 10 + .time_buffer [1] - %C'0';
+	IF (.hr GEQ 12)
+	  THEN
+	    BEGIN
+	    pm_flag = 1;
+	    hr = .hr - 12;
+	    IF (.hr EQL 0) THEN hr = 12;
+	    END
+	  ELSE
+	    pm_flag = 0;
+
+	IF (.hr GEQ 10)
+	  THEN
+	    BEGIN
+	    built_time_buffer [0] = %C'1';
+	    built_time_buffer [1] = (.hr - 10) + %C'0';
+	    now_offset = 2;
+	    END
+	  ELSE
+	    BEGIN
+	    built_time_buffer [0] = .hr + %C'0';
+	    now_offset = 1;
+	    END;
+	built_time_buffer [.now_offset] = %C':';
+	built_time_buffer [.now_offset + 1] = .time_buffer [mm_offset];
+	built_time_buffer [.now_offset + 2] = .time_buffer [mm_offset + 1];
+	built_time_buffer [.now_offset + 3] = %C' ';
+	now_offset = .now_offset + 4;
+	IF (.pm_flag)
+	  THEN built_time_buffer [.now_offset] = %C'P'
+	  ELSE built_time_buffer [.now_offset] = %C'A';
+	built_time_buffer [.now_offset + 1] = %C'M';
+        built_time_desc [0] = .now_offset + 2;	!# chars used.
+	END;
+    [prof$K_timef_24hr]:		!13:56
+	BEGIN
+	CH$MOVE	(5
+		,time_buffer
+		,built_time_buffer
+		);
+	built_time_desc [0] = 5;
+	END;
+    [prof$K_timef_eur]:			!13H56
+	BEGIN
+	CH$MOVE	(5
+		,time_buffer
+		,built_time_buffer
+		);
+	built_time_buffer [2] = %C'H';	!"H" instead of colon
+	built_time_desc [0] = 5;
+	END;
+    TES
+);
+
+!
+! Write this time out to the virtual display device always to line 1,
+! field 1, and character position 1
+!
+IF NOT vs$$txt_DeleteCharacters
+		(.clock_vd_id
+		,1, 1, 1
+		,0	!"all"
+		)
+  THEN RETURN $error (vsta$_delchs);
+
+IF NOT vs$$txt_writeText
+		(.clock_vd_id
+		,built_time_desc
+		,1	! Line
+		,1	! Field start
+		,1	! Character postion
+		)
+  THEN RETURN $error	(vsta$_writet
+			,%ASCID 'time field in right utility area'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_which_slot
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given screen coordinates, tells you which slot you're pointing at.
+!	(1 to num_slots);  0 means not pointing at any slot.
+! FORMAL PARAMETERS:
+	(vs_x
+	,vs_y
+	,returned_slot_idx
+	) =
+!--
+BEGIN
+
+IF ((.vs_x LSS .vsta$gl_footer_start_x) OR (.vs_x GTR .vsta$gl_screen_size_x))
+  THEN
+    BEGIN
+    .returned_slot_idx = 0;		!not even pointing at PB!
+    RETURN SS$_NORMAL;
+    END;
+
+IF ((.vs_y LSS (clock_height + username_height))
+		OR
+	(.vs_y GTR foot_pb_height))
+  THEN
+    BEGIN
+    .returned_slot_idx = 0;		!Not pointing at any slots.
+    RETURN SS$_NORMAL;
+    END;
+!
+! We know he's pointing at ONE of the slots. Choose the nearest one.
+!
+.returned_slot_idx = 1 + ((.vs_y - (clock_height + username_height)) /
+			(slot_vd_size_y + slot_gap));
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_chk_slot_empty
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Checks to see if a slot is empty.
+!	Called with slot number, 1 to num_slots.
+!	Returns "0" status if slot is not empty.
+! FORMAL PARAMETERS:
+	(slot_number
+	) =
+!--
+BEGIN
+
+IF (.vd_in_slot [.slot_number - 1] EQL .blank_vd [.slot_number -1])
+  THEN RETURN SS$_NORMAL	!Slot is empty
+  ELSE RETURN 0			!Slot not empty
+
+END;
+
+GLOBAL ROUTINE vsta$$foot_find_empty_slot
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Return the slot number of the first empty job slot, or 0 if none.
+! FORMAL PARAMETERS:
+	(slot
+	) =
+! RETURN VALUES:
+!	SS$_NORMAL if a slot is found; else 0.
+!--
+BEGIN
+LOCAL
+    status;
+
+INCR i FROM 1 TO num_job_slots DO
+    IF (vsta$$foot_chk_slot_empty (.i))
+      THEN
+	BEGIN
+	.slot = .i;		!Return slot number to caller
+	RETURN SS$_NORMAL
+	END;
+
+RETURN 0			!No slots are empty
+END;
+
+GLOBAL ROUTINE vsta$$foot_empty_slot
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Erases a slot. The VD that is there is unpasted and deleted
+!	(unless it is one of the icon vd's)
+! FORMAL PARAMETERS:
+	(slot
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.vsta$gl_footer_pb_id EQL 0)
+  THEN RETURN SS$_NORMAL;	!Footer PB doesn't exist, return TRUE.
+
+IF (.slot GTR num_job_slots)
+  THEN
+    BEGIN			!n icon slot, unpaste but don't delete.
+    IF NOT vs$$vds_unpaste_vd_from_pb
+		(.vsta$gl_footer_pb_id
+		,.vd_in_slot [.slot-1]
+		)
+      THEN RETURN $error (vsta$_remvd);
+    END
+  ELSE
+    BEGIN
+    vs$$vds_delete_vd (.vd_in_slot [.slot - 1]);
+    END;
+
+vd_in_slot [.slot - 1] = .blank_vd [.slot - 1];	!Remember only the blank VD is
+						! in the slot.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_jrb_deleted
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when a JRB is deleted and it was in a slot.
+! FORMAL PARMETERS:
+	(slot
+	) =
+!--
+BEGIN
+LOCAL
+    vd_there,
+    status;
+
+!
+! Delete it from the slot, and delete the VD.
+!
+vsta$$foot_empty_slot (.slot);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$get_jobslot_icon
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates and pastes a job slot icon VD
+!	ALL errors are "should not happen" errors, but this
+!	routine returns a bad status to the caller anyway.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Main WDB
+	,astprm				!ASTPRM for "selected"
+	,slot				!slot where it should go.
+	) =
+!--
+BEGIN
+OWN
+    job_num_buf: VECTOR [10,BYTE];	!ASCII job number, if needed
+LOCAL
+    vd_id,
+    write_desc: VECTOR [2],
+    jrb: REF job_block,
+    got_name,		!Flag
+    temp,		!Cell for intermediate computations
+    out_len: WORD,	!Gets $fao length written
+    nlines,		!Number of text lines
+    line1_desc: VECTOR [2],
+    line2_desc: VECTOR [2],
+    size_free,		!Amount of free y-space in the VD
+    size_on_top,	!Size of the top line of the VD
+    status;
+
+jrb = .wdb [wdb$a_jrb];			!Get address of JRB
+got_name = 0;				!Set to 1 if we get a good name
+IF (.jrb [jrb$l_job_name_len] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (CH$EQL	(1, UPLIT (%C' '), .jrb [jrb$l_job_name_len], jrb [jrb$b_job_name], %C' ')
+	)
+      THEN
+	BEGIN
+	got_name = 1;
+	write_desc [0] = .jrb [jrb$l_job_name_len];
+	Write_desc [1] = jrb [jrb$b_job_name];
+	END;
+    END;
+
+IF NOT (.got_name)
+  THEN
+    BEGIN
+  !
+  ! Name is either null or all spaces. It won't show up and the user
+  ! will be at a loss to identify the job. We'll put "(job 3)" there.
+  !
+    IF NOT (status =
+	$fao	(%ASCID '(Job !UL)'	!"(Job 3)"
+		,out_len		!OUTLEN
+		,UPLIT (10, job_num_buf)	!OUTDSC
+		,.jrb [jrb$l_jobnum]
+		)
+	    )
+      THEN
+	BEGIN
+	write_desc [0] = %CHARCOUNT ('<???>');
+	write_desc [1] = UPLIT ('<???>');
+	END
+      ELSE
+	BEGIN
+	write_desc [0] = .out_len;		!How many characters written
+	write_desc [1] = job_num_buf;
+	END;
+    END;
+
+IF NOT vs$$vds_create_vd
+		(slot_vd_size_y		! Size info.
+		,slot_vd_size_x
+		,1			!1 Bitplane
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,3			!indicate Text and graphics
+		,0			!UIC
+		,1			!Permanent
+		,0			!UIC Protection
+		,vd_id			!Place to put VD_id
+		)
+  THEN RETURN $error (vsta$_crevd_for
+			,string_type, %ASCID 'Job icon'
+			);
+
+!
+! ** DO GRAPHICS CALLS TO WRITE THE JOB ICON **
+!
+get_icon_graphics (.vd_id, %ASCID 'J'); !Put the job icon in the
+					!specified vd's graphics plane.
+
+!
+! Figure out what the one or two lines of text will be.
+!
+get_divided_text
+	(write_Desc
+	,interior_job_icon	!Max # pixels that can be in a line
+	,nlines			!(output) # of lines, 1 or 2
+	,line1_desc		!First string descriptor
+	,line2_desc		!2nd string descriptor
+	);
+
+size_free = slot_vd_size_y - (.nlines * 15);	!Blank space
+size_on_top = (.size_free / 2) + 15;		!Include line 1
+
+!
+! Create a text line and write the name of the job in "ed_hdr_font".
+! (which we know will fit).
+!
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1		!Number of text lines
+		,.size_on_top	!height of the line
+		)
+  THEN RETURN $error (vsta$_addlines);
+!
+! Add lines if more than 1 line
+!
+IF (.nlines NEQ 1)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_addLines
+		(.vd_id			!id
+		,.nlines - 1		!number of lines
+		,15			!line height
+		)
+      THEN RETURN $error (vsta$_addlines);
+    END;
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+INCR i FROM 1 TO .nlines DO
+    BEGIN
+    IF NOT vs$$txt_set_field_format
+		(.vd_id
+		,.i		!line
+		,1		!Field
+		,ff_center	!format
+		)
+      THEN RETURN $error (vsta$_setfldfmt);
+    END;
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'PELLUCIDA'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'PELLUCIDA'
+			);
+
+IF NOT vs$$txt_setTypesize (.vd_id, 12)
+  THEN RETURN $error (vsta$_setts);
+
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,line1_desc		!The text to write
+		,1, 1, 1		!Line, field, char pos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'line 1 of job name'
+			);
+
+IF (.nlines GEQ 2)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_writeText
+		(.vd_id			!Vd
+		,line2_desc		!The text in line 2
+		,2, 1, 1		!Line, field, cpos
+		)
+      THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'line 2 of job name'
+			);
+    END;
+
+!
+! Make whole icon a selectable region.
+!
+IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,0
+		,0
+		,slot_vd_size_x
+		,slot_vd_size_y
+		)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,0		!The region at (0,0)
+		,0
+		,vsta$$srv_jobslot_selected
+		,.astprm	!Pass the ASTPRM along
+		,0, 0, 0	!No popup-pasteboard
+		,vsta$K_sel_area	!Selectability attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+!
+! Paste the VD on top of the blank VD
+!
+put_on_nonblank_vd (.vd_id, .slot, %ASCID 'Job slot vd');
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_on_nonblank_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Pastes a non-blank VD to a given slot (if a job slot, will be
+!	on top of the blank VD).
+! FORMAL PARAMETERS:
+	(vd_id
+	,slot
+	,paste_vd_text_desc
+	) =
+!--
+BEGIN
+LOCAL
+    temp,
+    status;
+
+temp = username_height + clock_height + (2 * slot_gap);	!Place to put 1st one.
+temp = .temp + ((slot_vd_size_y + slot_gap) * (.slot - 1));
+IF NOT vs$$vds_paste_vd_to_pb
+		(.vsta$gl_footer_pb_id		!PB-id
+		,.vd_id			!VD-id
+		,start_slot_x		!X
+		,.temp			!Y
+		,0			!On top
+		)
+  THEN RETURN $error (vsta$_paste_what
+		,string_type, .paste_vd_text_desc
+		,string_Type, %ASCID 'Right utility area'
+		);
+
+vd_in_slot [.slot - 1] = .vd_id;	!Remember the icon VD id.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_icon_graphics
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does some magic to get the job icon character into the
+!	graphics plane of the specified virtual display.
+! FORMAL PARAMETERS:
+	(vd_id
+	,text_desc		!Address of text descriptor to "J" (for a
+				! job icon) or "I" (for an HI icon).
+	) =
+!--
+BEGIN
+LOCAL
+    font_bm_desc: modified_fbmds,	!Descriptor
+    dest_offsets: VECTOR [2,WORD],	!X, Y offsets of the text in the VD
+    fib_id,
+    fib_adr: REF fib,
+    disp_adr,				!Address of font in display memory
+    status;
+
+!
+! Compute X,Y offsets of the text.
+!
+dest_offsets [0] = (slot_vd_size_x - job_icon_width) / 2;	!X offset
+dest_offsets [1] = (slot_vd_size_y - job_icon_height) /2;	!Y offset
+
+!
+! Compute the font bitmap descriptor.
+!
+IF NOT vs$$txt_get_font_address
+		(0			!No particular VD
+		,%ASCID 'ICON_FONT'	!Typeface
+		,0			!Typesize
+		,0			!Rendition
+		,font_bm_desc [mfbmd$a_sfbmd_addr]	!Return addr here
+		,fib_id			!Return FIB id here
+		)
+  THEN RETURN $error (vsta$_getfntaddr);	!?Unable to get font address
+!
+! Dereference the fib, since we don't require font to stay around after we're
+! done.
+! (We assume that vs$$txt_get_font_address upped the reference count).
+!
+	$ertn (fibDereference) (.fib_id);
+!
+!  Get the address of the font image block
+!
+IF NOT findfib	(.fib_id	!FIB id
+		,fib_adr	!Return address of FIB here
+		)
+  THEN RETURN $error (vsta$_findfib);	!?Unable to get fib_adr
+
+!
+!  Check to see if font is disp mem
+!
+IF (disp_adr = .fib_adr [fib_display_adr]) NEQ 0
+  THEN
+    BEGIN
+    font_bm_desc [mfbmd$w_locate] = vsta$k_dispmem;
+    font_bm_desc [mfbmd$a_sfbmd_addr] = .disp_adr;
+    END
+  ELSE
+    font_bm_desc [mfbmd$w_locate] = vsta$k_vaxmem;
+
+!
+! Do the VSTA$$NAT_PRINT_TEXT to write the graphics plane of the VD.
+!
+IF NOT $VSTAPRINT
+	(SRCTYP = vsta$K_src_const
+	,SOURCE = 1
+	,MSKTYP = vsta$K_msk_font_bitmap	!Have font descriptor
+	,MASK = font_bm_desc		!Font bitmap descriptor
+	,DSTTYP = vsta$K_dst_vd		!Write into the VD
+	,DST = .vd_id			!Here's the VD.
+	,DSTOFF = dest_offsets		!The X,Y positions in the VD
+	,MAPTYP = vsta$K_map_source	!Map the source pixels
+	,MAPADR = UPLIT (%B'10')	!If this doesn't work, switch bits
+	,TXTTYP = vsta$K_txt_8bits	!8-bit text string
+	,TXTDSC = .text_desc		!Text descriptor
+	,EFN = 1			!EFN 1 = synchronous
+	)
+  THEN RETURN $error (vsta$_vsta_print);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_divided_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given 1 line of up to 15 characters, break it into
+!	2 lines if it doesn't all fit on one line.
+! FORMAL PARAMETERS:
+	(write_desc: REF $string_descriptor
+	,max_width			!Max width allowed in pixels
+	,nlines				!Place to write # of lines
+	,line1_desc: REF VECTOR [2]	!Place to write line1 descriptor
+	,line2_desc: REF VECTOR [2]	!Place to write line2 descriptor
+	) =
+!--
+BEGIN
+LOCAL
+    rem_Desc: VECTOR [2],
+    ret_x,
+    str_buf: REF VECTOR [,BYTE],
+    try1_desc: VECTOR [2],
+    try2_desc: VECTOR [2],
+    score,
+    best_score,
+    best1_desc: VECTOR [2],
+    best2_desc: VECTOR [2],
+    first_possible;
+
+line1_desc [0] = 0;		!Incase errors happen, we just return
+line2_desc [0] = 0;		! with null strings
+
+!
+! Throw out leading and trailing spaces
+!
+rem_desc [0] = .write_desc [sd$w_len];
+rem_desc [1] = .write_Desc [sd$a_adr];
+str_buf = .rem_desc [1];
+
+INCR i FROM 0 TO .rem_desc [0] - 1 DO
+    BEGIN
+    IF (.str_buf [.i] EQL %C' ')
+      THEN
+	BEGIN
+	rem_desc [0] = .rem_desc [0] - 1;
+	rem_desc [1] = .rem_desc [1] + 1;
+	END
+      ELSE EXITLOOP;
+    END;
+
+str_buf = .rem_desc [1];
+
+DECR i FROM .rem_desc [0] - 1 TO 0 DO
+    BEGIN
+    IF (.str_buf [.i] EQL %C' ')
+      THEN
+	rem_desc [0] = .rem_desc [0] - 1
+      ELSE EXITLOOP;
+    END;
+!
+! Now we have a string descriptor in rem-desc without the leading
+! and trailing spaces (if any were present).
+! First see if it will all fit. Then we just have 1 line.
+!
+
+IF NOT meas_pelluc (rem_desc, ret_x)
+  THEN RETURN 0;		!Error
+
+IF (.ret_x LEQ .max_width)
+  THEN
+    BEGIN
+    .nlines = 1;		!1 line
+    line1_desc [0] = .rem_desc [0];
+    line1_desc [1] = .rem_desc [1];
+    RETURN SS$_NORMAL
+    END;
+
+.nlines = 2;			!There will be 2 lines
+
+!
+! See if there is a reasonable way to break up the string.
+!
+try1_desc [0] = 0;		!Start at position 0
+IF NOT next_breakup		!If no delimiter exists within string,
+		(rem_desc
+		,try1_desc
+		,try2_desc
+		)
+  THEN RETURN meas_nobrk (rem_desc, .max_width, .line1_desc, .line2_desc);
+				! Then just truncate where we have to.
+
+best_score = %X'FFFF';		!Anything beats this
+WHILE 1 DO
+    BEGIN
+    IF NOT meas_score
+		(try1_desc	!1st string desc.
+		,try2_desc	!2nd string desc.
+		,.max_width	!Maximum allowed width
+		,score		!Write 'score' here.
+		)
+      THEN RETURN 0;		!Error!
+
+    IF (.score EQL 0)		!Both strings fit.
+      THEN
+	BEGIN			!Try1_desc, try2_desc are ok.
+	line1_desc [0] = .try1_desc [0];
+	line1_desc [1] = .try1_desc [1];
+	line2_desc [0] = .try2_desc [0];
+	line2_desc [1] = .try2_desc [1];
+	RETURN SS$_NORMAL;
+	END;
+
+    IF (.score LSS .best_score)
+      THEN
+	BEGIN
+	best1_desc [0] = .try1_desc [0];	!Remember the best so far..
+	best1_desc [1] = .try1_desc [1];
+	best2_desc [0] = .try2_desc [0];
+	best2_desc [1] = .try2_desc [1];
+	best_score = .score;
+	END;
+
+    IF NOT next_breakup		!If no delimiter exists within string,
+		(rem_desc
+		,try1_desc
+		,try2_desc
+		)
+      THEN EXITLOOP;		!Ran out of break-up possibilities.
+				!If ok, then loop back to check this
+				! one out.
+    END;			!"WHILE 1 DO..."
+!
+! We have a "best" score. But it is not perfect. If best_score<B1> =1,
+! means the 1st string got truncated.  If best_score<B0>= 1, means
+! 2nd string got truncated.
+!
+IF ((.best_score AND %B'01') NEQ 0)
+  THEN meas_trunc (best2_desc, .max_width); !Truncate 2nd string till it fits.
+IF ((.best_score AND %B'10') NEQ 0)
+  THEN meas_trunc (best1_desc, .max_width); !Truncate 1st string till it fits.
+
+line1_desc [0] = .best1_desc [0];
+line1_desc [1] = .best1_desc [1];
+line2_desc [0] = .best2_desc [0];
+line2_desc [1] = .best2_desc [1];
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE meas_pelluc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Measure string in PELLUCIA, return width.
+! FORMAL PARAMETERS:
+	(str_desc: REF $string_Descriptor
+	,width		!Return width here
+	) =
+!--
+BEGIN
+MACRO
+    ptf = 'PELLUCIDA' %;
+LITERAL
+    pell_tfs = %CHARCOUNT (ptf);
+BIND
+    pell_tfa = UPLIT (ptf);
+LOCAL
+    y;
+
+IF NOT vs$$txt_measure_Text
+		(0		!no Vd-id
+		,.str_desc [sd$w_len]		!Length of string..
+		,.str_desc [sd$a_adr]		!The text to measure
+		,pell_tfs, pell_tfa	!Typeface = "PELLUCIDA"
+		,1, UPLIT (15)		!Typesize = 15
+		,0, 0		!Current rendition
+		,.width, y
+		)
+      THEN RETURN $error (vsta$_meastxt_for
+			,string_type, %ASCID 'PELLUCIDA string'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE meas_trunc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Truncate a string that is too long.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,max_width
+	) =
+!--
+BEGIN
+LOCAL
+    x,
+    try_Desc: VECTOR [2];
+
+try_desc [0] = .str_desc [0] - 1;
+try_Desc [1] = .str_desc [1];
+WHILE (.try_desc [0] GTR 0) DO
+    BEGIN
+    IF NOT meas_pelluc (try_desc, x)
+      THEN RETURN 0;
+    IF (.x LEQ .max_width)
+      THEN EXITLOOP;			!ok.
+    try_desc [0] = .try_desc [0] - 1;	!Still too long..
+    END;
+
+str_desc [0] = .try_desc [0];	!Return the most chars that fit.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE next_breakup
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finds next place in string where a delimiter
+!	allows us to assume a natural dividing point.
+! FORMAL PARAMETERS:
+	(whole_desc: REF $string_Descriptor
+	,str1_desc: REF VECTOR [2]
+	,str2_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    chars_left,
+    str_buf: REF VECTOR [,BYTE];
+
+str_buf = .whole_desc [sd$a_adr] + .str1_desc [0];  !Start here.
+chars_left = .whole_desc [sd$w_len] - (.str_buf - .whole_desc [sd$a_adr]);
+
+WHILE 1 DO
+    BEGIN
+    IF (.str_buf [0] NEQ %C' ')
+      THEN EXITLOOP;			!Done skipping spaces
+    str_buf = .str_buf + 1;		!Skip space if any.
+    str1_desc [0] = .str1_desc [0] + 1;
+    chars_left = .chars_left - 1;
+    IF (.chars_left EQL 0)
+      THEN RETURN 0;			!Nothing but spaces left (can't happen)
+    END;
+
+str1_desc [1] = .whole_desc [sd$a_adr];
+
+WHILE (.chars_left GTR 0) DO
+    BEGIN
+    IF (.str_buf [0] EQL %C' ')
+      THEN
+	BEGIN
+	str2_desc [0] = .chars_left - 1;
+	str2_desc [1] = str_buf [1];
+	remove_leading_blanks (.str2_desc);
+	RETURN SS$_NORMAL
+	END;
+    (SELECTONE .str_buf [0] OF
+	SET
+	[%C',', %C';', %C'-', %C'.']:
+	    BEGIN
+	    str1_desc [0] = .str1_desc [0] + 1;	!Include the delimiter
+	    str2_desc [0] = .chars_left - 1;
+	    str2_desc [1] = str_buf [1];
+	    remove_leading_blanks (.str2_desc);
+	    RETURN SS$_NORMAL
+	    END;
+	[OTHERWISE]:
+	    SS$_NORMAL
+	TES
+    );
+    str_buf = .str_buf + 1;
+    chars_left = .chars_left - 1;
+    str1_desc [0] = .str1_desc [0] + 1;
+    END;
+
+RETURN 0;			!No more possibilities
+END;
+
+ROUTINE meas_score
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns a "score":
+!	0 = both strings fit
+!	bit 0 = string 2 must be truncated
+!	bit 1 = string 1 must be truncated
+!	(the lower the score the better)
+!
+! FORMAL PARAMETERS:
+	(str1_desc: REF VECTOR [2]
+	,str2_desc: REF VECTOR [2]
+	,max_width
+	,score		!Returned score here
+	) =
+!--
+BEGIN
+LOCAL
+    x1,
+    x2;
+
+IF NOT meas_pelluc (.str1_desc, x1)
+  THEN RETURN 0;		!Error..
+IF NOT meas_pelluc (.str2_desc, x2)
+  THEN RETURN 0;		!Error.
+
+.score = 0;
+IF (.x1 GTR .max_width)
+  THEN .score = %B'10';
+IF (.x2 GTR .max_width)
+  THEN .score = ..score OR %B'01';
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE meas_nobrk
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Find the best place to break a string, given that
+!	there is no "natural delimiter" within the string.
+! FORMAL PARAMETERS:
+	(whole_desc: REF VECTOR [2]
+	,max_width
+	,str1_desc: REF VECTOR [2]
+	,str2_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    try_desc: VECTOR [2],
+    x;
+
+!
+! Algorithm for now: Put the most we can on line 1.
+! Then, truncate line 2 if necessary.
+!
+try_desc [0] = .whole_desc [0] / 2;	!Start with 1/2 string
+try_desc [1] = .whole_desc [1];
+
+IF NOT meas_pelluc (try_desc, x)
+  THEN RETURN 0;
+
+IF (.x GTR .max_width)
+  THEN
+    BEGIN
+    WHILE 1 DO
+	BEGIN
+	try_desc [0] = .try_desc [0] - 1;
+	IF NOT meas_pelluc (try_desc, x)
+	  THEN RETURN 0;
+	IF (.x LEQ .max_width)
+	  THEN
+	    BEGIN
+	    str1_desc [0] = .try_desc [0];
+	    str1_desc [1] = .try_desc [1];
+	    str2_desc [0] = .whole_desc [0] - .try_Desc [0];
+	    str2_desc [1] = .try_desc [1] + .try_desc [0];
+	    EXITLOOP;
+	    END;
+	END;
+    END
+  ELSE		!Fits, see how long we can get it..
+    BEGIN
+    WHILE 1 DO
+	BEGIN
+        try_desc [0] = .try_desc [0] + 1;
+	IF NOT meas_pelluc (try_desc, x)
+	  THEN RETURN 0;
+	IF (.x GTR .max_width)
+	  THEN
+	    BEGIN
+	    str1_desc [0] = .try_desc [0] - 1;
+	    str1_desc [1] = .try_desc [1];
+	    str2_desc [0] = .whole_desc [0] - .str1_desc [0];
+	    str2_desc [1] = .try_desc [1] + .str1_desc [0];
+	    EXITLOOP;
+	    END;
+	END;
+    END;
+!
+! Truncate line 2 if necessary
+!
+IF NOT meas_pelluc (.str2_desc, x)
+  THEN RETURN 0;
+IF (.x GTR .max_width)
+  THEN RETURN meas_trunc (.str2_desc, .max_width);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE remove_leading_blanks
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given a string descriptor, remove leading blanks.
+! FORMAL PARAMETERS:
+	(str_desc: REF $string_descriptor
+	) =
+!--
+BEGIN
+LOCAL
+    str_addr: REF VECTOR [,BYTE];
+
+str_addr = .str_desc [sd$a_adr];
+INCR i FROM 0 TO .str_desc [sd$w_len] - 1 DO
+    BEGIN
+    IF (.str_addr [.i] NEQ %C' ')
+      THEN RETURN SS$_NORMAL;		!Return when found first non-space
+    str_desc [sd$a_adr] = .str_desc [sd$a_adr] + 1;
+    str_desc [sd$w_len] = .str_desc [sd$w_len] - 1;
+    END;
+
+RETURN SS$_NORMAL		!Blanked out the string
+END;
+
+GLOBAL ROUTINE vsta$$foot_attn_notices =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Rings the terminal bell, and if the plain notices icon was
+!	in the slot, changes it to one with the "attention" attribute.
+!--
+BEGIN
+LOCAL
+    notice_y_start,
+    status;
+
+IF (.vsta$gb_notices_in EQL 0)
+  THEN RETURN SS$_NORMAL;		!Not in the slot.
+
+!
+! Ring the bell
+!
+vsta$$kbrd_sound_bell (.vs$gw_vbchan);
+
+!
+! Change the icon if the plain one was there.
+!
+IF (.vsta$gb_notices_on EQL 0)
+  THEN
+    BEGIN		!Change it to the ATTN one.
+    INCR i FROM 1 TO .notice_slot_num_lines DO
+	BEGIN
+	IF NOT vs$$txt_change_rendition
+			(.vsta$gl_notice_vd_id
+			,0		!Which bits to turn off
+			,rend_reverse_bit	!which bits to turn on
+			,.i		!Line
+			,1		!Field
+			,1		!Cpos
+			,0		!All characters
+			)
+	  THEN RETURN $error (vsta$_chgrend);
+	END;
+  !
+  ! Remember we put the ATTN notice VD in the slot.
+  !
+    vsta$gb_notices_on = 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_notice_store =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called to reset the notices icon (if necessary) and
+!	paste the icon back in its slot.
+!--
+BEGIN
+
+IF (.vsta$gb_notices_on)
+  THEN
+    BEGIN
+    INCR i FROM 1 TO .notice_slot_num_lines DO
+	BEGIN
+	IF NOT vs$$txt_change_rendition
+			(.vsta$gl_notice_vd_id
+			,rend_reverse_bit	!Which bits to turn off
+			,0		!which bits to turn on
+			,.i		!Line
+			,1		!Field
+			,1		!Cpos
+			,0		!All characters
+			)
+	  THEN RETURN $error (vsta$_chgrend);
+	END;
+  !
+  ! Remember it's not ON now.
+  !
+    vsta$gb_notices_on = 0;
+    END;
+
+!
+! Paste notices back in its slot.
+!
+put_on_nonblank_vd	(.vsta$gl_notice_vd_id		!Vd-id
+			,.vsta$gl_notice_slot		!Slot
+			,%ASCID 'Notice slot vd'	!Which VD for error msg
+			);
+vsta$gb_notices_in = 1;		!Remember notices is in slot
+
+RETURN SS$_NORMAL;
+END;
+
+GLOBAL ROUTINE vsta$$foot_help_store =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Put HELP icon back in its slot.
+!--
+BEGIN
+
+put_on_nonblank_vd	(.vsta$gl_help_vd_id	!Vd-id
+			,.vsta$gl_help_slot	!Slot
+			,%ASCID 'HELP slot vd'	!Which VD for error msg
+			);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_prof_store =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Put PROFILE icon back in its slot.
+!--
+BEGIN
+
+put_on_Nonblank_vd	(.vsta$gl_prof_vd_id	!Vd-id
+			,.vsta$gl_prof_slot	!Slot
+			,%ASCID 'Profile slot vd' !Which VD for error msg
+			);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_newun1
+!++
+! FUNCTIONAL DESCRIPTION:
+!	User just edited the user name 1. Change it in the user name vd.
+! FORMAL PARAMETERS:
+	(len_addr
+	,str_addr
+	) =
+!--
+BEGIN
+LOCAL
+    len_wrote,
+    str_desc: VECTOR [2],
+    status;
+
+str_desc [0] = ..len_addr;
+str_desc [1] = .str_addr;
+
+!
+! Delete the old one.
+!
+IF NOT vs$$txt_DeleteCharacters
+		(.username_vd_id
+		,1, 1, 1	!Line, field, char pos
+		,0		!n (0 means "all")
+		)
+  THEN RETURN $error (vsta$_delchs);
+
+!
+! Write the new one.
+!
+IF (.str_desc [0] NEQ 0)
+  THEN
+    IF NOT vsta$$srv_write_truncated
+		(.username_vd_id
+		,str_desc
+		,1, 1			!Line, field
+		,slot_vd_size_x - 1	!Field width
+		,len_wrote
+		)
+      THEN RETURN $error (vsta$_writet
+			,%ASCID 'user name line 1'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$foot_newun2
+!++
+! FUNCTIONAL DESCRIPTION:
+!	User just edited the user name 2. Change it in the user name vd.
+! FORMAL PARAMETERS:
+	(len_addr
+	,str_addr
+	) =
+!--
+BEGIN
+LOCAL
+    len_wrote,
+    str_desc: VECTOR [2],
+    status;
+
+str_desc [0] = ..len_addr;
+str_desc [1] = .str_addr;
+
+!
+! Delete the old one.
+!
+IF NOT vs$$txt_DeleteCharacters
+		(.username_vd_id
+		,2, 1, 1	!Line, field, char pos
+		,0		!n (0 means "all")
+		)
+  THEN RETURN $error (vsta$_delchs);
+
+!
+! Write the new one.
+!
+IF (.str_desc [0] NEQ 0)
+  THEN
+    IF NOT vsta$$srv_write_truncated
+		(.username_vd_id
+		,str_desc
+		,2, 1			!Line, field
+		,slot_vd_size_x - 1	!Field width
+		,len_wrote
+		)
+      THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'user name line 2'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

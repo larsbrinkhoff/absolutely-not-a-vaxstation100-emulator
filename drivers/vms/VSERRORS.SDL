@@ -1,0 +1,66 @@
+MODULE VS$ERRORS;
+
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/*
+/* Constants
+/*
+	CONSTANT
+	    integer_type EQUALS 0;		/*Integer type parameter
+	CONSTANT
+	    string_type EQUALS 1;		/*String type parameter
+	CONSTANT
+	    system_code EQUALS 0;		/*System msg facility code
+	CONSTANT
+	    rms_code EQUALS 1;			/*RMS msg facility code
+/* 
+/*
+/* Error block for individual error status code to be preserved in a
+/* format compatable with $PUTMSG
+/*
+    AGGREGATE error_block STRUCTURE PREFIX vs$eb_;
+	flink		 ADDRESS;		/*Ptr to next error block
+	blink		 ADDRESS;		/*Ptr to previous error block
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	state_field	 UNION;
+	  state		 LONGWORD UNSIGNED;	/*State of error block
+	  state_bits	 STRUCTURE;		/*Individual error block bits
+	    complete	 BITFIELD MASK;		/*Error block complete bit
+	    extra	 BITFIELD LENGTH 7;	/*For future DEC use
+	  END state_bits;
+	END state_field;
+	irp		 ADDRESS;		/*Unique error block ID (IRP)
+	msgvec		 ADDRESS;		/*Message argument vector addr.
+	msgvec_size	 LONGWORD UNSIGNED;	/*Msg argument vector size
+	CONSTANT "block_size" EQUALS .;		/*Length of EB block
+	END error_block;
+/*
+/* Per-process Error Block List
+/*
+    AGGREGATE pp_errors STRUCTURE PREFIX vs$pe_;
+	flink		ADDRESS;		/*Ptr to next PE block
+	blink		ADDRESS;		/*Ptr to previous PE block
+	size		WORD UNSIGNED;		/*Data block size
+	type		WORD UNSIGNED;		/*Data block type
+	pid		LONGWORD UNSIGNED;	/*PID of owner of error block
+	eb_flink	ADDRESS;		/*Error block list forward link
+	eb_blink	ADDRESS;		/*Error block list backward link
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END pp_errors;
+/*
+/* End of module VS$VSERRORS
+/*
+    end_module;

@@ -1,0 +1,1042 @@
+module txtfields (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! Routines for manipulating fields
+
+forward routine!s
+	vs$$txt_defineField,	! define new field
+	vs$$txt_deleteField,	! delete a field
+	releaseFieldsBetween,	! delete contiguous set of fields
+	vs$$txt_clearField,	! clear all text from field
+	find_field_block,	! get field block for specified field
+	vsta$$txt_measure_field_portion,
+				! measure width of characters
+	printField,		! print part or all of one field
+	clear_rest_of_field,	! used by printField to clear old text
+	clearTextInField,	! clears text in specified field
+	defineDefaultField;	! define default field spanning entire line
+
+library 'vsta$library:txtsym';
+library 'vsta$library:vstanativ';	! symbols like modified_fbmds
+library'vsta$library:vstadef';	! symbols like vsta$k_vaxmem
+library 'vsta$library:termio';
+library 'vsta$library:libmacros';	! symbols like $log_error_and_return
+library 'sys$library:starlet';	! symbols like ss$_normal
+
+external routine!s . . .
+	alcful,			! allocate block of full words
+	appendElement,		! append element to list
+	deleteElements,		! delete elements from list
+	vs$$vds_clear_text,	! clear old text from region
+	find_font_image,	! get address of font image for string block
+	measure_height,		! measure height of contiguous lines
+	vsta$$txt_measure_width,! measure width of string
+	string_intersects,	! see if string intersects particular range
+	vs$$vds_stage_text;	! prints text in specified rectangle
+
+$vsta_psect;			! PSECT definitions
+
+
+global routine vs$$txt_defineField
+!++
+! Functional description:
+!
+!	Define a new field, given its left margin and extent.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id
+    lineNum,			! line on which field is being defined
+    pos,			! left margin for field (and subsequent identifier)
+    size			! width of field
+	     ) =
+!
+! Value:
+!
+!	This routine returns an error if an attempt to overlap fields is made.
+!--
+
+	begin
+	bind
+
+	    ! Find line block, return error if bad line.
+	    linBlk = getLineBlock (.id, .lineNum) : line_block,
+
+	    ! Allocate a data block for the new field
+	    fldBlk = allocateFullwords(field_block_length):field_block,
+
+	    ! Get text block for given virtual display.
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get number of fields defined for this line
+	    nFields = .linBlk[lin_nFields],
+
+	    ! Get list of fields defined for this line already
+	    fldLst = .linBlk[lin_fields]:vector,
+
+	    ! Get beginning and end for new field
+	    newBeg = .pos,
+	    newEnd = .pos + .size;
+
+	! Check for overlap and give error if attempt is made.
+	! the following loop scans all old fields, and if the beginning
+	! or end of our new field falls within the bounds of the new one,
+	! an overlap has been detected.
+	! Also, if the new field entire engulfs any old one, that's an
+	! overlap too.
+	incr i from 1 to nFields do
+	    begin
+	    bind
+		! get info about an old field
+		oldFldBlk = .fldLst[.i]:field_block,
+
+		! Get old field's beginning and end
+		oldBeg = .oldFldBlk[fld_pos],
+		oldEnd = oldBeg + .oldFldBlk[fld_size];
+
+	    ! Check for either end point of new field being within old field.
+	    ! The following checks assume that the right ends of fields aren't
+	    ! part of the field.  Hence the reasons for "gtr" vs "geq" etc.
+	    if
+		! Catch left edge of new overlapping old
+		newBeg geq oldbeg and newBeg lss oldEnd
+			or
+		! Catch right edge of new overlapping old
+		newEnd gtr oldBeg and newEnd lss oldEnd
+			or
+		! Catch new field engulfing old
+		newBeg leq oldBeg and newEnd geq oldEnd
+	    then
+		$return_error (vsta$_ovrlp_fld)
+	    end;
+
+	! Identify field block as one.
+	fldBlk[block_id] = field_block_id;
+
+	! Fill in position and size of this field
+	fldBlk[fld_pos] = .pos;
+	fldBlk[fld_size] = .size;
+
+	! Update field block for line's list of fields
+	appendElement(.linBlk[lin_nFields], linBlk[lin_fields], fldBlk);
+
+	! Keep track of total number of fields defined on this line
+	linBlk[lin_nFields] = .linBlk[lin_nFields] + 1;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_deleteField
+!++
+! Functional description:
+!
+!	Delete a field, given its defined position and line.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id
+    lineNum,			! line on which field is being deleted
+    pos				! left margin of field
+	     ) =
+!
+! Value:
+!
+!	This routine returns an error if deleting a nonexistent field
+!--
+
+	begin
+
+	local s, field_rank;
+	bind
+
+	    ! Get text block for given virtual display.
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get field block of field being deleted, and rank.
+	    !
+	    fldBlk = getFieldBlock(
+		txtBlk[base], .lineNum, .pos, field_rank):field_block,
+
+	    ! Get address of list of line blocks for text block
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Get Data block for line on which field is being deleted.
+	    linBlk = .linlst[.lineNum]:line_block;
+
+	! Clear the field before removing it.
+	vs$$txt_clearField (.id, .lineNum, .pos);
+
+	! Release the field
+	!
+	if not (s = releaseFieldsBetween (
+	    linBlk[base], .field_rank-1, .field_rank+1))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine releaseFieldsBetween
+!++
+! Functional description:
+!
+!	Release fields from a line block.
+!
+! Formal parameters:
+ (
+    linBlk:ref line_block,	! line block to delete fields from
+    left,			! rank of field to left of first to delete
+    right			! rank of one to right of last being deleted
+		      ) =
+!--
+
+	begin
+
+	external routine
+
+	    deallocateFieldBlock;
+
+	local s;
+
+	bind
+
+	    ! Get address of list of fields
+	    fldLst = .linBlk[lin_fields]:vector,
+
+	    ! get rank of first and last involved.
+	    !
+	    first = .left + 1,	
+	    last = .right - 1,
+
+	    ! Get number of fields in list before reduction
+	    oldCount = .linBlk[lin_nFields],
+
+	    ! Calculate how many  will be left after deletion
+	    newCount = max (0, oldCount - last + first - 1);
+
+	! release space allocated for each block
+	incr i from first to last do 
+	    if not (s = deallocateFieldBlock(.fldLst[.i]))
+	    then return .s;
+
+	! Update number of fields in line to reflect decrease
+	linBlk[lin_nFields] = newCount;
+
+	! Move fields in list to close gap.
+	! Bug here !  We're in trouble if deleteElements fails even though
+	! we've already called deallocateFieldBlock.
+	if not (s = deleteElements(oldCount, linBlk[lin_fields], first, last))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_clearField
+!++
+! Functional description:
+!
+!	Clear all text from a given field
+!
+! Formal parameters:
+ (
+    id,			! which display to operate on
+    lineNum,		! which line field to be cleared is on
+    pos			! position of field being cleared
+	   ) =
+!--
+
+	begin
+
+	external routine
+
+	    deallocateAllStrings;
+
+	local s;
+
+	bind
+	    ! Get text block for this display
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get field block for this field
+	    fldBlk = getFieldBlock(txtBlk, .lineNum, .pos):field_block;
+!
+! Deallocate all strings for this field.
+!
+	if not (s = deallocateAllStrings(fldBlk))
+	then return .s;
+!
+! Record that there's no used space in this field anymore.
+!
+	fldBlk[fld_used_width] = 0;
+!
+! No characters left either . . .
+!
+	fldBlk[fld_nChars] = 0;
+!
+! Cause text to physically disappear from screen.
+!
+	clearTextInField (.id, txtBlk, .lineNum, .pos);
+!
+! give success return
+!
+	true
+
+	end;
+
+global routine printField
+!++
+! Functional description:
+!
+!	Call display driver in order to print a field, or part of one.
+!	The caller specifies which character ranks within the field to print,
+!	and whether old text in the region should be cleared first.
+!
+! Formal parameters:
+ (
+    id,
+    txtBlk:ref text_block,	! address of text block
+    lineNum,			! which line's field to print
+    fieldPos,			! which field to print
+    firstPos,			! which character to start with
+    last_pos,			! which character to end with.
+    refresh_left_flag,		! 1 means repaint lefthand whitespace
+    clear_old_text_flag,	! 1 means clear old text first
+    refresh_right_flag		! 1 means repaint righthand 
+	   ) =
+!--
+
+	begin
+
+	bind
+
+	    ! Get current field block address.
+	    fldBlk = getFieldBlock(.txtBlk, .lineNum, .fieldPos):field_block,
+
+	    ! Get total number of characters in field.
+	    nChars = .fldBlk[fld_nChars],
+
+	    ! Get total width encompassed by existing characters in  field.
+	    txt_width = .fldBlk[fld_used_width],
+
+	    ! Get total width of this field.
+	    field_width = .fldBlk[fld_size],
+
+	    ! Get unused width.
+	    unused_width = field_width - txt_width,
+
+	    ! Get number of strings in this field
+	    nStrings = .fldBlk[fld_nStrings],
+
+	    ! Get list of strings for this field
+	    strLst = .fldBlk[fld_strings]:vector,
+
+	    ! Get line list for this text block
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Get line block for current line
+	    linBlk = .linLst[.lineNum]:line_block,
+
+	    ! Get height of this field
+	    lineHeight = .linBlk[lin_height],
+
+	    ! Get format of field being printed.
+	    field_format = .fldBlk[fld_format];
+
+	local s, xPix, initial_x, yPix,
+	    refreshed_yet : initial(0),
+	    fiBlk : ref fib,
+	    font_mem_blk : modified_fbmds;
+
+	! Calculate initial horizontal offset for first string of field.
+	!
+	!	For a left-justified field use the left margin of the field.
+	!
+	!	For a centered field, use half the unused width.
+	!
+	!	For a right-justified field, use all the unused width.
+	!
+	selectone field_format of
+	    set
+	    [ff_left] : initial_x = xPix = .fldBlk[fld_pos];
+	    [ff_right] : initial_x = xPix = .fldBlk[fld_pos] + unused_width;
+	    [ff_center] : initial_x = xPix = .fldBlk[fld_pos] + unused_width/2;
+	    tes;
+
+	! Calculate initial vertical displacement measured in distance
+	! down from top of display.
+	!
+	yPix = measure_height (txtBlk[base], 1, .lineNum-1);
+
+	! Loop over each string of field, sending the text to the virtual
+	! display, if the text starts at or beyond the specified first character
+	! to be displayed.
+	!
+	incr i from 1 to nStrings do
+	begin
+	bind
+	    ! Get string block for this string
+	    !
+	    strBlk = .strLst[.i]:string_block,
+
+	    ! Get rank of first and beyond last characters of this string.
+	    !
+	    strBeg = .strBlk[str_beg],
+	    strEnd = .strBlk[str_end],
+
+	    ! Set printFlag to indicate whether any portion of this string is
+	    ! supposed to be printed.
+	    !
+	    printFlag = string_intersects (strBlk[base], .firstPos, .last_pos,
+		0, 0),
+
+	    ! Get number of characters to skip at prefix of this string, which
+	    ! if positive is how many characters to skip to get to the portion
+	    ! of the string that we want to print.
+	    !
+	    pre_skip = max (0, .firstPos - strBeg),
+
+	    ! Get number of characters to skip at end of the string due to
+	    ! last requested position falling to the left of the end of the
+	    ! string.
+	    !
+	    post_skip = max (0, strEnd - .last_pos - 1),
+
+	    ! get local length and position info for this string
+	    !
+	    sOffset = .strBlk[str_offset],
+	    sBase = .strBlk[str_base],
+
+	    ! Get length and address of entire string.
+	    !
+	    wholeAdr = .strBlk[str_ptr],
+	    wholeLength = .strBlk[str_len],
+
+	    ! Get length and address of portion being printed.
+	    !
+	    sLength = wholeLength - pre_skip - post_skip,
+	    sString = wholeAdr + pre_skip,
+
+	    ! Get address and needed attributes of font.
+	    !
+	    fimBlk =
+		begin
+		local temp;
+		if not (s = find_font_image(strBlk[base], temp, fiBlk))
+		then $return_bug (vsta$_fnd_font, strBlk[base])
+		else .temp
+		end : fim_block,
+	    fontHeight = .fiBlk[fib_height],
+	    imageAdr = fimBlk[base],
+
+	    ! Calculate width of entire string being printed.
+	    !
+	    wholeWidth = .strBlk[str_width],
+
+	    ! Calculate distance down from top to upperleft corner of text.
+	    ! This is currently the distance down from the top of the virtual
+	    ! display to the text being printed.
+	    !
+	    char_upper_left = .yPix + lineHeight - sBase - fontHeight;
+
+	! Only send text to display if this string includes characters that are
+	! within range of what we were asked to print.
+	!
+	if printFlag
+	then
+	    begin
+
+	    bind
+
+		! Calculate width of portion of string being printed, but use
+		! wholeWidth if entire string being printed
+		!
+		sWidth =
+		    begin
+		    local temp;
+		    if sString eql wholeAdr and sLength eql wholeLength
+		    then  wholeWidth
+		    else
+			if not (s = vsta$$txt_measure_width (
+			    sLength,
+			    sString,
+			    fiBlk[base],
+			    temp
+			    ))
+			then return .s
+			else .temp
+		    end,
+
+		! Calculate width of portion to left of what is being printed.
+		!
+		notWidth =
+		    begin
+		    local temp;
+		    if pre_skip eql 0
+		    then 0
+		    else
+			if pre_skip eql 0 or post_skip eql 0
+			then wholeWidth - sWidth
+			else
+			    if not (s = vsta$$txt_measure_width (
+				pre_skip,
+				wholeAdr,
+				fiBlk[base],
+				temp
+				))
+			    then return .s
+			    else .temp
+		    end,
+
+		! Calculate horizontal position at which to print text, which
+		! is left edge of field plus distance necessary to skip what's
+		! already there and not being reprinted.
+		!
+		hPos = .xPix + notWidth;
+!
+! Set up the font memory block to indicate whether this font resides in
+! display memory or only vax memory, and at what address.
+!
+	if .fiBlk[fib_display_adr] neq 0
+	then
+	    begin	! font is in display memory
+	    font_mem_blk[mfbmd$w_locate] = vsta$k_dispmem;
+	    font_mem_blk[mfbmd$a_sfbmd_addr] = .fiBlk[fib_display_adr]
+	    end
+	else		! font is only in vax memory
+	    begin
+	    font_mem_blk[mfbmd$w_locate] = vsta$k_vaxmem;
+	    font_mem_blk[mfbmd$a_sfbmd_addr] = fimBlk[base]
+	    end;
+!
+! If we haven't done various refresh chores for this field yet, do it
+! now.  Note that we do it in the loop rather than once at beginning merely
+! because it isn't until the middle of the loop that .hPos is correctly
+! known.
+!
+	    if not .refreshed_yet
+	    then
+		begin
+
+		clear_rest_of_field (
+		    .id,		! This virtual display . . .
+		    lineHeight,		! which has this line height.
+		    fldblk[base],	! This field . . .
+		    .firstPos,		! First position to being printed . . .
+		    .last_pos,		! . . . and last.
+		    hPos,		! Where text starts.
+		    .yPix,		! Distance down from top of display
+		    .initial_x,
+		.refresh_left_flag,	! 1 means repaint lefthand whitespace
+		.clear_old_text_flag,	! 1 means clear old text first
+		.refresh_right_flag	! 1 means repaint righthand 
+		    );
+
+		! Remember that this field has been refreshed.
+		refreshed_yet = 1
+
+		end;
+
+	    ! Display the new text.
+	    !
+	    vs$$vds_stage_text (
+                .id,		! id of virtual display whose text is being printed
+		hPos,		! distance from left margin of display
+		char_upper_left,! distance down from top of display
+                sWidth,		! distance wide encompassing rectangle is
+		fontHeight,	! distance high the encompassing rectangle is
+
+                0,		! how far from left margin to begin writing
+                .fiBlk[fib_base],
+				! baseline for underscoring
+		font_mem_blk[$base],
+				! adr of block that tells where font is
+                sLength,	! number of characters to be written
+                sString,	! address of ascii string to be written
+		.strBlk[str_rendition] and not .strBlk[str_font_rend],
+		    ! Tell display driver to algorithmically produce all
+		    ! effects that the user program requested AND that aren't
+		    ! already built in to the font itself.
+		.strBlk[str_inkColor],
+				! color of writing
+		.strBlk[str_backgroundColor]
+				! color of background
+			    );
+	    end;
+
+	! Update x coordinate so we know where next string starts
+	xPix = .xPix + wholeWidth
+	end;
+!
+! If we didn't print anything, there still may be old text left to
+! clear.
+!
+	if not .refreshed_yet
+	then clear_rest_of_field (
+		.id,			! This virtual display . . .
+		lineHeight,		! which has this line height.
+		fldblk[base],		! This field . . .
+		.firstPos,		! First position to being printed . . .
+		.last_pos,		! . . . and last.
+		.xPix,			! Where text starts.
+		.yPix,			! Distance down from top of display
+		.initial_x,
+		.refresh_left_flag,	! 1 means repaint lefthand whitespace
+		.clear_old_text_flag,	! 1 means clear old text first
+		.refresh_right_flag	! 1 means repaint righthand 
+		    );
+
+	ss$_normal
+
+	end;
+
+routine clear_rest_of_field
+!++
+! Functional description:
+!
+!	When printing some new or refreshed text in a field, this routine
+!	is called to clear out old text that was there.
+!
+!
+! Formal parameters:
+ (
+	id,				! This virtual display . . .
+	lineHeight,			! which has this line height.
+	fldblk : ref field_block,	! This field . . .
+	firstPos,			! First position to being printed . . .
+	last_pos,			! . . . and last.
+	hPos,				! Start of RIGHT margin
+	yPix,				! Distance down from top of display
+	initial_x,			! Where text starts in field
+	refresh_left_flag,		! 1 means repaint lefthand whitespace
+	clear_old_text_flag,		! 1 means clear old text first
+	refresh_right_flag		! 1 means repaint righthand 
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,
+!
+! In most general case, clearing old field involves THREE operations, the
+! left whitespace, the text, and the right whitespace.
+! The following cells hold virtual-display-relative pixel distances
+! delimiting the areas.
+!
+	    left_start,
+	    left_end,
+	    right_start,
+	    right_end,
+!
+! Cells for widths of each portion.
+!
+	    left_width,
+	    string_width,
+	    right_width,
+!
+! Cells for adjacency flags.
+!
+	    left_text_flag,
+	    text_right_flag;
+!
+! If we're supposed to clear the old text that was under the text being
+! printed, calculate the text's width.  This we read out of the field block
+! if the entire field's string is being dealt with at once.  Otherwise, we
+! call a routine to calculate the width.
+!
+	if .clear_old_text_flag
+	then
+	    if .firstPos eql 1 and .last_pos eql .fldBlk[fld_nChars]
+	    then string_width = .fldBlk[fld_used_width]
+	    else
+		if not (s = vsta$$txt_measure_field_portion (
+		    fldBlk[base],
+		    .firstPos,
+		    .last_pos,
+		    string_width
+		    ))
+		then $log_error_and_return (.s);
+!
+! If we're supposed to only clear the old text, but neither of the margins,
+! do it and return.
+!
+	if not .refresh_left_flag and .clear_old_text_flag and not
+	    .refresh_right_flag
+	then return vs$$vds_clear_text (
+		.id,	! id of virtual display whose text is being printed
+		.hPos,	! distance from left margin of display
+		.yPix,	! distance down from top of display
+		.string_width,! distance wide encompassing rectangle is
+		.lineHeight	! distance high the encompassing rectangle is
+		);
+!
+! Assuming initial_x tells where the text starts relative to the left edge
+! of the virtual display, and .fldBlk[fld_used_width] is the total width
+! used by the text, and .fldBlk[fld_size] gives the width of the field,
+! and .fldBlk[fld_pos] tells where the field starts relative to the left
+! edge of the display, calculate the starting and end points of the margins,
+! and the margin widths.
+!
+	left_start = .fldBlk[fld_pos];
+	left_end = .initial_x;
+	right_start = .initial_x + .fldBlk[fld_used_width];
+	right_end = .fldBlk[fld_pos] + .fldBlk[fld_size];
+	left_width = .left_end - .left_start;
+	right_width = .right_end - .right_start;
+!
+! Compute two flags, indicating whether the left margin is adjacent to the
+! text being printed, and whether the text is adjacent to the right margin.
+!
+	if .hPos eql .left_end then left_text_flag = 1 else left_text_flag = 0;
+	if .clear_old_text_flag
+	then
+	    if .string_width + .hPos eql .right_start
+	    then text_right_flag = 1
+	    else text_right_flag = 0
+	else
+	    text_right_flag = 0;
+!
+! If all three sections are adjacent AND we're supposed to clear them all,
+! we can do it by clearing the entire field, and we're done.
+!
+	if .refresh_left_flag and .clear_old_text_flag and .refresh_right_flag
+	    and .left_text_flag and .text_right_flag
+	then return vs$$vds_clear_text (
+	    .id,
+	    .left_start,	! start clearing at beginning of field
+	    .yPix,		! get down from top of vd to field
+	    .fldBlk[fld_size],	! clear entire field width
+	    .lineHeight		! clear entire line height's worth
+	    );
+!
+! If we're supposed to clear only the left white space and the text, and
+! both are adjacent, do it and return.
+!
+	if .refresh_left_flag and .clear_old_text_flag and
+	    not .refresh_right_flag and .left_text_flag
+	then return vs$$vds_clear_text (
+	    .id,
+	    .left_start,	! start clearing at beginning of field
+	    .yPix,		! get down from top of vd to field
+	    .left_width + .string_width,
+	    .lineHeight		! clear entire line height's worth
+	    );
+!
+! If we're supposed to clear only the text and the right white space, and
+! both are adjacent, do it and return.
+!
+	if not .refresh_left_flag and .clear_old_text_flag and
+	    .refresh_right_flag and .text_right_flag
+	then return vs$$vds_clear_text (
+	    .id,
+	    .hPos,		! start with text
+	    .yPix,		! get down from top of vd to field
+	    .string_width + .right_width,
+	    .lineHeight		! clear entire line height's worth
+	    );
+!
+! If we're supposed to clear the left white space, do it.
+!
+	if .refresh_left_flag
+	then vs$$vds_clear_text (
+	    .id,
+	    .left_start,	! start clearing at beginning of field
+	    .yPix,		! get down from top of vd to field
+	    .left_width,
+	    .lineHeight		! clear entire line height's worth
+	    );
+!
+! If we're supposed to clear the old text, do it.
+!
+	if .clear_old_text_flag
+	then vs$$vds_clear_text (
+		.id,	! id of virtual display whose text is being printed
+		.hPos,	! distance from left margin of display
+		.yPix,	! distance down from top of display
+		.string_width,! distance wide encompassing rectangle is
+		.lineHeight	! distance high the encompassing rectangle is
+		);
+!
+! If we're supposed to clear the right white space, do it.
+!
+	if .refresh_right_flag
+	then vs$$vds_clear_text (
+	    .id,
+	    .right_start,	! start clearing at beginning of right white.
+	    .yPix,		! get down from top of vd to field
+	    .right_width,
+	    .lineHeight		! clear entire line height's worth
+	    );
+!
+! All done.
+!
+	ss$_normal
+
+	end;
+
+global routine clearTextInField
+!++
+! Functional description:
+!
+!	Call display driver in order to clear all text from field
+!
+! Formal parameters:
+ (
+    id,
+    txtBlk:ref text_block,	! address of text block
+    lineNum,			! which line's field to clear
+    fieldPos			! which field to clear
+	   ) =
+!--
+
+	begin
+	bind
+	    ! Get current field block address
+	    fldBlk = getFieldBlock(.txtBlk, .lineNum, .fieldPos):field_block,
+
+	    ! Get line list for this text block
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Get line block for current line
+	    linBlk = .linLst[.lineNum]:line_block,
+
+	    ! Get width of this field
+	    fieldWidth = .fldBlk[fld_size],
+
+	    ! Get height of this field
+	    lineHeight = .linBlk[lin_height];
+
+	local xPix, yPix;
+
+	! Calculate initial horizontal offset for first string of field
+	xPix = .fldBlk[fld_pos];
+
+	! Calculate initial vertical displacement measured in distance
+	! down from top of display.
+	!
+	yPix = measure_height (txtBlk[base], 1, .lineNum-1);
+
+	! Clear out any previous text that was displayed for this field.
+	!
+	vs$$vds_clear_text (
+                .id,		! id of virtual display whose text is being printed
+		.xPix,		! distance from left margin of display
+                .yPix,		! distance down from top of display
+		fieldWidth,	! distance wide encompassing rectangle is
+                lineHeight	! distance high the encompassing rectangle is
+			    )
+
+	end;
+
+global routine defineDefaultField
+!++
+! Functional description:
+!
+!	Define the default field for a particular line of a particular display
+!
+! Formal parameters:
+ (
+    id,			! which display to define field on
+    lineNum		! which line to define field on
+		   ) =
+!--
+
+	begin
+	bind
+	    ! Get text block for this display
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get width of display
+	    width = .txtBlk[txt_width];
+
+	! Define the default field to span entire line, but start at position
+	! 1 instead of 0 so that 0 can be reserved for future use as a default
+	! or something.
+	!
+	vs$$txt_defineField(.id, .lineNum, 1, width-1)
+
+    end;
+
+global routine find_field_block
+!++
+! Functional description:
+!
+!	Get address for field block, given text block address, and field
+!	addressing info.  This routine is used by macro	getFieldBlock.
+!
+! Formal parameters:
+ (
+    txtBlk:ref text_block,	! address of text block
+    lineNo,			! line number
+    fieldPos,			! position of start of field
+    fld_blk_adr,		! where to write address of field block
+    rank_adr			! optional address into which to write rank of
+				! field
+	      ) =
+!
+! Value:
+!
+!	address of field block or 0 if no such field
+!--
+
+	begin
+
+	bind
+	    ! Get list of lines for this text block
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Get number of lines.
+	    nLines = .txtBlk[txt_nLines],
+!
+! Get address of line block for this line but immediately return
+! error if line number is out of range.
+!
+	    linBlk =
+		begin
+		if .lineNo lss 1 or .lineNo gtr nLines
+		then $return_error (vsta$_no_such_line)
+		else .linLst[.lineNo]
+		end : line_block,
+
+	    ! Get number of fields defined for this line
+	    nFields = .linBlk[lin_nFields],
+
+	    ! Get list of fields for this line
+	    fldLst = .linBlk[lin_fields]:vector;
+!
+! Loop through all fields on line.  If any have the sought position,
+! return its address.
+!
+	incr i from 1 to nFields do
+	    begin
+	    bind
+		fldBlk = .fldLst[.i]:field_block;
+	    if .fldBlk[fld_pos] eql .fieldPos
+	    then
+		begin
+!
+! If caller wants field's rank, tell her.
+!
+		if argumentExists (5)
+		then .rank_adr = .i;
+		.fld_blk_adr = fldBlk;
+!
+! Give success return to say that field address has been found.
+!
+		return ss$_normal
+
+		end
+	    end;
+!
+! No such field found, generate correct error.  A useful enhancement here would
+! be for the error message to include which line number and field position was
+! not found.
+!
+	$return_error (vsta$_not_a_fld)
+
+	end;
+
+global routine vsta$$txt_measure_field_portion
+!++
+! Functional description:
+!
+!	Given a field block and starting and ending character positions,
+!	calculate the width taken up by the characters in that range.
+!
+! Formal parameters:
+ (
+	fldBlk : ref field_block,	! which field to measure
+	first_pos,			! first character position to include
+	last_pos,			! last
+	result_adr			! where to write answer.
+ ) =
+!
+! Output:
+!
+!	combined width of characters, as determined by their font
+!--
+
+	begin
+
+	bind
+
+	    ! Get list of strings for this field.
+	    strLst = .fldBlk[fld_strings] : vector;
+
+	local
+
+	    s,
+
+	    ! Character positions delimiting part of string we're interested in.
+	    !
+	    use_first, use_last,
+
+	    ! Running total of measured width
+	    width : initial(0), piece_of_width,
+
+	    ! Address of font image
+	    font_adr,
+
+	    ! Font image block
+	    fiBlk : ref fib;
+
+	! Loop over all strings of the field.
+	incr i from 1 to .fldBlk[fld_nStrings] do
+
+	    begin
+
+	    bind
+
+		! Get next string block and bounds for field.
+		strBlk = .strLst[.i] : string_block,
+		strBeg = .strBlk[str_beg],
+		strEnd = .strBlk[str_end];
+
+	    ! Only count this string if it intersects the interesting range.
+	    !
+	    if string_intersects (strBlk[base], .first_pos, .last_pos,
+		use_first, use_last)
+	    then
+
+		if strBeg eql .first_pos and strEnd eql .last_pos
+		then width = .width + .strBlk[str_width]
+		else
+		    begin
+
+		    ! Get address of font image.
+		    !
+		    find_font_image (strBlk[base], font_adr, fiBlk);
+
+		    if not (s = vsta$$txt_measure_width (
+			.use_last - .use_first + 1,
+			.strBlk[str_ptr] + .use_first - strBeg,
+			fiBlk[base],
+			piece_of_width
+			))
+		    then return .s;
+
+		    width = .width + .piece_of_width
+		    end
+
+	    end;
+
+	! Return the sought width.
+	.result_adr = .width;
+
+	ss$_normal
+
+	end;
+
+end
+eludom

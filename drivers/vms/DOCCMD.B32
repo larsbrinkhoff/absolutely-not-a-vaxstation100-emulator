@@ -1,0 +1,2231 @@
+MODULE DOC$CMD (
+		IDENT = 'VSTADOC Utility GENERATE Command Parse and dispatch'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!   This module is called with a command line and parses it. Errors
+! are generated, and if everything is ok, the command is passed on.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$gen_command,	!Process a GENERATE command.
+    gen_cmd_parser,	!Actual parse routine
+    parse_blank,	!"BLANK" or "BL"
+    parse_break,	!"BREAK" or "BR"
+    parse_center,	!"CENTER"
+    parse_checkoff,	!"CHECKOFF"
+    parse_define,	!"DEFINE"
+    define_font,	!"DEFINE FONT"
+    sw_rendition,	!/RENDITION=
+    sw_typeface,	!/TYPEFACE=
+    sw_typesize,	!/TYPESIZE=
+    sw_id,		!/ID=
+    sw_space,		!/SPACE=
+    parse_editable,	!"EDITABLE"
+    parse_fill,		!"FILL"
+    parse_indent,	!"INDENT" or "I"
+    parse_index,	!"INDEX"
+    parse_keyword,	!"KEYWORD"
+    parse_lm,		!"LEFTMARGIN" or "LM"
+    parse_nofill,	!"NOFILL"
+    parse_overlay,	!"OVERLAY"
+    parse_pagenum,	!"PAGE_NUMBERS"
+    sw_linesize,	!/LINESIZE=
+    sw_overspace,	!/OVERSPACE=
+    sw_underspace,	!/UNDERSPACE=
+    parse_rm,		!"RIGHTMARGIN" or "RM"
+    parse_select,	!"SELECTABLE"
+    parse_set,		!"SET"
+    set_typesize,	!"SET TYPESIZE"
+    set_typeface,	!"SET TYPEFACE"
+    set_rendition,	!"SET RENDITION"
+    sw_rendition_onoff,	!Parse "(" + <rendition list> + ")"
+    parse_rendition_list,	!Parse "<rend> !NO <rend> [, ...]"
+    set_linesize,	!"SET LINESIZE"
+    set_measurement,	!"SET MEASUREMENT-UNITS"
+    set_pagesize,	!"SET PAGESIZE"
+    parse_title,	!"TITLE"
+    parse_toc,		!"TOC"
+    get_str_item,	!Read quoted string
+    check_colon_eq,	!Check for = or :
+    confirm;		!Confirm the command
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:HELPUSER';
+
+LIBRARY 'VSTA$LIBRARY:DOCDATA';		!Various internal data structures
+					! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';
+LIBRARY 'VSTA$LIBRARY:DOCMACS';		!Macros
+REQUIRE 'VSTA$SOURCE:TXTSYM.REQ';	
+!!!LIBRARY 'SYS$LIBRARY:STARLET';	!Taken care of by TXTSYM.REQ
+
+EXTERNAL ROUTINE
+   lib$parse_line,
+   lib$parse_field,
+   doc$$error,
+   doc$$type_line,
+   doc$$append_list_line,
+   doc$$put_list_line,
+   doc$$gen_fill,
+   doc$$gen_nofill,
+   doc$$gen_pagenums,
+   doc$$gen_rm,
+   doc$$gen_lm,
+   doc$$gen_break,
+   doc$$gen_blank,
+   doc$$gen_center,
+   doc$$gen_indent,
+   doc$$gen_selectable,
+   doc$$gen_checkoff,
+   doc$$gen_editable,
+   doc$$gen_define_font,
+   doc$$gen_set_typeface,
+   doc$$gen_set_typesize,
+   doc$$gen_set_rendition,
+   doc$$gen_set_linesize,
+   doc$$gen_set_pagesize,
+   doc$$gen_set_measurement,
+   doc$$gen_title,
+   doc$$gen_toc,
+   doc$$gen_overlay,
+   doc$$gen_index,
+   doc$$gen_keyword;
+
+EXTERNAL
+    fatal_error,
+    num_user_errors;
+
+OWN
+    cmd_str_desc: VECTOR [2],		!Copied command descriptor
+    atom_buffer: BLOCK [512, BYTE],	!Atom buffer for commands
+    atom_str_desc: VECTOR [2] INITIAL (512, atom_buffer),
+    file_str: BLOCK [512, BYTE],	!Place for filespec
+    file_str_desc: VECTOR [2] INITIAL (512, file_str),
+    ccab: $cab	(CMD = cmd_str_desc
+		,ATM = atom_str_desc
+		),
+!
+! Some generally useful patterns
+!
+    comment_pat: $pab	(TYP = TOKEN		!Comment character
+			,ARG = %ASCID '!'
+			,CAB = ccab
+			),
+    eol_pat: $pab	(TYP = END	!EOL/EOS pattern
+			,NXT = comment_pat !Can always have comment instead
+			,CAB = ccab
+			),
+    nnpat: $pab		(TYP = NUMBER	!Number field
+			,CAB = ccab
+			),
+    dash_pat: $pab	(TYP = TOKEN
+			,ARG = %ASCID '-'
+			,CAB = ccab
+			),
+    plus_minus: $pab	(TYP = TOKEN
+			,ARG = %ASCID '+'
+			,NXT = dash_pat
+			,CAB = ccab
+			),
+    lparen_pat: $PAB	(TYP = TOKEN
+			,ARG = %ASCID '('
+			,CAB = ccab
+			),
+    rparen_pat: $PAB	(TYP = TOKEN
+			,ARG = %ASCID ')'
+			,CAB = ccab
+			),
+    comma_pat: $pab	(TYP = TOKEN		!Required comma
+			,ARG = %ASCID ','
+			,CAB = ccab
+			),
+    comma_eol_pat: $pab	(TYP = TOKEN		!Comma or EOL
+			,ARG = %ASCID ','
+			,CAB = ccab
+			,NXT = eol_pat
+			);
+
+GLOBAL ROUTINE doc$$gen_command
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Process a GENERATE command.
+! FORMAL PARAMETERS:
+	(cmd_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+cmd_str_Desc [0] = .cmd_Desc [0];
+cmd_str_Desc [1] = .cmd_desc [1];
+ccab [CAB$V_GOT] = 1;		!Got command line
+ccab [CAB$V_COM] = 1;		!Allow "!" for comments
+
+lib$parse_line (ccab, gen_cmd_parser);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE gen_cmd_parser =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to do the actual parsing.
+!--
+BEGIN
+OWN
+    kitblank: $KIT	(VAL = parse_blank
+			),
+    kitbreak: $KIT	(VAL = parse_break
+			),
+    kitcenter: $KIT	(VAL = parse_center
+			),
+    kitcheckoff: $KIT	(VAL = parse_checkoff
+			),
+    kitdefine: $KIT	(VAL = parse_define
+			),
+    kiteditable: $KIT	(VAL = parse_editable
+			),
+    kitfill: $KIT	(VAL = parse_fill
+			),
+    kitindent: $KIT	(VAL = parse_indent
+			),
+    kitindex: $KIT	(VAL = parse_index
+			),
+    kitkeyword: $KIT	(VAL = parse_keyword
+			),
+    kitlm: $KIT		(VAL = parse_lm
+			),
+    kitnofill: $KIT	(VAL = parse_nofill
+			),
+    kitoverlay: $KIT	(VAL = parse_overlay
+			),
+    kitpagenum: $KIT	(VAL = parse_pagenum
+			),
+    kitrm: $KIT		(VAL = parse_rm
+			),
+    kitselect: $KIT	(VAL = parse_select
+			),
+    kitset: $KIT	(VAL = parse_set
+			),
+    kittitle: $KIT	(VAL = parse_title
+			),
+    kittoc: $KIT	(VAL = parse_toc
+			);
+LITERAL
+    num_options = 23;	!# of commands
+OWN
+    mainkeytab: VECTOR [2 + 2*num_options]	!Main keyword table
+	INITIAL	(1^31 + num_options		!1 in 1st bit + max size
+		,num_options		!Flags,, cur size
+		,%ASCID 'BLANK'
+		,kitblank
+		,%ASCID 'BREAK'
+		,kitbreak
+		,%ASCID 'CENTER'
+		,kitcenter
+		,%ASCID 'CHECKOFF'
+		,kitcheckoff
+		,%ASCID 'DEFINE'
+		,kitdefine
+		,%ASCID 'EDITABLE'
+		,kiteditable
+		,%ASCID 'FILL'
+		,kitfill
+		,%ASCID 'I'
+		,kitindent
+		,%ASCID 'INDENT'
+		,kitindent
+		,%ASCID 'INDEX'
+		,kitindex
+		,%ASCID 'KEYWORD'
+		,kitkeyword
+		,%ASCID 'LEFTMARGIN'
+		,kitlm
+		,%ASCID 'LM'
+		,kitlm
+		,%ASCID 'NF'		!Abbrev for NOFILL
+		,kitnofill
+		,%ASCID 'NOFILL'
+		,kitnofill
+		,%ASCID 'OVERLAY'
+		,kitoverlay
+		,%ASCID 'PAGE_NUMBERS'
+		,kitpagenum
+		,%ASCID 'RIGHTMARGIN'
+		,kitrm
+		,%ASCID 'RM'
+		,kitrm
+		,%ASCID 'SELECTABLE'
+		,kitselect
+		,%ASCID 'SET'
+		,kitset
+		,%ASCID 'TITLE'
+		,kittitle
+		,%ASCID 'TOC'
+		,kittoc
+		),
+    kwd_pat: $PAB	(TYP = KEYWORD
+			,ARG = mainkeytab
+			,CAB = ccab
+			,NXT = eol_pat
+			);
+LOCAL
+    routin,
+    status;
+!
+! Make sure the atom buffer points to the right place.
+!
+ccab [cab$a_atm] = atom_str_desc;
+!
+! Read keyword or EOL
+!
+IF NOT (status =
+    lib$parse_field (kwd_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Invalid ##: command');
+    RETURN .status;
+    END;
+!
+! If EOL, just return normally (ignore null command)
+!
+IF (.ccab [cab$a_curpab] NEQ kwd_pat)
+  THEN RETURN SS$_NORMAL;
+!
+! Must be a keyword
+!
+routin = ..kwd_pat [pab$l_val];
+IF NOT (status =
+    (.routin)()		!Call routine
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_break =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the BREAK command.
+!--
+BEGIN
+
+confirm ();
+doc$$gen_break ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_blank =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the BLANK command.
+!--
+BEGIN
+OWN
+    nn_or_eol_pat: $PAB	(TYP = NUMBER
+			,NXT = eol_pat
+			,CAB = ccab
+			);
+LOCAL
+    nn,
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nn_or_eol_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing BLANK [nn]');
+    RETURN .status;
+    END;
+
+IF (.ccab [cab$a_curpab] NEQ nn_or_eol_pat)
+ THEN nn = 1		!Get default value
+ ELSE
+    BEGIN
+    nn = .nn_or_eol_pat [pab$l_val];
+    confirm ();
+    END;
+
+doc$$gen_blank (.nn);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_center =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the CENTER command.
+!--
+BEGIN
+LOCAL
+    centered_str_desc: VECTOR [2],
+    centered_str_itself: VECTOR [512,byte],
+    status;
+!
+! Initialize variables
+!
+centered_str_desc [0] = 512;
+centered_str_desc [1] = centered_str_itself;
+!
+! Parse the string to center
+!
+IF NOT (status =
+    get_str_item (centered_str_desc)
+	)
+  THEN RETURN .status;
+
+confirm ();
+
+doc$$gen_center (centered_str_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_checkoff =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the CHECKOFF command.
+!	CHECKOFF "text" /ID=nn.
+!--
+BEGIN
+OWN
+    kit_id: $KIT	(VAL = sw_id
+			);
+OWN
+    swtab: VECTOR [2 + 2 * 1]
+	INITIAL	(1^31 + 1
+		,1		!num-switches
+		,%ASCID 'ID'
+		,kit_id
+		);		
+OWN
+    swpat:	$PAB	(TYP = QUALIFIER
+			,ARG = swtab
+			,CAB = ccab
+			);
+LOCAL
+    checkoff_str_desc: VECTOR [2],
+    checkoff_str_itself: VECTOR [512,byte],
+    id,
+    routin,
+    status;
+!
+! Initialize variables
+!
+checkoff_str_desc [0] = 512;
+checkoff_str_desc [1] = checkoff_str_itself;
+!
+! Parse the string to center
+!
+IF NOT (status =
+    get_str_item (checkoff_str_desc)
+	)
+  THEN RETURN .status;
+!
+! Parse required /ID switch
+!
+IF NOT (status =
+    lib$parse_field	(swpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: /ID required for CHECKOFF');
+    RETURN .status;
+    END;
+
+routin = ..swpat [pab$l_val];
+!
+! Must have : or =
+!
+IF NOT (check_colon_eq ())
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing CHECKOFF /ID=nn');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Call routine to read value
+!
+IF NOT (status = (.routin) (id))
+  THEN RETURN .status;
+
+confirm ();
+
+doc$$gen_checkoff (checkoff_str_desc, .id);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_define =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the DEFINE command.
+!--
+BEGIN
+OWN
+    kitfont: $KIT	(VAL = define_font
+			);
+LITERAL
+    num_options = 1;
+OWN
+    define_tab: VECTOR [2 + 2*num_options]
+		INITIAL (1^31 + num_options
+			,num_options
+			,%ASCID 'FONT'
+			,kitfont
+			);
+OWN
+    kwd_pat: $PAB	(TYP = KEYWORD
+			,ARG = define_tab
+			,CAB = ccab
+			);
+LOCAL
+    routin,
+    status;
+!
+! Read keyword
+!
+IF NOT (status =
+    lib$parse_field	(kwd_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Invalid keyword after DEFINE, only FONT is allowed');
+    RETURN .status;
+    END;
+!
+! Get routine address and call it
+!
+routin = ..kwd_pat [pab$l_val];
+(.routin) ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_editable =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the EDITABLE command.
+!--
+BEGIN
+LITERAL
+    sw_center = %X'88880000';	!Unique address that means "/CENTER"
+				! (No use having a routine to set a flag!)
+OWN
+    kit_center: $KIT	(VAL = sw_center
+			),
+    kit_typeface: $KIT	(VAL = sw_typeface
+			),
+    kit_typesize: $KIT	(VAL = sw_typesize
+			),
+    kit_rendition: $KIT	(val = sw_rendition_onoff
+			),
+    kit_id:	$KIT	(val = sw_id
+			),
+    kit_space: $KIT	(val = sw_space
+			);
+LITERAL
+    num_switches = 6;
+OWN
+    swtab: VECTOR [2 + 2 * num_switches]
+	INITIAL	(1^31 + num_switches
+		,num_switches
+		,%ASCID 'CENTER'
+		,kit_center
+		,%ASCID 'ID'
+		,kit_id
+		,%ASCID 'RENDITION'
+		,kit_rendition
+		,%ASCID 'SPACE'
+		,kit_space
+		,%ASCID 'TYPEFACE'
+		,kit_typeface
+		,%ASCID 'TYPESIZE'
+		,kit_typesize
+		);
+OWN
+    swpat: $PAB	(TYP = QUALIFIER
+		,ARG = swtab
+		,NXT = eol_pat
+		,CAB = ccab
+		);
+LOCAL
+    typesize,
+    rend_on,
+    rend_off,
+    typeface_desc: VECTOR [2],
+    typeface_str: VECTOR [512,BYTE],
+    space,
+    id,
+    routin,
+    flags,
+    status;
+
+!
+! Initialize variables.
+!
+typesize = 0;
+rend_on = 0;
+rend_off = 0;
+typeface_desc [0] = 0;
+typeface_desc [1] = typeface_str;
+space = 0;
+id = 0;
+flags = 0;
+
+!
+! Parse the switches on the line.
+!
+WHILE 1 DO		!Loop until EOL seen (or error)
+    BEGIN
+    IF NOT (status =
+	lib$parse_field	(swpat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing EDITABLE [/switch ...]');
+	RETURN .status;
+	END;
+  !
+  ! If we parsed EOL, exitloop
+  !
+    IF (.ccab [cab$a_curpab] EQL eol_pat)
+      THEN EXITLOOP;
+  !
+  ! Get routine address
+  !
+    routin = ..swpat [pab$l_val];
+    IF (.routin NEQ sw_center)
+      THEN
+     !
+     ! Must have : or =
+     !
+	IF NOT (check_colon_eq ())
+	  THEN
+	    BEGIN
+	    $gen_error ('%ERR: Value required for EDITABLE /switch');
+	    RETURN SS$_BADPARAM;
+	    END;
+  !
+  ! Call routine to read value
+  !
+    status = (SELECTONE (.routin) OF
+	SET
+	[sw_id]: sw_id (id);
+	[sw_space]: sw_space (space);
+	[sw_rendition_onoff]: sw_rendition_onoff (rend_on, rend_off);
+	[sw_typeface]:
+	    BEGIN
+	    typeface_desc [0] = 512;
+	    sw_typeface (typeface_desc)
+	    END;
+	[sw_typesize]: sw_typesize (typesize);
+	[sw_center]: flags = .flags OR ede$K_flag_center;
+	TES
+	);
+    IF NOT .status THEN RETURN .status;
+    END;	!of WHILE 1 DO
+!
+! All switches parsed ok. Make sure all the required ones have been
+! specified.
+!
+IF (.id EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: /ID must be specified for EDITABLE');
+    RETURN SS$_BADPARAM;
+    END;
+
+IF (.space EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: /SPACE must be specified for EDITABLE');
+    RETURN SS$_BADPARAM;
+    END;
+!
+! All ok - call routine.
+!
+doc$$gen_editable	(.id, .space, typeface_desc, .typesize
+			,.rend_on, .rend_off, .flags
+			);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_fill =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the FILL command.
+!--
+BEGIN
+
+confirm ();
+doc$$gen_fill ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE define_font =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses DEFINE FONT command.
+!--
+BEGIN
+OWN
+    kit_typeface: $KIT	(VAL = sw_typeface
+			),
+    kit_typesize: $KIT	(VAL = sw_typesize
+			),
+    kit_rendition: $KIT	(VAL = sw_rendition
+			);
+LITERAL
+    num_switches = 3;
+OWN
+    swtab: VECTOR [2 + 2*num_switches]
+	INITIAL	(1^31 + num_switches
+		,num_switches
+		,%ASCID 'RENDITION'
+		,kit_rendition
+		,%ASCID 'TYPEFACE'
+		,kit_typeface
+		,%ASCID 'TYPESIZE'
+		,kit_typesize
+		);
+OWN
+    swpat:	$PAB	(TYP = QUALIFIER
+			,ARG = swtab
+			,NXT = eol_pat
+			,CAB = ccab
+			),
+    infil_pat:	$PAB	(TYP = INPUT_FILE
+			,CAB = ccab
+			);
+LOCAL
+    typesize,
+    rend,
+    typeface_defined_flag,
+    fontfile_desc: VECTOR [2],
+    fontfile_str: VECTOR [512,BYTE],
+    typeface_desc: VECTOR [2],
+    typeface_str: VECTOR [512,BYTE],
+    routin,
+    status;
+!
+! Parse fontfilename
+!
+fontfile_desc [0] = 512;
+fontfile_desc [1] = fontfile_str;
+ccab [cab$a_atm] = fontfile_desc;
+
+IF NOT (status =
+    lib$parse_field	(infil_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing DEFINE FONT filespec ...');
+    RETURN .status;
+    END;
+
+fontfile_desc [0] = .ccab [cab$w_aln];	!Get length of filespec
+!
+! Use normal atom buffer again
+!
+ccab [cab$a_atm] = atom_str_desc;
+!
+! Loop parsing switches until error or EOL
+!
+typeface_Defined_flag = 0;	!No typeface defined yet.
+typesize = 0;		!In case not defined, set to 0.
+rend = 0;		!in case not defined, set to 0.
+
+WHILE 1 DO		!Loop until EOL seen (or error causes us to RETURN)
+    BEGIN
+    IF NOT (status =
+	lib$parse_field	(swpat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing DEFINE FONT filename [/switch...]');
+	RETURN .status;
+	END;
+  !
+  ! If we have parsed EOL, exitloop
+  !
+    IF (.ccab [cab$a_curpab] NEQ swpat)
+     THEN EXITLOOP;
+  !
+  ! Get routine address
+  !
+    routin = ..swpat [pab$l_val];
+  !
+  ! Must have : or = following switch
+  !
+    IF NOT (check_colon_eq ())
+     THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing DEFINE FONT filenm [/switch=val ...]');
+	RETURN SS$_BADPARAM
+	END;
+  ! Call routine to read value
+  !
+    status = (SELECTONE (.routin) OF
+	SET
+	[sw_rendition]: sw_rendition (rend);
+	[sw_typeface]:
+		BEGIN
+		typeface_defined_flag = 1;
+		typeface_desc [0] = 512;
+		typeface_desc [1] = typeface_str;
+		sw_typeface (typeface_desc)
+		END;
+	[sw_typesize]: sw_typesize (typesize);
+	TES
+	);
+
+    IF NOT .status THEN RETURN .status;
+    END;	!Of WHILE 1 DO
+!
+! EOL- make sure a typeface has been defined
+!
+IF NOT (.typeface_defined_flag)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: No TYPEFACE specified in DEFINE FONT');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Call routine to define the font
+!
+doc$$gen_define_font (fontfile_desc, typeface_desc, .typesize, .rend);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_rendition
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the /RENDITION options for DEFINE FONT
+! FORMAL PARAMETERS:
+	(rend_mask	!Address of longword to write rendition mask in
+	) =
+!--
+BEGIN
+OWN
+    kitbold: $KIT	(VAL = rend_bold_bit
+			),
+    kitund: $KIT	(VAL = rend_underscore_bit
+			),
+    kitital: $KIT	(VAL = rend_italics_bit
+			);
+LITERAL
+    num_options = 3;
+OWN
+    rendtab: VECTOR [2 + 2*num_options]
+	INITIAL (1^31 + num_options
+		,num_options
+		,%ASCID 'BOLD'
+		,kitbold
+		,%ASCID 'ITALICS'
+		,kitital
+		,%ASCID 'UNDERLINE'
+		,kitund
+		);
+OWN
+    rend_pat: $PAB	(TYP = KEYWORD
+			,ARG = rendtab
+			,CAB = ccab
+			),
+    comma_or_rparen_pat:
+		$PAB	(TYP = TOKEN
+			,ARG = %ASCID ','
+			,NXT = rparen_pat
+			,CAB = ccab
+			);
+LOCAL
+    rend,
+    status;
+
+rend = 0;
+IF NOT (status =
+    lib$parse_field (lparen_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: "(" required for list of renditions');
+    RETURN .status;
+    END;
+!
+! Loop reading <RENDITION> <COMMA>!<RPAREN> until RPAREN seen
+!
+WHILE 1 DO
+    BEGIN
+    IF NOT (status =
+	lib$parse_field	(rend_pat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Bad rendition specified');
+	doc$$append_list_line (%ASCID '  Must be one of: BOLD, ITALICS, UNDERLINE');
+	doc$$put_list_line ();
+	$typeline ('  Must be one of: BOLD, ITALICS, UNDERLINE');
+ 	RETURN .status
+	END;
+
+    rend = .rend OR ..rend_pat [pab$l_val];
+  !
+  ! Read comma or ")"
+  !
+    IF NOT (status =
+	lib$parse_field (comma_or_rparen_pat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Missing comma or ")" following rendition keyword');
+	RETURN .status
+	END;
+
+    IF (.ccab [cab$a_curpab] EQL rparen_pat)
+      THEN EXITLOOP;
+
+    END;		!WHILE 1 DO... (if get here, comma seen).
+
+.rend_mask = .rend;		!Pass renditions back to caller.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_typeface
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the /TYPEFACE switch
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]	!Address of descr. to write str in
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status = get_str_item (.str_desc))
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_typesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the /TYPESIZE switch
+! FORMAL PARAMETERS:
+	(size		!Addr of variable to return size in
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad TYPESIZE specified');
+    RETURN .status
+    END;
+
+.size = .nnpat [pab$l_val];	!Return number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_id
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the /ID switch
+! FORMAL PARAMETERS:
+	(id		!Addr of variable to return id in
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad ID specified');
+    RETURN .status
+    END;
+
+.id = .nnpat [pab$l_val];	!Return number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_space
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the /SPACE switch
+! FORMAL PARAMETERS:
+	(space		!Addr of variable to return space in
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad SPACE value specified');
+    RETURN .status
+    END;
+
+.space = .nnpat [pab$l_val];	!Return number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_indent =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the INDENT command.
+!--
+BEGIN
+LOCAL
+    neg_flag,
+    nn,
+    status;
+
+!
+! Try to parse a dash. If parsed, set neg_flag.
+!
+neg_flag = 0;
+
+IF (lib$parse_field	(dash_pat))
+  THEN neg_flag = 1;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing INDENT nn');
+    RETURN .status;
+    END;
+
+nn = .nnpat [pab$l_val];	!Get number
+
+IF (.neg_flag)
+  THEN nn = 0 - .nn;
+
+confirm ();
+doc$$gen_indent (.nn);		!Call routine to do it
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_index =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the INDEX command.
+!--
+BEGIN
+LOCAL
+    eos_flag,
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [512,BYTE],
+    status;
+
+eos_flag = 0;		!Not end of string yet.
+WHILE (NOT (.eos_flag)) DO
+    BEGIN
+  !
+  ! Get next quoted string to put in the index.
+  !
+    str_desc [0] = 512;
+    str_desc [1] = str_itself;
+    IF NOT (status = get_str_item (str_desc))
+      THEN RETURN .status;	!Give up on rest of items if error found
+  !
+  ! Index this item
+  !
+    doc$$gen_index (str_desc);
+  !
+  ! Parse comma or EOL
+  !
+    IF NOT (status =
+	lib$parse_field	(comma_eol_pat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Bad syntax for list of INDEX items');
+	RETURN .status;
+	END;
+    IF (.ccab [cab$a_curpab] NEQ comma_eol_pat)
+      THEN eos_flag = 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_keyword =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses a keyword.
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [512,BYTE],
+    status;
+
+str_desc [0] = 512;
+str_desc [1] = str_itself;
+
+IF NOT (status = get_str_item (str_desc))
+  THEN RETURN .status;
+
+confirm ();
+!
+! Call routine
+!
+doc$$gen_keyword (str_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_lm =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the LEFTMARGIN command.
+!--
+BEGIN
+LOCAL
+    rel_flag,
+    neg_flag,
+    nn,
+    status;
+
+rel_flag = 0;
+IF (lib$parse_field	(plus_minus))
+  THEN
+    BEGIN
+    rel_flag = 1;
+    neg_flag = 0;		!Assume not negative
+    IF (.ccab [cab$a_curpab] EQL dash_pat)
+      THEN neg_flag = 1;
+    END;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing LEFTMARGIN nn');
+    RETURN .status;
+    END;
+
+nn = .nnpat [pab$l_val];
+confirm ();
+
+IF (.rel_flag)
+ THEN
+    BEGIN
+    IF (.neg_flag)
+      THEN doc$$gen_lm (1, 0 - .nn)
+      ELSE doc$$gen_lm (1, .nn);
+    END
+ ELSE
+    doc$$gen_lm (0, .nn);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_nofill =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the NOFILL command.
+!--
+BEGIN
+
+confirm ();
+doc$$gen_nofill ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_overlay =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the "OVERLAY" command.
+!--
+BEGIN
+OWN
+    infil_pat: $PAB	(TYP = INPUT_FILE
+			,CAB = ccab
+			),
+    kit_at: $KIT	(VAL = 0
+			),
+    at_tab: VECTOR [4]
+	INITIAL (1^31 + 1
+		,1
+		,%ASCID 'AT'
+		,kit_at
+		),
+    at_pat: $PAB	(TYP = KEYWORD
+			,ARG = at_tab
+			,CAB = ccab
+			);
+LOCAL
+    inp_file_desc: VECTOR [2],
+    inp_file_str: VECTOR [512,BYTE],
+    x,
+    y,
+    status;
+
+inp_file_desc [0] = 512;
+inp_file_desc [1] = inp_file_str;
+
+!
+! Parse filespec
+!
+ccab [cab$a_atm] = inp_file_desc;	!This gets changed if reparse.
+IF NOT (status =
+    lib$parse_field	(infil_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad file spec');
+    RETURN .status;
+    END;
+
+inp_file_desc [0] = .ccab [cab$w_aln];	!Get length of atom buffer
+
+ccab [cab$a_atm] = atom_str_desc;	!Back to good 'ol atom buffer
+!
+! Parse "AT"
+!
+IF NOT (status =
+    lib$parse_field	(at_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Format is "OVERLAY filespec AT x,y"');
+    RETURN .status;
+    END;
+!
+! Parse x,y
+!
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Format is "OVERLAY filespec AT x,y"');
+    RETURN .status;
+    END;
+x = .nnpat [pab$l_val];
+
+IF NOT (status =
+    lib$parse_field	(comma_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Format is "OVERLAY filespec AT x,y"');
+    RETURN .status;
+    END;
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Format is "OVERLAY filespec AT x,y"');
+    RETURN .status;
+    END;
+y = .nnpat [pab$l_val];
+confirm ();
+!
+! Call OVERLAY routine
+!
+doc$$gen_overlay (inp_file_Desc, .x, .y);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_pagenum =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the PAGE_NUMBERS command.
+!--
+BEGIN
+MACRO
+    default_typeface = 'Kilter' %;
+LITERAL
+    default_tf_len = %CHARCOUNT (default_typeface);
+BIND
+    def_typeface_str_desc = %ASCID default_typeface: VECTOR [2];
+OWN
+    kit_linesize: $KIT	(VAL = sw_linesize
+			),
+    kit_overspace: $KIT	(VAL = sw_overspace
+			),
+    kit_typeface: $KIT	(VAL = sw_typeface
+			),
+    kit_typesize: $KIT	(VAL = sw_typesize
+			),
+    kit_rendition: $KIT	(VAL = sw_rendition
+			),
+    kit_underspace: $KIT (VAL = sw_underspace
+			);
+LITERAL
+    num_switches = 6;
+OWN
+    swtab: VECTOR [2 + 2*num_switches]
+	INITIAL (1^31 + num_switches
+		,num_switches
+		,%ASCID 'LINESIZE'
+		,kit_linesize
+		,%ASCID 'OVERSPACE'
+		,kit_overspace
+		,%ASCID 'RENDITION'
+		,kit_rendition
+		,%ASCID 'TYPEFACE'
+		,kit_typeface
+		,%ASCID 'TYPESIZE'
+		,kit_typesize
+		,%ASCID 'UNDERSPACE'
+		,kit_underspace
+		);
+OWN
+    swpat: $PAB	(TYP = QUALIFIER
+		,ARG = swtab
+		,NXT = eol_pat
+		,CAB = ccab
+		);
+LOCAL
+    typesize,
+    rend,
+    typeface_desc: VECTOR [2],
+    typeface_str: VECTOR [512,BYTE],
+    underspace,
+    overspace,
+    linesize,
+    routin,
+    status;
+
+typeface_desc [0] = 0;
+rend = 0;		!Default rendition bits
+typesize = 14;		!Default typesize
+linesize = 15;		!Default line height
+underspace = 0;		!Default undersize
+overspace = 30;		!Default oversize
+!
+! Parse switches or EOL
+!
+WHILE 1 DO
+    BEGIN
+    IF NOT (lib$parse_field (swpat)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing PAGE_NUMBERS [/switch...]');
+	RETURN .status;
+	END;
+  !
+  ! If we have parsed EOL, exitloop
+  !
+    IF (.ccab [cab$a_curpab] NEQ swpat)
+      THEN EXITLOOP;
+  !
+  ! Get routine address
+  !
+    routin = ..swpat [pab$l_val];
+  !
+  ! Must have : or = following switch
+  !
+    IF NOT (check_colon_eq ())
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing PAGE_NUMBERS /switch=val');
+	RETURN SS$_BADPARAM
+	END;
+  !
+  ! Call routine to read value
+  !
+    status = (SELECTONE (.routin) OF
+	SET
+	[sw_rendition]: sw_rendition (rend);
+	[sw_typeface]:
+		BEGIN
+		typeface_desc [0] = 512;
+		typeface_desc [1] = typeface_str;
+		sw_typeface (typeface_desc)
+		END;
+	[sw_typesize]: sw_typesize (typesize);
+	[sw_linesize]: sw_linesize (linesize);
+	[sw_underspace]: sw_underspace (underspace);
+	[sw_overspace]: sw_overspace (overspace);
+	TES
+	);
+    IF NOT .status THEN RETURN .status;
+    END;		!Of WHILE 1 DO
+!
+! Get a default typeface if not specified
+!
+IF (.typeface_desc [0] EQL 0)
+  THEN
+    BEGIN
+    typeface_desc [0] = default_tf_len;
+    typeface_desc [1] = .def_typeface_str_desc [1];
+    END;
+!
+! Call routine
+!
+doc$$gen_pagenums	(.linesize
+			,.overspace
+			,.underspace
+			,typeface_desc
+			,.typesize
+			,.rend
+			);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_linesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the LINESIZE switch.
+! FORMAL PARAMETERS:
+	(pixels		!Number of pixels
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad value for /LINESIZE=nn');
+    RETURN .status
+    END;
+
+.pixels = .nnpat [pab$l_val];	!Return number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_underspace
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the /UNDERSPACE switch
+! FORMAL PARAMETERS:
+	(pixels		!# pixels below page number line
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad value for /UNDERSPACE=nn');
+    RETURN .status
+    END;
+
+.pixels = .nnpat [pab$l_val];	!Return number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_overspace
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the /OVERSPACE switch
+! FORMAL PARAMETERS:
+	(pixels		!# pixels minimum between text and page number line
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad value for /OVERSPACE=nn');
+    RETURN .status
+    END;
+
+.pixels = .nnpat [pab$l_val];	!Return number
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_rm =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the RIGHTMARGIN command.
+!--
+BEGIN
+LOCAL
+    rel_flag,
+    neg_flag,
+    nn,
+    status;
+
+rel_flag = 0;
+IF (lib$parse_field	(plus_minus))
+  THEN
+    BEGIN
+    rel_flag = 1;
+    neg_flag = 0;		!Assume not negative
+    IF (.ccab [cab$a_curpab] EQL dash_pat)
+      THEN neg_flag = 1;
+    END;
+
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing RIGHTMARGIN nn');
+    RETURN .status;
+    END;
+
+nn = .nnpat [pab$l_val];
+confirm ();
+
+IF (.rel_flag)
+ THEN
+    BEGIN
+    IF (.neg_flag)
+      THEN doc$$gen_rm (1, 0 - .nn)
+      ELSE doc$$gen_rm (1, .nn);
+    END
+ ELSE
+    doc$$gen_rm (0, .nn);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_select =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the SELECTABLE command.
+!	SELECTABLE "string" [/KEYWORD="keyword" ! /LINK=n]
+!--
+BEGIN
+OWN
+    kit_keyword: $KIT	(VAL = 0
+			),
+    kit_link: $KIT	(VAL = 1
+			);
+LITERAL
+    num_switches = 2;
+OWN
+    swtab: VECTOR [2 + 2*num_switches]
+	INITIAL	(1^31 + num_switches
+		,num_switches
+		,%ASCID 'KEYWORD'
+		,kit_keyword
+		,%ASCID 'LINK'
+		,kit_link
+		);
+OWN
+    swpat: $PAB		(TYP = QUALIFIER
+			,ARG = swtab
+			,CAB = ccab
+			);
+LOCAL
+    sel_str_desc: VECTOR [2],
+    sel_str_itself: VECTOR [512,byte],
+    kwd_str_desc: VECTOR [2],
+    kwd_str_itself: VECTOR [512,byte],
+    sw_link_flag,
+    link,
+    status;
+!
+! Initialize variables
+!
+sel_str_desc [0] = 512;
+sel_str_desc [1] = sel_str_itself;
+kwd_str_desc [0] = 512;
+kwd_str_desc [1] = kwd_str_itself;
+link = 0;			!If not specified
+!
+! Parse the selectable string
+!
+IF NOT (status =
+    get_str_item (sel_str_desc)
+	)
+  THEN RETURN .status;
+!
+! Parse the /KEYWORD or /LINK string
+!
+IF NOT (status =
+    lib$parse_field	(swpat)		!Switch MUST be present
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing SELECTABLE "str" /KEYWORD="kwd"');
+    RETURN .status;
+    END;
+
+sw_link_flag = ..swpat [pab$l_val];
+!
+! Make sure : or = given
+!
+IF NOT (check_colon_eq ())
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing SELECTABLE "str" /KEYWORD="kwd"');
+    RETURN .status;
+    END;
+!
+! Parse the keyword (or link number) itself
+!
+IF (.sw_link_flag)
+  THEN
+    BEGIN
+    IF NOT (status =
+	lib$parse_field	(nnpat)
+		)
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Error parsing SELECTABLE .. /LINK=nn');
+	RETURN .status;
+	END;
+    link = .nnpat [pab$l_val];
+    IF (.link EQL 0)
+      THEN
+	BEGIN
+	$gen_error ('%ERR: /LINK value must be a positive number');
+	RETURN .status;
+	END;
+    END
+  ELSE
+    BEGIN
+    IF NOT (status = get_str_item (kwd_str_desc))
+      THEN RETURN .status;
+    END;
+
+confirm ();		!Must be EOL now
+!
+! Store the SELECTABLE field
+!
+doc$$gen_selectable (sel_str_desc, .link, kwd_str_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_set =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse a set command
+!--
+BEGIN
+LOCAL
+    routin,
+    status;
+OWN
+    kittypesize: $KIT	(VAL = set_typesize
+			),
+    kittypeface: $KIT	(VAL = set_typeface
+			),
+    kitrendition: $KIT	(VAL = set_rendition
+			),
+    kitlinesize: $KIT	(VAL = set_linesize
+			),
+    kitmeasure:	$KIT	(VAL = set_measurement
+			),
+    kitpagesize: $KIT	(VAL = set_pagesize
+			);
+LITERAL
+    num_set_cmds = 6;	!# of SET commands
+OWN
+    setkeytab: VECTOR [2 + 2*num_set_cmds]	!SET command table
+	INITIAL	(1^31 + num_set_cmds		!1 in 1st bit + max size
+		,num_set_cmds			!Flags, cur size
+		,%ASCID 'LINESIZE'
+		,kitlinesize
+		,%ASCID 'MEASUREMENT_UNITS'
+		,kitmeasure
+		,%ASCID 'PAGESIZE'
+		,kitpagesize
+		,%ASCID 'RENDITION'
+		,kitrendition
+		,%ASCID 'TYPEFACE'
+		,kittypeface
+		,%ASCID 'TYPESIZE'
+		,kittypesize
+		);
+OWN
+    kwd_pat: $pab	(TYP = KEYWORD
+			,ARG = setkeytab
+			,CAB = ccab
+			);
+!
+! Parse the SET keyword
+!
+IF NOT (status =
+    lib$parse_field	(kwd_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Invalid SET command');
+    RETURN .status;
+    END;
+!
+! Parse succeeded, call routine
+!
+routin = ..kwd_pat [pab$l_val];
+IF NOT (status =
+    (.routin)()		!Call routine
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_typesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse "SET TYPESIZE nn <EOS>", then call routine
+!--
+BEGIN
+LOCAL
+    nn,		!The parsed number
+    status;
+!
+! Parse nn
+!
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad number for SET TYPESIZE');
+    RETURN .status;
+    END;
+
+nn = .nnpat [pab$l_val];	!Get number
+confirm ();
+!
+! Command ok, call routine
+!
+doc$$gen_set_typesize (.nn);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_typeface =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse SET TYPEFACE command
+!--
+BEGIN
+LOCAL
+    typeface_desc: VECTOR [2],
+    typeface_str: VECTOR [512,byte],
+    status;
+
+typeface_desc [0] = 512;
+typeface_desc [1] = typeface_str;
+
+IF NOT (status =
+    get_str_item (typeface_desc)
+	)
+  THEN RETURN .status;
+
+confirm ();
+
+doc$$gen_set_typeface (typeface_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_rendition =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses SET RENDITION (rend, rend..)
+!--
+BEGIN
+LOCAL
+    rend_on_mask,
+    rend_off_mask,
+    status;
+
+IF NOT (status =
+    parse_rendition_list (rend_on_mask, rend_off_mask)
+	)
+  THEN RETURN .status;
+
+!
+! There better be EOL now.
+!
+confirm ();
+
+IF ((.rend_on_mask EQL 0) AND (.rend_off_mask EQL 0))
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad format for rendition list');
+    RETURN SS$_BADPARAM
+    END;
+
+!
+! Ok, call SET RENDITION routine
+!
+doc$$gen_set_rendition (.rend_on_mask, .rend_off_mask);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_rendition_onoff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses /RENDITION=(<rend>, NO <rend> , etc.)
+!	Parens must be specified.
+! FORMAL PARAMETERS:
+	(rend_on
+	,rend_off
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$parse_field (lparen_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: "(" required for list of renditions');
+    RETURN .status
+    END;
+
+IF NOT (status =
+    parse_rendition_list (.rend_on, .rend_off)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    lib$parse_field (rparen_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad format for rendition list');
+    RETURN .status
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_rendition_list
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse list of renditions separated by commas, until
+!	we hit something that can't be parsed. Then return.
+! FORMAL PARAMETERS:
+	(rend_on		!Address of where to return "ON" bits
+	,rend_off		!Address of where to return "OFF" bits
+	) =
+!--
+BEGIN
+OWN
+    kitno: $KIT		(VAL = 0		!0 = "NO"
+			),
+    kitbold: $KIT	(VAL = rend_bold_bit
+			),
+    kitund: $KIT	(VAL = rend_underscore_bit
+			),
+    kitital: $KIT	(VAL = rend_italics_bit
+			);
+!   kitblink: $KIT	(VAL = rend_blink_bit
+!			),
+!   kitinverse: $KIT	(VAL = rend_inverse_bit
+!			);
+LITERAL
+    num_options = 4;
+OWN
+    rendtab: VECTOR [2 + 2*num_options]
+	INITIAL	(1^31 + num_options
+		,num_options
+		,%ASCID 'BOLD'
+		,kitbold
+		,%ASCID 'ITALICS'
+		,kitital
+		,%ASCID 'NO'
+		,kitno
+		,%ASCID 'UNDERLINE'
+		,kitund
+		);
+OWN
+    rend_pat: $PAB	(TYP = KEYWORD
+			,ARG = rendtab
+			,CAB = ccab
+			);
+LOCAL
+    neg_flag,
+    this_bit,
+    rend_on_mask,
+    rend_off_mask,
+    status;
+!
+! Initialize variables
+!
+.rend_on = 0;
+.rend_off = 0;
+!
+! Parse selection.
+!
+WHILE 1 DO			!Return at parse error.
+    BEGIN
+    neg_flag = 0;		!Set if "NO" rendition parsed
+    IF NOT (status =
+        lib$parse_field	(rend_pat)
+	    )
+      THEN RETURN SS$_NORMAL;
+
+    this_bit = ..rend_pat [pab$l_val];	!Get bit value
+    IF (.this_bit EQL 0)
+      THEN
+	BEGIN
+	neg_flag = 1;		!"NO" xxx
+	IF NOT (status =
+	    lib$parse_field	(rend_pat)
+		)
+	  THEN
+	    BEGIN
+	    $gen_error ('%ERR: Bad rendition selection');
+	    doc$$append_list_line (%ASCID '	Must be one of: BOLD, ITALICS, UNDERLINE');
+	    doc$$put_list_line ();
+	    $typeline ('	Must be one of: BOLD, ITALICS, UNDERLINE');
+	    RETURN .status;
+	    END;
+        this_bit = ..rend_pat [pab$l_val];	!Get bit value
+	END;
+
+    IF (.neg_flag)
+      THEN .rend_off = ..rend_off OR .this_bit
+      ELSE .rend_on  = ..rend_on OR .this_bit;
+  !
+  ! Try to parse comma. If can't then return. Else loop.
+  !
+    IF NOT (status =
+	lib$parse_field	(comma_pat)
+	   )
+      THEN RETURN SS$_NORMAL;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_linesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses SET LINESIZE
+!--
+BEGIN
+LOCAL
+    nn,		!The parsed number
+    status;
+!
+! Parse nn
+!
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Bad number for SET LINESIZE');
+    RETURN .status;
+    END;
+
+nn = .nnpat [pab$l_val];	!Get number
+confirm ();
+!
+! Command ok, call routine
+!
+doc$$gen_set_linesize (.nn);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_measurement =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses SET MEASUREMENT UNITS
+!--
+BEGIN
+OWN
+    kitpixels: $KIT	(VAL = m_units$k_pixels
+			),
+    kitcent: $KIT	(VAL = m_units$k_centimeters
+			),
+    kitinch: $KIT	(VAL = m_units$k_inches
+			);
+LITERAL
+    num_options = 3;
+OWN
+    measure_tab: VECTOR [2 + 2*num_options]
+		INITIAL	(1^31 + num_options	!1 in 1st bit + max size
+			,num_options
+			,%ASCID 'CENTIMETERS'
+			,kitcent
+			,%ASCID 'INCHES'
+			,kitinch
+			,%ASCID 'PIXELS'
+			,kitpixels
+			);
+OWN
+    kwd_pat: $PAB	(TYP = KEYWORD
+			,ARG = measure_tab
+			,CAB = ccab
+			);
+LOCAL
+    type,		!Type of measurement units wanted
+    status;
+!
+! Read keyword
+!
+IF NOT (status =
+    lib$parse_field	(kwd_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Invalid measurement unit type, must be one of:');
+    doc$$append_list_line (%ASCID '	PIXELS, INCHES, CENTIMETERS');
+    doc$$put_list_line ();
+    $typeline ('	PIXELS, INCHES, CENTIMETERS');
+    RETURN .status;
+    END;
+!
+! Get value
+!
+type = ..kwd_pat [pab$l_val];
+confirm ();
+
+!
+! Call routine
+!
+doc$$gen_set_measurement (.type);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_pagesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses SET PAGESIZE
+!--
+BEGIN
+LOCAL
+    x_size,	!The parsed number
+    y_size,
+    status;
+!
+! Parse x
+!
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing SET PAGESIZE x,y');
+    RETURN .status;
+    END;
+
+x_size = .nnpat [pab$l_val];	!Get x-coordinate
+!
+! Parse comma
+!
+IF NOT (status =
+    lib$parse_field	(comma_pat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing SET PAGESIZE x,y');
+    RETURN .status;
+    END;
+!
+! Then y
+!
+IF NOT (status =
+    lib$parse_field	(nnpat)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Error parsing SET PAGESIZE x,y');
+    RETURN .status;
+    END;
+
+y_size = .nnpat [pab$l_val];	!Get y
+confirm ();
+!
+! Command ok, call routine
+!
+doc$$gen_set_pagesize (.x_size, .y_size);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_title =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the TITLE command.
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: BLOCK [256,BYTE],
+    status;
+
+str_desc [0] = 256;
+str_Desc [1] = str_itself;
+
+IF NOT (status =
+    get_str_item (str_desc)
+	)
+  THEN RETURN .status;
+
+confirm ();
+doc$$gen_title (str_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_toc =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the TOC command.
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: BLOCK [256,BYTE],
+    status;
+
+str_desc [0] = 256;
+str_Desc [1] = str_itself;
+
+IF NOT (status =
+    get_str_item (str_desc)
+	)
+  THEN RETURN .status;
+
+confirm ();
+doc$$gen_toc (str_desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_str_item
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads a quoted string and returns the string
+!	(without quotes) in str_desc. Returns bad status
+!	with error typed.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    nchars,
+    eqloc,		!Location of 2nd quote
+    status;
+OWN
+    str_pat: $pab	(TYP = STRING
+			,CAB = ccab
+			);
+
+IF NOT (status =
+    lib$parse_field (str_pat)
+	)
+  THEN
+    BEGIN
+  ! Do some analysis
+    $gen_error ('%ERR: Error in quoted string');
+    RETURN .status;
+    END;
+!
+! Extract the string (without the quotes) from the atom buffer
+!
+nchars = .ccab [cab$w_aln];	!Get length of atom buffer
+eqloc = CH$FIND_CH	(.nchars - 1
+			,atom_buffer + 1
+			,%C'"'
+			);
+IF (.eqloc EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Missing end quote on string');
+    RETURN .status;
+    END;
+
+nchars = .eqloc - atom_buffer - 1;	!# chars between quotes
+IF (.nchars GTR .str_desc [0])
+  THEN
+    BEGIN
+    $gen_error ('%WARN: Quoted string truncated');
+    nchars = .str_desc [0];
+    END;
+
+CH$MOVE	(.nchars
+	,atom_buffer + 1
+	,.str_desc [1]
+	);
+
+str_desc [0] = .nchars;		!Return true number
+RETURN SS$_NORMAL
+END;
+
+ROUTINE check_colon_eq =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to check command option for : or = qualifier.
+!	Returns SS$_NORMAL if : or = parsed, else returns 0.
+!--
+BEGIN
+OWN
+    eqlpat:	$PAB	(TYP = TOKEN
+			,ARG = %ASCID '='
+			,CAB = ccab
+			),
+    colon_pat:	$PAB	(TYP = TOKEN
+			,ARG = %ASCID ':'
+			,NXT = eqlpat
+			,CAB = ccab
+			);
+
+IF NOT (lib$parse_field (colon_pat))
+  THEN RETURN 0;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE confirm =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Make sure nothing else on end of command
+!	If so, ignore it and give a warning.
+!--
+BEGIN
+IF NOT (
+    lib$parse_field (eol_pat)
+	)
+  THEN
+    $gen_error ('%WARN: Extraneous command text ignored');
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

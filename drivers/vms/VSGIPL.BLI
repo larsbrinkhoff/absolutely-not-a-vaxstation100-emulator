@@ -1,0 +1,256 @@
+! VSGIPL.BLI - VaxStation GIdis PathLess processes, Bliss source
+!
+MODULE VSTA$GID_pl(
+    IDENT = 'GIDIS - Pathless Processes',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This file contains routines for the following Gidis functions:
+!		screen_erase
+!		screen_scroll
+!		set_color_map
+!		flood
+!		wait
+!
+! Environment:
+!
+!	To use this module, require VSGIPL.REQ to declare the routines
+!	and symbols.
+!
+GLOBAL LITERAL GID$$PL_Edit_level = 3;
+!
+!--
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsging';			! Native Graphics interface
+LIBRARY 'VSTA$LIBRARY:vsgicx';			! Coordinate transformations
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+LIBRARY 'vsta$library:vstasyms';
+
+library_file_crock;
+
+$vsta_psect;
+
+EXTERNAL ROUTINE VS$$ACP_get_vm;
+EXTERNAL ROUTINE VS$$ACP_free_vm;
+EXTERNAL ROUTINE VSTA$$Error;
+
+
+!+
+GLOBAL ROUTINE GID$$PL_screen_erase =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Erase the current clipping region to the current background color
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status,
+	cliplist: REF VECTOR[ ,WORD];
+
+    ROUTINE se_completion_routine( stuff) = VS$$ACP_free_vm( %ref( 8), stuff);
+
+    status = VS$$ACP_get_vm( %ref( 8), cliplist);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+    cliplist[ 0] = .sf[ clipping_x];
+    cliplist[ 1] = .sf[ clipping_y];
+    cliplist[ 2] = .sf[ clipping_width];
+    cliplist[ 3] = .sf[ clipping_height];
+
+    status = $vstacopy(
+	SOURCE = .sf[ background_color],
+	DST = .sf[ display_id],
+	RECNUM = 1,
+	RECADR = .cliplist,
+	ASTADR = se_completion_routine,
+	ASTPRM = .cliplist);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PL_screen_scroll(
+	X,		! Distance to scroll X, in Gidis space
+	Y		! Distance to scroll Y, in Gidis space
+	) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Scroll the screen by the offsets X and Y
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status,
+	hard_x_offset,
+	hard_y_offset,
+	source_x_offset,
+	source_y_offset,
+	dest_x_offset,
+	dest_y_offset,
+	vd_width,
+	vd_height,
+	vd_depth,
+	mask_rectangle: REF VECTOR[ 2, WORD, 1],
+	background_rectangles: REF VECTOR[ 8, WORD, 1];
+
+    ROUTINE ss_completion_routine( stuff) = VS$$ACP_free_vm( %ref( 20), stuff);
+
+    status = VS$$acp_get_vm( %ref( 20), background_rectangles);
+    mask_rectangle = background_rectangles[ 8];
+
+    status = VS$$VDS_get_vd_char(
+	.sf[ display_id],	! vdid of virt. display
+	0,			! owner's uic
+	VD_height,		!
+	VD_width,		! in pixels
+	VD_depth,		!
+	0,			! intensity of background
+	0,			! intensity of foreground
+	0,			! emulated or normal text mode
+	0,			! Permanence, Shareability
+	0);			! UIC protection
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+    hard_x_offset = GID$$CX_map_coordinate( .x);
+    IF .hard_x_offset LSS 0 THEN hard_x_offset = -.hard_x_offset;
+
+    hard_y_offset = GID$$CX_map_coordinate( .y);
+    IF .hard_y_offset LSS 0 THEN hard_y_offset = -.hard_y_offset;
+
+    IF .x LSS 0			! Set up X operations accordingly
+    THEN ! X is negative, use source offset
+	BEGIN
+	source_x_offset = .hard_x_offset;
+	dest_x_offset = 0;
+	background_rectangles[ 0] = .vd_width - .hard_x_offset;
+	background_rectangles[ 1] = 0;
+	background_rectangles[ 2] = .hard_x_offset;
+	background_rectangles[ 3] = .vd_height;
+	END
+    ELSE ! X is positive, use dest offset
+	BEGIN
+	source_x_offset = 0;
+	dest_x_offset = .hard_x_offset;
+	background_rectangles[ 0] = 0;
+	background_rectangles[ 1] = 0;
+	background_rectangles[ 2] = .hard_x_offset;
+	background_rectangles[ 3] = .vd_height;
+	END;
+
+    IF .Y LSS 0			! Set up Y operations accordingly
+    THEN ! Y is negative, use source offset
+	BEGIN
+	source_Y_offset = .hard_Y_offset;
+	dest_Y_offset = 0;
+	background_rectangles[ 4] = 0;
+	background_rectangles[ 5] = .vd_height - .hard_y_offset;
+	background_rectangles[ 6] = .vd_width;
+	background_rectangles[ 7] = .hard_y_offset;
+	END
+    ELSE ! Y is positive, use dest offset
+	BEGIN
+	source_Y_offset = 0;
+	dest_Y_offset = .hard_Y_offset;
+	background_rectangles[ 4] = 0;
+	background_rectangles[ 5] = 0;
+	background_rectangles[ 6] = .vd_width;
+	background_rectangles[ 7] = .hard_y_offset;
+	END;
+
+    mask_rectangle[ 0] = .vd_width - .hard_x_offset;
+    mask_rectangle[ 1] = .vd_height - .hard_y_offset;
+    IF (.mask_rectangle[ 0] LSS 0)
+    OR (.mask_rectangle[ 1] LSS 0)
+    THEN  ! Copy cleared the whole screen, treat specially
+    	BEGIN
+	status = GID$$PL_screen_erase();
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END
+    ELSE ! Scroll did not clear the screen, move data appropriately
+	BEGIN
+	status = $vstacopy(
+	    SRCTYP = nat$k_src_vd,
+	    SOURCE = .sf[ display_id],
+	    SRCOFX = .source_x_offset,
+	    SRCOFY = .source_y_offset,
+	    MSKTYP = nat$k_msk_rectangle,
+	    MASK = mask_rectangle[ 0],
+	    DSTTYP = nat$k_dst_vd,
+	    DST = .sf[ display_id],
+	    DSTOFX = .dest_x_offset,
+	    DSTOFY = .dest_y_offset
+	    );
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+	status = $vstacopy(
+	    SOURCE = .sf[ background_color],
+	    DST = .sf[ display_id],
+	    RECNUM = 2,
+	    RECADR = .background_rectangles,
+	    ASTADR = ss_completion_routine,
+	    ASTPRM = .background_rectangles
+	);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+    	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PL_flood( color) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	cliplist: REF VECTOR[ ,word],
+	status;
+
+    ROUTINE fl_completion_routine( stuff) = VS$$ACP_free_vm( %ref( 8), stuff);
+
+    status = VS$$ACP_get_vm( %ref( 8), cliplist);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+    cliplist[ 0] = .sf[ clipping_x];
+    cliplist[ 1] = .sf[ clipping_y];
+    cliplist[ 2] = .sf[ clipping_width];
+    cliplist[ 3] = .sf[ clipping_height];
+
+    status = $VSTAFLOOD(
+	SRCTYP = .sf[ area_texture_type],
+	SOURCE = (IF .sf[ area_texture_type] EQL nat$k_src_constant
+	    THEN .sf[ source1]
+	    ELSE sf[ area_texture_descriptor]),
+	DSTTYP = nat$k_dst_vd,
+	DST = .sf[ display_id],
+	BNDMAP = (IF .color THEN 2 ELSE 1),
+	SEDPTX = .sf[ x_hard_pos],
+	SEDPTY = .sf[ y_hard_pos],
+	RECNUM = 1,
+	RECADR = .cliplist,
+	ASTADR = fl_completion_routine,
+	ASTPRM = .cliplist);
+
+    IF NOT .status THEN VSTA$$Error( .status);
+    .status
+    END;
+
+END
+ELUDOM

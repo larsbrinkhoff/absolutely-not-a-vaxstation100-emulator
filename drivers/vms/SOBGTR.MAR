@@ -1,0 +1,19 @@
+;----------------------------------------------------
+;
+;	VS$$VDS_SOBGTR  --  
+;		Input parameters: COUNTFIELD ADDRESS
+;
+;	First decrements COUNTFIELD, then returns a 0 (false) if that field is
+;		now greater than 0.  It returns a 1 (true) if that field is
+;		now 0.
+;----------------------------------------------------
+.PSECT	_VSTA$CODE	RD,NOWRT,PIC,SHR,LONG,EXE
+;
+VS$$VDS_SOBGTR::
+	.word	0			; Waste not, want not
+	sobgtr	@4(AP), 10$		; Subtract from COUNTFIELD ADDRESS
+	movl	#1,R0			; If COUNTFIELD is now zero, return 1
+	ret
+10$:	movl	#0,R0			; If COUNTFIELD is >0, return 0
+	ret
+	.end

@@ -1,0 +1,541 @@
+MODULE DOC$DISP (
+		IDENT = 'VSTADOC Utility page displayer'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides the logic to display a page of the
+!	document on the VAXstation.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$setup_view,		!Setup to view a specified document
+    doc$$display_page,		!Display page on ONYX screen
+    process_rcals,		! Execute a bunch of RCAL's.
+    zap_pb_vd,			!Delete VD and/or PB
+    doc$$quit_display;		!Stop displaying page
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$open_edf_in,		!Open EDF file for input
+    doc$$read_edf_file,		!Read a block from EDF file
+    doc$$close_edf,		!Close EDF file
+    doc$$update_lang,		!Update language
+    doc$$get_doc_vd,		!Create VD for the document
+    doc$$create_doc_pb,		!Create pasteboard for DOC
+    doc$$create_window,		!Create window on PB
+    doc$$delete_pb,		!Delete PB
+    doc$$delete_vd,		!Delete VD
+    doc$$add_lines,		!Add lines to VD
+    doc$$paste_vd,		!Paste VD to PB
+    doc$$define_field,		!Define a TXT field
+    doc$$undefine_field,	!Undefine the default field
+    doc$$insert_text,		!Insert text
+    doc$$append_text,		!Append text to field
+    doc$$center_field,		!Set field format to CENTER
+    doc$$rj_field,		!Set field format to Right Just
+    doc$$selectable,		!Make a field SELECTable.
+    doc$$define_font,		!Define a font
+    doc$$set_typeface,		!Set typeface
+    doc$$set_typesize,		!Set typesize
+    doc$$set_rendition,		!Set rendition
+    doc$$type_line,		!Type a line on the TTY
+    doc$$error;			!Report an error
+EXTERNAL
+    doc_edf_file_desc,		!File to view
+    doc$_noidx,			!?No index
+    doc$_notoc,			!?No table of contents
+    doc$_hibodypag,		!?Body page out of range
+    doc$_hitocpag,		!?TOC page out of range
+    doc$_hiidxpag;		!?IDX page out of range
+OWN
+    hdr: header_block,		!File header block
+    pb_id,			!Id of the DOC pb
+    vd_p,			!Vd-id of the DOC vd
+    win_id,			!Window id
+    page_displayed,		!Which page is currently displayed
+    type_page_displayed,	!Which type of page is being displayed
+				! (toc, body, or idx)
+    view_setup: BYTE;		!=1 if view already set up.
+
+
+GLOBAL ROUTINE doc$$setup_view =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set up to view a specified document.
+! IMPLICIT INPUTS:
+!	doc_edf_file_Desc - file to view
+!--
+BEGIN
+LOCAL
+    blk1: VECTOR [512,byte],
+    status;
+!
+! If we were already viewing, stop and start again.
+!
+IF (.view_setup)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$close_edf ()
+	    )
+      THEN RETURN .status;
+    zap_pb_vd (.pb_id, .vd_p);
+    pb_id = 0;
+    win_id = 0;
+    vd_p = 0;
+    view_setup = 0;
+    END;
+!
+! Open file and read in header.
+!
+IF NOT (status =
+    doc$$open_edf_in	(doc_edf_file_desc)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    doc$$read_edf_file	(1	!bucket
+			,blk1	!bufadr
+			)
+	)
+  THEN RETURN .status;
+
+CH$MOVE	(hdr$K_block_length
+	,blk1
+	,hdr
+	);
+!
+! Sanity check - make sure this is a real DOC file
+!
+IF (.hdr [hdr$l_sanity] NEQ hdr$K_sanity_data)
+  THEN
+    BEGIN
+    $typeline ('? File is not a properly encoded DOC file');
+    RETURN SS$_BADPARAM
+    END;
+
+IF (.hdr [hdr$l_version] NEQ 1)
+  THEN
+    BEGIN
+    $typeline ('? Unknown version of DOC file');
+    RETURN SS$_BADPARAM
+    END;
+
+doc$$update_lang (.hdr [hdr$l_language_key]);
+!
+! Create a pasteboard to paste stuff on
+!
+IF NOT (status =
+    doc$$create_doc_pb (.hdr [hdr$w_page_width], .hdr [hdr$w_page_length], pb_id)
+	)
+  THEN RETURN .status;
+!
+! Create window so we can see how it works
+!
+IF NOT (status =
+    doc$$create_window (.pb_id, .hdr [hdr$w_page_width], .hdr [hdr$w_page_length], win_id)
+	)
+  THEN RETURN .status;
+
+view_setup = 1;			!Remember view is setup.
+page_displayed = 0;
+type_page_displayed = 0;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$display_page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Displays the specified page of the help document.
+! FORMAL PARAMETERS:
+	(type			!What kind of page (body, toc, index)
+	,page_num
+	) =
+!--
+BEGIN
+LITERAL
+    num_ppes_per_block = 512 / ppe$S_page_ptr_entry;
+LOCAL
+    buffr: VECTOR [512,BYTE],	!A buffer
+    ppe: REF page_ptr_entry,	!This page ptr entry
+    pgent: REF page_entry,	!Addr of page entry at top of 1st block
+    start_ppe_block,		!Block number where PPE entries starts
+    ppe_block_offset,
+    first_rcal_block,		!First block with RCAL's.
+    num_rcal_blocks,		!How many RCAL blocks there are.
+    lde: REF lindef_entry,	!Ptr to lindef entry
+    num_ldes,			!Number of LDE's defined
+    num_rcals,			!# rcals defined in this block
+    rcal,			!Address of first RCAL in this block
+    temp,
+    status;
+!
+! Find the PPE
+!
+(SELECTONE .type OF
+    SET
+    [0]:	!Body page
+	BEGIN
+	IF (.page_num GTR .hdr [hdr$w_num_body_pages])
+	  THEN RETURN doc$$error (doc$_hibodypag, .hdr [hdr$w_num_body_pages]);
+	start_ppe_block = .hdr [hdr$w_body_ppe_block];
+	END;
+    [1]:	!TOC page
+	BEGIN
+	IF ((temp = .hdr [hdr$w_num_toc_pages]) EQL 0)
+	  THEN RETURN doc$$error (doc$_notoc);
+	IF (.page_num GTR .temp)
+	  THEN RETURN doc$$error (doc$_hitocpag, .temp);
+	start_ppe_block = .hdr [hdr$w_toc_ppe_block];
+	END;
+    [2]:	!IDX page
+	BEGIN
+	IF ((temp = .hdr [hdr$w_num_index_pages]) EQL 0)
+	  THEN RETURN doc$$error (doc$_noidx);
+	IF (.page_num GTR .temp)
+	  THEN RETURN doc$$error (doc$_hiidxpag, .temp);
+	start_ppe_block = .hdr [hdr$w_index_ppe_block];
+	END;
+    TES
+);
+ppe_block_offset = .page_num / num_ppes_per_block;
+IF NOT (status =
+    doc$$read_edf_file	(.start_ppe_block + .ppe_block_offset, buffr)
+	)
+  THEN RETURN .status;
+
+ppe = buffr + ((.page_num - 1 - (.ppe_block_offset * num_ppes_per_block))
+	    * ppe$S_page_ptr_entry);
+!
+! Read in each block and "execute" it
+! The first block gives us info about defining lines
+!
+first_rcal_block = .ppe [ppe$w_block];
+num_rcal_blocks = .ppe [ppe$w_num_blocks];
+IF NOT (status =
+    doc$$read_edf_file (.first_rcal_block, buffr)
+	)
+  THEN RETURN .status;
+
+num_rcals = .buffr;		!Get # of RCALs
+pgent = buffr + 4;		!Address of page-ent
+num_ldes = .pgent [pe$w_num_ldes];
+
+IF (.num_ldes EQL 0)
+  THEN
+    BEGIN
+    $typeline ('[ No lines defined on this page]');
+    RETURN SS$_NORMAL
+    END;
+
+lde = .pgent + pe$S_page_entry;	!Point at first LDE
+
+zap_pb_vd (0, .vd_p);		!Delete old VD (if any)
+vd_p = 0;
+!
+! Create virtual display and paste it
+!
+IF NOT (status =
+    doc$$get_doc_vd
+		(.hdr [hdr$w_page_width]	!Width
+		,.hdr [hdr$w_page_length]	!Height
+		,.lde [lde$w_num_lines]		!Number of lines
+		,.lde [lde$w_lin_size]		!Size of lines
+		,vd_p				!Addr of returned Vd-id
+		)
+	)
+  THEN RETURN .status;
+!
+! Add lines if necessary
+!
+IF (.num_ldes GTR 1)
+  THEN
+    INCR i FROM 2 TO .num_ldes DO
+	BEGIN
+	lde = .lde + lde$S_lindef_entry;	!Go to next LDE
+	IF NOT (status =
+	    doc$$add_lines
+			(.vd_p			!VD-id
+			,.lde [lde$w_num_lines]	!# of lines to add
+			,.lde [lde$w_lin_size]	!How high
+			)
+		)
+	  THEN RETURN .status;
+	END;
+!
+! Paste the VD
+!
+IF NOT (status =
+    doc$$paste_vd (.vd_p, .pb_id, 0, 0)
+	)
+  THEN RETURN .status;
+!
+! Setup for loop
+!
+rcal = .lde + lde$S_lindef_entry;	!Rcal's start right after LDE's
+IF NOT (status =
+    process_rcals (.num_rcals, .rcal)
+	)
+  THEN RETURN .status;
+
+IF (.num_rcal_blocks GTR 1)
+  THEN
+    INCR i FROM 1 TO .num_rcal_blocks-1 DO
+	BEGIN
+	IF NOT (status =
+	    doc$$read_edf_file (.first_rcal_block + .i, buffr)
+		)
+	  THEN RETURN .status;
+	num_rcals = .buffr;
+	rcal = buffr + 4;
+	IF NOT (status =
+	    process_rcals (.num_rcals, .rcal)
+		)
+	  THEN RETURN .status;
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_rcals
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do RCALs to put things on the screen.
+! FORMAL PARAMETERS:
+	(num_rcals		!How many
+	,firstr			!Address of the first RCAL
+	) =
+!--
+BEGIN
+LOCAL
+    rcal: REF rcal_header,
+    rcdeffld: REF rcal_def_field,
+    rcundeff: REF rcal_undef_field,
+    rccen: REF rcal_center_field,
+    rcrj: REF rcal_rj_field,
+    rcins: REF rcal_insert_text,
+    rcapp: REF rcal_append_text,
+    rcsel: REF rcal_set_selectable,
+    rcdeffont: REF rcal_def_font,
+    rcsettf: REF rcal_set_typeface,
+    rcsetts: REF rcal_set_typesize,
+    rcsetr: REF rcal_set_rendition,
+    rcedit: REF rcal_editable,
+    desc_1: VECTOR [2],
+    desc_2: VECTOR [2],
+    status;
+
+rcal = .firstr;			!Get address of first RCAL
+INCR i FROM 1 TO .num_rcals DO
+    BEGIN
+    (CASE .rcal [rcl$w_type] FROM 0 TO doc_rcal$K_mark_field - 1 OF
+	SET
+	[doc_rcal$K_def_field]:
+	    BEGIN
+	    rcdeffld = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$define_field
+			(.rcdeffld [rcl$w_def_fld_line]	!Line
+			,.rcdeffld [rcl$w_def_fstart]	!Starting pos
+			,.rcdeffld [rcl$w_def_fsize]	!Size (pixels)
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_undef_field]:
+	    BEGIN
+	    rcundeff = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$undefine_field
+			(.rcundeff [rcl$w_undef_fld_line])	!Line
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_center_field]:
+	    BEGIN
+	    rccen = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$center_field
+			(.rccen [rcl$w_cen_fld_line]	!line
+			,.rccen [rcl$w_cen_fld_id]	!field
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_rj_field]:
+	    BEGIN
+	    rcrj = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$rj_field
+			(.rcrj [rcl$w_rj_fld_line]	!line
+			,.rcrj [rcl$w_rj_fld_id]	!field
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_insert_text]:
+	    BEGIN
+	    rcins = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcins [rcl$w_ins_txt_size];
+	    desc_1 [1] = .rcins + rcl$K_ins_txt_str;
+	    IF NOT (status =
+		doc$$insert_text
+			(.rcins [rcl$w_ins_txt_line]	!line
+			,.rcins [rcl$w_ins_txt_fld]	!field
+			,desc_1				!Descriptor to text
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_append_text]:
+	    BEGIN
+	    rcapp = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcapp [rcl$w_app_txt_size];
+	    desc_1 [1] = .rcapp + rcl$K_app_txt_str;
+	    IF NOT (status =
+		doc$$append_text
+			(.rcapp [rcl$w_app_txt_line]	!line
+			,.rcapp [rcl$w_app_txt_fld]	!field
+			,desc_1				!Descriptor to text
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_selectable]:
+	    BEGIN
+	    rcsel = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$selectable
+			(.rcsel [rcl$w_sel_x_orig]	!X-orig
+			,.rcsel [rcl$w_sel_y_orig]	!Y-orig
+			,.rcsel [rcl$w_sel_x_extent]	!X-extent
+			,.rcsel [rcl$w_sel_y_extent]	!Y-extent
+			,.rcsel [rcl$w_sel_docpage]	!Page
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_def_font]:
+	    BEGIN
+	    rcdeffont = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcdeffont [rcl$w_deffont_fn_len];
+	    desc_1 [1] = .rcdeffont + rcl$K_deffont_fn_str;
+	    desc_2 [0] = .rcdeffont [rcl$w_deffont_tf_len];
+	    desc_2 [1] = .desc_1 [1] + .desc_1 [0];
+	    IF NOT (status =
+		doc$$define_font
+			(desc_1		!File descriptor
+			,desc_2		!Typeface descriptor
+			,.rcdeffont [rcl$w_deffont_ts]	!Typesize
+			,.rcdeffont [rcl$l_deffont_rend] !Rendition
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_typeface]:
+	    BEGIN
+	    rcsettf = .rcal + rcl$S_rcal_header;
+	    desc_1 [0] = .rcsettf [rcl$w_typeface_len];
+	    desc_1 [1] = .rcsettf + rcl$K_typeface_str;
+	    IF NOT (status =
+		doc$$set_typeface (desc_1)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_typesize]:
+	    BEGIN
+	    rcsetts = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$set_typesize (.rcsetts [rcl$w_typesize])
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_rendition]:
+	    BEGIN
+	    rcsetr = .rcal + rcl$S_rcal_header;
+	    IF NOT (status =
+		doc$$set_rendition
+			(.rcsetr [rcl$l_rend_on]	!On mask
+			,.rcsetr [rcl$l_rend_off]	!off mask
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_editable]:
+	    BEGIN
+	    rcedit = .rcal + rcl$S_rcal_header;
+	    END;
+	TES
+    );
+    rcal = .rcal + .rcal [rcl$w_size];		!Go to next RCAL
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE zap_pb_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete pasteboard and VD, if they exist
+! FORMAL PARAMETERS:
+	(pb_id
+	,vd_id
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.pb_id NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$delete_pb (.pb_id)
+	    )
+      THEN RETURN .status;
+    END;
+
+IF (.vd_id NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$delete_vd (.vd_id)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$quit_display =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Quits displaying the current page
+!--
+BEGIN
+LOCAL
+    status;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

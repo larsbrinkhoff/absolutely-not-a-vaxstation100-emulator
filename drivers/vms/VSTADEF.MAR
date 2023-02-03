@@ -1,0 +1,2151 @@
+ 
+	.MACRO	$VSTADEF,..EQU=<=>,..COL=<:>
+; 	Version 01-000
+; 
+; +++
+;  Facility:
+; 
+; 	VAX/VMS VS100 display driver
+; 
+;  Abstract:
+; 
+; 	This file contains the data structure and constant definitions
+; 	used by the VAXstation 100 display device driver and system
+; 	display software.
+; 
+; ---
+; 
+; 
+; 		===== P1 PARAMETER DEFINITIONS =====
+; 		=====    OPERAND DESCRIPTORS   =====
+; 
+;  P1 parameter block description:
+; 
+; 	This section defines the offsets for graphic operand descriptors.
+; 	The offsets are of the form:
+; 
+; 		DSC$W_xxx_DESC
+; 
+; 	The xxx field refers to the specific operand the descriptor is for.
+; 	These operands are:
+; 
+; 		SRC - source operand (see p2 parameter)
+; 		SMK - source mask operand (see p2 parameter)
+; 		FNT - font operand ( see p2 parameter)
+; 		DST - destination operand (see p3 parameter)
+; 		DMK - destination mask operand (see p3 parameter)
+; 		MAP - map operand (see p4 parameter)
+; 		PTH - path operand (see p5 parameter)
+; 		INI - initial position operand (see p5 parameter)
+; 		BND - boundry operand (see p5 parameter)
+; 		PTN - pattern operand (see p5 parameter)
+; 		TXT - text string operand (see p5 parameter)
+; 		SEC - secondary source operand (see p5 parameter)
+; 		CTL - control string operand (see p5 parameter)
+; 
+;  P1 parameter block format:
+; 
+; 		+------------------+
+; 		|    descriptor    | : P1$W_DSC_PACKET
+; 		+---            ---+
+; 		|      packet      |
+; 		+------------------+
+; 
+;  P1 parameter block size:
+; 
+;     size = VSTA$K_P1_LENGTH (bytes)
+; 
+; 
+; 
+;  Copy Area Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   | DSC$W_SMK_DESC  | : Source mask descriptor
+;   +-----------------+
+;   | DSC$W_DST_DESC  | : Destination descriptor
+;   +-----------------+
+;   | DSC$W_DMK_DESC  | : Destination mask descriptor
+;   +-----------------+
+;   | DSC$W_MAP_DESC  | : Map descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+;  Draw Curve Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   | DSC$W_SMK_DESC  | : Source mask descriptor
+;   +-----------------+
+;   | DSC$W_DST_DESC  | : Destination descriptor
+;   +-----------------+
+;   | DSC$W_DMK_DESC  | : Destination mask descriptor
+;   +-----------------+
+;   | DSC$W_MAP_DESC  | : Map descriptor
+;   +-----------------+
+;   | DSC$W_PTH_DESC  | : Path descriptor
+;   +-----------------+
+;   | DSC$W_PTN_DESC  | : Pattern descriptor
+;   +-----------------+
+;   | DSC$W_SEC_DESC  | : Secondary source descriptor
+;   +-----------------+
+; 
+;  Print Text Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   | DSC$W_FNT_DESC  | : Font descriptor
+;   +-----------------+
+;   | DSC$W_DST_DESC  | : Destination descriptor
+;   +-----------------+
+;   | DSC$W_DMK_DESC  | : Destination mask descriptor
+;   +-----------------+
+;   | DSC$W_MAP_DESC  | : Map descriptor
+;   +-----------------+
+;   | DSC$W_INI_DESC  | : Initial position descriptor
+;   +-----------------+
+;   | DSC$W_TXT_DESC  | : Text string descriptor
+;   +-----------------+
+;   | DSC$W_CTL_DESC  | : Control string descriptor
+;   +-----------------+
+; 
+; 
+; 
+;  Flood Area Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   | DSC$W_DST_DESC  | : Destination descriptor
+;   +-----------------+
+;   | DSC$W_DMK_DESC  | : Destination mask descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   | DSC$W_BND_DESC  | : Boundry descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+;  Move Object Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   | DSC$W_DST_DESC  | : Destination descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+;  Load Cursor Descriptor Packet:
+; 
+;   +-----------------+
+;   | DSC$W_SRC_DESC  | : Source descriptor
+;   +-----------------+
+;   | DSC$W_SMK_DESC  | : Source mask descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   | DSC$W_MAP_DESC  | : Map descriptor
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+; 
+; 
+;  ---- Packet based offsets ----
+; 
+VSTA$K_P1_LENGTH'..equ'16               ;  P1Size
+DSC$S_DSC_BLOCK'..equ'16
+DSC_BLOCK'..equ'0
+DSC$W_SRC_DESC'..equ'0                  ;  SourceDescriptor
+DSC$S_P2_DESC'..equ'2
+DSC$R_P2_DESC'..equ'2
+DSC$W_SMK_DESC'..equ'2                  ;  SourceMaskDescriptor
+DSC$W_FNT_DESC'..equ'2                  ;  FontDescriptor
+DSC$W_DST_DESC'..equ'4                  ;  DestinationDescriptor
+DSC$W_DMK_DESC'..equ'6                  ;  DestinationMaskDescriptor
+DSC$W_MAP_DESC'..equ'8                  ;  MapDescriptor
+DSC$S_P51_DESC'..equ'2
+DSC$R_P51_DESC'..equ'10
+DSC$W_PTH_DESC'..equ'10                 ;  PathDescriptor
+DSC$W_INI_DESC'..equ'10                 ;  InitialPositionDescriptor
+DSC$W_BND_DESC'..equ'10                 ;  BoundryMapDescriptor
+DSC$S_P52_DESC'..equ'2
+DSC$R_P52_DESC'..equ'12
+DSC$W_PTN_DESC'..equ'12                 ;  PatternDescriptor
+DSC$W_TXT_DESC'..equ'12                 ;  TextStringDescriptor
+DSC$S_P53_DESC'..equ'2
+DSC$R_P53_DESC'..equ'14
+DSC$W_SEC_DESC'..equ'14                 ;  SecondSourceMode
+DSC$W_CTL_DESC'..equ'14                 ;  ControlStringDescriptor
+; 
+;  ---- Descriptor contents ----
+; 
+VSTA$S_DESC_BLOCK'..equ'2
+DESC_BLOCK'..equ'0
+VSTA$B_TYPE'..equ'0                     ;  DescriptorTypeField
+VSTA$B_ADDR'..equ'1                     ;  DescriptorAddressField
+VSTA$K_DISPMEM'..equ'0                  ;  OperandAddress = DISPMEM
+VSTA$K_VAXMEM'..equ'256                 ;  OperandAddress = VAXMEM
+VSTA$K_CMD_IRP'..equ'2                  ;  CommandType = IRP
+; 
+;  The "INTRNL" syllable added to free up version without extra syllable for
+;  application programs, which want VSTA$K_SRC_BITMAP to go with
+;  VSTA$K_DST_BITMAP (see VSTAGBL.SDL)
+; 
+VSTA$K_SRC_INTRNL_BITMAP'..equ'0        ;  SourceType = BITMAP
+VSTA$K_SRC_CONSTANT'..equ'1             ;  SourceType = CONSTANT
+VSTA$K_SRC_HALFTONE'..equ'2             ;  SourceType = HALFTONE
+VSTA$K_SRC_FONT'..equ'3                 ;  SourceType = FONT
+VSTA$K_SMK_BITMAP'..equ'0               ;  SourceMaskType = BITMAP
+VSTA$K_SMK_RECTANGLE'..equ'1            ;  SourceMaskType = RECTANGLE
+VSTA$K_SMK_FONT'..equ'2                 ;  SourceMaskType = MASK
+VSTA$K_SMK_NONE'..equ'3                 ;  SourceMaskType = NONE
+VSTA$K_INI_POINTER'..equ'0              ;  InitialPositionType = POINTER
+VSTA$K_INI_LITERAL'..equ'1              ;  InitialPositionType = LITERAL
+VSTA$K_INI_UPDPTR'..equ'2               ;  InitialPositionType = UPDPTR
+VSTA$K_INI_UPDLIT'..equ'3               ;  InitialPositionType = UPDLIT
+VSTA$K_DMK_NONE'..equ'0                 ;  DestinationMaskType = NONE
+VSTA$K_DMK_RECLIST'..equ'1              ;  DestinationMaskType = RECLIST
+VSTA$K_DMK_RECTANGLE'..equ'2            ;  DestinationMaskType = RECTANGLE
+VSTA$K_MAP_IDEN'..equ'0                 ;  MapType = IDEN
+VSTA$K_MAP_SRC_ADDR'..equ'1             ;  MapType = SRC
+VSTA$K_MAP_SRCDST_ADDR'..equ'2          ;  MapType = SRCDST
+VSTA$K_MAP_SLIT'..equ'3                 ;  MapType = SLIT
+VSTA$K_MAP_SDLIT'..equ'4                ;  MapType = SDLIT
+VSTA$K_PTN_NONE'..equ'0                 ;  PatternType = NONE
+VSTA$K_PTN_LITERAL'..equ'1              ;  PatternType = LITERAL
+VSTA$K_PTN_POINTER'..equ'2              ;  PatternType = POINTER
+VSTA$K_PTN_UPDLIT'..equ'3               ;  PatternType = UPDLIT
+VSTA$K_PTN_UPDPTR'..equ'4               ;  PatternType = UPDPTR
+VSTA$K_SEC_NONE'..equ'0                 ;  SecondSourceType = SINGLE
+VSTA$K_SEC_CONSTANT'..equ'1             ;  SecondSourceType = CONSTANT
+VSTA$K_SEC_HALFTONE'..equ'2             ;  SecondSourceType = HALFTONE
+VSTA$K_SEC_BITMAP'..equ'3               ;  SecondSourceType = BITMAP
+VSTA$K_BND_LITERAL'..equ'0              ;  BoundryMapType = LITERAL
+VSTA$K_BND_POINTER'..equ'1              ;  BoundryMapType = POINTER
+VSTA$K_TXT_8BIT'..equ'0                 ;  TextStringType = 8BIT
+VSTA$K_TXT_16BIT'..equ'1                ;  TextStringType = 16BIT
+VSTA$K_CTL_NONE'..equ'0                 ;  ControlStringType = NONE
+VSTA$K_CTL_STRING'..equ'1               ;  ControlStringType = STRING
+; 
+; 
+; 		===== P2 PARAMETER DEFINITIONS =====
+; 		=====      SOURCE OPERAND      =====
+; 		=====   SOURCE MASK OPERAND    =====
+; 
+;  P2 parameter block description:
+; 
+; 	This section defines the offsets for the VS100 source and source
+; 	mask operands. Two types of offsets are defined, these are:
+; 
+; 		P2_xxx$s_nnnn
+; 		xxx$s_nnnn
+; 
+; 	The xxx field is either SRC for source operands, SMK for source
+; 	mask operands, or FNT for font operands which are an extension
+; 	to a source mask for print text commands. The s field describes
+; 	the packet field type and size while the nnnn field is the name
+; 	of the packet field. The two types of offsets differ in that those
+; 	prefixed with a P2_xxx are zero based with respect to the P2
+; 	parameter packet while the xxx offsets are zero based with respect
+; 	to the beginning of the xxx operand.
+; 
+;  P2 parameter block format:
+; 
+; 		+------------------+
+; 		|  source operand  | : P2$W_SRC_PACKET
+; 		+---            ---+
+; 		|                  |
+; 		+------------------+
+; 		|    source mask   | : P2$W_SMK_PACKET
+; 		+---            ---+   P2$W_FNT_PACKET
+; 		|      operand     |
+; 		+------------------+
+; 
+;  P2 parameter block size:
+; 
+;     size = VSTA$K_P2_LENGTH (bytes)
+; 
+; 
+; 
+;  Source Operand Packet:
+; 
+;     size = VSTA$K_SRC_LENGTH (bytes)
+; 
+;  Source operand type = VSTA$K_SRC_BITMAP
+; 
+;   +-----------------+
+;   |  SRC$A_BM_ADDR  | : Source bitmap address
+;   +--             --+
+;   |                 |
+;   +-----------------+
+;   | SRC$W_BM_SIZE_X | : Source bitmap size x
+;   +-----------------+
+;   | SRC$W_BM_SIZE_Y | : Source bitmap size y
+;   +-----------------+
+;   | SRC$W_BM_SIZE_Z | : Source bitmap size z
+;   +-----------------+
+;   | SRC$W_BM_OFF_X  | : Source bitmap offset x
+;   +-----------------+
+;   | SRC$W_BM_OFF_Y  | : Source bitmap offset y
+;   +-----------------+
+; 
+;  Source operand type = VSTA$K_SRC_CONSTANT
+; 
+;   +-----------------+
+;   |SRC$W_CN_CONSTANT| : Source constant value
+;   +-----------------+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+;  Source operand type = VSTA$K_SRC_HALFTONE
+; 
+;   +-----------------+
+;   |  SRC$A_HT_ADDR  | : Source halftone address
+;   +--             --+
+;   |                 |
+;   +-----------------+
+;   | SRC$W_HT_SIZE_X | : Source halftone size x
+;   +-----------------+
+;   | SRC$W_HT_SIZE_Y | : Source halftone size y
+;   +-----------------+
+;   | SRC$W_HT_SIZE_Z | : Source halftone size z
+;   +-----------------+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+;  Source operand type = VSTA$K_SRC_FONT
+; 
+;   +-----------------+
+;   |  SRC$A_FN_ADDR  | : Source font address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+; 
+; 
+;  Source Mask Packet:
+; 
+;     size = VSTA$K_SMK_LENGTH (bytes)
+; 
+;  Source mask operand type = VSTA$K_SMK_BITMAP
+; 
+;   +-----------------+
+;   |  SMK$A_BM_ADDR  | : Source mask bitmap address
+;   +--             --+
+;   |                 |
+;   +-----------------+
+;   | SMK$W_BM_SIZE_X | : Source mask bitmap size x
+;   +-----------------+
+;   | SMK$W_BM_SIZE_Y | : Source mask bitmap size y
+;   +-----------------+
+;   | SMK$W_BM_SIZE_Z | : Source mask bitmap size z
+;   +-----------------+
+;   | SMK$W_BM_OFF_X  | : Source mask bitmap offset x
+;   +-----------------+
+;   | SMK$W_BM_OFF_Y  | : Source mask bitmap offset y
+;   +-----------------+
+;   | SMK$W_BM_EXT_X  | : Source mask bitmap extent x
+;   +-----------------+
+;   | SMK$W_BM_EXT_Y  | : Source mask bitmap extent y
+;   +-----------------+
+; 
+;  Source mask operand type = VSTA$K_SMK_RECTANGLE
+; 
+;   +-----------------+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +--             --+
+;   |                 |
+;   +-----------------+
+;   | SMK$W_RC_EXT_X  | : Source mask rectangle extent x
+;   +-----------------+
+;   | SMK$W_RC_EXT_Y  | : Source mask rectangle extent y
+;   +-----------------+
+; 
+; 
+; 
+;  Font Mask Packet:
+; 
+;     size = VSTA$K_FNT_LENGTH (bytes)
+; 
+;   +-----------------+
+;   |  FNT$A_FN_ADDR  | : Mask font address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+; 
+; 
+;  ---- P2 parameter block based offsets ----
+; 
+VSTA$K_SRC_LENGTH'..equ'14              ;  SourceSize
+VSTA$K_SMK_LENGTH'..equ'18              ;  SourceMaskSize
+VSTA$K_FNT_LENGTH'..equ'18              ;  FontSize
+VSTA$K_P2_LENGTH'..equ'32               ;  P2Size
+S_P2_BLOCK'..equ'32
+P2_BLOCK'..equ'0
+; 
+;  Source packet
+; 
+P2_SRC$S_SRC_BLOCK'..equ'14
+SRC_BLOCK'..equ'0
+P2$W_SRC_PACKET'..equ'0                 ;  SourcePacketOffset
+P2_SRC$S_P2_SRC_BITMAP_BLOCK'..equ'14
+P2_SRC$R_P2_SRC_BITMAP_BLOCK'..equ'0
+P2_SRC$A_BM_ADDR'..equ'0                ;  SourceBitmapAddress
+P2_SRC$W_BM_SIZE_X'..equ'4              ;  SourceBitmapSizeX
+P2_SRC$W_BM_SIZE_Y'..equ'6              ;  SourceBitmapSizeY
+P2_SRC$W_BM_SIZE_Z'..equ'8              ;  SourceBitmapSizeZ
+P2_SRC$W_BM_OFF_X'..equ'10              ;  SourceBitmapOffsetX
+P2_SRC$W_BM_OFF_Y'..equ'12              ;  SourceBitmapOffsetY
+P2_SRC$S_CONSTANT_BLOCK'..equ'2
+P2_SRC$R_CONSTANT_BLOCK'..equ'0
+P2_SRC$W_CN_CONSTANT'..equ'0            ;  SourceConstant
+P2_SRC$S_HALFTONE_BLOCK'..equ'10
+P2_SRC$R_HALFTONE_BLOCK'..equ'0
+P2_SRC$A_HT_ADDR'..equ'0                ;  SourceHalftoneAddress
+P2_SRC$W_HT_SIZE_X'..equ'4              ;  SourceHalftoneSizeX
+P2_SRC$W_HT_SIZE_Y'..equ'6              ;  SourceHalftoneSizeY
+P2_SRC$W_HT_SIZE_Z'..equ'8              ;  SourceHalftoneSizeZ
+P2_SRC$S_SRCFONT_BLOCK'..equ'4
+P2_SRC$R_SRCFONT_BLOCK'..equ'0
+P2_SRC$A_FN_ADDR'..equ'0                ;  SourceFontAddress
+; 
+;  Source mask packet
+; 
+P2_SMK$S_SMK_BLOCK'..equ'18
+SMK_BLOCK'..equ'14
+P2$W_SMK_PACKET'..equ'14                ;  SourceMaskPacketOffset
+P2$W_FNT_PACKET'..equ'14                ;  FontPacketOffset
+P2_SMK$S_P2_SMK_BITMAP_BLOCK'..equ'18
+P2_SMK$R_P2_SMK_BITMAP_BLOCK'..equ'14
+P2_SMK$A_BM_ADDR'..equ'14               ; SourceMaskBitmapAddress
+P2_SMK$W_BM_SIZE_X'..equ'18             ; SourceMaskBitmapSizeX
+P2_SMK$W_BM_SIZE_Y'..equ'20             ; SourceMaskBitmapSizeY
+P2_SMK$W_BM_SIZE_Z'..equ'22             ; SourceMaskBitmapSizeZ
+P2_SMK$W_BM_OFF_X'..equ'24              ; SourceMaskBitmapOffsetX
+P2_SMK$W_BM_OFF_Y'..equ'26              ; SourceMaskBitmapOffsetY
+P2_SMK$W_BM_EXT_X'..equ'28              ; SourceMaskBitmapExtentX
+P2_SMK$W_BM_EXT_Y'..equ'30              ; SourceMaskBitmapExtentY
+P2_SMK$S_P2_SMK_RECTANGLE_BLOCK'..equ'18
+P2_SMK$R_P2_SMK_RECTANGLE_BLOCK'..equ'14
+P2_SMK$S_RC_RESERVED'..equ'14
+P2_SMK$W_RC_RESERVED'..equ'14
+P2_SMK$W_RC_EXT_X'..equ'28              ; SourceMaskRectangleExtentX
+P2_SMK$W_RC_EXT_Y'..equ'30              ; SourceMaskRectangleExtentY
+P2_FNT$S_SMKFONT_BLOCK'..equ'4
+P2_SMK$R_SMKFONT_BLOCK'..equ'14
+P2_FNT$A_FN_ADDR'..equ'14               ;  FontAddress
+; 
+;  ---- Packet based offsets ----
+; 
+; 
+;  Source packet
+; 
+SRC$S_SRC_BITMAP_BLOCK'..equ'14
+SRC_BITMAP_BLOCK'..equ'0
+SRC$A_BM_ADDR'..equ'0                   ;  SourceBitmapAddress
+SRC$W_BM_SIZE_X'..equ'4                 ;  SourceBitmapSizeX
+SRC$W_BM_SIZE_Y'..equ'6                 ;  SourceBitmapSizeY
+SRC$W_BM_SIZE_Z'..equ'8                 ;  SourceBitmapSizeZ
+SRC$W_BM_OFF_X'..equ'10                 ;  SourceBitmapOffsetX
+SRC$W_BM_OFF_Y'..equ'12                 ;  SourceBitmapOffsetY
+SRC$S_CONSTANT_BLOCK'..equ'2
+CONSTANT_BLOCK'..equ'0
+SRC$W_CN_CONSTANT'..equ'0               ;  SourceConstant
+SRC$S_HALFTONE_BLOCK'..equ'10
+HALFTONE_BLOCK'..equ'0
+SRC$A_HT_ADDR'..equ'0                   ;  SourceHalftoneAddress
+SRC$W_HT_SIZE_X'..equ'4                 ;  SourceHalftoneSizeX
+SRC$W_HT_SIZE_Y'..equ'6                 ;  SourceHalftoneSizeY
+SRC$W_HT_SIZE_Z'..equ'8                 ;  SourceHalftoneSizeZ
+SRC$S_SRCFONT_BLOCK'..equ'4
+SRCFONT_BLOCK'..equ'0
+SRC$A_FN_ADDR'..equ'0                   ;  SourceFontAddress
+; 
+;  Source mask packet
+; 
+SMK$S_SMK_BITMAP_BLOCK'..equ'18
+SMK_BITMAP_BLOCK'..equ'0
+SMK$A_BM_ADDR'..equ'0                   ; SourceMaskBitmapAddress
+SMK$W_BM_SIZE_X'..equ'4                 ; SourceMaskBitmapSizeX
+SMK$W_BM_SIZE_Y'..equ'6                 ; SourceMaskBitmapSizeY
+SMK$W_BM_SIZE_Z'..equ'8                 ; SourceMaskBitmapSizeZ
+SMK$W_BM_OFF_X'..equ'10                 ; SourceMaskBitmapOffsetX
+SMK$W_BM_OFF_Y'..equ'12                 ; SourceMaskBitmapOffsetY
+SMK$W_BM_EXT_X'..equ'14                 ; SourceMaskBitmapExtentX
+SMK$W_BM_EXT_Y'..equ'16                 ; SourceMaskBitmapExtentY
+SMK$S_SMK_RECTANGLE_BLOCK'..equ'18
+SMK_RECTANGLE_BLOCK'..equ'0
+SMK$S_RC_RESERVED'..equ'14
+SMK$W_RC_RESERVED'..equ'0
+SMK$W_RC_EXT_X'..equ'14                 ; SourceMaskRectangleExtentX
+SMK$W_RC_EXT_Y'..equ'16                 ; SourceMaskRectangleExtentY
+FNT$S_SMKFONT_BLOCK'..equ'4
+SMKFONT_BLOCK'..equ'0
+FNT$A_FN_ADDR'..equ'0                   ;  FontAddress
+; 
+; 
+; 		===== P3 PARAMETER DEFINITIONS =====
+; 		=====    DESTINATION OPERAND   =====
+; 		=====    DESTINATION OFFSET    =====
+; 		===== DESTINATION MASK OPERAND =====
+; 
+;  P3 parameter block description:
+; 
+; 	This section defines the offsets for the VS100 destination,
+; 	destination offset, and destination mask operands. Two types
+; 	of offsets are defined, these are:
+; 
+; 		P3_xxx$s_nnnn
+; 		xxx$s_nnnn
+; 
+; 	The xxx field is either DST for destination operands, DMK for
+; 	destination mask operands, or OFF for the destination offset
+; 	operands. The s field describes the packet field type and size
+; 	while the nnnn field is the name of the packet field. The two
+; 	types of offsets differ in that those prefixed with a P3_xxx are
+; 	zero based with respect to the P3 parameter packet while the xxx
+; 	offsets are zero based with respect to the beginning of the xxx
+; 	operand.
+; 
+;  P3 parameter block format:
+; 
+; 		+------------------+
+; 		|    destination   | : P3$W_DST_PACKET
+; 		+---            ---+
+; 		|      operand     |
+; 		+------------------+
+; 		|    destination   | : P3$W_OFF_PACKET
+; 		+---            ---+
+; 		|  offset operand  |
+; 		+------------------+
+; 		|    destination   | : P3$W_DMK_PACKET
+; 		+---            ---+
+; 		|    mask operand  |
+; 		+------------------+
+; 
+;  P3 parameter block size:
+; 
+;     size = VSTA$K_P3_LENGTH (bytes)
+; 
+; 
+; 
+;  Destination Packet:
+; 
+;     size = VSTA$K_DST_LENGTH (bytes)
+; 
+;   +-----------------+
+;   |  DST$A_BM_ADDR  | : Destination bitmap address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+;   | DST$W_BM_SIZE_X | : Destination bitmap size x
+;   +-----------------+
+;   | DST$W_BM_SIZE_Y | : Destination bitmap size y
+;   +-----------------+
+;   | DST$W_BM_SIZE_Z | : Destination bitmap size z
+;   +-----------------+
+; 
+; 
+; 
+;  Position Packet:
+; 
+;     size = VSTA$K_POS_LENGTH (bytes)
+; 
+;  For copy, draw, fill, and flood:
+; 
+;   +-----------------+
+;   |   POS$W_OFF_X   | : Destination offset x
+;   +-----------------+
+;   |   POS$W_OFF_Y   | : Destination offset y
+;   +-----------------+
+; 
+;  Destination offset operand type for print = VSTA$K_INI_ADDR
+; 
+;   +-----------------+
+;   |  POS$A_IN_ADDR  | : Initial position address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+;  Destination offset operand type for print = VSTA$K_INI_LITERAL
+; 
+;   +-----------------+
+;   | POS$W_LT_OFF_X  | : Initial position x
+;   +-----------------+
+;   | POS$W_LT_OFF_Y  | : Initial position y
+;   +-----------------+
+; 
+; 
+; 
+;  Destination Mask Packet:
+; 
+;     size = VSTA$K_DMK_LENGTH (bytes)
+; 
+;  Destination mask operand type = VSTA$K_DMK_RECLIST
+; 
+;   +-----------------+
+;   |  DMK$A_RC_ADDR  | : Destination mask rectangle list address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+;   | DMK$W_RC_COUNT  | : Destination mask rectangle list count
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+;  Destination mask operand type = VSTA$K_DMK_RECTANGLE
+; 
+;   +-----------------+
+;   | DMK$W_LT_OFF_X  | : Destination mask rectangle offset x
+;   +-----------------+
+;   | DMK$W_LT_OFF_Y  | : Destination mask rectangle offset y
+;   +-----------------+
+;   | DMK$W_LT_EXT_X  | : Destination mask rectangle extent x
+;   +-----------------+
+;   | DMK$W_LT_EXT_Y  | : Destination mask rectangle extent y
+;   +-----------------+
+; 
+; 
+; 
+;  ---- P3 parameter block based offsets ----
+; 
+VSTA$K_DST_LENGTH'..equ'10              ;  DestinationSize
+VSTA$K_POS_LENGTH'..equ'4               ;  PositionSize
+VSTA$K_DMK_LENGTH'..equ'8               ;  DestinationMaskSize
+VSTA$K_P3_LENGTH'..equ'22               ;  P3Size
+S_P3_BLOCK'..equ'22
+P3_BLOCK'..equ'0
+; 
+;  Destination packet
+; 
+P3_DST$S_DST_BLOCK'..equ'10
+DST_BLOCK'..equ'0
+P3$W_DST_PACKET'..equ'0                 ;  DestinationPacketOffset
+P3_DST$S_P3_DST_BITMAP_BLOCK'..equ'10
+P3_DST$R_P3_DST_BITMAP_BLOCK'..equ'0
+P3_DST$A_BM_ADDR'..equ'0                ;  DestinationBitmapAddress
+P3_DST$W_BM_SIZE_X'..equ'4              ;  DestinationBitmapSizeX
+P3_DST$W_BM_SIZE_Y'..equ'6              ;  DestinationBitmapSizeY
+P3_DST$W_BM_SIZE_Z'..equ'8              ;  DestinationBitmapSizeZ
+; 
+;  Destination position packet
+; 
+P3_POS$S_POS_BLOCK'..equ'4
+POS_BLOCK'..equ'10
+P3$W_POS_PACKET'..equ'10                ;  PositionOffset
+P3_POS$S_POSITION_BLOCK'..equ'4
+P3_POS$R_POSITION_BLOCK'..equ'10
+P3_POS$W_OFF_X'..equ'10                 ;  OffsetX
+P3_POS$W_OFF_Y'..equ'12                 ;  OffsetY
+P3_POS$S_P3_POS_LITERAL_BLOCK'..equ'4
+P3_POS$R_P3_POS_LITERAL_BLOCK'..equ'10
+P3_POS$W_LT_OFF_X'..equ'10              ;  InitialPositionOffsetX
+P3_POS$W_LT_OFF_Y'..equ'12              ;  InitialPositionOffsetY
+P3_POS$S_P3_POS_ADDRESS_BLOCK'..equ'4
+P3_POS$R_P3_POS_ADDRESS_BLOCK'..equ'10
+P3_POS$A_IN_ADDR'..equ'10               ;  InitialPositionAddress
+; 
+;  Destination mask packet
+; 
+P3_DMK$S_DMK_BLOCK'..equ'8
+DMK_BLOCK'..equ'14
+P3$W_DMK_PACKET'..equ'14                ;  DestinationMaskPacketOffset
+P3_DMK$S_RECLIST_BLOCK'..equ'6
+P3_DMK$R_RECLIST_BLOCK'..equ'14
+P3_DMK$A_RC_ADDR'..equ'14               ;  DestinationMaskRectangleListAddress
+P3_DMK$W_RC_COUNT'..equ'18              ;  DestinationMaskRectangleListCount
+P3_DMK$S_P3_DMK_RECTANGLE_BLOCK'..equ'8
+P3_DMK$R_P3_DMK_RECTANGLE_BLOCK'..equ'14
+P3_DMK$W_LT_OFF_X'..equ'14              ;  DestinationMaskRectangleOffsetX
+P3_DMK$W_LT_OFF_Y'..equ'16              ;  DestinationMaskRectangleOffsetY
+P3_DMK$W_LT_EXT_X'..equ'18              ;  DestinationMaskRectangleExtentX
+P3_DMK$W_LT_EXT_Y'..equ'20              ;  DestinationMaskRectangleExtentY
+; 
+;  ---- Packet based offsets ----
+; 
+; 
+;  Destination packet
+; 
+DST$S_DST_BITMAP_BLOCK'..equ'10
+DST_BITMAP_BLOCK'..equ'0
+DST$A_BM_ADDR'..equ'0                   ;  DestinationBitmapAddress
+DST$W_BM_SIZE_X'..equ'4                 ;  DestinationBitmapSizeX
+DST$W_BM_SIZE_Y'..equ'6                 ;  DestinationBitmapSizeY
+DST$W_BM_SIZE_Z'..equ'8                 ;  DestinationBitmapSizeZ
+; 
+;  Destination position packet
+; 
+POS$S_POSITION_BLOCK'..equ'4
+POSITION_BLOCK'..equ'0
+POS$W_OFF_X'..equ'0                     ;  OffsetX
+POS$W_OFF_Y'..equ'2                     ;  OffsetY
+POS$S_POS_LITERAL_BLOCK'..equ'4
+POS_LITERAL_BLOCK'..equ'0
+POS$W_LT_OFF_X'..equ'0                  ;  InitialPositionOffsetX
+POS$W_LT_OFF_Y'..equ'2                  ;  InitialPositionOffsetY
+POS$S_POS_ADDRESS_BLOCK'..equ'4
+POS_ADDRESS_BLOCK'..equ'0
+POS$A_IN_ADDR'..equ'0                   ;  InitialPositionAddress
+; 
+;  Destination mask packet
+; 
+DMK$S_RECLIST_BLOCK'..equ'6
+RECLIST_BLOCK'..equ'0
+DMK$A_RC_ADDR'..equ'0                   ;  DestinationMaskRectangleListAddress
+DMK$W_RC_COUNT'..equ'4                  ;  DestinationMaskRectangleListCount
+DMK$S_DMK_RECTANGLE_BLOCK'..equ'8
+DMK_RECTANGLE_BLOCK'..equ'0
+DMK$W_LT_OFF_X'..equ'0                  ;  DestinationMaskRectangleOffsetX
+DMK$W_LT_OFF_Y'..equ'2                  ;  DestinationMaskRectangleOffsetY
+DMK$W_LT_EXT_X'..equ'4                  ;  DestinationMaskRectangleExtentX
+DMK$W_LT_EXT_Y'..equ'6                  ;  DestinationMaskRectangleExtentY
+; 
+; 
+; 		===== P4 PARAMETER DEFINITIONS =====
+; 		=====        MAP OPERAND       =====
+; 
+;  P4 parameter block description:
+; 
+; 	This section defines the offsets for the VS100 map operands.
+; 	Two types of offsets are defined, these are:
+; 
+; 		P4_xxx$s_nnnn
+; 		xxx$s_nnnn
+; 
+; 	The xxx field is MAP. The s field describes the packet field type
+; 	and size while the nnnn field is the name of the packet field. The
+; 	two types of offsets differ in that those prefixed with a P4_xxx
+; 	are zero based with respect to the P4 parameter packet while the
+; 	xxx offsets are zero based with respect to the beginning of the xxx
+; 	operand.
+; 
+;  P4 parameter block format:
+; 
+; 		+------------------+
+; 		|    map operand   | : P4$W_MAP_PACKET
+; 		+---            ---+
+; 		|                  |
+; 		+------------------+
+; 
+;  P4 parameter block size:
+; 
+;     size = VSTA$K_P2_LENGTH (bytes)
+; 
+; 
+; 
+;  Map Packet:
+; 
+;     size = VSTA$K_MAP_LENGTH (bytes)
+; 
+;  Map operand type = VSTA$K_MAP_SRC
+;  Map operand type = VSTA$K_MAP_SRCDST
+; 
+;   +-----------------+
+;   |  MAP$A_MP_ADDR  | : Map address
+;   +---           ---+
+;   |                 |
+;   +-----------------+
+; 
+;  Map operand type = VSTA$K_MAP_SLIT
+;  Map operand type = VSTA$K_MAP_SDLIT
+; 
+;   +-----------------+
+;   | MAP$W_LT_LITERAL| : Map literal value
+;   +-----------------+
+;   |                 |
+;   +-----------------+
+; 
+; 
+; 
+;  ---- P4 parameter block based offsets
+; 
+VSTA$K_MAP_LENGTH'..equ'4               ;  MapSize
+VSTA$K_P4_LENGTH'..equ'4                ;  P4Size
+S_P4_BLOCK'..equ'4
+P4_BLOCK'..equ'0
+; 
+;  Map packet
+; 
+P4_MAP$S_MAP_BLOCK'..equ'4
+MAP_BLOCK'..equ'0
+P4$W_MAP_PACKET'..equ'0                 ;  MapPacketOffset
+P4_MAP$S_P4_MAP_ADDRESS_BLOCK'..equ'4
+P4_MAP$R_P4_MAP_ADDRESS_BLOCK'..equ'0
+P4_MAP$A_MP_ADDR'..equ'0                ;  MapAddress
+P4_MAP$S_P4_MAP_LITERAL_BLOCK'..equ'2
+P4_MAP$R_P4_MAP_LITERAL_BLOCK'..equ'0
+P4_MAP$W_LT_LITERAL'..equ'0             ;  MapLiteral
+; 
+;  ---- Packet based offsets ----
+; 
+; 
+;  Map packet
+; 
+MAP$S_MAP_ADDRESS_BLOCK'..equ'4
+MAP_ADDRESS_BLOCK'..equ'0
+MAP$A_MP_ADDR'..equ'0                   ;  MapAddress
+MAP$S_MAP_LITERAL_BLOCK'..equ'2
+MAP_LITERAL_BLOCK'..equ'0
+MAP$W_LT_LITERAL'..equ'0                ;  MapLiteral
+; 
+; 
+; 		===== P5 PARAMETER DEFINITIONS =====
+; 		===== COMMAND SPECIFIC OPERANDS =====
+; 
+; 	This section defines the offsets for VS100 command specific
+; 	operands. Two types of offsets are defined, these are:
+; 
+; 		P5_xxx$s_nnnn
+; 		xxx$s_nnnn
+; 
+; 	The xxx field is the 3 character command code (DRW, PRT, FIL,
+; 	FLD, MOV, LOD) which specifies the VS100 command. The s field
+; 	describes the packet field type and size while the nnnn field
+; 	is the name of the packet field. The two types of offsets differ
+; 	in that those prefixed with a P5_xxx are zero based with respect
+; 	to the P5 parameter packet while the xxx offsets are zero based
+; 	with respect to the beginning of the xxx operand.
+; 
+;  P5 parameter block format:
+; 
+; 		+------------------+
+; 		| command specific | : P5$W_CMD_PACKET
+; 		+---            ---+
+; 		|    parameters    |
+; 		+------------------+
+; 
+;  P5 parameter block size:
+; 
+;     size = VSTA$K_P5_xxx_LENGTH (bytes)
+; 
+; 	xxx =
+; 		DRW - draw curve
+; 		PRT - print text
+; 		FIL - fill area
+; 		FLD - flood area
+; 		MOV - move object
+; 		LOD - load cursor
+; 
+; 
+;  Draw curve command specific operands:
+; 
+; 	+-----------------+
+; 	|  DRW$A_PT_ADDR  | : Path address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	| DRW$W_PT_COUNT  | : Path count
+; 	+-----------------+
+; 	|   DRW$W_COUNT   | : Pattern length
+; 	+-----------------+
+; 	|  DRW$W_PATTERN  | : Pattern
+; 	+-----------------+
+; 	|   DRW$W_MULT    | : Pattern multiplier
+; 	+-----------------+
+;            (literal)             (indirect)
+; 	+-----------------+    +-----------------+
+; 	|   DRW$W_POSIT   |    |   DRW$A_STATE   | : Pattern state
+; 	+-----------------+    +---           ---+
+; 	|   DRW$W_PCOUNT  |    |                 |
+; 	+-----------------+    +-----------------+
+;             (bitmap)              (constant)             (halftone)
+; 	+-----------------+    +-----------------+    +-----------------+
+; 	|  DRW$A_BM_ADDR  |    |DRW$W_CN_CONSTANT|    |  DRW$A_HT_ADDR  | : Second source
+; 	+---           ---+    +-----------------+    +---           ---+
+; 	|                 |    |                 |    |                 |
+; 	+-----------------+    +---           ---+    +-----------------+
+; 	| DRW$W_BM_SIZE_X |    |                 |    | DRW$W_HT_SIZE_X |
+; 	+-----------------+    +---           ---+    +-----------------+
+; 	| DRW$W_BM_SIZE_Y |    |                 |    | DRW$W_HT_SIZE_Y |
+; 	+-----------------+    +---           ---+    +-----------------+
+; 	| DRW$W_BM_SIZE_Z |    |                 |    | DRW$W_HT_SIZE_Z |
+; 	+-----------------+    +---           ---+    +-----------------+
+;       | DRW$W_BM_OFF_X  |    |                 |    |                 |
+; 	+---           ---+    +---           ---+    +---           ---+
+;       | DRW$W_BM_OFF_Y  |    |                 |    |                 |
+; 	+-----------------+    +-----------------+    +-----------------+
+; 
+;  Print text command specific operands:
+; 
+; 	+-----------------+
+; 	|  PRT$A_TX_ADDR  | : Text string address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	| PRT$W_TX_COUNT  | : Text string size
+; 	+-----------------+
+; 	|  PRT$A_CN_ADDR  | : Control string address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	| PRT$W_CN_COUNT  | : Control string size
+; 	+-----------------+
+; 	|   PRT$W_INTER   | : Intercharacter pad
+; 	+-----------------+
+; 	|   PRT$W_SPACE   | : Space pad
+; 	+-----------------+
+; 
+; 
+; 
+;  Fill area command specific operands:
+; 
+; 	+-----------------+
+; 	|  FIL$A_PT_ADDR  | : Path address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	| FIL$W_PT_COUNT  | : Path size
+; 	+-----------------+
+; 
+;  Flood area command specific operands:
+; 
+;            (literal)             (indirect)
+; 	+-----------------+    +-----------------+
+; 	|  FLD$L_BOUNDRY  |    |  FLD$A_BN_ADDR  | : Boundry map
+; 	+---           ---+    +---           ---+
+; 	|                 |    |                 |
+; 	+-----------------+    +-----------------+
+; 
+;  Move object command specific operands:
+; 
+; 	+-----------------+
+; 	|   MOV$W_TYPE    | : Object type
+; 	+-----------------+
+; 	|  MOV$L_LENGTH   | : Object size
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	|    MOV$A_OBJ    | : Object address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 	|    MOV$A_DST    | : Destination Address
+; 	+---           ---+
+; 	|                 |
+; 	+-----------------+
+; 
+;  Load cursor command specific operands
+; 
+; 	+-----------------+
+; 	|  LOD$W_ATTRIB   | 
+; 	+-----------------+
+; 	|   LOD$W_TIP_X   | 
+; 	+-----------------+
+; 	|   LOD$W_TIP_Y   |
+; 	+-----------------+
+; 	| LOD$W_CENTER_X  |
+; 	+-----------------+
+; 	| LOD$W_CENTER_Y  |
+; 	+-----------------+
+; 
+; 
+; 
+; 
+;  ---- P5 paramter block based offsets ----
+; 
+VSTA$K_P5_DRW_LENGTH'..equ'30           ;  P5DrawSize
+; 
+VSTA$K_P5_PRT_LENGTH'..equ'16           ;  P5PrintSize
+; 
+VSTA$K_P5_FIL_LENGTH'..equ'6            ;  P5FillSize
+; 
+VSTA$K_P5_FLD_LENGTH'..equ'4            ;  P5FloodSize
+; 
+VSTA$K_P5_MOV_LENGTH'..equ'14           ;  P5MoveObjectSize
+; 
+P5_LOD$M_BLINK'..equ'1
+P5_LOD$M_TC'..equ'2
+VSTA$K_P5_LOD_LENGTH'..equ'10           ;  P5 load cursor sice
+S_P5_BLOCK'..equ'30
+P5_BLOCK'..equ'0
+P5$W_CMD_PACKET'..equ'0                 ;  CommandPacketOffset
+; 
+;  Draw packet
+; 
+P5_DRW$S_P5_DRW_BLOCK'..equ'30
+P5_DRW_BLOCK'..equ'0
+P5_DRW$A_PT_ADDR'..equ'0                ;  PathPointsAddress
+P5_DRW$W_PT_COUNT'..equ'4               ;  PathPointCount
+P5_DRW$W_COUNT'..equ'6                  ;  PatternSize
+P5_DRW$W_PATTERN'..equ'8                ;  Pattern
+P5_DRW$W_MULT'..equ'10                  ;  PatternMultiplier
+P5_DRW$S_DRW_STATE_BLOCK'..equ'4
+P5_DRW$R_DRW_STATE_BLOCK'..equ'12
+P5_DRW$S_STATE_LITERAL_BLOCK'..equ'4
+P5_DRW$R_STATE_LITERAL_BLOCK'..equ'12
+P5_DRW$W_POSIT'..equ'12                 ;  PatternPosition
+P5_DRW$W_PCOUNT'..equ'14                ;  PatternCount
+P5_DRW$A_STATE'..equ'12                 ;  PatternStateAddress
+P5_DRW$S_DRW_SEC_SRC_BLOCK'..equ'14
+P5_DRW$R_DRW_SEC_SRC_BLOCK'..equ'16
+P5_DRW$S_SEC_SRC_BITMAP'..equ'14
+P5_DRW$R_SEC_SRC_BITMAP'..equ'16
+P5_DRW$A_BM_ADDR'..equ'16               ;  SecondSourceBitmapAddress
+P5_DRW$W_BM_SIZE_X'..equ'20             ;  SecondSourceBitmapSizeX
+P5_DRW$W_BM_SIZE_Y'..equ'22             ;  SecondSourceBitmapSizeY
+P5_DRW$W_BM_SIZE_Z'..equ'24             ;  SecondSourceBitmapSizeZ
+P5_DRW$W_BM_OFF_X'..equ'26              ;  SecondSourceBitmapOffsetX
+P5_DRW$W_BM_OFF_Y'..equ'28              ;  SecondSourceBitmapOffsetY
+P5_DRW$S_SEC_SRC_CONSTANT'..equ'2
+P5_DRW$R_SEC_SRC_CONSTANT'..equ'16
+P5_DRW$W_CN_CONSTANT'..equ'16           ;  SecondSourceConstant
+P5_DRW$S_SEC_SRC_HALFTONE'..equ'10
+P5_DRW$R_SEC_SRC_HALFTONE'..equ'16
+P5_DRW$A_HT_ADDR'..equ'16               ;  SecondSourceHalftoneAddress
+P5_DRW$W_HT_SIZE_X'..equ'20             ;  SecondSourceHalftoneSizeX
+P5_DRW$W_HT_SIZE_Y'..equ'22             ;  SecondSourceHalftoneSizeY
+P5_DRW$W_HT_SIZE_Z'..equ'24             ;  SecondSourceHalftoneSizeZ
+;  Print packet
+; 
+P5_PRT$S_P5_PRT_BLOCK'..equ'16
+P5_PRT_BLOCK'..equ'0
+P5_PRT$A_TX_ADDR'..equ'0                ;  TextStringAddress
+P5_PRT$W_TX_COUNT'..equ'4               ;  TextStringSize
+P5_PRT$A_CN_ADDR'..equ'6                ;  ControlStringAddress
+P5_PRT$W_CN_COUNT'..equ'10              ;  ControlStringSize
+P5_PRT$W_INTER'..equ'12                 ;  InterCharacterPad
+P5_PRT$W_SPACE'..equ'14                 ;  SpacePad
+;  Fill packet
+; 
+P5_FIL$S_P5_FIL_BLOCK'..equ'6
+P5_FIL_BLOCK'..equ'0
+P5_FIL$A_PT_ADDR'..equ'0                ;  PathPointsAddress
+P5_FIL$W_PT_COUNT'..equ'4               ;  PathPointCount
+;  Flood packet
+; 
+P5_FLD$S_P5_FLD_BLOCK'..equ'4
+P5_FLD_BLOCK'..equ'0
+P5_FLD$S_P5_FLD_LITERAL'..equ'4
+P5_FLD$R_P5_FLD_LITERAL'..equ'0
+P5_FLD$L_BOUNDRY'..equ'0                ;  BoundryMapLiteral
+P5_FLD$S_P5_FLD_POINTER'..equ'4
+P5_FLD$R_P5_FLD_POINTER'..equ'0
+P5_FLD$A_BN_ADDR'..equ'0                ;  BoundryMapAddress
+;  Move object packet
+; 
+P5_MOV$S_P5_MOV_BLOCK'..equ'14
+P5_MOV_BLOCK'..equ'0
+P5_MOV$W_TYPE'..equ'0                   ;  ObjectType
+P5_MOV$L_LENGTH'..equ'2                 ;  ObjectSize
+P5_MOV$A_OBJ'..equ'6                    ;  ObjectAddress
+P5_MOV$A_DST'..equ'10                   ;  DestinationAddress
+;  Load cursor packet
+; 
+P5_LOD$S_P5_LOD_BLOCK'..equ'10
+P5_LOD_BLOCK'..equ'0
+P5_LOD$S_ATTRIB_WORD'..equ'2
+P5_LOD$R_ATTRIB_WORD'..equ'0
+P5_LOD$W_ATTRIB'..equ'0                 ;  Attribute
+P5_LOD$S_ATTRIB_BITS'..equ'1
+P5_LOD$R_ATTRIB_BITS'..equ'0
+P5_LOD$V_BLINK'..equ'0                  ;  blink attribute
+P5_LOD$V_TC'..equ'1                     ;  tip and center specified 
+P5_LOD$W_TIP_X'..equ'2                  ;  x coord of tip
+P5_LOD$W_TIP_Y'..equ'4                  ;  y coord of tip
+P5_LOD$W_CENTER_X'..equ'6               ;  x coord of center
+P5_LOD$W_CENTER_Y'..equ'8               ;  y coord of center
+; 
+;  ---- Packet based offset ----
+; 
+; 
+;  Draw packet
+; 
+DRW$S_DRW_BLOCK'..equ'30
+DRW_BLOCK'..equ'0
+DRW$A_PT_ADDR'..equ'0                   ;  PathPointsAddress
+DRW$W_PT_COUNT'..equ'4                  ;  PathPointCount
+DRW$W_COUNT'..equ'6                     ;  PatternSize
+DRW$W_PATTERN'..equ'8                   ;  Pattern
+DRW$W_MULT'..equ'10                     ;  PatternMultiplier
+DRW$S_DRW_STATE_BLOCK'..equ'4
+DRW$R_DRW_STATE_BLOCK'..equ'12
+DRW$S_STATE_LITERAL_BLOCK'..equ'4
+DRW$R_STATE_LITERAL_BLOCK'..equ'12
+DRW$W_POSIT'..equ'12                    ;  PatternPosition
+DRW$W_PCOUNT'..equ'14                   ;  PatternCount
+DRW$A_STATE'..equ'12                    ;  PatternStateAddress
+DRW$S_DRW_SEC_SRC_BLOCK'..equ'14
+DRW$R_DRW_SEC_SRC_BLOCK'..equ'16
+DRW$S_SEC_SRC_BITMAP'..equ'14
+DRW$R_SEC_SRC_BITMAP'..equ'16
+DRW$A_BM_ADDR'..equ'16                  ;  SecondSourceBitmapAddress
+DRW$W_BM_SIZE_X'..equ'20                ;  SecondSourceBitmapSizeX
+DRW$W_BM_SIZE_Y'..equ'22                ;  SecondSourceBitmapSizeY
+DRW$W_BM_SIZE_Z'..equ'24                ;  SecondSourceBitmapSizeZ
+DRW$W_BM_OFF_X'..equ'26                 ;  SecondSourceBitmapOffsetX
+DRW$W_BM_OFF_Y'..equ'28                 ;  SecondSourceBitmapOffsetY
+DRW$S_SEC_SRC_CONSTANT'..equ'2
+DRW$R_SEC_SRC_CONSTANT'..equ'16
+DRW$W_CN_CONSTANT'..equ'16              ;  SecondSourceConstant
+DRW$S_SEC_SRC_HALFTONE'..equ'10
+DRW$R_SEC_SRC_HALFTONE'..equ'16
+DRW$A_HT_ADDR'..equ'16                  ;  SecondSourceHalftoneAddress
+DRW$W_HT_SIZE_X'..equ'20                ;  SecondSourceHalftoneSizeX
+DRW$W_HT_SIZE_Y'..equ'22                ;  SecondSourceHalftoneSizeY
+DRW$W_HT_SIZE_Z'..equ'24                ;  SecondSourceHalftoneSizeZ
+; 
+;  Print packet
+; 
+PRT$S_PRT_BLOCK'..equ'16
+PRT_BLOCK'..equ'0
+PRT$A_TX_ADDR'..equ'0                   ;  TextStringAddress
+PRT$W_TX_COUNT'..equ'4                  ;  TextStringSize
+PRT$A_CN_ADDR'..equ'6                   ;  ControlStringAddress
+PRT$W_CN_COUNT'..equ'10                 ;  ControlStringSize
+PRT$W_INTER'..equ'12                    ;  InterCharacterPad
+PRT$W_SPACE'..equ'14                    ;  SpacePad
+; 
+;  Flood packet
+; 
+FLD$S_FLD_BLOCK'..equ'8
+FLD_BLOCK'..equ'0
+FLD$S_FLD_LITERAL'..equ'4
+FLD$R_FLD_LITERAL'..equ'0
+FLD$L_BOUNDRY'..equ'0                   ;  BoundryMapLiteral
+FLD$S_FLD_POINTER'..equ'4
+FLD$R_FLD_POINTER'..equ'4
+FLD$A_BN_ADDR'..equ'4                   ;  BoundryMapAddress
+; 
+;  Move object packet
+; 
+MOV$S_MOV_BLOCK'..equ'14
+MOV_BLOCK'..equ'0
+MOV$W_TYPE'..equ'0                      ;  ObjectType
+MOV$L_LENGTH'..equ'2                    ;  ObjectSize
+MOV$A_OBJ'..equ'6                       ;  ObjectAddress
+MOV$A_DST'..equ'10                      ;  DestinationAddress
+; 
+;  Load cursor packet
+; 
+LOD$M_BLINK'..equ'1
+LOD$M_TC'..equ'2
+LOD$S_LOD_BLOCK'..equ'10
+LOD_BLOCK'..equ'0
+LOD$S_ATTRIB_WORD'..equ'2
+LOD$R_ATTRIB_WORD'..equ'0
+LOD$W_ATTRIB'..equ'0                    ;  Attribute
+LOD$S_ATTRIB_BITS'..equ'1
+LOD$R_ATTRIB_BITS'..equ'0
+LOD$V_BLINK'..equ'0                     ;  blink attribute
+LOD$V_TC'..equ'1                        ;  tip and center specified 
+LOD$W_TIP_X'..equ'2                     ;  x coord of tip
+LOD$W_TIP_Y'..equ'4                     ;  y coord of tip
+LOD$W_CENTER_X'..equ'6                  ;  x coord of center
+LOD$W_CENTER_Y'..equ'8                  ;  y coord of center
+; 
+; 
+;  ===== VS100 COMMAND PACKET DEFINITIONS =====
+; 
+; 	Packaged commands are device command packets in the format the
+; 	VS100 expects. This packet is of the form:
+; 
+; 		+------------------+
+; 		|      opcode      |
+; 		+------------------+
+; 		|    link field    |
+; 		+------------------+
+; 		| command specific |
+; 		+--              --+
+; 		|    parameters    |
+; 		+------------------+
+; 
+;  VS100 packaged commands block:
+; 
+;     size = VB$K_xxx_LENGTH (bytes)
+; 
+; 	xxx = 
+; 		COP - copy area
+; 		DRW - draw curve
+; 		PRT - print text
+; 		FIL - fill area
+; 		FLD - flood area
+; 		MOV - move object
+; 		REP - report status
+; 		LOD - load cursor
+; 		SET - set cursor position
+; 		GET - get cursor position
+; 		ATT - attach cursor
+; 		EVE - set event reporting
+; 		GMO - get mouse position
+; 		SMO - set mouse characteristics
+; 		GTB - get tablet position
+; 
+; 
+; 
+;  Copy Area Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_COP_SRC  | : Copy source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_COP_SMK  | : Copy source mask operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_COP_DST  | : Copy destination operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_COP_POS  | : Copy destination offset operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_COP_MAP  | : Copy map operand
+; 	+---          ---+    (see p4 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_COP_DMK  | : Copy destination mask operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 
+; 
+;  Draw Curve Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_DRW_SRC  | : Draw curve source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_DRW_SMK  | : Draw curve source mask operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_DRW_DST  | : Draw curve destination operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_DRW_POS  | : Draw curve destination offset operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_DRW_MAP  | : Draw curve map operand
+; 	+---          ---+    (see p4 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_DRW_DMK  | : Draw curve destination mask operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+;       | VB$W_DRW_DRAW  | : Draw curve command specific operands
+; 	+---          ---+    (see p5 parameter)
+; 	|                |
+; 	+----------------+
+; 
+; 
+;  Print Text Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_PRT_SRC  | : Print text source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_PRT_FNT  | : Print text font mask operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_PRT_DST  | : Print text destination operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_PRT_INI  | : Print text initial position operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_PRT_MAP  | : Print text map operand
+; 	+---          ---+    (see p4 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_PRT_DMK  | : Print text destination mask operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+;       | VB$W_PRT_PRINT | : Print text command specific operands
+; 	+---          ---+    (see p5 parameter)
+; 	|                |
+; 	+----------------+
+; 
+; 
+;  Fill Area Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_FIL_SRC  | : Fill area source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FIL_DST  | : Fill area destination operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FIL_POS  | : Fill area destination offset operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FIL_MAP  | : Fill area map operand
+; 	+---          ---+    (see p4 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FIL_DMK  | : Fill area destination mask operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+;       | VB$W_FIL_FILL  | : Fill area command specific operands
+; 	+---          ---+    (see p5 parameter)
+; 	|                |
+; 	+----------------+
+; 
+; 
+;  Flood Area Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_FLD_SRC  | : Flood area source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FLD_DST  | : Flood area destination operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FLD_POS  | : Flood area destination offset operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_FLD_DMK  | : Flood area destination mask operand
+; 	+---          ---+    (see p3 parameter)
+; 	|                |
+; 	+----------------+
+;       | VB$W_FLD_FLOOD | : Flood area command specific operands
+; 	+---          ---+    (see p5 parameter)
+; 	|                |
+; 	+----------------+
+; 
+; 
+;  Move Object Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	| VB$W_MOV_MOVE  | : Move object command specific operands
+; 	+---          ---+    (see p5 parameter)
+; 	|                |
+; 	+----------------+
+; 
+;  Set Cursor Position Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|   VB$W_SET_X   | : Set cursor position x
+; 	+----------------+
+; 	|   VB$W_SET_Y   | : Set cursor position y
+; 	+----------------+
+; 
+;  Attach Cursor Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|VB$W_ATT_DEVICE | : Attach cursor device code
+; 	+----------------+
+; 
+;  Get Cursor Position Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|   VB$W_GET_X   | : Get cursor position x
+; 	+----------------+
+; 	|   VB$W_GET_Y   | : Get cursor position y
+; 	+----------------+
+; 
+;  Set Event Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	| VB$W_EVE_ENABLE| : Set event enable mask
+; 	+----------------+
+; 
+; 
+;  Report Status Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$L_REP_TYPE | : Report Status device type
+; 	+----------------+
+; 	|VB$W_REP_VERSION| : Report Status device version
+; 	+----------------+
+; 	| VB$W_REP_MCODE | : Report Status microcode version
+; 	+----------------+
+; 	|VB$A_REP_SCREEN | : Report Status screen address
+; 	+----------------+
+; 	| VB$W_REP_SCN_X | : Report Status screen size x
+; 	+----------------+
+; 	| VB$W_REP_SCN_Y | : Report Status screen size y
+; 	+----------------+
+; 	| VB$W_REP_SCN_Z | : Report Status screen size z
+; 	+----------------+
+; 	| VB$A_REP_FRAME | : Report Status free frame buffer address
+; 	+----------------+
+; 	| VB$L_REP_FSIZE | : Report Status free frame buffer size
+; 	+----------------+
+; 	|VB$A_REP_PROGRAM| : Report Status free program buffer address
+; 	+----------------+
+; 	| VB$L_REP_PSIZE | : Report Status free program buffer size
+; 	+----------------+
+; 	|VB$A_REP_UNIBUS | : Report Status unibus address
+; 	+----------------+
+; 	| VB$L_REP_USIZE | : Report Status unibus size
+; 	+----------------+
+; 
+;  Load Cursor Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|  VB$W_LOD_SRC  | : Load cursor source operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_LOD_SMK  | : Load cursor source mask operand
+; 	+---          ---+    (see p2 parameter)
+; 	|                |
+; 	+----------------+
+; 	|  VB$W_LOD_MAP  | : Load cursor map operand
+; 	+---          ---+    (see p4 parameter)
+; 	|                |
+; 	+----------------+
+; 	| VB$W_LOD_ATTRIB| : Load cursor attributes
+; 	+----------------+
+; 	| VB$W_LOD_TIP_X | 
+; 	+----------------+
+; 	| VB$W_LOD_TIP_Y |
+; 	+----------------+
+; 	|VB$W_LOD_CENTER_X|
+; 	+----------------+
+; 	|VB$W_LOD_CENTER_Y|
+; 	+----------------+
+; 
+; 
+;  Get Mouse Position Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|   VB$W_GMO_X   | : Get mouse position x
+; 	+----------------+
+; 	|   VB$W_GMO_Y   | : Get mouse position y
+; 	+----------------+
+; 
+;  Set Mouse Characteristics Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	| VB$W_SMO_MULT  | : Set mouse characteristics multiplier
+; 	+----------------+
+; 	|  VB$W_SMO_DIV  | : Set mouse characteristics divisor
+; 	+----------------+
+; 
+; 
+;  Get Tablet Position Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 	|   VB$W_GTB_X   | : Get tablet position x
+; 	+----------------+
+; 	|   VB$W_GTB_Y   | : Get tablet position y
+; 	+----------------+
+; 
+;  No Operation Position Command Packet:
+; 
+; 	+----------------+
+; 	|  VB$L_OPCODE   | : Command opcode
+; 	+----------------+
+; 	|   VB$L_LINK    | : Command forward link
+; 	+----------------+
+; 
+; 
+;  ---- Command block based offsets ----
+; 
+VSTA$K_COPY'..equ'1                     ;  CommandFunction = CopyArea
+VSTA$K_DRAW'..equ'2                     ;  CommandFunction = DrawCurve
+VSTA$K_PRINT'..equ'3                    ;  CommandFunction = PrintText
+VSTA$K_FLOOD'..equ'4                    ;  CommandFunction = FloodArea
+VSTA$K_FILL'..equ'5                     ;  CommandFunction = FillArea
+VSTA$K_MOVEOBJ'..equ'6                  ;  CommandFunction = MoveObject
+VSTA$K_REPORT'..equ'7                   ;  CommandFunction = ReportStatus
+VSTA$K_LOADCUR'..equ'8                  ;  CommandFunction = LoadCursor
+VSTA$K_SETCUR'..equ'9                   ;  CommandFunction = SetCursorPosition
+VSTA$K_GETCUR'..equ'10                  ;  CommandFunction = GetCursorPosition
+VSTA$K_ATTCUR'..equ'11                  ;  CommandFunction = AttachCursor
+VSTA$K_SETEVENT'..equ'12                ;  CommandFunction = SetEventReporting
+VSTA$K_GETMOUSE'..equ'13                ;  CommandFunction = GetMousePosition
+VSTA$K_SETMOUSE'..equ'14                ;  CommandFunction = SetMouseCharacteristics
+VSTA$K_GETTAB'..equ'15                  ;  CommandFunction = GetTabletPosition
+VSTA$K_NOP'..equ'16                     ;  CommandFunction = NoOperation
+VB$K_NOP_LENGTH'..equ'8                 ;  NoOperationLength
+VB$K_COP_LENGTH'..equ'66                ;  CopyLength
+VB$K_DRW_LENGTH'..equ'96                ;  DrawLength
+VB$K_PRT_LENGTH'..equ'82                ;  PrintLength
+VB$K_FIL_LENGTH'..equ'78                ;  FillLength
+VB$K_FLD_LENGTH'..equ'48                ;  FloodLength
+VB$K_MOV_LENGTH'..equ'22                ;  MoveObjectLength
+VB$K_SET_LENGTH'..equ'12                ;  SetCursorLength
+VB$K_ATT_LENGTH'..equ'10                ;  AttachCursorLength
+VB$K_GET_LENGTH'..equ'12                ;  GetCursorLength
+VB$K_EVE_LENGTH'..equ'10                ;  SetEventReportingLength
+VB$K_REP_LENGTH'..equ'50                ;  ReportStatusLength
+VB$M_LOD_BLINK'..equ'1
+VB$M_LOD_TC'..equ'2
+VB$K_LOD_LENGTH'..equ'54                ;  LoadCursorLength
+VB$K_GMO_LENGTH'..equ'12                ;  GetMousePositionLength
+VB$K_SMO_LENGTH'..equ'12                ;  SetMouseCharacteristicsLength
+VB$K_GTB_LENGTH'..equ'12                ;  GetTabletPositionLength
+VB$S_COMMAND_PACKET_BLOCK'..equ'96
+COMMAND_PACKET_BLOCK'..equ'0
+VB$L_OPCODE'..equ'0                     ;  CommandOpcode
+VB$L_LINK'..equ'4                       ;  CommandForwardLink
+VB$S_CMD_BLOCK'..equ'88
+VB$R_CMD_BLOCK'..equ'8
+VB$S_COPY_BLOCK'..equ'58
+VB$R_COPY_BLOCK'..equ'8
+VB$S_COP_SRC'..equ'14
+VB$W_COP_SRC'..equ'8                    ;  CopySource
+VB$S_COP_SMK'..equ'18
+VB$W_COP_SMK'..equ'22                   ;  CopySourceMask
+VB$S_COP_DST'..equ'10
+VB$W_COP_DST'..equ'40                   ;  CopyDestination
+VB$S_COP_POS'..equ'4
+VB$W_COP_POS'..equ'50                   ;  CopyOffset
+VB$S_COP_MAP'..equ'4
+VB$W_COP_MAP'..equ'54                   ;  CopyMap
+VB$S_COP_DMK'..equ'8
+VB$W_COP_DMK'..equ'58                   ;  CopyDestinationMask
+VB$S_DRAW_BLOCK'..equ'88
+VB$R_DRAW_BLOCK'..equ'8
+VB$S_DRW_SRC'..equ'14
+VB$W_DRW_SRC'..equ'8                    ;  DrawSource
+VB$S_DRW_SMK'..equ'18
+VB$W_DRW_SMK'..equ'22                   ;  DrawSourceMask
+VB$S_DRW_DST'..equ'10
+VB$W_DRW_DST'..equ'40                   ;  DrawDestination
+VB$S_DRW_POS'..equ'4
+VB$W_DRW_POS'..equ'50                   ;  DrawOffset
+VB$S_DRW_MAP'..equ'4
+VB$W_DRW_MAP'..equ'54                   ;  DrawMap
+VB$S_DRW_DMK'..equ'8
+VB$W_DRW_DMK'..equ'58                   ;  DrawDestinationMask
+VB$S_DRW_DRAW'..equ'30
+VB$W_DRW_DRAW'..equ'66                  ;  DrawParameters
+VB$S_PRINT_BLOCK'..equ'74
+VB$R_PRINT_BLOCK'..equ'8
+VB$S_PRT_SRC'..equ'14
+VB$W_PRT_SRC'..equ'8                    ;  PrintSource
+VB$S_PRT_FNT'..equ'18
+VB$W_PRT_FNT'..equ'22                   ;  PrintFont
+VB$S_PRT_DST'..equ'10
+VB$W_PRT_DST'..equ'40                   ;  PrintDestination
+VB$S_PRT_INI'..equ'4
+VB$W_PRT_INI'..equ'50                   ;  PrintOffset
+VB$S_PRT_MAP'..equ'4
+VB$W_PRT_MAP'..equ'54                   ;  PrintMap
+VB$S_PRT_DMK'..equ'8
+VB$W_PRT_DMK'..equ'58                   ;  PrintDestinationMask
+VB$S_PRT_PRINT'..equ'16
+VB$W_PRT_PRINT'..equ'66                 ;  PrintParameters
+VB$S_FILL_BLOCK'..equ'70
+VB$R_FILL_BLOCK'..equ'8
+VB$S_FIL_SRC'..equ'14
+VB$W_FIL_SRC'..equ'8                    ;  FillSource
+VB$S_FIL_DST'..equ'10
+VB$W_FIL_DST'..equ'22                   ;  FillDestination
+VB$S_FIL_POS'..equ'4
+VB$W_FIL_POS'..equ'32                   ;  FillOffset
+VB$S_FIL_MAP'..equ'4
+VB$W_FIL_MAP'..equ'36                   ;  FillMap
+VB$S_FIL_DMK'..equ'8
+VB$W_FIL_DMK'..equ'40                   ;  FillDestinationMask
+VB$S_FIL_FILL'..equ'30
+VB$W_FIL_FILL'..equ'48                  ;  FillParameters
+VB$S_FLOOD_BLOCK'..equ'40
+VB$R_FLOOD_BLOCK'..equ'8
+VB$S_FLD_SRC'..equ'14
+VB$W_FLD_SRC'..equ'8                    ;  FloodSource
+VB$S_FLD_DST'..equ'10
+VB$W_FLD_DST'..equ'22                   ;  FloodDestination
+VB$S_FLD_POS'..equ'4
+VB$W_FLD_POS'..equ'32                   ;  FloodOffset
+VB$S_FLD_DMK'..equ'8
+VB$W_FLD_DMK'..equ'36                   ;  FloodDestinationMask
+VB$S_FLD_FLOOD'..equ'4
+VB$W_FLD_FLOOD'..equ'44                 ;  FloodParamters
+VB$S_MOVEOBJ_BLOCK'..equ'14
+VB$R_MOVEOBJ_BLOCK'..equ'8
+VB$S_MOV_MOVE'..equ'14
+VB$W_MOV_MOVE'..equ'8                   ;  MoveParameters
+VB$S_SETCUR_BLOCK'..equ'4
+VB$R_SETCUR_BLOCK'..equ'8
+VB$W_SET_X'..equ'8                      ;  SetCursorX
+VB$W_SET_Y'..equ'10                     ;  SetCursorY
+VB$S_ATTCUR_BLOCK'..equ'2
+VB$R_ATTCUR_BLOCK'..equ'8
+VB$W_ATT_DEVICE'..equ'8                 ;  AttachCursorDevice
+VB$S_GETCUR_BLOCK'..equ'4
+VB$R_GETCUR_BLOCK'..equ'8
+VB$W_GET_X'..equ'8                      ;  GetCursorX
+VB$W_GET_Y'..equ'10                     ;  GetCursorY
+VB$S_SETEVENT_BLOCK'..equ'2
+VB$R_SETEVENT_BLOCK'..equ'8
+VB$W_EVE_ENABLE'..equ'8                 ;  SetEventReportingEnableFlag
+VB$S_REPORT_BLOCK'..equ'42
+VB$R_REPORT_BLOCK'..equ'8
+VB$L_REP_TYPE'..equ'8                   ;  DeviceType
+VB$W_REP_VERSION'..equ'12               ;  DeviceVersion
+VB$W_REP_MCODE'..equ'14                 ;  MicrocodeVersion
+VB$A_REP_SCREEN'..equ'16                ;  VisibleScreenAddress
+VB$W_REP_SCN_X'..equ'20                 ;  VisibleScreenX
+VB$W_REP_SCN_Y'..equ'22                 ;  VisibleScreenY
+VB$W_REP_SCN_Z'..equ'24                 ;  VisibleScreenZ
+VB$A_REP_FRAME'..equ'26                 ;  FreeFrameBufferAddress
+VB$L_REP_FSIZE'..equ'30                 ;  FreeFrameBufferSize
+VB$A_REP_PROGRAM'..equ'34               ;  FreeProgramSpaceAddress
+VB$L_REP_PSIZE'..equ'38                 ;  FreeProgramSpaceSize
+VB$A_REP_UNIBUS'..equ'42                ;  UnibusOffset
+VB$L_REP_USIZE'..equ'46                 ;  UnibusSize
+VB$S_LOADCUR_BLOCK'..equ'46
+VB$R_LOADCUR_BLOCK'..equ'8
+VB$S_LOD_SRC'..equ'14
+VB$W_LOD_SRC'..equ'8                    ;  LoadCursorSource
+VB$S_LOD_SMK'..equ'18
+VB$W_LOD_SMK'..equ'22                   ;  LoadCursorSourceMask
+VB$S_LOD_MAP'..equ'4
+VB$W_LOD_MAP'..equ'40                   ;  LoadCursorMap
+VB$S_LOD_ATTRIB_WORD'..equ'2
+VB$R_LOD_ATTRIB_WORD'..equ'44
+VB$W_LOD_ATTRIB'..equ'44                ;  LoadCursorAttributes
+VB$S_LOD_ATTRIB_BITS'..equ'1
+VB$R_LOD_ATTRIB_BITS'..equ'44
+VB$V_LOD_BLINK'..equ'0                  ;  blink attribute
+VB$V_LOD_TC'..equ'1                     ;  tip and center specified
+VB$W_LOD_TIP_X'..equ'46                 ;  x coord of tip
+VB$W_LOD_TIP_Y'..equ'48                 ;  y coord of tip
+VB$W_LOD_CENTER_X'..equ'50              ;  x coord of center
+VB$W_LOD_CENTER_Y'..equ'52              ;  y coord of center
+VB$S_GETMOUSE_BLOCK'..equ'4
+VB$R_GETMOUSE_BLOCK'..equ'8
+VB$W_GMO_X'..equ'8                      ;  GetMouseX
+VB$W_GMO_Y'..equ'10                     ;  GetMouseY
+VB$S_SETMOUSE_BLOCK'..equ'4
+VB$R_SETMOUSE_BLOCK'..equ'8
+VB$W_SMO_MULT'..equ'8                   ;  SetMouseCharacteristicsMultiplier
+VB$W_SMO_DIV'..equ'10                   ;  SetMouseCharacteristicsDivisor
+VB$S_GETTAB_BLOCK'..equ'4
+VB$R_GETTAB_BLOCK'..equ'8
+VB$W_GTB_X'..equ'8                      ;  GetTabletX
+VB$W_GTB_Y'..equ'10                     ;  GetTabletY
+; 
+; 
+;  Report status and device characteristics block
+; 
+VSTA$K_CHR_LENGTH'..equ'100             ;  ReportStatusLength
+CHR$S_CHR_BLOCK'..equ'100
+CHR_BLOCK'..equ'0
+; 
+;  Status data
+; 
+CHR_STA$S_CHR_STAT_BLOCK'..equ'16
+CHR$R_CHR_STAT_BLOCK'..equ'0
+CHR_STA$L_DEVDEPEND'..equ'0             ;  DeviceStatus
+CHR_STA$L_KB_STATE'..equ'4              ;  KeyboardCharacterState
+CHR_STA$L_MOUSE_STATE'..equ'8           ;  MouseButtonState
+CHR_STA$L_TABLET_STATE'..equ'12         ;  TabletButtonState
+; 
+;  Counter data
+; 
+CHR_CNT$S_CHR_COUN_BLOCK'..equ'24
+CHR$R_CHR_COUN_BLOCK'..equ'16
+CHR_CNT$L_UNKNOWN'..equ'16              ;  UnknownInterruptCounter
+CHR_CNT$L_UNSOL'..equ'20                ;  UnsolicitedInterruptCounter
+CHR_CNT$L_LINK_ERROR'..equ'24           ;  LinkError
+CHR_CNT$L_FLASH'..equ'28                ;  LightFlash
+CHR_CNT$L_LIGHT_ON'..equ'32             ;  LightOnTransition
+CHR_CNT$L_LIGHT_OFF'..equ'36            ;  LightOffTransition
+; 
+;  Version data
+; 
+CHR_VER$S_CHR_VER_BLOCK'..equ'20
+CHR$R_CHR_VER_BLOCK'..equ'40
+CHR_VER$L_DRIVER'..equ'40               ;  DriverVersion
+CHR_VER$L_ROM'..equ'44                  ;  ROMVersion
+CHR_VER$L_DEV_TYPE'..equ'48             ;  DeviceType
+CHR_VER$L_DEV_VERSION'..equ'52          ;  DeviceVersion
+CHR_VER$L_MCODE'..equ'56                ;  MicrocodeVersion
+; 
+;  Configuration data
+; 
+CHR_CNF$S_CHR_CONF_BLOCK'..equ'40
+CHR$R_CHR_CONF_BLOCK'..equ'60
+CHR_CNF$L_SCREEN'..equ'60               ;  VisibleFrameBuffer
+CHR_CNF$L_SCREEN_X'..equ'64             ;  VisibleFrameBufferX
+CHR_CNF$L_SCREEN_Y'..equ'68             ;  VisibleFrameBufferY
+CHR_CNF$L_SCREEN_Z'..equ'72             ;  VisibleFrameBufferZ
+CHR_CNF$L_FRAME'..equ'76                ;  FreeFrameBuffer
+CHR_CNF$L_FRAME_SIZE'..equ'80           ;  FreeFrameBufferSize
+CHR_CNF$L_PROGRAM'..equ'84              ;  FreeProgramSpace
+CHR_CNF$L_PROGRAM_SIZE'..equ'88         ;  FreeProgramSpaceSize
+CHR_CNF$L_UNIBUS'..equ'92               ;  UnibusOffset
+CHR_CNF$L_UNIBUS_SIZE'..equ'96          ;  UnibusSize
+; 
+;  Status data
+; 
+VSTA$K_STA_LENGTH'..equ'16              ;  StatusLength
+STA$S_STAT_BLOCK'..equ'16
+STAT_BLOCK'..equ'0
+STA$L_DEVDEPEND'..equ'0                 ;  DeviceStatus
+STA$L_KB_STATE'..equ'4                  ;  KeyboardCharacterState
+STA$L_MOUSE_STATE'..equ'8               ;  MouseButtonState
+STA$L_TABLET_STATE'..equ'12             ;  TabletButtonState
+; 
+;  Counter data
+; 
+VSTA$K_CNT_LENGTH'..equ'24              ;  CounterLength
+CNT$S_COUN_BLOCK'..equ'24
+COUN_BLOCK'..equ'0
+CNT$L_UNKNOWN'..equ'0                   ;  UnknownInterruptCounter
+CNT$L_UNSOL'..equ'4                     ;  UnsolicitedInterruptCounter
+CNT$L_LINK_ERROR'..equ'8                ;  LinkError
+CNT$L_FLASH'..equ'12                    ;  LightFlash
+CNT$L_LIGHT_ON'..equ'16                 ;  LightOnTransition
+CNT$L_LIGHT_OFF'..equ'20                ;  LightOffTransition
+; 
+;  Version data
+; 
+VSTA$K_VER_LENGTH'..equ'20              ;  VersionLength
+VER$S_VER_BLOCK'..equ'20
+VER_BLOCK'..equ'0
+VER$L_DRIVER'..equ'0                    ;  DriverVersion
+VER$L_ROM'..equ'4                       ;  ROMVersion
+VER$L_DEV_TYPE'..equ'8                  ;  DeviceType
+VER$L_DEV_VERSION'..equ'12              ;  DeviceVersion
+VER$L_MCODE'..equ'16                    ;  MicrocodeVersion
+; 
+;  Configuration data
+; 
+VSTA$K_CNF_LENGTH'..equ'40              ;  ConfigurationLength
+CNF$S_CONF_BLOCK'..equ'40
+CONF_BLOCK'..equ'0
+CNF$L_SCREEN'..equ'0                    ;  VisibleFrameBuffer
+CNF$L_SCREEN_X'..equ'4                  ;  VisibleFrameBufferX
+CNF$L_SCREEN_Y'..equ'8                  ;  VisibleFrameBufferY
+CNF$L_SCREEN_Z'..equ'12                 ;  VisibleFrameBufferZ
+CNF$L_FRAME'..equ'16                    ;  FreeFrameBuffer
+CNF$L_FRAME_SIZE'..equ'20               ;  FreeFrameBufferSize
+CNF$L_PROGRAM'..equ'24                  ;  FreeProgramSpace
+CNF$L_PROGRAM_SIZE'..equ'28             ;  FreeProgramSpaceSize
+CNF$L_UNIBUS'..equ'32                   ;  UnibusOffset
+CNF$L_UNIBUS_SIZE'..equ'36              ;  UnibusSize
+;                                                                           *)
+;  Debug Aid block                                                          *)
+;                                                                           *)
+VSTA$K_DBGAID_LENGTH'..equ'8            ;  Debug Aid info length
+DBGAID$S_DBGAID_BLOCK'..equ'8
+DBGAID_BLOCK'..equ'0
+DBGAID$L_DEVDEPEND'..equ'0              ;  Device dependent data
+DBGAID$W_STS'..equ'4                    ;  Device unit status
+DBGAID$W_DEVSTS'..equ'6                 ;  Device dependent status  	
+; 
+; 
+;  Font block
+; 
+VSTA$K_FTB_LENGTH'..equ'24
+FTB$S_FTB_BLOCK'..equ'24
+FTB_BLOCK'..equ'0
+FTB$L_BM_ADDR'..equ'0
+FTB$W_BM_SIZE_X'..equ'4
+FTB$W_BM_SIZE_Y'..equ'6
+FTB$W_BM_SIZE_Z'..equ'8
+FTB$W_FIRST'..equ'10
+FTB$W_LAST'..equ'12
+FTB$L_LEFT'..equ'14
+FTB$W_BASE'..equ'18
+FTB$W_SPACE'..equ'20
+FTB$W_WIDTH'..equ'22
+; 
+; 
+;  Temporary I/O function codes
+; 
+IO$_COPY'..equ'1                        ;  CopyArea
+IO$_DRAW'..equ'2                        ;  DrawCurve
+IO$_PRINT'..equ'3                       ;  PrintText
+IO$_FLOOD'..equ'4                       ;  FloodArea
+IO$_PIO_PACKET'..equ'5                  ;  PIO packet
+IO$_LOADCUR'..equ'6                     ;  LoadCursor
+IO$_SETCUR'..equ'7                      ;  SetCursorPosition
+IO$_ATTCUR'..equ'8                      ;  AttachCursor
+IO$_MOVEOBJ'..equ'9                     ;  MoveObject
+IO$_STARTM'..equ'10                     ;  StartMicrocode
+IO$_REPORT'..equ'11                     ;  ReportStatus
+IO$_RESET'..equ'12                      ;  ResetOnyx
+IO$_GETCUR'..equ'13                     ;  GetCursorPosition	
+IO$_VB_KEYBOARD'..equ'14                ;  KeyboardFunctions
+IO$_VB_STATUS'..equ'15                  ;  ReportCharacteristics
+IO$_GETMOUSE'..equ'16                   ;  GetMousePosition
+IO$_SETMOUSE'..equ'17                   ;  SetMouseCharacteristics
+IO$_GETTAB'..equ'18                     ;  GetTabletPosition
+IO$_SETEVENT'..equ'19                   ;  SetEventReporting
+IO$_NOOP'..equ'20                       ;  NoOperation
+IO$_FILL'..equ'21                       ;  FillArea
+IO$_POWERUP'..equ'22                    ;  PowerupReset
+IO$_VB_BUTTON'..equ'23                  ;  ButtonAST
+IO$_VB_FIBER'..equ'24                   ;  FiberOpticControl
+IO$_VB_MOVE'..equ'25                    ;  MovementAST
+IO$_VB_GETPOS'..equ'26                  ;  GetDevicePosition
+IO$_VB_FUNC'..equ'27                    ;  VS100Function
+IO$_VB_DEBUG'..equ'28                   ;  Debug Functions
+IO$_VB_PIO'..equ'29                     ;  PIO Functions
+IO$_VB_SAVE_SCREEN'..equ'30             ;  Save screen function
+IO$M_SYS_FUNC'..equ'63
+IO$M_VB_RESET'..equ'64
+IO$M_VB_STARTM'..equ'128
+IO$M_VB_POWERUP'..equ'256
+IO$M_VB_INFINITE'..equ'512
+IO$M_VB_FINITE'..equ'1024
+IO$M_VB_ENABBA'..equ'2048
+IO$M_VB_DISBBA'..equ'4096
+IO$M_VB_ABORT'..equ'8192
+IO$M_VB_SAVE_SCREEN'..equ'16384
+IO$S_VB_FUNC'..equ'2
+VB_FUNC'..equ'0
+IO$S_SYS_FUNC'..equ'6
+IO$V_SYS_FUNC'..equ'0
+IO$V_VB_RESET'..equ'6
+IO$V_VB_STARTM'..equ'7
+IO$V_VB_POWERUP'..equ'8
+IO$V_VB_INFINITE'..equ'9
+IO$V_VB_FINITE'..equ'10
+IO$V_VB_ENABBA'..equ'11
+IO$V_VB_DISBBA'..equ'12
+IO$V_VB_ABORT'..equ'13
+IO$V_VB_SAVE_SCREEN'..equ'14
+IO$M_SYS_FIBER'..equ'127
+IO$M_VB_LINK_AST'..equ'128
+IO$M_VB_LIGHT_ON'..equ'256
+IO$M_VB_LIGHT_OFF'..equ'512
+IO$M_VB_WAIT'..equ'1024
+IO$M_VB_LINK_ONEXIT'..equ'2048
+IO$S_VB_FIBER'..equ'2
+VB_FIBER'..equ'0
+IO$S_SYS_FIBER'..equ'7
+IO$V_SYS_FIBER'..equ'0
+IO$V_VB_LINK_AST'..equ'7
+IO$V_VB_LIGHT_ON'..equ'8
+IO$V_VB_LIGHT_OFF'..equ'9
+IO$V_VB_WAIT'..equ'10
+IO$V_VB_LINK_ONEXIT'..equ'11
+IO$M_SYS_KEYBOARD'..equ'63
+IO$M_VB_CANCEL'..equ'64
+IO$M_VB_LOADKB'..equ'128
+IO$M_VB_WAKEKB'..equ'256
+IO$M_VB_KB_SYSRTN'..equ'512
+IO$S_VB_KEYBOARD'..equ'2
+VB_KEYBOARD'..equ'0
+IO$S_SYS_KEYBOARD'..equ'6
+IO$V_SYS_KEYBOARD'..equ'0
+IO$V_VB_CANCEL'..equ'6
+IO$V_VB_LOADKB'..equ'7
+IO$V_VB_WAKEKB'..equ'8
+IO$V_VB_KB_SYSRTN'..equ'9
+IO$M_SYS_BUTTON'..equ'127
+IO$M_VB_EXIT_IDLE'..equ'128
+IO$M_VB_MOUSE'..equ'256
+IO$M_VB_TABLET'..equ'512
+IO$M_VB_RET_POS'..equ'1024
+IO$M_VB_RET_BUT'..equ'2048
+IO$S_VB_BUTTON_MOVEMENT'..equ'2
+VB_BUTTON_MOVEMENT'..equ'0
+IO$S_SYS_BUTTON'..equ'7
+IO$V_SYS_BUTTON'..equ'0
+IO$V_VB_EXIT_IDLE'..equ'7
+IO$V_VB_MOUSE'..equ'8
+IO$V_VB_TABLET'..equ'9
+IO$V_VB_RET_POS'..equ'10
+IO$V_VB_RET_BUT'..equ'11
+IO$M_SYS_STATUS'..equ'63
+IO$M_VB_STATUS'..equ'64
+IO$M_VB_COUNTER'..equ'128
+IO$M_VB_VERSION'..equ'256
+IO$M_VB_CONFIG'..equ'512
+IO$M_VB_DBGAID'..equ'1024
+IO$S_VB_STATUS'..equ'2
+VB_STATUS'..equ'0
+IO$S_SYS_STATUS'..equ'6
+IO$V_SYS_STATUS'..equ'0
+IO$V_VB_STATUS'..equ'6
+IO$V_VB_COUNTER'..equ'7
+IO$V_VB_VERSION'..equ'8
+IO$V_VB_CONFIG'..equ'9
+IO$V_VB_DBGAID'..equ'10
+IO$M_SYS_DEBUG'..equ'127
+IO$M_VB_DEVDEPEND'..equ'128
+IO$M_VB_STEP'..equ'256
+IO$S_VB_DEBUG'..equ'2
+VB_DEBUG'..equ'0
+IO$S_SYS_DEBUG'..equ'7
+IO$V_SYS_DEBUG'..equ'0
+IO$V_VB_DEVDEPEND'..equ'7
+IO$V_VB_STEP'..equ'8
+IO$M_SYS_PIO'..equ'63
+IO$M_VB_PIO_ENABLE'..equ'64
+IO$M_VB_PIO_DISABLE'..equ'128
+IO$M_VB_PIO_READ_COUNT'..equ'256
+IO$M_VB_PIO_ZERO_COUNT'..equ'512
+IO$M_VB_PIO_CREATE_WCP'..equ'1024
+IO$M_VB_PIO_DELETE_WCP'..equ'2048
+IO$M_VB_PIO_CREATE_DB'..equ'4096
+IO$M_VB_PIO_DELETE_DB'..equ'8192
+IO$S_VB_PIO_FUNC'..equ'2
+VB_PIO_FUNC'..equ'0
+IO$S_SYS_PIO'..equ'6
+IO$V_SYS_PIO'..equ'0
+IO$V_VB_PIO_ENABLE'..equ'6
+IO$V_VB_PIO_DISABLE'..equ'7
+IO$V_VB_PIO_READ_COUNT'..equ'8
+IO$V_VB_PIO_ZERO_COUNT'..equ'9
+IO$V_VB_PIO_CREATE_WCP'..equ'10
+IO$V_VB_PIO_DELETE_WCP'..equ'11
+IO$V_VB_PIO_CREATE_DB'..equ'12
+IO$V_VB_PIO_DELETE_DB'..equ'13
+; 
+; 
+;  ==== VD_IIP Virtual Display I/O Information Packet
+; 
+; 	Defines the structure of information that contains the packets defined
+;       above, plus information pertaining to the its size, type and parent
+;       acp request packet (RP). The address of the iip is given to ast 
+; 	routine delivered by vbdriver.
+; 
+; 
+;     size = VSTA$K_COP_IIP_LENGTH (bytes)
+;     size = VSTA$K_DRW_IIP_LENGTH (bytes)
+;     size = VSTA$K_PRN_IIP_LENGTH (bytes)
+;     size = VSTA$K_FLD_IIP_LENGTH (bytes)
+; 
+;  VD_IIP Packet:
+; 
+;  Field offset prefix 
+; 
+;     prefix = IIP_COP$
+;     prefix = IIP_DRW$
+;     prefix = IIP_PRN$
+;     prefix = IIP_FLD$
+;  
+; 
+; 	copy		draw		print		flood
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   A_FLINK |  |    A_FLINK |  |    A_FLINK  |  |   A_FLINK   |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   A_BLINK |  |    A_BLINK |  |    A_BLINK  |  |   A_BLINK   |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   W_SIZE  |  |    W_SIZE  |  |    W_SIZE   |  |   W_SIZE    |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   W_TYPE  |  |    W_TYPE  |  |    W_TYPE   |  |   W_TYPE    |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   W_IOSB  |  |   W_IOSB   |  |   W_IOSB    |  |   W_IOSB    |  
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   | 4 words   |  |            |  |             |  |             |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   L_EFN   |  |   L_EFN    |  |   L_EFN     |  |   L_EFN     |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   A_ASTADR|  |   A_ASTADR |  |   A_ASTADR  |  |   A_ASTADR  |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   L_ASTPRM|  |   L_ASTPRM |  |   L_ASTPRM  |  |   L_ASTPRM  |
+;   +-----------+  +------------+  +-------------+  +-------------+
+;   |   command specific blocks defined above P1 - P5 packets     |
+;   +-------------------------------------------------------------+
+; 
+VSTA$K_IIP_COP_LENGTH'..equ'104
+VSTA$K_IIP_DRW_LENGTH'..equ'134
+VSTA$K_IIP_PRN_LENGTH'..equ'150
+VSTA$K_IIP_FIL_LENGTH'..equ'156
+VSTA$K_IIP_FLD_LENGTH'..equ'160
+VSTA$K_IIP_MOV_LENGTH'..equ'174
+IIP$S_IIP_BLOCK'..equ'174
+IIP_BLOCK'..equ'0
+IIP$A_FLINK'..equ'0
+IIP$A_BLINK'..equ'4
+IIP$W_TYPE'..equ'8
+IIP$S_IOSB'..equ'8
+IIP$W_IOSB'..equ'10
+IIP$L_EFN'..equ'18
+IIP$A_ASTADR'..equ'22
+IIP$L_ASTPRM'..equ'26
+IIP$S_P1_PKT'..equ'16
+IIP$B_P1_PKT'..equ'30
+IIP$S_P2_PKT'..equ'32
+IIP$B_P2_PKT'..equ'46
+IIP$S_P3_PKT'..equ'22
+IIP$B_P3_PKT'..equ'78
+IIP$S_P4_PKT'..equ'4
+IIP$B_P4_PKT'..equ'100
+IIP_DRW$S_IIP_DRW_BLOCK'..equ'30
+IIP$R_IIP_DRW_BLOCK'..equ'104
+; 
+;  draw curve iip packet
+; 
+IIP_DRW$S_P5_DRW_PKT'..equ'30
+IIP_DRW$B_P5_DRW_PKT'..equ'104
+IIP_PRN$S_IIP_PRN_BLOCK'..equ'16
+IIP$R_IIP_PRN_BLOCK'..equ'134
+; 
+;  print text iip packet
+; 
+IIP_PRN$S_P5_PRN_PKT'..equ'16
+IIP_PRN$B_P5_PRN_PKT'..equ'134
+IIP_FIL$S_IIP_FIL_BLOCK'..equ'6
+IIP$R_IIP_FIL_BLOCK'..equ'150
+; 
+;  fill area iip packet
+; 
+IIP_FIL$S_P5_FIL_PKT'..equ'6
+IIP_FIL$B_P5_FIL_PKT'..equ'150
+IIP_FLD$S_IIP_FLD_BLOCK'..equ'4
+IIP$R_IIP_FLD_BLOCK'..equ'156
+; 
+;  flood area iip packet
+; 
+IIP_FLD$S_P5_FLD_PKT'..equ'4
+IIP_FLD$B_P5_FLD_PKT'..equ'156
+IIP_MOV$S_IIP_MOV_BLOCK'..equ'14
+IIP$R_IIP_MOV_BLOCK'..equ'160
+; 
+;  move object iip packet
+; 
+IIP_MOV$S_P5_MOV_PKT'..equ'14
+IIP_MOV$B_P5_MOV_PKT'..equ'160
+; 
+; 
+;  End of module $VSTADEF
+; 
+	.ENDM

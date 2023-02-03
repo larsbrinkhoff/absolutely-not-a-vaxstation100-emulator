@@ -1,0 +1,2104 @@
+MODULE login (IDENT = 'V04-000',
+	      MAIN = start,
+	      ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:  Login
+!
+! ABSTRACT:
+!
+!	This image initializes the process context for a particular
+!	user and transfers control the the command language interpreter.
+!
+! ENVIRONMENT:
+!
+!	VAX/VMS operating system.
+!
+!--
+
+!
+! Include files
+!
+
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+REQUIRE 'SHRLIB$:UTILDEF';		! Common BLISS definitions
+REQUIRE 'SHRLIB$:INTDEF';		! CLI common "internal" definitions
+REQUIRE 'LIB$:PPDDEF';			! Process permanent data region
+REQUIRE 'LIB$:LGIDEF';			! LOGINOUT-private permanent storage
+
+!
+! Table of contents
+!
+
+FORWARD ROUTINE
+    start,				! Main routine
+    login:		NOVALUE,	! Login portion
+    logout:		NOVALUE,	! Logout portion
+    check_job_quotas:	NOVALUE,	! Check interactive job quotas
+    check_user_quotas,			! Check user and account job quotas
+    check_user_hours:	NOVALUE,	! Check user hourly restrictions
+    check_account_expiration: NOVALUE,	! Check account expiration
+    update_uaf_record:	NOVALUE,	! Update the UAF record
+    set_ppd_prot,			! Set page protection on PPD structure
+    set_sysprv:		NOVALUE,	! Set SYSPRV privilege
+    clear_sysprv:	NOVALUE,	! Clear SYSPRV privilege
+    clear_log_io:	NOVALUE,	! Clear LOG_IO privilege
+    validate_uafrec:	NOVALUE,	! Read/validate UAF record
+    get_uafrec,				! Read UAF record without validiation
+    rundown_cli,			! Eliminate supervisor mode stuff
+    logout_message:	NOVALUE,	! Write logout message
+    handler,				! Condition handler
+    exit_process:	NOVALUE,	! Exit the process
+    clear_creator_cli:	NOVALUE,	! Clear creator's CLI and CLI table
+    set_terminal_hangup: NOVALUE;	! Set/clear terminal's hangup state
+
+!
+! External routines
+!
+
+EXTERNAL ROUTINE
+    open_input:		NOVALUE,	! Open primary input file
+    close_input:	NOVALUE,	! Close primary input file
+    open_output:	NOVALUE,	! Open primary output file
+    close_output:	NOVALUE,	! Close primary output file
+    set_account:	NOVALUE,	! Set account name in JIB and P1 space
+    init_interactive:	NOVALUE,	! Initialize interactive job
+    check_connection:	NOVALUE,	! Check for (re-)connection(s)
+    announce:		NOVALUE,	! Print welcome message
+    init_batch:		NOVALUE,	! Initialize batch job step
+    init_network:	NOVALUE,	! Initialize network job
+    init_user:		NOVALUE,	! Initialize user process quotas, etc.
+    init_cli:		NOVALUE,	! Initialize CLI image
+    execute_cli:	NOVALUE,	! Call the CLI image at its entry point
+    create_logical,			! Create logical name with LNM services
+    write_fao:		NOVALUE,	! Write formatted message to output
+    write_output,			! Write to primary output stream
+    terminate_batch:	NOVALUE,	! Stop batch job, optionally spool log
+    sys$setddir,			! Set default directory
+    lgi$check_pass,			! Validate password against UAF record
+    lgi$searchuser,			! Read UAF record
+    security_audit:	NOVALUE,	! Perform a security audit
+    cia_scan,				! Check for suspect/intruders
+    lgi$cmsupr,				! Change mode to supervisor
+    ascic_day_of_week,			! Return ASCIC day of week
+    lib$day_of_week,			! Find which day of the week this is
+    lib$hour_of_day,			! Find which hour of the day this is
+    lib$get_vm;				! Allocate virtual memory
+
+!
+! External storage
+!
+
+EXTERNAL
+    write_output_status,		! WRITE_OUTPUT's last status
+    input_fab:		BBLOCK,		! Input FAB
+    input_nam:		BBLOCK,		! Input NAM
+    output_fab:		BBLOCK,		! Output FAB
+    output_rab:		BBLOCK,		! Output RAB
+    output_nam:		BBLOCK,		! Output NAM
+    disk_name:		VECTOR,		! Diskname descriptor
+    ctl$gl_creprc_flags:BBLOCK,		! Flags specified to $CREPRC
+    ctl$ag_climage,			! Address of CLI code in control region
+    ctl$ag_clidata,			! Process permanent data region
+    exe$gl_dynamic_flags: BITVECTOR;	! Dynamic system flags
+
+EXTERNAL LITERAL
+	exe$v_brk_disuser : UNSIGNED (6); ! Set DISUSER if breakin
+
+BIND
+    ppd = ctl$ag_clidata: BBLOCK;	! Address of PPD structure
+
+!
+! Define message codes
+!
+
+EXTERNAL LITERAL
+    cli$_present,
+    cli$_negated,
+    lgi$_evade,
+    lgi$_logdisabl,
+    lgi$_exquota,
+    lgi$_notvalid,
+    lgi$_fileacc,
+    lgi$_userauth,
+    lgi$_userexc,
+    lgi$_acntexc,
+    lgi$_badhour,
+    lgi$_badday,
+    lgi$_restrict,
+    lgi$_inputerr,
+    lgi$_acntexpir,
+    lgi$_pwdexpir,
+    lgi$_nosuchuser,
+    lgi$_invpwd;
+
+!
+! Macro to set the processor interrupt priority level register
+!
+
+BUILTIN
+	MTPR;
+
+MACRO						! set processor IPL
+	SET_IPL (LEVEL) = MTPR (%REF (LEVEL), PR$_IPL)%;
+
+!
+! Macro to setup a GETJPI item list or GETDVI item list
+!
+
+MACRO
+    setup_jpidvi_list2 (ptr) [item_code, buflen, bufadr] =
+	BEGIN
+	ptr [0,0,16,0] = buflen;
+	ptr [2,0,16,0] = item_code;
+	ptr [4,0,32,0] = bufadr;
+	ptr [8,0,32,0] = 0;
+	ptr = .ptr + 12;
+	END%,
+
+    setup_jpidvi_list (buffer) =
+	BEGIN
+	LOCAL ptr: REF BBLOCK;
+	ptr = buffer;
+	setup_jpidvi_list2(ptr, %REMAINING);
+	END%;
+
+!
+! Flags
+!
+
+GLOBAL
+    pcb_sts:		BITVECTOR[32],		! PCB status flags
+    job_type,					! Job type from JIB
+    terminal_device:	BYTE INITIAL(false),	! True if SYS$INPUT is terminal
+    dev_char_2:		$BBLOCK[4],		! Dev char #2 of SYS$INPUT
+    dev_dep_2:		$BBLOCK[4],		! Dev dep #2 of SYS$INPUT
+    subprocess: 	BYTE INITIAL(false),	! True if subprocess
+    image_activate:	BYTE INITIAL(false),	! True if image to be chained
+    break_attempt:	BYTE INITIAL(false),	! True if breakin attempt
+    dummy:		VECTOR [1, BYTE];	! Alignment filler
+
+OWN
+    doing_login:	BYTE INITIAL(false),	! True if doing a login
+    full_logout:	BYTE INITIAL(false),	! Give full logout message
+    dummy_1:		VECTOR [2, BYTE];	! Alignment filler
+
+!
+! Own storage
+!
+
+OWN
+    fail_password_buff:				! Buffer for failing password
+		VECTOR [nsa$s_pkt_password,BYTE],
+    term_buff: VECTOR [8,BYTE],			! Buffer for terminal name
+    phy_term_buff: VECTOR [8,BYTE],		! Buffer for terminal name
+    clu_term_buff: VECTOR [16,BYTE],		! Buffer for terminal name
+    sys$input_buffer: VECTOR [128,BYTE],	! SYS$INPUT buffer
+    sys$output_buffer: VECTOR [128,BYTE],	! SYS$OUTPUT buffer
+    sys$error_buffer: VECTOR [128,BYTE];	! SYS$ERROR buffer
+
+GLOBAL
+    uaf_fab: $FAB_DECL,				! FAB to open UAF
+    uaf_rab: $RAB_DECL;				! RAB to read UAF record
+
+OWN
+    rundown_list: VECTOR [3]		! Argument list for LGI$CMSUPR
+		INITIAL (2, rundown_cli, 0);
+
+GLOBAL
+    uaf_record: REF BBLOCK,		! Address of user authorization record
+    org_username: VECTOR [uaf$s_username, BYTE], ! Username proc was started with
+    parent_pid,				! PID of parent process
+    creator_username: VECTOR [2]	! Username of creating process
+		INITIAL(0, org_username),
+    fail_password: VECTOR [2]		! Descriptor of failing password
+		INITIAL(0, fail_password_buff),
+    term_name:	VECTOR [2]		! Terminal name string descriptor
+		INITIAL(0, term_buff),
+    phy_term_name: VECTOR [2]		! Phys terminal name string descriptor
+		INITIAL(0, phy_term_buff),
+    clu_term_name: VECTOR [2]		! Cluster terminal name string descriptor
+		INITIAL(0, clu_term_buff),
+    sys$input_attr,			! SYS$INPUT logical name attributes
+    sys$input:	VECTOR [2]		! SYS$INPUT descriptor
+		INITIAL(%ALLOCATION(sys$input_buffer),
+			sys$input_buffer),
+    sys$output_attr,			! SYS$OUTPUT logical name attributes
+    sys$output:	VECTOR [2]		! SYS$OUTPUT descriptor
+		INITIAL(%ALLOCATION(sys$output_buffer),
+			sys$output_buffer),
+    sys$error_attr,			! SYS$ERROR logical name attributes
+    sys$error:	VECTOR [2]		! SYS$ERROR descriptor
+		INITIAL(%ALLOCATION(sys$error_buffer),
+			sys$error_buffer);
+
+LITERAL
+    bell = 7;
+
+ROUTINE start =
+
+!---
+!
+!	This is the main entry point to the image.  The login data structure
+!	is examined in the control region to determine if this is a login or
+!	a logout operation.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+BUILTIN FP;
+
+!
+! Establish condition handler
+!
+.fp = handler;				! Establish condition handler
+
+!
+! Get job status flags to determine type of job.  
+!
+BEGIN
+
+LOCAL
+    dev_class,				! Device class of SYS$INPUT
+    item_list:	$ITMLST_DECL(ITEMS=5);	! GETJPI/GETDVI item list
+
+$ITMLST_INIT(ITMLST = item_list,
+	    (ITMCOD = jpi$_username,
+	     BUFSIZ = uaf$s_username,
+	     BUFADR = org_username,
+	     RETLEN = creator_username),
+	    (ITMCOD = jpi$_sts,
+	     BUFADR = pcb_sts),
+	    (ITMCOD = jpi$_jobtype,
+	     BUFADR = job_type),
+	    (ITMCOD = jpi$_owner,
+	     BUFADR = parent_pid));
+
+pcb_sts = 0;
+job_type = 0;
+parent_pid = 0;
+ch$fill (' ', uaf$s_username, org_username);
+return_if_error($GETJPIW(ITMLST = item_list));	! Obtain PCB flags
+
+subprocess = (.parent_pid NEQ 0);	! Mark if this is a subprocess or not
+
+!
+! Get characteristics and names of the SYS$INPUT device.  Believe the
+! SYS$INPUT logical for logins, but use the name from the PPD for logouts.
+! This information is for later use throughout LOGINOUT.
+!
+$ITMLST_INIT(ITMLST = item_list,
+	    (ITMCOD = dvi$_devclass,
+	     BUFADR = dev_class),
+	    (ITMCOD = dvi$_devchar2,
+	     BUFADR = dev_char_2),
+	    (ITMCOD = dvi$_devdepend2,
+	     BUFADR = dev_dep_2),
+	    (ITMCOD = dvi$_devnam,
+	     BUFSIZ = %ALLOCATION(term_buff),
+	     BUFADR = term_buff,
+	     RETLEN = term_name[0]),
+	    (ITMCOD = dvi$_tt_phydevnam,
+	     BUFSIZ = %ALLOCATION(phy_term_buff),
+	     BUFADR = phy_term_buff,
+	     RETLEN = phy_term_name[0]));
+
+dev_class = 0;
+IF $GETDVIW(ITMLST = item_list,
+	    DEVNAM = (IF .ppd[ppd$w_size] EQL 0
+		      THEN %ASCID 'SYS$INPUT'
+		      ELSE
+		      (LOCAL devnam_desc : VECTOR[2];
+		       devnam_desc[0] = .ppd[$BYTEOFFSET(ppd$t_inpdvi),0,8,0];
+		       devnam_desc[1] = ppd[ppd$t_inpdvi] + 1;
+		       devnam_desc)
+		     ))
+AND .dev_class EQL dc$_term
+THEN
+    BEGIN
+    terminal_device = true;		! It is a terminal device
+    IF .phy_term_name[0] EQL 0		! If no physical name,
+    THEN CH$MOVE((phy_term_name[0] = .term_name[0]), ! Set one
+		 term_buff, phy_term_buff); !  from original
+    $ITMLST_INIT(ITMLST = item_list,
+		(ITMCOD = dvi$_fulldevnam,
+		 BUFSIZ = %ALLOCATION(clu_term_buff),
+		 BUFADR = clu_term_buff,
+		 RETLEN = clu_term_name[0]));
+    return_if_error($GETDVIW(ITMLST = item_list,
+			     DEVNAM = phy_term_name));
+    END
+ELSE
+    BEGIN
+    terminal_device = false;		! Not a terminal device
+    dev_char_2 = 0;			! Ensure characteristics
+    dev_dep_2 = 0;			!  and dependent bits are null
+    term_name[0] = 0;			! Ensure
+    phy_term_name[0] = 0;		!  terminal names
+    clu_term_name[0] = 0;		!   are null
+    END;
+
+END;
+
+!
+! Drop the installed SYSPRV privilege, unless the parent is authorized,
+! so that random caller's of this program cannot use its privileges to
+! create files in a privileged directory.  Note that the caller may be
+! the job controller, which initializes the process with all privileges
+! in order to ensure that the terminal is accessible even though it has
+! device protection.
+!
+
+clear_sysprv();				! Drop SYSPRV privilege
+
+!
+! Assume that when the process is initially created, the PPD is a demand
+! zero page.  We can simply test the length of the structure to determine
+! if its already been set up.  If so, its a logout operation
+!
+
+IF NOT (doing_login = (.ppd [ppd$w_size] EQL 0)) ! If already initialized,
+THEN
+    logout()				! then invoke logout portion
+ELSE
+    login();				! else, initialize user job
+
+RETURN true;
+
+END;
+
+ROUTINE login: NOVALUE =
+
+!---
+!
+!	Determine the username and initialize all process context
+!	to correspond to the user authorization limits and quotas.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	routine = status (already signaled)
+!---
+
+BEGIN
+
+EXTERNAL LITERAL
+    ctl$c_clidatasz;			! Size of storage area in P1 space
+
+LOCAL
+    status,
+    time:	VECTOR [2],		! Buffer for current time
+    lgi:	REF BBLOCK;		! Address of LGI area
+
+BIND
+    clireg = ppd [ppd$q_clireg]: VECTOR; ! Reference as 2 longwords
+
+!
+! Change the page protection on the PPD structure to allow user mode
+! write access, so that this program may run primarily in user mode.
+!
+status = $CMEXEC(ROUTIN = set_ppd_prot,	! Set PPD page protection
+		 ARGLST = prt$c_uw);
+IF NOT .status THEN SIGNAL_STOP (.status);
+
+!
+! Translate SYS$INPUT, SYS$OUTPUT, and SYS$ERROR.
+!
+
+BEGIN
+
+LOCAL
+    trnlnm_item_list : BLOCK[2*3+1,LONG];	! Item list for 2 items
+
+trnlnm_item_list[0, 0,16,0] = 4;
+trnlnm_item_list[0,16,16,0] = lnm$_attributes;	! Fetch name's attributes
+trnlnm_item_list[1, 0,32,0] = sys$input_attr;
+trnlnm_item_list[2, 0,32,0] = 0;
+trnlnm_item_list[3, 0,16,0] = .sys$input[0];
+trnlnm_item_list[3,16,16,0] = lnm$_string;	! Fetch name's value string
+trnlnm_item_list[4, 0,32,0] = .sys$input[1];
+trnlnm_item_list[5, 0,32,0] = sys$input[0];
+trnlnm_item_list[6, 0,32,0] = 0;
+
+status = $TRNLNM(TABNAM = %ASCID 'LNM$PROCESS_TABLE', ! Translate SYS$INPUT
+		 LOGNAM = %ASCID 'SYS$INPUT',
+		 ITMLST = trnlnm_item_list);
+IF NOT .status
+THEN SIGNAL_STOP(.status);
+
+trnlnm_item_list[1,0,32,0] = sys$output_attr;
+trnlnm_item_list[3,0,16,0] = .sys$output[0];
+trnlnm_item_list[4,0,32,0] = .sys$output[1];
+trnlnm_item_list[5,0,32,0] = sys$output[0];
+
+status = $TRNLNM(TABNAM = %ASCID 'LNM$PROCESS_TABLE', ! Translate SYS$OUTPUT
+		 LOGNAM = %ASCID 'SYS$OUTPUT',
+		 ITMLST = trnlnm_item_list);
+IF NOT .status
+THEN SIGNAL_STOP(.status);
+
+trnlnm_item_list[1,0,32,0] = sys$error_attr;
+trnlnm_item_list[3,0,16,0] = .sys$error[0];
+trnlnm_item_list[4,0,32,0] = .sys$error[1];
+trnlnm_item_list[5,0,32,0] = sys$error[0];
+
+status = $TRNLNM(TABNAM = %ASCID 'LNM$PROCESS_TABLE', ! Translate SYS$ERROR
+		 LOGNAM = %ASCID 'SYS$ERROR',
+		 ITMLST = trnlnm_item_list);
+IF NOT .status					! If no translation,
+OR .status EQL ss$_notran
+THEN
+    sys$error[0] = 0;				!  then make a null string
+
+END;
+
+!
+! Inititalize the process permanent data region
+!
+ppd [ppd$w_size] = ppd$c_length;	! Initialize with static length
+lgi = ppd + ppd$c_length;		! Allocate LGI area just after PPD
+ppd [ppd$l_lgi] = .lgi;			! Store pointer in PPD
+clireg [1] = .lgi + lgi$c_length;	! Allocate CLI storage after LGI
+clireg [0] = ctl$c_clidatasz - ppd$c_length - lgi$c_length;
+
+!
+! Store the original name of SYS$INPUT in the PPD region
+!
+VECTOR [ppd[ppd$t_filename], 0; ,BYTE] = .sys$input[0] + 1;
+CH$MOVE(.sys$input[0],
+    	.sys$input[1],
+    	ppd[ppd$t_filename] + 1);
+
+!
+! Determine if the job is interactive.
+! If not interactive, set the mode bit.
+!
+IF NOT .ctl$gl_creprc_flags[prc$v_inter]		! If not interactive, 
+THEN ppd [ppd$v_mode] = true;				! mark non-interactive job
+
+!
+! Change the STARTUP process's account name to the special start up
+! account name (a binary null followed by "<start>") in order to
+! generate a SYSINIT accounting record.
+!
+! The STARTUP process is detected by:
+!
+!	Not a subprocess
+!	No terminal
+!	Username is "SYSTEM"
+!	Account name is all binary nulls
+!
+BEGIN
+BUILTIN
+    SKPC;
+EXTERNAL
+    ctl$t_username,
+    ctl$t_account;
+IF NOT .subprocess
+AND NOT .terminal_device
+AND CH$EQL(jib$s_username, ctl$t_username, 6, UPLIT BYTE('SYSTEM'), ' ')
+AND NOT SKPC(%REF(0), %REF(jib$s_account), ctl$t_account)
+THEN $CMKRNL(ROUTIN = set_account,
+	     ARGLST = %ASCID %STRING(%CHAR(0), '<start>'));
+END;
+
+!
+! Perform initializations specific to the type of job.
+!
+! The following special account names (all starting with a binary
+! null) are set in order to generate correct LOGFAIL accounting
+! records if there is an authorization failure:
+!
+!	<batch>	Batch job login failure
+!	<det>	Detached process login failure
+!	<login>	Interactive login failure
+!	<net>	Network login failure
+!
+SELECTONE true
+OF
+    SET
+    !
+    ! If batch job, ask job controller for job parameters
+    !
+    [.ctl$gl_creprc_flags[prc$v_batch]]:
+	BEGIN
+	$CMKRNL(ROUTIN = clear_creator_cli);
+	$CMKRNL(ROUTIN = set_account,
+		ARGLST = %ASCID %STRING(%CHAR(0), '<batch>'));
+	init_batch();
+	END;
+
+    !
+    ! If network job, process NETACP parameters
+    !
+    [.ctl$gl_creprc_flags[prc$v_netwrk]]:
+	BEGIN
+	IF NOT .ctl$gl_creprc_flags[prc$v_nouaf]
+	THEN
+	    BEGIN
+	    $CMKRNL(ROUTIN = clear_creator_cli);
+	    $CMKRNL(ROUTIN = set_account,
+		    ARGLST = %ASCID %STRING(%CHAR(0), '<net>'));
+	    END;
+	init_network();
+	END;
+
+    !
+    ! If sub-process, open SYS$INPUT and SYS$OUTPUT.
+    ! P1 cells will be used later on to get the CLI name, CLI table
+    ! name, and UAF flags.
+    ! Note that this test must preceed the following two.
+    !
+    [.subprocess<0,1>]:
+	BEGIN
+	$CMEXEC(ROUTIN = open_output);	! Create output file first so that
+					!  error messages can be written
+	$CMEXEC(ROUTIN = open_input);	! Create input file
+	END;
+
+    !
+    ! If interactive job initiated by unsolicited input from a terminal,
+    ! prompt the terminal for job parameters, and check for job quotas.
+    !
+    [.ctl$gl_creprc_flags[prc$v_inter]
+     and not .ctl$gl_creprc_flags[prc$v_nopassword]]:
+	BEGIN
+	$CMKRNL(ROUTIN = clear_creator_cli);
+	$CMKRNL(ROUTIN = set_account,
+		ARGLST = %ASCID %STRING(%CHAR(0), '<login>'));
+	init_interactive();
+	check_connection();
+	check_job_quotas();
+	END;
+
+    !
+    ! Any other process is considered a detached one.
+    !
+    [OTHERWISE]:
+	BEGIN
+	IF NOT .ctl$gl_creprc_flags[prc$v_nouaf]
+	THEN
+	    BEGIN
+	    $CMKRNL(ROUTIN = clear_creator_cli);
+	    $CMKRNL(ROUTIN = set_account,
+		    ARGLST = %ASCID %STRING(%CHAR(0), '<det>'));
+	    get_uafrec();
+	    IF .uaf_record EQL 0
+	    THEN SIGNAL_STOP(lgi$_userauth);	! signal fatal error
+	    END;
+	END;
+    TES;
+
+!
+! Check user job limits based on current process counts
+!
+IF .uaf_record NEQ 0			! If a UAF record
+THEN
+  IF .uaf_record [uaf$w_maxjobs] NEQ 0	! with job limits
+  OR .uaf_record [uaf$w_maxacctjobs] NEQ 0
+THEN
+    BEGIN				! check limits now, at raised IPL
+    status = $CMKRNL(ROUTIN = check_user_quotas);  
+    IF NOT .status
+    THEN SIGNAL_STOP(.status);		! signal fatal error
+    END;
+
+!
+! Check account expiration, password expriation, user hourly restrictions,
+! DISUSER flag, and terminal line types. All these checks are waived for
+! the system manager logging in on the console terminal.
+!
+IF .uaf_record NEQ 0			! If a UAF record
+THEN 
+    BEGIN
+    $GETTIM (TIMADR = time);		! Get current time
+    IF  (
+	CH$NEQ(uaf$s_username, uaf_record [uaf$t_username],
+	       6, UPLIT BYTE('SYSTEM'), ' ')
+      OR
+	CH$NEQ(.phy_term_name [0], .phy_term_name [1],
+	       6, UPLIT BYTE('_OPA0:'))
+	)
+    THEN
+	BEGIN
+	IF  (				! Check password expiration
+	    .uaf_record [uaf$v_pwd_expired]
+	  OR
+	    .uaf_record [uaf$v_pwd2_expired]
+	    )
+	THEN SIGNAL_STOP (lgi$_pwdexpir);
+
+	IF .uaf_record[uaf$v_disacnt]	! Check DISUSER flag
+	THEN SIGNAL_STOP (lgi$_notvalid);
+	check_account_expiration(time);	! Check account expiration
+	check_user_hours(time);		! Check hourly restrictions if any
+	END;
+    END;
+
+!
+! If interactive login write a messages announcing successful login.
+!
+IF .ctl$gl_creprc_flags[prc$v_inter]
+AND NOT .ctl$gl_creprc_flags[prc$v_nopassword]
+AND .uaf_record NEQ 0
+THEN
+    announce();
+
+!
+! Initialize the CLI image into P1 space
+!
+
+IF NOT .image_activate			! If not activating a single image,
+THEN
+    init_cli();				! Initialize CLI image
+
+!
+! Set the process quotas, privileges and UIC from the UAF record
+!
+
+IF .uaf_record NEQ 0			! If UAF record is valid,
+    AND NOT .ctl$gl_creprc_flags[prc$v_nouaf] ! and uaf init. enabled,
+    AND NOT .subprocess			! or if this is not a sub-process,
+THEN
+    BEGIN
+    lgi [lgi$l_origuic] = .uaf_record [uaf$l_uic]; ! Save original UIC
+    init_user();			! Initialize user context
+    END;
+
+!
+! Open the input and output files under the user's UIC and privileges.
+!
+
+IF .input_fab [fab$w_ifi] EQL 0		! If not already done,
+THEN
+    BEGIN
+    $CMEXEC(ROUTIN = open_output);	! Create output file first so that
+					! error messages can be written
+    $CMEXEC(ROUTIN = open_input);	! Create input file
+    END;
+
+!
+! If the creating process passed SYS$ERROR as something different than
+! SYS$OUTPUT, then the original value of SYS$ERROR is passed as
+! a supervisor mode SYS$ERROR logical name, so that this process
+! can obtain the value.  This is used by the DCL SPAWN command
+! to pass a context argument to the subprocess - but yet it wants
+! the executive mode SYS$ERROR (the permanent one) to be set equal
+! to SYS$OUTPUT (so that we don't get two output streams on SPAWNed
+! jobs).
+!
+
+IF .subprocess					! For subprocesses
+AND .sys$error [0] NEQ 0			!  with non-null SYS$ERROR,
+AND CH$NEQ(.sys$error [0], .sys$error [1],	! If original SYS$ERROR
+	   .sys$output [0], .sys$output [1], 0)	!  NEQ original SYS$OUTPUT,
+THEN
+    create_logical(%ASCID 'SYS$ERROR',		! Define supervisor SYS$ERROR
+		   sys$error,			!   as original SYS$ERROR
+		   psl$c_super);
+
+!
+! Create SYS$LOGIN, SYS$LOGIN_DEVICE, SYS$SCRATCH logical names
+!
+
+IF .uaf_record NEQ 0			! If UAF record valid,
+THEN
+    BEGIN
+    LOCAL
+	buffer:		VECTOR [80,BYTE],	! Buffer for SYS$LOGIN
+	bufdesc:	VECTOR [2],		! Descriptor of above buffer
+	devdesc:	VECTOR [2];		! Descriptor for device name
+
+    IF .disk_name[0] EQL 0			! If no disk specified,
+    THEN					! use the default in the UAF
+	BEGIN
+	bufdesc [0] = CH$RCHAR(uaf_record [uaf$t_defdev])
+		    + CH$RCHAR(uaf_record [uaf$t_defdir]);
+	bufdesc [1] = buffer;
+	devdesc [0] = CH$RCHAR(uaf_record [uaf$t_defdev]);
+	devdesc [1] = buffer;
+
+	CH$COPY(CH$RCHAR(uaf_record [uaf$t_defdev]),
+		    uaf_record [$BYTEOFFSET(uaf$t_defdev) + 1,0,0,0],
+		CH$RCHAR(uaf_record [uaf$t_defdir]),
+		    uaf_record [$BYTEOFFSET(uaf$t_defdir) + 1,0,0,0],
+	    0, %ALLOCATION(buffer), buffer);
+    	END
+    ELSE					! Otherwise, use the disk
+	BEGIN					! specified at login
+	bufdesc [0] = .disk_name[0]
+		    + CH$RCHAR(uaf_record [uaf$t_defdir]);
+	bufdesc [1] = buffer;
+	devdesc [0] = .disk_name[0];
+	devdesc [1] = buffer;
+
+	CH$COPY(.disk_name[0],
+		.disk_name[1],
+		CH$RCHAR(uaf_record [uaf$t_defdir]),
+		uaf_record [$BYTEOFFSET(uaf$t_defdir) + 1,0,0,0],
+		0, %ALLOCATION(buffer), buffer);
+    	END;
+
+    BEGIN
+
+    !+
+    ! Normally, we wouldn't have to use $CMEXEC to create executive
+    ! mode logicals as LOGINOUT is installed with SYSNAM privilege
+    ! but, the INIT_USER() routine above has established the user's
+    ! authorized privileges, which may not include SYSNAM.
+    !-
+
+    LOCAL
+	create_arglist : VECTOR[6];
+
+    create_arglist[0] = 5;			! 5 args to 'create_logical'
+    create_arglist[3] = psl$c_exec;		! Exec mode definitions
+    create_arglist[4] = 0;			! No attributes
+    create_arglist[5] = %ASCID 'LNM$JOB';	! Use job table
+
+    create_arglist[1] = %ASCID 'SYS$LOGIN';	! Define SYS$LOGIN
+    create_arglist[2] = bufdesc;
+    $CMEXEC(ROUTIN = create_logical,
+	    ARGLST = create_arglist);
+
+    create_arglist[1] = %ASCID 'SYS$LOGIN_DEVICE'; ! Define SYS$LOGIN_DEVICE
+    create_arglist[2] = devdesc;
+    $CMEXEC(ROUTIN = create_logical,
+	    ARGLST = create_arglist);
+
+    create_arglist[1] = %ASCID 'SYS$SCRATCH';	! Define SYS$SCRATCH
+    create_arglist[2] = bufdesc;
+    $CMEXEC(ROUTIN = create_logical,
+	    ARGLST = create_arglist);
+
+    END;
+
+    END;
+
+!
+! Update the UAF record.
+!
+IF .uaf_record NEQ 0
+THEN update_uaf_record(time);
+
+!
+! Security audit successful LOGINs
+!
+
+security_audit(nsa$k_rectyp_logi);	! Security audit successful LOGINs
+
+!
+! Transfer control to the command language interpreter
+!
+
+IF .image_activate			! If activating a single image,
+THEN
+    $CMEXEC(ROUTIN = .ctl$ag_climage)	! then activate the image
+ELSE
+    $CMEXEC(ROUTIN = execute_cli);	! Call the CLI image
+
+RETURN true;
+
+END;
+
+ROUTINE logout: NOVALUE =
+
+!---
+!
+!	If this is a batch job, an attempt is made to start the
+!	next job step.  For all other jobs, the process is terminated.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+!
+! The routine below is a copy of the CLI$PRESENT routine in CLI$INTERFACE.
+! This is used so that we call the current CLI's result parse routines, not
+! the routines linked into us for LOGIN's sake.
+!
+
+ROUTINE real_cli$present(name) =
+BEGIN
+EXTERNAL ROUTINE
+    lib$get_vm,				! Allocate virtual memory
+    lib$free_vm,			! Deallocate virtual memory
+    sys$cli;				! Current CLI's callback address
+MAP
+    name :	REF VECTOR;		! (Static) Descriptor by reference
+LOCAL
+    req_desc :	BBLOCK [cli$c_reqdesc],	! Request descriptor block
+    rpw :	BBLOCK [cli$c_workarea],! Result parse work area
+    req_flags :	BITVECTOR [32];		! Request flags array
+CH$FILL(0, cli$c_reqdesc, req_desc);	! Zero request descriptor block
+req_desc [int_b_type] = cli$k_present;	! Set request type
+req_desc [int_l_getvm] = lib$get_vm;	! Set address of get vm routine
+req_desc [int_l_freevm] = lib$free_vm;	! Set address of free vm routine
+req_desc [int_w_entlen] = .name [0];	! Set length of passed name
+req_desc [int_l_entaddr] = .name [1];	! Set address of passed name
+RETURN (sys$cli(req_desc, rpw, req_flags)); ! Call callback utility
+END;
+
+LOCAL status;
+
+!
+! First cancel the CLI's exit handlers. Thus, if a forced exit occurs,
+! the process terminates, rather than having control return to the CLI
+! with the process in some state of disarray.
+!
+status = $CMEXEC (ROUTIN = lgi$cmsupr, 
+		ARGLST = rundown_list);
+IF NOT .status THEN SIGNAL_STOP (.status);
+
+!
+! Change the page protection on the PPD structure to allow user mode
+! write access, so that this program may run primarily in user mode.
+!
+status = $CMEXEC (ROUTIN = set_ppd_prot,
+		 ARGLST = prt$c_uw);
+IF NOT .status THEN SIGNAL_STOP (.status);
+
+input_fab [fab$w_ifi] = .ppd [ppd$w_inpifi];	! Restore input IFI
+CH$MOVE(ppd$c_dvifid, ppd [ppd$t_inpdvi], input_nam [nam$t_dvi]);
+output_fab [fab$w_ifi] = .ppd [ppd$w_outifi];	! Restore output IFI
+output_rab [rab$w_isi] = .ppd [ppd$w_outisi];	! Restore output ISI
+CH$MOVE(ppd$c_dvifid, ppd [ppd$t_outdvi], output_nam [nam$t_dvi]);
+
+!
+! Security audit all LOGOUTs
+!
+security_audit(nsa$k_rectyp_logo);	! Security audit all LOGOUTs
+
+full_logout = .ppd [ppd$v_mode];	! Assume /FULL if batch job
+
+IF real_cli$present(%ASCID 'FULL')	! If /FULL present,
+THEN
+    full_logout = true;
+
+IF real_cli$present(%ASCID 'BRIEF')	! If /BRIEF present,
+THEN
+    full_logout = false;
+
+!
+! If the logout contains an explicit reference to either /HANGUP or
+! /NOHANGUP then process that request. First disable the installed
+! LOG_IO privilege so that the terminal's MODHANGUP protection
+! functions correctly.
+!
+
+clear_log_io();
+status = real_cli$present(%ASCID 'HANGUP');
+IF .status EQL cli$_present
+OR .status EQL cli$_negated
+THEN
+    set_terminal_hangup(.status);
+
+IF .ctl$gl_creprc_flags[prc$v_batch]		! If batch job,
+THEN
+    BEGIN
+    $CMEXEC(ROUTIN = close_input);	! Close input file
+    init_batch();			! Get next input file; if none, exit
+    $CMEXEC(ROUTIN = open_input);	! Open input file
+    $CMEXEC(ROUTIN = execute_cli);	! Call already mapped CLI again
+    END;
+
+logout_message();			! Write logout message
+
+$CMEXEC(ROUTIN = close_input);		! Close input file
+$CMEXEC(ROUTIN = close_output);		! Close output file
+
+$CMEXEC(ROUTIN = exit_process);		! Terminate process
+
+END;
+
+ROUTINE check_job_quotas: NOVALUE =
+
+!---
+!
+!	Check if the interactive job quota has been exceeded, and if
+!	so, issue a fatal message to the user.
+!
+! Inputs:
+!
+!	uaf_record  = Address of user's UAF record, if any
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+EXTERNAL
+    sys$gw_ijobcnt:	WORD,		! Number of interactive jobs
+    sys$gw_ijoblim:	WORD;		! Interactive job limit
+
+LOCAL
+    privmask:		REF BBLOCK;	! Address of user's privilege mask
+
+IF .uaf_record NEQ 0			! If UAF record valid,
+THEN
+    BEGIN
+    privmask = uaf_record [uaf$q_priv];	! Get address of user's privmask
+    IF .privmask [prv$v_oper]		! If operator,
+    THEN
+	RETURN;				! then bypass all quota checking
+    END;
+
+IF .sys$gw_ijobcnt GTRU .sys$gw_ijoblim	! If job limit exceeded,
+THEN
+    BEGIN
+    IF .sys$gw_ijoblim EQL 0		! If logins disabled,
+    THEN
+	SIGNAL_STOP(lgi$_logdisabl)	! then signal logins disabled
+    ELSE
+	SIGNAL_STOP(lgi$_exquota);	! else signal login quota exceeded
+    END;
+
+END;
+
+FORWARD
+    synch_ipl;				! Cell to force locking of this page
+
+ROUTINE check_user_quotas =
+
+!---
+!
+!	Check if this process has reached it user job limit or account
+!	job limit, if so, issue a fatal message to the user.
+!	This routine runs in kernel mode and depends on all the local
+!	variables to be either in registers or on the stack.
+!
+! Inputs:
+!
+!	uaf_record  = Address of user's UAF record
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+EXTERNAL
+    sch$gl_pcbvec:	REF VECTOR,	! Address of PCB vector
+    sch$gl_maxpix:	LONG;		! Last process slot index
+
+LOCAL
+    pcb:		REF BBLOCK,	! user's pcb
+    jib:		REF BBLOCK,	! user's jib
+    usercnt,				! count of same user logged in
+    acntcnt,				! count of same accounts logged in
+    userstr:		BBLOCK [uaf$s_username],! local storage for user name
+    acntstr:		BBLOCK [uaf$s_account];	! local storage for account
+
+usercnt = 0;
+acntcnt = 0;
+
+CH$COPY (uaf$s_username, uaf_record [uaf$t_username],
+	 0,
+	 uaf$s_username, userstr );
+
+CH$COPY (uaf$s_account, uaf_record [uaf$t_account],
+	 0,
+	 uaf$s_account, acntstr );
+
+!
+! This page of code needs to be locked in the working set
+!
+
+SET_IPL (.synch_ipl);			! disable scheduling
+
+!
+! For every process on the system, check the username and account name
+! in the JIB, and talley the number of users logged in under that username
+! and account name.
+!
+
+INCR j FROM 2 to .sch$gl_maxpix DO
+    BEGIN
+    pcb = .sch$gl_pcbvec [.j];		! get the pcb address
+    IF .pcb NEQ .sch$gl_pcbvec [0]	! if not NULL PROCESS pcb
+    THEN
+	IF .pcb [pcb$l_owner] EQL 0	! and not sub-process
+	AND .pcb [pcb$v_netwrk] EQL 0	! and not network job
+	THEN
+	    BEGIN
+	    jib = .pcb [pcb$l_jib];	! get the associated jib address
+	    IF .jib NEQ 0
+	    THEN
+		BEGIN
+		usercnt = .usercnt + CH$EQL (uaf$s_username,
+				     userstr,
+				     jib$s_username,
+				     jib [jib$t_username],
+				     ' ' );
+		acntcnt = .acntcnt + CH$EQL (uaf$s_account,
+				     acntstr,
+				     jib$s_account,
+				     jib [jib$t_account],
+				     ' ' );
+		END;
+	    END;
+    END;
+				     
+SET_IPL (0);				! reenable scheduling
+
+IF .uaf_record [uaf$w_maxjobs] NEQ 0	! If max user jobs specified
+THEN					! check to make sure not exceeded
+    BEGIN
+    IF .usercnt - .uaf_record [uaf$w_maxjobs] GTR 0
+	THEN
+	    RETURN lgi$_userexc;	! then signal can't login now
+    END;
+
+IF .uaf_record [uaf$w_maxacctjobs] NEQ 0	! If max account jobs specified
+THEN					! check to make sure not exceeded
+    BEGIN
+    IF .acntcnt - .uaf_record [uaf$w_maxacctjobs] GTR 0
+	THEN
+	    RETURN lgi$_acntexc;	! then signal can't login now
+    END;
+
+RETURN TRUE;
+
+END;
+
+PSECT OWN = $CODE$(NOWRITE,EXECUTE);	! Cause this own to occur here
+
+OWN synch_ipl:	INITIAL(ipl$_synch);	! Used to lock previous code page
+
+PSECT OWN = $OWN$(WRITE,NOEXECUTE);	! Restore normal own psect
+
+ROUTINE check_user_hours (time) : NOVALUE =
+
+!---
+!
+!	Check to see if this process is allowed to login now on the type of
+!	terminal line indicated. If not, issue a fatal message to the user.
+!
+! Inputs:
+!
+!	time = quadword date and time
+!	uaf_record  = Address of user's UAF record, if any
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+STRUCTURE
+    threebytevector [i; n, ext=0] =
+	[n*3]
+	(threebytevector+i*3)<0, 24, ext>;
+
+MAP
+    time:		REF VECTOR;	! Quadword date and time
+
+EXTERNAL
+    exe$gl_flags:	BITVECTOR;	! System wide flag bits
+
+EXTERNAL LITERAL
+    exe$v_explicitp:	UNSIGNED (6),	! day type set by operator
+    exe$v_explicits:	UNSIGNED (6);	! flag as to whether operator set day
+
+LOCAL
+    day,				! Day of week for today
+    hour,				! Hour of day for today
+    secondary_day,			! Prime/secondary day flag
+    flags;				! Longword for correct days flags
+
+!
+! Define a vector structure over the UAF hourly restriction fields
+! for quick reference.
+!
+$ASSUME (jib$c_network, EQL, 1);
+$ASSUME (jib$c_batch, EQL, 2);
+$ASSUME (jib$c_local, EQL, 3);
+$ASSUME (jib$c_dialup, EQL, 4);
+$ASSUME (jib$c_remote, EQL, 5);
+$ASSUME ($BYTEOFFSET (uaf$b_network_access_s), EQL, $BYTEOFFSET (uaf$b_network_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_batch_access_p), EQL, $BYTEOFFSET (uaf$b_network_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_batch_access_s), EQL, $BYTEOFFSET (uaf$b_batch_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_local_access_p), EQL, $BYTEOFFSET (uaf$b_batch_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_local_access_s), EQL, $BYTEOFFSET (uaf$b_local_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_dialup_access_p), EQL, $BYTEOFFSET (uaf$b_local_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_dialup_access_s), EQL, $BYTEOFFSET (uaf$b_dialup_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_remote_access_p), EQL, $BYTEOFFSET (uaf$b_dialup_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_remote_access_s), EQL, $BYTEOFFSET (uaf$b_remote_access_p)+3);
+
+BIND
+    restrict_vector = uaf_record[uaf$b_network_access_p]
+		    : threebytevector;
+
+!
+! Hourly restrictions are not processed on detached jobs - they inherit
+! their creator's restrictions and will be checked up on by the job
+! controller.
+!
+IF .job_type EQL jib$c_detached THEN RETURN;
+
+!
+! Get the necessary components of the time of day.
+!
+lib$day_of_week (.time, day);
+lib$hour_of_day (.time, hour);
+
+!
+! Find out whether today is a primary or secondary day, either from
+! the UAF record or from the operator override.
+!
+secondary_day = .BITVECTOR [uaf_record [uaf$b_primedays], .day-1];
+IF .exe$gl_flags [exe$v_explicits]
+THEN secondary_day = .exe$gl_flags [exe$v_explicitp];
+
+!
+! Check the appropriate restriction vector, depending on login and day type,
+! and give an error message indicating whether the user is bagged for
+! right now, today, or always.
+!
+flags = .restrict_vector [(.job_type-1)*2+.secondary_day];
+IF .BITVECTOR [flags, .hour]
+THEN
+    BEGIN
+    IF .flags NEQ %X'FFFFFF'
+    THEN SIGNAL_STOP (lgi$_badhour)
+    ELSE IF .restrict_vector [(.job_type-1)*2+1-.secondary_day] NEQ %X'FFFFFF'
+    THEN SIGNAL_STOP (lgi$_badday)
+    ELSE SIGNAL_STOP (lgi$_restrict);
+    END;
+
+END;
+
+ROUTINE check_account_expiration (time) : NOVALUE =
+
+!---
+!
+!	Check to see if the account that this process belongs to has expired.
+!	If so, issue a fatal message to the user.
+!
+! Inputs:
+!
+!	time = quadword date and time
+!	uaf_record  = Address of user's UAF record, if any
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+MAP
+    time:		REF VECTOR;	! Quadword date and time
+
+BIND
+    expiration = uaf_record [uaf$q_expiration] : VECTOR; ! Use as 2 longwords
+
+!
+! Return if no UAF record or no expiration date.
+!
+IF .uaf_record EQL 0
+THEN RETURN;
+
+IF (.expiration [0] EQL 0) AND (.expiration [1] EQL 0)
+THEN RETURN;
+
+!
+! Compare it to the account expiration date and return if the current time
+! is less.  Otherwise signal a fatal error.
+!
+IF .time [1] LSSU .expiration [1]
+THEN RETURN;
+
+IF .time [1] EQL .expiration [1]
+AND .time [0] LSSU .expiration [0]
+THEN RETURN;
+
+SIGNAL_STOP (lgi$_acntexpir);
+END;
+
+GLOBAL ROUTINE update_uaf_record (time) : NOVALUE =
+
+!---
+!
+!	Refetch and lock the UAF record.
+!	Check for password expiration and set the UAF flag.
+!	Update the last login time.
+!	Zero the login failure count.
+!
+!	If time is missing, then only increment the login failure count.
+!
+! Inputs:
+!
+!	time = quadword date and time
+!	uaf_rab = RAB used to read the UAF
+!	uaf_fab = FAB used to read the UAF
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+BUILTIN
+    EMUL,
+    SUBM,
+    NULLPARAMETER;
+
+MAP
+    time:		REF VECTOR;	! Quadword date and time
+
+BIND
+    lifetime = uaf_record [uaf$q_pwd_lifetime] : VECTOR,
+    pwd1 = uaf_record [uaf$q_pwd] : VECTOR,
+    pwd2 = uaf_record [uaf$q_pwd2] : VECTOR;
+
+LOCAL
+    status,
+    expiration:		VECTOR [2],	! Quadword date and time
+    expir_5days:	VECTOR [2],	!  and another
+    delta_5days:	VECTOR [2];	! Positive delta of 5 days
+
+!
+! Refetch the UAF record.
+!
+uaf_rab [rab$b_rac] = rab$c_rfa;
+uaf_rab [rab$l_rop] = rab$m_rlk OR rab$m_wat;
+IF NOT (status = $GET (RAB = uaf_rab))
+THEN 
+    BEGIN
+    $DISCONNECT (RAB = uaf_rab);
+    $CLOSE (FAB = uaf_fab);
+    RETURN;
+    END;
+
+IF NULLPARAMETER (1)
+THEN
+    BEGIN
+    !
+    ! Update the number of login failures.
+    !
+    uaf_record [uaf$w_logfails] = .uaf_record [uaf$w_logfails] + 1;
+    !
+    ! If this was tagged as a breakin attempt and we are disabling users
+    ! on attempted breakin, set the DISUSER flag.
+    !
+    IF .break_attempt
+    AND .exe$gl_dynamic_flags[exe$v_brk_disuser]
+    THEN uaf_record[uaf$v_disacnt] = true;
+    END
+ELSE
+    BEGIN
+    !
+    ! Update the last login time.
+    !
+    IF .ppd [ppd$v_mode]
+    THEN
+	move_quad(time [0], uaf_record [uaf$q_lastlogin_n])
+    ELSE
+	BEGIN
+	uaf_record [uaf$w_logfails] = 0;
+	move_quad(time [0], uaf_record [uaf$q_lastlogin_i]);
+	!
+	! Check for expired passwords.  Skip if no expiration period.
+	! Note the signed compare; it is used to catch the pre-expired
+	! encoding of -1,-1.
+	!
+	IF (.lifetime [0] NEQ 0) OR (.lifetime [1] NEQ 0)
+	THEN
+	    BEGIN
+	    !
+	    ! Check first password.
+	    !
+	    EMUL (%REF(10*1000*1000), %REF(60*60*24*5), %REF(0), delta_5days);
+	    IF (.pwd1 [0] NEQ 0) OR (.pwd1 [1] NEQ 0)
+	    THEN
+		BEGIN
+		SUBM (2, lifetime, uaf_record [uaf$q_pwd_date], expiration);
+		IF .time [1] GTR .expiration [1]
+		OR (.time [1] EQL .expiration [1]
+		AND .time [0] GEQU .expiration [0])
+		THEN
+		    BEGIN
+		    uaf_record [uaf$v_pwd_expired] = true;
+		    IF .(uaf_record [uaf$q_pwd2_date]) eql 0
+		    THEN
+			write_output(%ASCID %STRING(
+	%CHAR(bell),%CHAR(bell),%CHAR(bell),
+	'WARNING - Your password has expired; update immediately with SET PASSWORD!'))
+		    ELSE
+			write_output(%ASCID %STRING(
+	%CHAR(bell),%CHAR(bell),%CHAR(bell),
+	'WARNING - Primary password has expired; update immediately with SET PASSWORD!'));
+		    END
+		ELSE
+		    BEGIN
+		    SUBM (2, delta_5days, expiration, expir_5days);
+		    IF .time [1] GTRU .expir_5days [1]
+		    OR (.time [1] EQL .expir_5days [1]
+		    AND .time [0] GEQU .expir_5days [0])
+		    THEN
+			BEGIN
+			IF .(uaf_record [uaf$q_pwd2_date]) eql 0
+			THEN
+			    write_fao(UPLIT BYTE(%ASCIC %STRING(
+	%CHAR(bell),%CHAR(bell),
+	'WARNING - Your password expires on !AC, !17%D')),
+			    ascic_day_of_week(expiration), expiration)
+			ELSE
+			    write_fao(UPLIT BYTE(%ASCIC %STRING(
+	%CHAR(bell),%CHAR(bell),
+	'WARNING - Primary password expires on !AC, !17%D')),
+			    ascic_day_of_week(expiration), expiration);
+			END;
+		    END;
+		END;
+	    !
+	    ! Check second password.
+	    !
+	    IF (.pwd2 [0] NEQ 0) OR (.pwd2 [1] NEQ 0)
+	    THEN
+		BEGIN
+		SUBM (2, lifetime, uaf_record [uaf$q_pwd2_date], expiration);
+		IF .time [1] GTR .expiration [1]
+		OR (.time [1] EQL .expiration [1]
+		AND .time [0] GEQU .expiration [0])
+		THEN
+		    BEGIN
+		    uaf_record [uaf$v_pwd2_expired] = true;
+		    write_output(%ASCID %STRING(
+	%CHAR(bell),%CHAR(bell),%CHAR(bell),
+	'WARNING - Secondary password has expired; update immediately with SET PASSWORD!'));
+		    END
+		ELSE
+		    BEGIN
+		    SUBM (2, delta_5days, expiration, expir_5days);
+		    IF .time [1] GTRU .expir_5days [1]
+		    OR (.time [1] EQL .expir_5days [1]
+		    AND .time [0] GEQU .expir_5days [0])
+		    THEN
+			write_fao(UPLIT BYTE(%ASCIC %STRING(
+	%CHAR(bell),%CHAR(bell),
+	'WARNING - Secondary password expires on !AC, !17%D')),
+			    ascic_day_of_week(expiration), expiration);
+		    END;
+		END;
+	    END;
+	END;
+    END;
+
+!
+! Update the UAF record and close the file.
+!
+$UPDATE (rab = uaf_rab);
+$DISCONNECT (RAB = uaf_rab);
+$CLOSE (FAB = uaf_fab);
+
+END;
+
+GLOBAL ROUTINE set_ppd_prot =
+
+!---
+!
+!	Change the page protection on the process permanent data area.
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+!	AP = New page protection
+!
+! Outputs:
+!
+!	routine = status (not signaled)
+!---
+
+BEGIN
+
+BUILTIN AP;
+
+LOCAL
+    range:	VECTOR [2];		! Address range
+
+range [0] = ppd;
+range [1] = ppd + ppd$c_length + lgi$c_length - 1;
+
+RETURN $SETPRT(INADR = range,		! Set page protection
+	       PROT  = .AP);		!  as specified
+
+END;
+
+GLOBAL ROUTINE set_sysprv: NOVALUE =
+
+!---
+!
+!	Enable SYSPRV privilege in the current privilege mask in
+!	in order to obtain acess to system-wide files such as 
+!	SYSUAF and SYSALF.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    privmask:	BBLOCK [8];		! Privilege mask
+
+BIND
+    quadword = privmask: VECTOR;	! Access as 2 longwords
+
+quadword [0] = 0;			! Initialize mask
+quadword [1] = 0;
+privmask [prv$v_sysprv] = true;		! Set SYSPRV bit in mask
+
+$SETPRV(PRVADR = privmask,		! Disable SYSPRV privilege
+	ENBFLG = 1);
+
+END;
+
+GLOBAL ROUTINE clear_sysprv: NOVALUE =
+
+!---
+!
+!	Disable SYSPRV privilege which is given because the program
+!	is normally installed with it in order to obtain acess to
+!	system-wide files such as SYSUAF and SYSALF.  The privilege
+! 	is not disabled if the process is authorized to have it.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    privmask:	BBLOCK [8];		! Privilege mask
+
+BIND
+    quadword = privmask: VECTOR;	! Access as 2 longwords
+
+$SETPRV(PRVPRV = privmask,		! Get authorized privilege mask
+	PRMFLG = 1);
+
+IF .privmask [prv$v_sysprv]		! If authorized to have SYSPRV,
+THEN
+    RETURN;				! then do nothing
+
+quadword [0] = 0;			! Initialize mask
+quadword [1] = 0;
+privmask [prv$v_sysprv] = true;		! Set SYSPRV bit in mask
+
+$SETPRV(PRVADR = privmask,		! Disable SYSPRV privilege
+	ENBFLG = 0);
+
+END;
+
+GLOBAL ROUTINE clear_log_io: NOVALUE =
+
+!---
+!
+!	Disable LOG_IO privilege which is given because the program
+!	is normally installed with it in order to force terminal
+!	hangups in case of error.  The privilege is not disabled if
+!	the process is authorized to have it.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    privmask:	BBLOCK [8];		! Privilege mask
+
+BIND
+    quadword = privmask: VECTOR;	! Access as 2 longwords
+
+$SETPRV(PRVPRV = privmask,		! Get authorized privilege mask
+	PRMFLG = 1);
+
+IF .privmask [prv$v_log_io]		! If authorized to have LOG_IO,
+THEN
+    RETURN;				! then do nothing
+
+quadword [0] = 0;			! Initialize mask
+quadword [1] = 0;
+privmask [prv$v_log_io] = true;		! Set LOG_IO bit in mask
+
+$SETPRV(PRVADR = privmask,		! Disable LOG_IO privilege
+	ENBFLG = 0);
+
+END;
+
+GLOBAL ROUTINE validate_uafrec (username, password1, password2): NOVALUE =
+
+!---
+!
+!	Lookup the specified username in the authorization file
+!	and validate the passwords. Apply breakin detection / evasion
+!	as appropriate.
+!
+! Inputs:
+!
+!	username = Address of descriptor of username
+!	password1 = Address of descriptor of primary password
+!	password2 = Address of descriptor of secondary password
+!
+! Outputs:
+!
+!	uaf_record = Address of UAF record for user
+!---
+
+BEGIN
+
+MAP
+    username:	REF VECTOR,		! Address of username descriptor
+    password1:	REF VECTOR,		! Address of password #1 descriptor
+    password2:	REF VECTOR;		! Address of password #2 descriptor
+
+LOCAL
+    status,
+    arglist:	VECTOR [2];		! Argument list for CIA_SCAN
+
+status = get_uafrec(.username);		! Read the UAF record
+
+IF .uaf_record NEQ 0			! Validate both passwords
+THEN
+    BEGIN
+    IF NOT (status = lgi$check_pass(.password1, .uaf_record, 0))
+    THEN
+	CH$COPY((fail_password [0] = MINU(.password1 [0],	! Save password
+					  nsa$s_pkt_password)),
+		.password1 [1],					!  for auditing
+		0,
+		nsa$s_pkt_password,
+		.fail_password [1])
+    ELSE
+	BEGIN
+	IF .bblock [uaf_record [uaf$q_pwd2],0,0,32,0] NEQ 0
+	OR .bblock [uaf_record [uaf$q_pwd2],4,0,32,0] NEQ 0
+	THEN
+	    IF NOT (status = lgi$check_pass(.password2, .uaf_record, 1))
+	    THEN
+		CH$COPY((fail_password [0] = MINU(.password2 [0],
+						  nsa$s_pkt_password)),
+			.password2 [1],
+			0,
+			nsa$s_pkt_password,
+			.fail_password [1]);
+	END;
+    IF .status EQL -4			! Special invalid password status?
+    THEN status = lgi$_invpwd;
+    IF NOT .status
+    THEN update_uaf_record();		! Increment login failure count
+    END;
+
+arglist[0] = 1;
+IF NOT .status				! If error detected,
+THEN
+    BEGIN
+    arglist[1] = 0;			! Call CIA_SCAN, with 0,
+    IF NOT $CMKRNL(ROUTIN = cia_scan,	! which means "check this
+		   ARGLST = arglist)	! for a suspect".
+    THEN
+	security_audit(nsa$k_rectyp_logb); ! Audit the breakin
+    END
+ELSE
+    BEGIN
+    arglist[1] = 1;			! Call CIA_SCAN, to see if
+    IF NOT $CMKRNL(ROUTIN = cia_scan,	! this might be an intruder.
+    	           ARGLST = arglist)
+    THEN status = lgi$_evade;
+    END;
+
+ppd [ppd$l_lststatus] = .status;	! set final job status
+
+IF NOT .status
+THEN SIGNAL_STOP(lgi$_notvalid);	! say it was a password problem
+
+END;
+
+GLOBAL ROUTINE get_uafrec (username) =
+
+!---
+!
+!	Lookup the specified username in the authorization file
+!	and use it without checking any password.
+!
+! Inputs:
+!
+!	username = Optional address of descriptor of username to look for.
+!
+! Outputs:
+!
+!	uaf_record = Address of UAF record for user
+!
+! Return Value:
+!
+!	true if UAF record successfully read OR if UAF is unavailable
+!		and the terminal is OPA0:
+!	false otherwise
+!---
+
+BEGIN
+
+BUILTIN
+    NULLPARAMETER;			! True if no parameter specified
+
+MAP
+    username:	REF VECTOR;		! Address of username descriptor
+
+EXTERNAL
+    ctl$t_username:	BBLOCK;		! Current username
+
+LOCAL
+    status,
+    uaf_desc:	VECTOR [2],		! Descriptor of UAF record buffer
+    desc:	VECTOR [2];		! Username descriptor
+
+IF NOT NULLPARAMETER(1)			! If parameter specified,
+THEN
+    BEGIN
+    desc [0] = .username [0];		! then use given username
+    desc [1] = .username [1];
+    END
+ELSE
+    BEGIN
+    desc [0] = jib$s_username;		! Setup descriptor of current username
+    desc [1] = ctl$t_username;
+    END;
+
+uaf_desc [0] = uaf$k_length;		! Setup descriptor of buffer
+status = LIB$GET_VM(uaf_desc [0], uaf_desc [1]); ! Allocate buffer
+IF NOT .status				! If error detected,
+THEN
+    SIGNAL_STOP(.status);		! then signal fatal error
+
+status = lgi$searchuser(desc,		! Search UAF for authorization record
+			0,		! Skip password checking
+			uaf_desc,	! Address of descriptor of buffer
+			uaf_fab,	! FAB for UAF access
+			uaf_rab);	! RAB for UAF access
+IF .status EQL -2			! Special invalid username status?
+THEN status = lgi$_nosuchuser;
+
+IF NOT .status				! If error detected,
+THEN
+    BEGIN
+    uaf_record = 0;			! Show no user record
+    pcb_sts [$BITPOSITION(pcb$v_secaudit)] = 0; !  and no mandatory auditing
+    ppd [ppd$l_lststatus] = .status;	! Initialize lststatus 
+
+    IF .status EQL lgi$_nosuchuser	! If invalid username
+    THEN RETURN .status;		! return the error
+
+    !
+    ! If user is at the console, allow login.
+    ! Otherwise, signal a fatal file access error.
+    !
+    IF CH$NEQ (.phy_term_name[0], .phy_term_name[1], 6, UPLIT BYTE('_OPA0:'))
+    THEN
+	SIGNAL_STOP(lgi$_fileacc,0,.status);
+    END
+
+ELSE
+    BEGIN
+    uaf_record = .uaf_desc [1];		! Mark UAF record present
+    pcb_sts [$BITPOSITION(pcb$v_secaudit)] = 0; ! Guess at no mandatory audit
+    IF .uaf_record [uaf$v_audit]	! If UAF says mandatory auditing
+    THEN pcb_sts [$BITPOSITION(pcb$v_secaudit)] = 1; !  then do auditing
+    END;
+
+RETURN 1;
+END;
+
+GLOBAL ROUTINE logout_message: NOVALUE =
+
+!---
+!
+!	Write the logout message to the output stream.
+!
+! Inputs:
+!
+!	full_logout = True if should output full display, else brief
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+BUILTIN EMUL;
+
+EXTERNAL ROUTINE
+    lib$subx;				! Subtract 2 quadword numbers
+
+OWN
+    bufio,				! Number of buffered I/O's
+    wspeak,				! Peak working set size
+    dirio,				! Number of direct I/O's
+    virtpeak,				! Peak page file size
+    pageflts,				! Number of page faults
+    volumes;				! Number of volumes mounted
+
+LOCAL
+    cputim:	VECTOR [2],		! Total CPU time
+    logintim:	VECTOR [2],		! Login date/time
+    curtime:	VECTOR [2],		! Current date/time
+    username:	VECTOR [2],		! Descriptor of username
+    procname:	VECTOR [2],		! Descriptor of process name
+    username_buffer: VECTOR [16,BYTE],
+    procname_buffer: VECTOR [16,BYTE],
+    jpi_list:	BBLOCK [128];		! GETJPI item list
+
+username [1] = username_buffer;
+procname [1] = procname_buffer;
+
+jpi_list [0,0,16,0] = %ALLOCATION(username_buffer);
+jpi_list [2,0,16,0] = jpi$_username;
+jpi_list [4,0,32,0] = username_buffer;
+jpi_list [8,0,32,0] = username [0];
+jpi_list [12,0,16,0] = %ALLOCATION(procname_buffer);
+jpi_list [14,0,16,0] = jpi$_prcnam;
+jpi_list [16,0,32,0] = procname_buffer;
+jpi_list [20,0,32,0] = procname [0];
+jpi_list [24,0,32,0] = 0;
+
+$GETJPI(ITMLST = jpi_list);		! Get username and process name
+
+IF .ppd [ppd$v_mode]			! If batch job,
+THEN
+    write_fao(UPLIT BYTE(%ASCIC '  !AS job terminated at !%D'),
+	username,
+	0)
+ELSE IF NOT .subprocess			! else if main interactive job,
+THEN
+    write_fao(UPLIT BYTE(%ASCIC '  !AS logged out at !%D'),
+	username,
+	0)
+ELSE					! Else, if subprocess
+    write_fao(UPLIT BYTE(%ASCIC '  Process !AS logged out at !%D'),
+	procname,
+	0);
+
+IF NOT .full_logout			! If brief message desired,
+THEN
+    RETURN;				! then skip rest
+
+setup_jpidvi_list(jpi_list,
+	jpi$_bufio,4,bufio,
+	jpi$_wspeak,4,wspeak,
+	jpi$_dirio,4,dirio,
+	jpi$_virtpeak,4,virtpeak,
+	jpi$_pageflts,4,pageflts,
+	jpi$_volumes,4,volumes,
+	jpi$_cputim,8,cputim,
+	jpi$_logintim,8,logintim,
+	0,0,0);
+
+$GETJPI(ITMLST = jpi_list);		! Get statistics
+
+EMUL(%REF(-100000),cputim,%REF(0),cputim); ! Convert MS to 100 NS units
+					! and negate to convert to delta time
+
+$GETTIM(TIMADR = curtime);		! Get current time
+
+LIB$SUBX(logintim,curtime,logintim);	! Subtract giving negative elapsed time
+
+write_fao(UPLIT BYTE(%ASCIC '!/  Accounting information:'));
+write_fao(UPLIT BYTE(%ASCIC 
+	'  Buffered I/O count:!13UL      Peak working set size:!6UL'),
+	.bufio, .wspeak);
+write_fao(UPLIT BYTE(%ASCIC
+	'  Direct I/O count:  !13UL      Peak page file size:  !6UL'),
+	.dirio, .virtpeak);
+write_fao(UPLIT BYTE(%ASCIC
+	'  Page faults:       !13UL      Mounted volumes:      !6UL'),
+	.pageflts, .volumes);
+write_fao(UPLIT BYTE(%ASCIC
+	'  Charged CPU time:  !%D   Elapsed time:  !%D'),
+	cputim, logintim);
+
+END;
+
+ROUTINE rundown_cli =
+
+!---
+!
+!	This routine executes in supervisor mode to cancel the CLI's exit
+!	handlers. This is necessary to prevent external attacks on a LOGOUT in
+!	progress with the $FORCEX system service. With the exit handlers
+!	canceled, if LOGOUT is forcibly exited, the process goes away.
+!	In addition, a $CANCEL is done on the PPD$W_INPCHAN channel.
+!
+! Calling Sequence:
+!
+!	This procedure is called in SUPERVISOR mode with the LGI$CMSUPR
+!	procedure.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	Status of the rundown.
+!
+! Side Effects:
+!
+!	Supervisor mode exit handlers canceled.
+!	Channel PPD$W_INPCHAN is canceled.
+!
+!---
+
+BEGIN
+
+LOCAL
+    status;
+
+IF (status = $CANEXH())				   ! Cancel all exit handlers
+AND .terminal_device
+THEN
+    status = $CANCEL(CHAN = .ppd [ppd$w_inpchan]); ! Cancel AST request(s)
+RETURN .status;
+
+END;
+
+GLOBAL ROUTINE handler (signal_args, mechanism_args) =
+
+!---
+!
+!	This is the primary condition handler for the loginout
+!	image.  Issue the error message, and for fatal errors,
+!	force the termination of the process.
+!
+! Inputs:
+!
+!	Access mode may be either user or executive depending on
+!	the current mode when the condition is signaled.
+!
+!	signal_args = Address of signal argument vector
+!	mechanism_args = Address of mechanism argument vector
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+MAP
+    signal_args:	REF BBLOCK,	! Address of signal vector
+    mechanism_args:	REF BBLOCK;	! Address of mechanism vector
+
+BIND
+    status = signal_args [chf$l_sig_name]: BBLOCK; ! Get at status fields
+
+IF .signal_args [chf$l_sig_name] EQL ss$_unwind ! If unwinding,
+THEN
+    RETURN false;			! then pass on to next handler
+
+signal_args [chf$l_sig_args] = .signal_args [chf$l_sig_args] - 2;
+signal_args [2,0,16,0] = 1;		! Output only text portion
+					! (inhibit message prefixes)
+
+write_output_status = 0;		! Preset no message output
+$PUTMSG(MSGVEC = .signal_args,		! Output messages
+	ACTRTN = write_output);		! using write_output to put messages
+	
+IF .status NEQ lgi$_notvalid		! If user validation error,
+    AND .status NEQ lgi$_userauth	! return with validation code
+THEN					! already set by signaller
+    ppd [ppd$l_lststatus] = .status;	! Else, set final job status
+
+IF .status EQL lgi$_inputerr		! If error opening input file,
+THEN
+    ppd [ppd$l_lststatus] = .(.signal_args+12); ! Exit with RMS status code
+					! for NETACP interpretation of netjob
+
+IF .doing_login				! If this is a login
+AND .status [sts$v_severity] NEQ sts$k_warning !  and not only a warning
+THEN security_audit(nsa$k_rectyp_logf,	!   then security audit the failure
+		    .ppd [ppd$l_lststatus]);
+
+IF .status [sts$v_severity] EQL sts$k_severe	! If fatal error,
+THEN
+    BEGIN
+    IF .ctl$gl_creprc_flags[prc$v_batch]	! then, if batch job
+    THEN terminate_batch(.signal_args)		! terminate job stream
+    ELSE
+	BEGIN
+	IF .doing_login				! If this is a login,
+	THEN set_terminal_hangup(true);		! Ensure terminal hangs up
+	IF .write_output_status			! If exit status output,
+	THEN ppd [ppd$l_lststatus] =		! Inhibit further output
+	    .ppd [ppd$l_lststatus] OR sts$m_inhib_msg;
+	$CMEXEC(ROUTIN = exit_process); 	! Terminate process
+	END;
+    END;
+
+RETURN ss$_continue;			! otherwise, continue execution
+
+END;
+
+GLOBAL ROUTINE exit_process: NOVALUE =
+
+!---
+!
+!	Terminate the process execution.  This is done in executive
+!	mode in order to bypass any supervisor mode exit handlers.
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+!	None
+!
+! Outputs:
+!
+!	There is no return - the image is exited.
+!---
+
+BEGIN
+
+$EXIT(CODE = .ppd [ppd$l_lststatus]);	! Exit with final job status
+
+END;
+
+ROUTINE clear_creator_cli: NOVALUE =
+
+!---
+!
+!	Clear the creator's CLI and CLI table name strings.
+!	Also clear inherited mandatory auditing status.
+!
+! Inputs:
+!
+!	Access mode is kernel.
+!
+! Outputs:
+!
+!	None.
+!
+!---
+
+BEGIN
+
+EXTERNAL
+    sch$gl_curpcb:	REF BBLOCK,	! Current PCB pointer
+    ctl$gt_cliname:	VECTOR[,BYTE],	! Creator's CLI name (ASCIC)
+    ctl$gt_tablename:	VECTOR[,BYTE];	! Creator's CLI table name (ASCIC)
+
+sch$gl_curpcb [pcb$v_secaudit] = false;
+pcb_sts [$BITPOSITION(pcb$v_secaudit)] = false;
+ctl$gt_cliname [0] = 0;
+ctl$gt_tablename [0] = 0;
+
+END;
+
+GLOBAL ROUTINE set_terminal_hangup (hangup): NOVALUE =
+
+!---
+!
+!	Set or clear terminal's hangup state.
+!
+! Inputs:
+!
+!	hangup = Hangup state to set.
+!
+! Outputs:
+!
+!	None.
+!
+!---
+
+BEGIN
+
+OWN
+    hang_devchar2: BLOCK [4,BYTE];	! Holds terminal's disconnected state
+
+BIND
+    hang_item = UPLIT (4 OR (dvi$_devchar2 ^ 16), hang_devchar2, 0, 0);
+
+LOCAL
+    channel:	WORD,			! Place to store assigned channel
+    iosb:	VECTOR [4,WORD],	! I/O status block
+    buffer:	VECTOR [3];		! Characteristics buffer
+
+IF NOT .terminal_device			! If not a real terminal,
+OR .dev_char_2 [dev$v_rtt]		!  or terminal is a remote terminal,
+OR .ppd [ppd$v_mode]			!  or non-interactive,
+OR .subprocess				!  or a subprocess,
+OR NOT $GETDVIW(DEVNAM = term_name,	!  or can't fetch terminal's state,
+		ITMLST = hang_item)
+OR .hang_devchar2 [dev$v_det]		!  or terminal now disconnected,
+THEN RETURN;				!   then forget any hangup
+
+IF ($ASSIGN(DEVNAM = term_name,		! Assign a channel to the terminal
+	    CHAN   = channel))
+THEN
+    BEGIN
+    IF ($QIOW(CHAN = .channel,		! Get current characteristics
+	      FUNC = io$_sensemode,
+	      IOSB = iosb,
+	      P1   = buffer,
+	      P2   = 12))
+    AND .iosb[0]
+    THEN
+	BEGIN
+	(
+	 BIND devdepend2 = buffer [2]: BBLOCK; ! Where HANGUP bit is stored
+	 devdepend2 [tt2$v_hangup] = .hangup; ! Set the correct hangup state
+	);
+	$QIOW(CHAN = .channel,		! Write characteristics back
+	      FUNC = io$_setmode,
+	      P1   = buffer,
+	      P2   = 12);
+	END;
+    $DASSGN(CHAN = .channel);		! Free up the channel
+    END;
+
+END;
+
+END
+ELUDOM

@@ -1,0 +1,282 @@
+ 
+/*** MODULE $VSTAGBL ***/
+/*                                                                          */
+/*++                                                                        */
+/* FACILITY:                                                                */
+/*   VAX WORKSTATIONS                                                       */
+/*                                                                          */
+/* ABSTRACT:                                                                */
+/*                                                                          */
+/*  This file contains the predefined symbols given in the manual for the   */
+/*  VAXstation Programmer's Library. Only those symbols which do NOT define */
+/*  VSTA error message symbols are defined here.                            */
+/*                                                                          */
+/* ENVIRONMENT:                                                             */
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation */
+/*   graphics subsystem.                                                    */
+/*                                                                          */
+/*                                                                          */
+/* RENDITION SYMBOLS                                                        */
+/*                                                                          */
+%REPLACE VSTA$M_REND_BOLD BY '10000000000000000000000000000000'b;
+%REPLACE VSTA$M_REND_ITALICS BY '01000000000000000000000000000000'b;
+%REPLACE VSTA$M_REND_UNDERSCORE BY '00100000000000000000000000000000'b;
+%REPLACE VSTA$M_REND_BLINK BY '00010000000000000000000000000000'b;
+%REPLACE VSTA$M_REND_REVERSE BY '00001000000000000000000000000000'b;
+%REPLACE VSTA$M_REND_EXTRA BY '00000111000000000000000000000000'b;
+%REPLACE VSTA$K_REND_BLOCK_SIZE BY 1;   /*LENGTH OF DATA BLOCK              */
+ 
+%REPLACE VSTA$S_REND_BITS BY 1;
+DCL 1 REND_BITS  BASED ,
+     2 VSTA$V_REND_BOLD bit(1),         /*BOLD RENDITION                    */
+     2 VSTA$V_REND_ITALICS bit(1),      /*ITALICS RENDITION                 */
+     2 VSTA$V_REND_UNDERSCORE bit(1),   /*UNDERSCORE RENDITION              */
+     2 VSTA$V_REND_BLINK bit(1),        /*BLINK RENDITION                   */
+     2 VSTA$V_REND_REVERSE bit(1),      /*REVERSE VIDEO RENDITION           */
+     2 VSTA$V_REND_EXTRA bit(3);        /*FOR FUTURE DEC ABUSE              */
+/*                                                                          */
+%REPLACE VSTA$K_NONE BY -1;             /* MEASURE TEXT SPECIAL             */
+/*                                                                          */
+/* FIELD FORMATS                                                            */
+/*                                                                          */
+%REPLACE VSTA$K_FF_LEFT BY 0;
+%REPLACE VSTA$K_FF_RIGHT BY 1;
+%REPLACE VSTA$K_FF_CENTER BY 2;
+/*                                                                          */
+/* SDA OBJECT PROTECTION                                                    */
+/*                                                                          */
+%REPLACE VSTA$K_UNPROTECTED BY -1;
+%REPLACE VSTA$K_DEFAULT_PROTECTION BY 65295;
+/*                                                                          */
+/* VIRTUAL KEYBOARD TRANSLATION TABLE IDS AND TIA CONFORMANCE LEVELS        */
+/*                                                                          */
+/* NOTE: MAKE SURE THE CONSTANT BELOW REFLECTS THE MAXIMUM VALID TRANSLATION */
+/*       TABLE NUMBER WHEN ADDING TRANSLATION TABLES. OTHERWISE, YOUR NEW   */
+/*	 TABLE WILL BE IGNORED. TABLES THAT END IN _TYP ARE TYPEWRITER      */
+/*	 TRANSLATION TABLES AND TABLES THAT END IN _DP ARE DATA PROCESSING  */
+/*	 TRANSLATON TABLES. THE NAMES OF THE TABLES CORRESPOND TO THE       */
+/*	 HARDWARE KEYBOARD OF THAT LANGUAGE.                                */
+/*                                                                          */
+/* NOTE: TABLES 	1.)LK201-CB = LK201-CP                              */
+/*			2.)LK201-CM = LK201-CF                              */
+/*                                                                          */
+%REPLACE VSTA$K_TT_DECMS_ENGLISH BY 0;  /*DEC MULTINATIONAL ENGLISH         */
+%REPLACE VSTA$K_LK201_CA BY 0;          /*DEC MULTINATIONAL ENGLISH(0)      */
+%REPLACE VSTA$K_LK201_CC_TYP BY 1;      /*CANADIAN (FRENCH) TYPEWRITER(1)   */
+%REPLACE VSTA$K_LK201_CC_DP BY 2;       /*CANADIAN (FRENCH) DATA PRO.(2)    */
+%REPLACE VSTA$K_LK201_CD_TYP BY 3;      /*DANISH TYPEWRITER(3)              */
+%REPLACE VSTA$K_LK201_CD_DP BY 4;       /*DANISH DATA PRO.(4)               */
+%REPLACE VSTA$K_LK201_CE_TYP BY 5;      /*BRITISH TYPEWRITER(5)             */
+%REPLACE VSTA$K_LK201_CE_DP BY 6;       /*BRITISH DATA PRO.(6)              */
+%REPLACE VSTA$K_LK201_CF_TYP BY 7;      /*FINNISH TYPEWRITER(7)             */
+%REPLACE VSTA$K_LK201_CF_DP BY 8;       /*FINNISH DATA PRO.(8)              */
+%REPLACE VSTA$K_LK201_CG_TYP BY 9;      /*GERMAN/AUSTRIAN TYPEWRITER(9)     */
+%REPLACE VSTA$K_LK201_CG_DP BY 10;      /*GERMAN/AUSTRIAN DATA PRO.(10)     */
+%REPLACE VSTA$K_LK201_CH_TYP BY 11;     /*DUTCH TYPEWRITER(11)              */
+%REPLACE VSTA$K_LK201_CH_DP BY 12;      /*DUTCH DATA PRO.(12)               */
+%REPLACE VSTA$K_LK201_CI_TYP BY 13;     /*ITALIAN TYPEWRITER(13)            */
+%REPLACE VSTA$K_LK201_CI_DP BY 14;      /*ITALIAN DATA PRO.(14)             */
+%REPLACE VSTA$K_LK201_CK_TYP BY 15;     /*FRENCH/SWISS TYPEWRITER(15)       */
+%REPLACE VSTA$K_LK201_CK_DP BY 16;      /*FRENCH/SWISS DATA PRO.(16)        */
+%REPLACE VSTA$K_LK201_CL_TYP BY 17;     /*GERMAN/SWISS TYPEWRITER(17)       */
+%REPLACE VSTA$K_LK201_CL_DP BY 18;      /*GERMAN/SWISS DATA PRO.(18)        */
+%REPLACE VSTA$K_LK201_CN_TYP BY 19;     /*NORWEGIAN TYPEWRITER(19)          */
+%REPLACE VSTA$K_LK201_CN_DP BY 20;      /*NORWEGIAN DATA PRO.(20)           */
+%REPLACE VSTA$K_LK201_CP_TYP BY 21;     /*FRENCH/BELGIUM TYPEWRITER(21)     */
+%REPLACE VSTA$K_LK201_CP_DP BY 22;      /*FRENCH/BELGIUM DATA PRO.(22)      */
+%REPLACE VSTA$K_LK201_CS_TYP BY 23;     /*SPANISH TYPEWRITER(23)            */
+%REPLACE VSTA$K_LK201_CS_DP BY 24;      /*SPANISH DATA PRO. (24)            */
+%REPLACE VSTA$K_LK201_CM_TYP BY 25;     /*SWEDISH TYPEWRITER(7)             */
+%REPLACE VSTA$K_LK201_CM_DP BY 26;      /*SWEDISH DATA PRO.(8)              */
+%REPLACE VSTA$K_LK201_CB_TYP BY 27;     /*FLEMISH TYPEWRITER(21)            */
+%REPLACE VSTA$K_LK201_CB_DP BY 28;      /*FLEMISH DATA PRO.(22)             */
+%REPLACE VSTA$K_TT_MAX BY 28;           /*MAX. VALID TRAN. TABLE OFFSET     */
+%REPLACE VSTA$K_TT_UNENCODED BY -1;     /*UNENCODED KEYBOARD FOR VKB        */
+/*                                                                          */
+/* NRC constants. This list is ORDER DEPENDENT. Any new NRCs must be added  */
+/* at the end (as the tables need be added to the ACP as well).             */
+/*                                                                          */
+%REPLACE VSTA$K_NRC_ASCII BY 0;
+%REPLACE VSTA$K_NRC_UK BY 1;
+%REPLACE VSTA$K_NRC_FRENCH BY 2;
+%REPLACE VSTA$K_NRC_FRCAN BY 3;
+%REPLACE VSTA$K_NRC_NORDAN BY 4;
+%REPLACE VSTA$K_NRC_FINNISH BY 5;
+%REPLACE VSTA$K_NRC_GERMAN BY 6;
+%REPLACE VSTA$K_NRC_DUTCH BY 7;
+%REPLACE VSTA$K_NRC_ITALIAN BY 8;
+%REPLACE VSTA$K_NRC_SWISS BY 9;
+%REPLACE VSTA$K_NRC_SWEDISH BY 10;
+%REPLACE VSTA$K_NRC_SPANISH BY 11;
+%REPLACE VSTA$K_NRC_MULTINATIONAL BY 12;
+/*                                                                          */
+%REPLACE VSTA$K_VKB_LEVEL_1 BY 64;
+%REPLACE VSTA$K_VKB_LEVEL_2 BY 128;
+/*                                                                          */
+/* VIRTUAL KEYBOARD MODE BIT DEFINITIONS                                    */
+/* NOTE: THESE BITS MUST CORRESPOND TO THE BIT DEFINITIONS IN VSVKB.SDL FOR */
+/*	 KEYBOARD STATE WITH RESPECT TO ORDER AND PADDING.                  */
+/*                                                                          */
+%REPLACE VSTA$M_LEVEL BY '00000011110000000000000000000000'b;
+%REPLACE VSTA$M_EIGHTBIT BY '00000000001000000000000000000000'b;
+%REPLACE VSTA$M_KEYPAD BY '00000000000100000000000000000000'b;
+%REPLACE VSTA$M_CURSOR_KEY BY '00000000000010000000000000000000'b;
+%REPLACE VSTA$M_VT52 BY '00000000000001000000000000000000'b;
+%REPLACE VSTA$M_NEW_LINE BY '00000000000000100000000000000000'b;
+%REPLACE VSTA$M_EXTRA BY '00000000000000010000000000000000'b;
+%REPLACE VSTA$K_BLOCK_SIZE BY 2;        /*LENGTH OF DATA BLOCK              */
+ 
+%REPLACE VSTA$S_VKB_MODE_BITS BY 2;
+DCL 1 VKB_MODE_BITS  BASED ,
+     2 VSTA$V_RESERVED bit(6),          /*RESERVED VKB STATE BITS           */
+     2 VSTA$V_LEVEL bit(4),             /*VKB LEVEL 1/2 CONFORMANCE         */
+     2 VSTA$V_EIGHTBIT bit(1),          /*VKB NATIVE EIGHT-BIT/SEVEN-BIT    */
+     2 VSTA$V_KEYPAD bit(1),            /*VKB KEYPAD APPLICATION MODE       */
+     2 VSTA$V_CURSOR_KEY bit(1),        /*VKB CURSOR KEY MODE               */
+     2 VSTA$V_VT52 bit(1),              /*VKB VT52 MODE                     */
+     2 VSTA$V_NEW_LINE bit(1),          /*VKB NEW-LINE MODE                 */
+     2 VSTA$V_EXTRA bit(1);             /*FOR FUTURE DEC ABUSE              */
+/*                                                                          */
+/*                                                                          */
+/*                                                                          */
+/*  TEKTRONYX CHARACTERISTICS SYMBOLS                                       */
+/*                                                                          */
+/*                                                                          */
+%REPLACE VSTA$K_TEK4014_GT_STRAP BY 96;
+%REPLACE VSTA$K_TEK4014_GT_CREOT BY 96;
+%REPLACE VSTA$K_TEK4014_GT_CR BY 64;
+%REPLACE VSTA$K_TEK4014_GT_NONE BY 0;
+%REPLACE VSTA$K_TEK4014_AUTO_CR_STRAP BY 128;
+%REPLACE VSTA$K_TEK4014_AUTO_CR_LF BY 128;
+%REPLACE VSTA$K_TEK4014_NO_AUTO_CR_LF BY 0;
+%REPLACE VSTA$K_TEK4014_AUTO_LF_STRAP BY 256;
+%REPLACE VSTA$K_TEK4014_AUTO_LF_CR BY 256;
+%REPLACE VSTA$K_TEK4014_NO_AUTO_LF_CR BY 0;
+%REPLACE VSTA$K_TEK4014_DEL_LOY_STRAP BY 512;
+%REPLACE VSTA$K_TEK4014_DEL_LOY BY 512;
+%REPLACE VSTA$K_TEK4014_DEL_NOT_LOY BY 0;
+/*                                                                          */
+/*                                                                          */
+/*  DEFINE THE GLOBAL NATIVE GRAPHICS SYMBOLS NEXT                          */
+/*                                                                          */
+/*	                                                                    */
+%REPLACE VSTA$K_COPY_AREA BY 0;
+%REPLACE VSTA$K_DRAW_CURVE BY 1;
+%REPLACE VSTA$K_PRINT_TEXT BY 2;
+%REPLACE VSTA$K_FILL_AREA BY 3;
+%REPLACE VSTA$K_FLOOD_AREA BY 4;
+%REPLACE VSTA$K_MOVE_TEXT BY 5;
+%REPLACE VSTA$K_BACKGROUND BY 6;
+%REPLACE VSTA$K_NOOP BY 7;
+%REPLACE VSTA$K_MOVE_OBJECT BY 8;
+%REPLACE VSTA$K_LOAD_CURSOR BY 9;
+%REPLACE VSTA$K_GETRCS BY 10;
+%REPLACE VSTA$K_LAST_OPCODE BY 11;
+%REPLACE VSTA$K_OPCODE_TYPES BY 10;
+%REPLACE VSTA$K_READ BY 0;
+%REPLACE VSTA$K_WRITE BY 1;
+%REPLACE VSTA$K_DEVICE_BITPLANES BY 1;
+%REPLACE VSTA$K_NATIVE_GRAPHICS BY 1;
+%REPLACE VSTA$K_SRC_CONST BY 0;
+%REPLACE VSTA$K_SRC_BITMAP BY 1;
+%REPLACE VSTA$K_SRC_VD BY 2;
+%REPLACE VSTA$K_SRC_HT_BITMAP BY 3;
+%REPLACE VSTA$K_SRC_HT_VD BY 4;
+%REPLACE VSTA$K_SRC_FONT_BITMAP BY 5;
+%REPLACE VSTA$K_SRC_DEFINED_FONT BY 6;
+%REPLACE VSTA$K_SRC_PRIVATE_FONT BY 7;
+%REPLACE VSTA$K_SRC_LAST_TYPE BY 8;
+%REPLACE VSTA$K_SRC_TYPES BY 7;
+/*                                                                          */
+/* Define old symbol for source bitmap just so stale sources continue to    */
+/* compile.                                                                 */
+/*                                                                          */
+%REPLACE VSTA$K_SRC_BM BY 1;
+%REPLACE VSTA$K_MSK_NONE BY 0;
+%REPLACE VSTA$K_MSK_RECTANGLE BY 1;
+%REPLACE VSTA$K_MSK_BITMAP BY 2;
+%REPLACE VSTA$K_MSK_FONT_BITMAP BY 3;
+%REPLACE VSTA$K_MSK_VD BY 4;
+%REPLACE VSTA$K_MSK_DEFINED_FONT BY 5;
+%REPLACE VSTA$K_MSK_PRIVATE_FONT BY 6;
+%REPLACE VSTA$K_MSK_LAST_TYPE BY 7;
+%REPLACE VSTA$K_MSK_TYPES BY 6;
+%REPLACE VSTA$K_DST_BITMAP BY 0;
+%REPLACE VSTA$K_DST_VD BY 1;
+%REPLACE VSTA$K_DST_LAST_TYPE BY 2;
+%REPLACE VSTA$K_DST_TYPES BY 1;
+%REPLACE VSTA$K_DST_UPDATE BY 0;
+%REPLACE VSTA$K_DST_NO_UPDATE BY 1;
+%REPLACE VSTA$K_DST_LAST_UPD_TYPE BY 2;
+%REPLACE VSTA$K_DST_UPD_TYPES BY 1;
+%REPLACE VSTA$K_MAP_IDENTITY BY 0;
+%REPLACE VSTA$K_MAP_S_LITERAL BY 1;
+%REPLACE VSTA$K_MAP_SD_LITERAL BY 2;
+%REPLACE VSTA$K_MAP_SOURCE BY 3;
+%REPLACE VSTA$K_MAP_SOURCEDEST BY 4;
+%REPLACE VSTA$K_MAP_LAST_TYPE BY 5;
+%REPLACE VSTA$K_MAP_BLACK BY 0;
+%REPLACE VSTA$K_MAP_SRC_AND_DST BY 1;
+%REPLACE VSTA$K_MAP_SRC_AND_NOTDST BY 2;
+%REPLACE VSTA$K_MAP_SRC BY 3;
+%REPLACE VSTA$K_MAP_NOTSRC_AND_DST BY 4;
+%REPLACE VSTA$K_MAP_DST BY 5;
+%REPLACE VSTA$K_MAP_SRC_XOR_DST BY 6;
+%REPLACE VSTA$K_MAP_SRC_OR_DST BY 7;
+%REPLACE VSTA$K_MAP_NOTSRC_AND_NOTDST BY 8;
+%REPLACE VSTA$K_MAP_NOT_SRCXORDST BY 9;
+%REPLACE VSTA$K_MAP_NOTDST BY 10;
+%REPLACE VSTA$K_MAP_SRC_OR_NOTDST BY 11;
+%REPLACE VSTA$K_MAP_NOTSRC BY 12;
+%REPLACE VSTA$K_MAP_NOTSRC_OR_DST BY 13;
+%REPLACE VSTA$K_MAP_NOTSRC_OR_NOTDST BY 14;
+%REPLACE VSTA$K_MAP_WHITE BY 15;
+%REPLACE VSTA$K_MAP_TYPES BY 4;
+%REPLACE VSTA$K_PTN_SINGLE_SRC BY 0;
+%REPLACE VSTA$K_PTN_ALTERN_SRC BY 1;
+%REPLACE VSTA$K_PTN_IDENT BY 2;
+%REPLACE VSTA$K_PTN_LAST_TYPE BY 3;
+%REPLACE VSTA$K_PTN_TYPES BY 2;
+%REPLACE VSTA$K_PTN_UPDATE BY 0;
+%REPLACE VSTA$K_PTN_NO_UPDATE BY 1;
+%REPLACE VSTA$K_PTN_LAST_UPD_TYPE BY 2;
+%REPLACE VSTA$K_PTN_UPD_TYPES BY 1;
+%REPLACE VSTA$K_TXT_8BITS BY 0;
+%REPLACE VSTA$K_TXT_16BITS BY 1;
+%REPLACE VSTA$K_TXT_LAST_TYPE BY 2;
+%REPLACE VSTA$K_TXT_TYPES BY 1;
+%REPLACE VSTA$K_NO_EFN BY 0;
+%REPLACE VSTA$K_NO_AST BY 0;
+%REPLACE VSTA$K_NO_ASTPRM BY 0;
+/*                                                                          */
+/* MOUSE BUTTON MASKS                                                       */
+/*                                                                          */
+%REPLACE VSTA$K_LEFT_MOUSE_BUTTON BY 4;
+%REPLACE VSTA$K_MIDDLE_MOUSE_BUTTON BY 2;
+%REPLACE VSTA$K_RIGHT_MOUSE_BUTTON BY 1;
+%REPLACE VSTA$K_SELECT_BUTTON BY 4;
+/*                                                                          */
+/* RESTRICTIONS ON SDA OBJECT DIMENSIONS                                    */
+/*                                                                          */
+%REPLACE VSTA$K_MAX_WINDOW_HEIGHT BY 824; /*MAX. ALLOWED WINDOW HEIGHT      */
+%REPLACE VSTA$K_MAX_WINDOW_WIDTH BY 1064; /*MAX. ALLOWED WINDOW WIDTH       */
+%REPLACE VSTA$K_MAX_SYS_WINDOW_HEIGHT BY 864; /*MAX. ALLOWED WINDOW HEIGHT  */
+%REPLACE VSTA$K_MAX_SYS_WINDOW_WIDTH BY 1088; /*MAX. ALLOWED WINDOW WIDTH   */
+%REPLACE VSTA$K_MAX_VD_AREA BY 940032;  /*MAX. VD AREA (1088 X 864)         */
+/*                                                                          */
+/* SELECTABILITY ATTRIBUTES (PASSED TO VSTA$SET_REGION_SELECTABLE)          */
+/*                                                                          */
+%REPLACE VSTA$K_SEL_TEXT BY 0;          /* APPROPRIATE FOR TEXT             */
+%REPLACE VSTA$K_SEL_AREA BY 1;          /* APPROPRIATE FOR SOLID AREAS      */
+%REPLACE VSTA$K_SEL_REVERSE BY 2;       /* REVERSE VIDEO                    */
+/*                                                                          */
+/* OEM-MODE VBDRIVER FUNCTION CODES AND MODIFIERS FOR APPLICATION PROGRAMS  */
+/*                                                                          */
+/* NOTE: THE CONSTANTS DEFINED BELOW MUST BE EQUIVALENT TO THOSE DEFINED    */
+/*	 IN THE VBDRIVER SYMBOL DEFINITION FILES (VSTADEF). ANY CHANGES     */
+/*	 MUST BE REFLECTED IN BOTH PLACES.                                  */
+/*                                                                          */
+%REPLACE IO$_VSTA_BUTTON BY 23;         /*SAME AS IO$_VB_BUTTON             */
+%REPLACE IO$M_VSTA_EXIT_IDLE BY 128;    /*SAME AS IO$M_VB_EXIT_IDLE         */
+%REPLACE IO$_VSTA_FIBER BY 24;          /*SAME AS IO$_VB_FIBER              */
+%REPLACE IO$M_VSTA_LINK_AST BY 128;     /*SAME AS IO$M_VB_LINK_AST          */

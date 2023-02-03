@@ -1,0 +1,228 @@
+ 
+!*** MODULE VS$VKB ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+!    This module contains all the data structures relevent to dealing with
+!    the VAXstation Virtual Keyboard as an entity in the context of
+!    a VAX workstation running the associated workstation display software;
+!    an implementation of the System Display Architecture.
+! 
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+! 
+!  Virtual Keyboard Module Constant Definitions
+! 
+literal vkb$k_first_state = 1;          ! First escape sequence state
+literal vkb$k_not_doing_escape = 1;
+literal vkb$k_last_character_was_escape = 2;
+literal vkb$k_ctl_seq_prms = 3;
+literal vkb$k_esc_seq_int = 4;
+literal vkb$k_esco_seq_int = 5;
+literal vkb$k_escy_seq_int = 6;
+literal vkb$k_escy_seq_int_int = 7;
+literal vkb$k_ctl_seq_int = 8;
+! Escape sequence verify states
+literal vkb$k_last_state = 8;
+! Last escape sequence state
+literal vkb$k_unencoded = 18;           ! Unencoded keyboard for VKB
+literal vkb$k_gen_size = 30;            ! VKB generation buffer size
+literal vkb$k_level_1 = 1;              ! Level 1 keyboard conformance
+literal vkb$k_level_2 = 2;              ! Level 2 keyboard conformance
+literal vs$k_break_table_size = 32;     ! Break table size
+literal null = 0;                       ! Null ascii code
+literal control_a = 1;                  ! Control A ascii code
+literal control_b = 2;                  ! Control B ascii code
+literal control_c = 3;                  ! Control C ascii code
+literal control_d = 4;                  ! Control D ascii code
+literal control_e = 5;                  ! Control E ascii code
+literal control_f = 6;                  ! Control F ascii code
+literal control_g = 7;                  ! Control G ascii code (bell)
+literal backspace = 8;                  ! Backspace ascii code
+literal tab = 9;                        ! TAB ascii code
+literal line_feed = 10;                 ! Line feed ascii code
+literal verticle_tab = 11;              ! Vertical TAB ascii code
+literal form_feed = 12;                 ! Form feed ascii code
+literal carriage_return = 13;           ! Carriage return ascii code
+literal control_n = 14;                 ! Control N ascii code
+literal control_o = 15;                 ! Control O ascii code
+literal control_p = 16;                 ! Control P ascii code
+literal control_q = 17;                 ! Control Q ascii code
+literal control_r = 18;                 ! Control R ascii code
+literal control_s = 19;                 ! Control S ascii code
+literal control_t = 20;                 ! Control T ascii code
+literal control_u = 21;                 ! Control U ascii code
+literal control_v = 22;                 ! Control V ascii code
+literal control_w = 23;                 ! Control W ascii code
+literal control_x = 24;                 ! Control X ascii code
+literal control_y = 25;                 ! Control Y ascii code
+literal control_z = 26;                 ! Control Z ascii code
+literal escape = 27;                    ! Escape ascii code
+literal space = 32;                     ! Space ascii code
+literal altmode_1 = 125;                ! Altmode 1 ascii code
+literal altmode_2 = 126;                ! Altmode 2 ascii code
+literal delete = 127;                   ! Delete ascii code
+literal ss3 = 143;                      ! Single shift three ascii code
+literal csi = 155;                      ! Control seq. init. ascii code
+! 
+!  Virtual Keyboard Ring Buffer (non-paged pool)
+! 
+literal vs$rb_k_block_size = 20;        ! Length of data block
+FIELD vs$rb_vkb_ring_buffer_FIELDSET =
+  SET
+  vs$rb_a_flink = [0,0,32,0],           ! Ring buffer forward link
+  vs$rb_a_blink = [4,0,32,0],           ! Ring buffer backward link
+  vs$rb_w_size = [8,0,16,0],            ! Data block size
+  vs$rb_w_type = [10,0,16,0],           ! Data block type
+  vs$rb_a_ring_buffer = [12,0,32,0],    ! Ring buffer head address
+  vs$rb_a_buffer = [16,0,32,0]          ! Typeahead buffer address
+  TES;
+literal vs$rb_s_vkb_ring_buffer = 20;
+MACRO vkb_ring_buffer = BLOCK [vs$rb_s_vkb_ring_buffer,byte] FIELD (vs$rb_vkb_ring_buffer_FIELDSET) %;
+! 
+!  Virtual Keyboard Ascii WORD descriptor block (NOTE: The order and values
+!  of these bits are hardcoded in the keyboard translation table. Any changes
+!  here must also be reflected in those entries).
+! 
+literal vs$aw_k_block_size = 2;         ! Length of data block
+FIELD vs$aw_vkb_ascii_word_FIELDSET =
+  SET
+  vs$aw_b_char_code = [0,0,8,0],        ! DEC multinational char. code
+  vs$aw_v_tbs = [0,8,4,0],              ! Reserved for expansion
+  vs$aw_v_ignore = [0,12,1,0],          ! Ignore key code flag
+  vs$aw_v_symbol = [0,13,1,0],          ! Symbol (fnct) key code flag
+  vs$aw_v_dead = [0,14,1,0],            ! Dead diacritical key flag
+  vs$aw_v_special = [0,15,1,0]          ! Special key code flag
+  TES;
+literal vs$aw_s_vkb_ascii_word = 2;
+MACRO vkb_ascii_word = BLOCK [vs$aw_s_vkb_ascii_word,byte] FIELD (vs$aw_vkb_ascii_word_FIELDSET) %;
+! 
+!  Virtual Keyboard Read Request Data Block
+! 
+literal vs$rr_k_block_size = 71;        ! Length of data block
+literal vs$rr_s_timeout = 8;
+FIELD vs$rr_vkb_read_request_FIELDSET =
+  SET
+  vs$rr_a_next_ptr = [0,0,32,0],        ! Ptr to next read request
+  vs$rr_a_back_ptr = [4,0,32,0],        ! Ptr to previous read request
+  vs$rr_w_size = [8,0,16,0],            ! Data block size
+  vs$rr_w_type = [10,0,16,0],           ! Data block type
+  vs$rr_a_vkb = [12,0,32,0],            ! Virtual Keyboard Block address
+  vs$rr_a_irp = [16,0,32,0],            ! I/O request packet address
+  vs$rr_l_function_code = [20,0,32,0],  ! I/O function code alone
+  vs$rr_l_full_function = [24,0,32,0],  ! I/O full function code + mod.
+  vs$rr_l_read_all = [28,0,32,0],       ! Read passall indicator (speed)
+  vs$rr_a_buffer = [32,0,32,0],         ! User read buffer address
+  vs$rr_l_buffer_size = [36,0,32,0],    ! User buffer size
+  vs$rr_l_buffer_ptr = [40,0,32,0],     ! User buffer ptr
+  vs$rr_b_buffer_inc = [44,0,8,0],      ! User buffer increment (1 or 2)
+  vs$rr_q_timeout = [45,0,0,0],         ! System delta timeout time
+  vs$rr_a_break_table = [53,0,32,0],    ! Read Request break table adr.
+  vs$rr_a_prompt_string = [57,0,32,0],  ! Read w/prompt string address
+  vs$rr_l_prompt_length = [61,0,32,0],  ! Read w/prompt string length
+  vs$rr_w_terminator = [65,0,16,0],     ! Read terminator
+  vs$rr_w_terminator_size = [67,0,16,0], ! Read terminator size
+  vs$rr_w_cursor_start = [69,0,16,0]    ! Cursor position at read start
+  TES;
+literal vs$rr_s_vkb_read_request = 71;
+MACRO vkb_read_request = BLOCK [vs$rr_s_vkb_read_request,byte] FIELD (vs$rr_vkb_read_request_FIELDSET) %;
+! 
+!  Virtual Keyboard Data Block Definition
+! 
+literal vs$vkb_m_read = 1;
+literal vs$vkb_m_read_active = 2;
+literal vs$vkb_m_write = 4;
+literal vs$vkb_m_current = 8;
+literal vs$vkb_m_read_asts = 16;
+literal vs$vkb_m_timeout = 32;
+literal vs$vkb_m_level = 960;
+literal vs$vkb_m_eightbit = 1024;
+literal vs$vkb_m_keypad = 2048;
+literal vs$vkb_m_cursor_key = 4096;
+literal vs$vkb_m_vt52 = 8192;
+literal vs$vkb_m_new_line = 16384;
+literal vs$vkb_m_extra = 32768;
+literal vs$vkb_m_ring_alloc = 1;
+literal vs$vkb_m_extra2 = 254;
+literal vs$vkb_k_block_size = 147;      ! Length of data block
+FIELD vs$vkb_vkb_block_FIELDSET =
+  SET
+  vs$vkb_a_next_ptr = [0,0,32,0],       ! Ptr to next virtual keyboard
+  vs$vkb_a_back_ptr = [4,0,32,0],       ! Ptr to previous vkb block
+  vs$vkb_w_size = [8,0,16,0],           ! Data block size
+  vs$vkb_w_type = [10,0,16,0],          ! Data block type
+  vs$vkb_l_id = [12,0,32,0],            ! Virtual Keyboard ID
+  vs$vkb_a_current_read = [16,0,32,0],  ! Current VKB read context
+  vs$vkb_w_pkb_chan = [20,0,16,0],      ! Physical Keyboard channel no.
+  vs$vkb_a_ring_buffer = [22,0,32,0],   ! Ring buffer address
+  vs$vkb_l_buffer_size = [26,0,32,0],   ! VKB typeahead buffer size
+  vs$vkb_l_unsolicit_ptr = [30,0,32,0], ! VKB unsolicited input pointer
+! 
+!  NOTE: These bits MUST correspond to the bit definitions in VSTAGBL.SDL for
+! 	 keyboard state with respect to order and padding. The first six bits
+! 	 are not program settable.
+! 
+    vs$vkb_l_state = [34,0,32,0],       ! VKB state (read-in-progress,)
+      vs$vkb_v_read = [34,0,1,0],       ! Read active on VKB bit
+      vs$vkb_v_read_active = [34,1,1,0], ! Read in progress on VKB bit
+      vs$vkb_v_write = [34,2,1,0],      ! Write active bit
+      vs$vkb_v_current = [34,3,1,0],    ! Current VKB bit (on a PKB)
+      vs$vkb_v_read_asts = [34,4,1,0],  ! VKB read ASTs in progress
+      vs$vkb_v_timeout = [34,5,1,0],    ! VKB read timeout indicator
+      vs$vkb_v_level = [34,6,4,0],      ! VKB level 1/2 conformance
+      vs$vkb_v_eightbit = [34,10,1,0],  ! VKB native eight-bit/seven-bit
+      vs$vkb_v_keypad = [34,11,1,0],    ! VKB keypad application mode
+      vs$vkb_v_cursor_key = [34,12,1,0], ! VKB cursor key mode
+      vs$vkb_v_vt52 = [34,13,1,0],      ! VKB VT52 mode
+      vs$vkb_v_new_line = [34,14,1,0],  ! VKB new-line mode
+      vs$vkb_v_extra = [34,15,1,0],     ! For future DEC abuse
+    vs$vkb_r_state_bits = [34,0,16,0],
+  vs$vkb_r_state_field = [34,0,32,0],
+! 
+    vs$vkb_l_state2 = [38,0,32,0],      ! VKB state
+      vs$vkb_v_ring_alloc = [38,0,1,0], ! VKB ring allocated bit
+      vs$vkb_v_extra2 = [38,1,7,0],     ! For future DEC abuse
+    vs$vkb_r_state2_bits = [38,0,8,0],
+  vs$vkb_r_state2_field = [38,0,32,0],
+  vs$vkb_l_char = [42,0,32,0],          ! VKB characteristics (noecho,)
+  vs$vkb_l_escape_state = [46,0,32,0],  ! Escape sequence state
+  vs$vkb_b_dead = [50,0,8,0],           ! Dead key character code
+  vs$vkb_l_trans_table = [51,0,32,0],   ! Translation Table for VKB
+  vs$vkb_l_nrc_table = [55,0,32,0],     ! NRC Table for VKB
+  vs$vkb_a_break_table = [59,0,32,0],   ! Default VKB break table adr.
+  vs$vkb_a_control_y_ast = [63,0,32,0], ! Control Y AST list head addr.
+  vs$vkb_a_control_c_ast = [67,0,32,0], ! Control C AST list head addr.
+  vs$vkb_a_out_of_band_ast = [71,0,32,0], ! Out of band AST list head adr
+  vs$vkb_l_out_of_band_mask = [75,0,32,0], ! Active out of band AST mask
+  vs$vkb_a_echo_routine = [79,0,32,0],  ! Emulator echo routine address
+  vs$vkb_a_gchar_routine = [83,0,32,0], ! Emulator trans. routine addr.
+  vs$vkb_l_gen_index = [87,0,32,0],     ! Generation buffer index
+  vs$vkb_a_gen_buffer = [91,0,32,0],    ! VKB generation buffer
+  vs$vkb_a_gen_buffer1 = [95,0,32,0],   ! VKB gen. buffer longword 2
+  vs$vkb_a_gen_buffer2 = [99,0,32,0],   ! VKB gen. buffer longword 3
+  vs$vkb_a_gen_buffer3 = [103,0,32,0],  ! VKB gen. buffer longword 4
+  vs$vkb_a_gen_buffer4 = [107,0,32,0],  ! VKB gen. buffer longword 5
+  vs$vkb_a_gen_buffer5 = [111,0,32,0],
+  vs$vkb_a_gen_buffer6 = [115,0,32,0],
+  vs$vkb_a_gen_buffer7 = [119,0,32,0],
+  vs$vkb_l_vd_id = [123,0,32,0],        ! VD to use for output device
+  vs$vkb_a_vd = [127,0,32,0],           ! VD address for faster output
+  vs$vkb_l_owner = [131,0,32,0],        ! Owner of native VKB
+  vs$vkb_l_lower_symbol_map_boff = [135,0,32,1], ! B-offset to current symbol map
+  vs$vkb_l_caps_symbol_map_boff = [139,0,32,1], ! B-offset to current symbol map
+  vs$vkb_l_shift_symbol_map_boff = [143,0,32,1] ! B-offset to current symbol map
+  TES;
+literal vs$vkb_s_vkb_block = 147;
+MACRO vkb_block = BLOCK [vs$vkb_s_vkb_block,byte] FIELD (vs$vkb_vkb_block_FIELDSET) %;
+! 
+!  End of module VS$VKB
+! 

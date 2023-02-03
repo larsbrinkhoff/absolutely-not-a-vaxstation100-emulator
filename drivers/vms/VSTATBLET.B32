@@ -1,0 +1,894 @@
+%TITLE 'vsta$tablet -- VAXSTATION TABLET (DATA PAD) LIBRARY'
+MODULE vsta$tablet (
+		IDENT = '1.2-1',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the sharable library routines and data relevent to
+!   dealing with the VAXstation entities in the context of a VAX workstation
+!   running the associated workstation display software; an implementation of
+!   the System Display Architecture.
+!
+!   Operations have been provided to allow the access of VAXstation
+!   datapad by the application program.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+!		Public routines
+!
+!
+!
+! Virtual Datapad manipulation procedures
+!
+	vsta$create_terminal_datapad,	!Create virtual datapad for terminal
+	vsta$delete_terminal_datapad,	!Delete virtual datapad on terminal
+	vsta$set_datapad_ptr_move_ast,	!Set up AST on datapad pointer movement
+	vsta$set_datapad_button_ast,	!Set up AST on datapad button pressing
+	vsta$get_datapad_info,		!Get the current datapad ptr + buttons
+!
+! Obsolete pointer routines
+!
+	vsta$sample_pointer,		!Get terminal pointer position
+	vsta$sample_on_functionkey,	!Enable sample_pointer on function key
+	vsta$sample_over_time,		!Sample pointer over time intervals
+	vsta$sample_pointer_movements;	!Sample pointer until stopped
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+!
+	vsta$$channel_found,		!Find terminal info blocks by chan.
+	vsta$$build_local_msgvec,	!Build local error message vectors
+	vsta$$get_template_chan;	!Get channel to template VD device
+!
+! EXTERNAL DATA
+!
+EXTERNAL
+	vsta$gl_local_error;		!VSTALIB local error indicator
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error symbol definitions
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB symbols and data structures
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+
+
+%SBTTL 'vsta$create_terminal_datapad -- Create Virtual Datapad for Terminal'
+GLOBAL ROUTINE vsta$create_terminal_datapad(
+			tty_chan,			!Channel to terminal
+			pb_id				!Pasteboard ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating virtual datapad devices for
+! emulated terminals. By default, a terminal created via the VAXstation
+! library has a virtual keyboard, but no virtual datapad device associated
+! with it. If possible, the virtual datapad will be created and the pasteboard
+! ID (or datapad id if you like) will be returned for subsequent access to
+! the datapad.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Address of word terminal channel number
+!			 	(input parameter)
+!	PB_ID	  : Address of longword Pasteboard ID
+!			 	(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CRETAB		!Create terminal datapad failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2] INITIAL(0,0),	!I/O status block
+	device_adr: REF BLOCK[0,BYTE],	!Terminal info block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF NOT vsta$$channel_found(
+				parameter_address(tty_chan),
+				device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_cretab);
+	  END;
+!
+! If this terminal does not have an associated pasteboard, that will be
+! indicated in the return status from $QIO. Use $QIO to get to VDDRIVER
+! with appropriate datapad function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN   = .device_adr[vsta$ct_l_tty_chan],
+		FUNC   = IO$_CREATE + IO$M_VD + IO$M_VTB,
+		IOSB   = iosb[0]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_cretab);
+	  END;
+!
+! Return the pasteboard ID and status from the ACP to the caller
+!
+	IF parameter_address(pb_id) NEQ 0 THEN
+	  .pb_id = .iosb[1];
+!
+	RETURN .iosb[0];	! Return $QIO status
+    END;			! end of routine vsta$create_terminal_datapad
+
+
+%SBTTL 'vsta$delete_terminal_datapad -- Delete Virtual Datapad on Terminal'
+GLOBAL ROUTINE vsta$delete_terminal_datapad(
+			tty_chan			!Channel to terminal
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting virtual datapad devices for
+! emulated terminals. By default, a terminal created via the VAXstation
+! library has a virtual keyboard, but no virtual datapad device associated
+! with it. If the virtual datapad was previously created for the terminal
+! through the library, then this will find and delete it if possible.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Address of word terminal channel number
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELTAB		!Delete terminal datapad failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2] INITIAL(0,0),	!I/O status block
+	device_adr: REF BLOCK[0,BYTE],	!Terminal info block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF NOT vsta$$channel_found(
+				parameter_address(tty_chan),
+				device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_deltab);
+	  END;
+!
+! If this terminal does not have an associated virtual datapad, that will be
+! indicated in the return status from $QIO. Use $QIO to get to VDDRIVER
+! with appropriate datapad function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN   = .device_adr[vsta$ct_l_tty_chan],
+		FUNC   = IO$_DELETE + IO$M_VD + IO$M_VTB,
+		IOSB   = iosb[0]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deltab);
+	  END;
+!
+! Return the status from the ACP to the caller
+!
+	RETURN .iosb[0];	! Return $QIO status
+    END;			! end of routine vsta$delete_terminal_datapad
+
+
+%SBTTL 'vsta$set_datapad_ptr_move_ast -- Set Datapad Pointer Move AST'
+GLOBAL ROUTINE vsta$set_datapad_ptr_move_ast(
+		pb_id,					!Pasteboard ID
+		buffer_length,				!Info buffer length
+		buffer_adr,				!Info buffer address
+		wait_flag,				!Wait for move?
+		efn,					!Event flag to set
+		iosb,					!I/O status block adr.
+		astadr,					!AST routine address
+		astprm,					!AST routine parameter
+		time_interval,				!Time to wait
+		last_known_x,				!Last known X-coordinate
+		last_known_y,				!Last known Y-coordinate
+		distance_interval			!Move distance
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing an AST routine to be
+! called when the specified datapad_ptr movement has occured. The so-called
+! datapad_ptr movement may be defined in terms of distance or lack-of movement
+! over a designated time interval.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	BUFFER_LENGTH	  : Address of datapad info buffer length (in longwords)
+!			 	(input parameter)
+!	BUFFER_ADR	  : Address of datapad info buffer. Format =>
+!					-------------------------
+!					!	X-coordinate	!
+!					!-----------------------!
+!					!	Y-coordinate	!
+!					!-----------------------!
+!					!	Button-mask	!
+!					_________________________
+!
+!			 	(output parameter)
+!	WAIT_FLAG	  : Address of longword wait indicator
+!			 	(input parameter)
+!	EFN		  : Address of event flag to set on completion
+!		 		(input parameter)
+!	IOSB		  : I/O status block address
+!		 		(input parameter)
+!	ASTADR		  : AST routine address
+!		 		(input parameter)
+!	ASTPRM		  : AST routine parameter
+!		 		(input parameter)
+!	TIME_INTERVAL	  : Address of time to wait
+!		 		(input parameter)
+!	LAST_KNOWN_X	  : Address of word last known X-coordinate
+!			 	(input parameter)
+!	LAST_KNOWN_Y	  : Address of word last known Y-coordinate
+!			 	(input parameter)
+!	DISTANCE_INTERVAL : Address of longword move distance
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTBP		!Set datapad pointer move AST failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	event_flag,			!To save event flag number
+	last_x: WORD,			!Temporary storage for X-coordinate
+	last_y: WORD,			!Temporary storage for Y-coordinate
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settbp);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate datapad
+! function codes and wait for response
+!
+	IF NOT fits_in_word(parameter_value(last_known_x),last_x) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			integer_type, parameter_rank(last_known_x));
+	    lib_ret_err(vsta$_settbp);
+	  END;
+!
+	IF NOT fits_in_word(parameter_value(last_known_y),last_y) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+			integer_type, parameter_rank(last_known_y));
+	    lib_ret_err(vsta$_settbp);
+	  END;
+!
+! Return status of $QIO to calling routine
+!
+	IF NOT (status = $QIO(
+			EFN    = (event_flag = parameter_value(efn)),
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_VSTAPTR + IO$M_MOVE_AST + IO$M_TABLET,
+			IOSB   = parameter_address(iosb),
+			ASTADR = parameter_address(astadr),
+			ASTPRM = parameter_value(astprm),
+			P1     = parameter_address(buffer_adr),
+			P2     = (parameter_value(buffer_length) * 4),
+			P3     = parameter_value(pb_id),
+			P4     = (.last_y ^ 16) + .last_x,
+			P5     = parameter_value(distance_interval),
+			P6     = parameter_value(time_interval)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settbp);
+	  END;
+!
+! If caller wants to wait for operation to complete, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = .event_flag );
+!
+	RETURN SS$_NORMAL;	! Return success status
+    END;			! end of routine vsta$set_datapad_ptr_move_ast
+
+
+%SBTTL 'vsta$set_datapad_button_ast -- Set Datapad Button AST'
+GLOBAL ROUTINE vsta$set_datapad_button_ast(
+		pb_id,					!Pasteboard ID
+		buffer_length,				!Info buffer length
+		buffer_adr,				!Info buffer address
+		wait_flag,				!Wait or not?
+		efn,					!Event flag to set
+		iosb,					!I/O status block
+		astadr,					!AST routine address
+		astprm,					!AST routine parameter
+		time_interval,				!Timeout time
+		up_mask,				!Button up mask
+		down_mask				!Button down mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for establishing an AST routine to be
+! called when the specified mask of datapad buttons has been activated.
+!	NOTE: The datapad buttons may be referred to as follows:
+!
+!		---------------------------------
+!		! ----- ----- ----- ----- ----- !
+!		! ! 5 ! ! 4 ! ! 3 ! ! 2 ! ! 1 ! !
+!		! ----- ----- ----- ----- ----- !
+!		---------------------------------
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	BUFFER_LENGTH	  : Address of datapad info buffer length (in longwords)
+!			 	(input parameter)
+!	BUFFER_ADR	  : Address of datapad info buffer. Format =>
+!					-------------------------
+!					!	X-coordinate	!
+!					!-----------------------!
+!					!	Y-coordinate	!
+!					!-----------------------!
+!					!	Button-mask	!
+!					_________________________
+!
+!			 	(output parameter)
+!	WAIT_FLAG	  : Address of longword wait indicator
+!			 	(input parameter)
+!	EFN		  : Address of event flag number to set on completion
+!		 		(input parameter)
+!	IOSB		  : I/O status block address
+!		 		(input parameter)
+!	ASTADR		  : AST routine address
+!		 		(input parameter)
+!	ASTPRM		  : AST routine parameter
+!		 		(input parameter)
+!	TIME_INTERVAL	  : Address of longword timeout time
+!		 		(input parameter)
+!	UP_MASK		  : Address of longword button-up mask
+!		 		(input parameter)
+!	DOWN_MASK	  : Address of longword button-down mask
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTBU		!Set datapad button AST failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	event_flag,			!To save event flag
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settbu);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate datapad
+! function codes to establish button ast
+!
+	IF NOT (status = $QIO(
+			EFN    = (event_flag = parameter_value(efn)),
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_VSTAPTR + IO$M_BUTTON_AST + IO$M_TABLET,
+			IOSB   = parameter_address(iosb),
+			ASTADR = parameter_address(astadr),
+			ASTPRM = parameter_value(astprm),
+			P1     = parameter_address(buffer_adr),
+			P2     = (parameter_value(buffer_length) * 4),
+			P3     = parameter_value(pb_id),
+			P4     = parameter_value(up_mask),
+			P5     = parameter_value(down_mask),
+			P6     = parameter_value(time_interval)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settbu);
+	  END;
+!
+! If caller wants to wait for operation to complete, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = .event_flag );
+!
+	RETURN SS$_NORMAL;	! Return success status
+    END;			! end of routine vsta$set_datapad_button_ast
+
+
+%SBTTL 'vsta$get_datapad_info -- Get Datapad Pointer Position and Buttons'
+GLOBAL ROUTINE vsta$get_datapad_info(
+		pb_id,					!Pasteboard ID
+		buffer_length,				!Info buffer length
+		buffer_adr				!Info buffer address
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the current X,Y coordinates
+! of the datapad_ptr within the pasteboard specified and the current state of
+! the buttons. If the datapad specified is not "active", the last known state
+! will be returned (whatever state was when last active).
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of longword Pasteboard ID
+!			 	(input parameter)
+!	BUFFER_LENGTH	  : Address of datapad info buffer length (in longwords)
+!			 	(input parameter)
+!	BUFFER_ADR	  : Address of datapad info buffer. Format =>
+!					-------------------------
+!					!	X-coordinate	!
+!					!-----------------------!
+!					!	Y-coordinate	!
+!					!-----------------------!
+!					!	Button-mask	!
+!					_________________________
+!
+!			 	(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETTAB		!Get datapad info failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!To hold dummy channel number
+	iosb: VECTOR[2],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_gettab);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate datapad
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN   = .dummy_chan,
+		FUNC   = IO$_VSTAPTR + IO$M_PTR_INFO + IO$M_TABLET,
+		IOSB   = iosb,
+		P1     = parameter_address(buffer_adr),
+		P2     = (parameter_value(buffer_length) * 4),
+		P3     = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_gettab);
+	  END;
+!
+	RETURN .iosb[0];	! Return status from $QIO
+    END;			! end of routine vsta$get_datapad_info
+
+
+%SBTTL 'vsta$sample_pointer -- Sample Pointer'
+GLOBAL ROUTINE vsta$sample_pointer(
+			timeout,			!Timeout period
+			user_response,			!"Boolean" indicator
+			x_coor,				!X-coordinate
+			y_coor				!Y-coordinate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will suspend execution of the calling process until
+! the following 2 things happen:
+!		1. The keyboard is attached to a viewport,
+!		2. The pointer is moved to inside the terminal's area,
+! or until timeout seconds have elapsed. User_response returns true with
+! the X and Y coordinates of the current position if termination occurs
+! the first way and false otherwise.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT       : Longword number of seconds until timeout to occur
+!			(input parameter)
+!	USER_RESPONSE : "Boolean" indicator of user's response
+!			(output parameter)
+!	X_COOR        : Longword X-coordinate in selected terminal
+!			(output parameter)
+!	Y_COOR        : Longword Y-coordinate in selected terminal
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+	vsta_obsolete_routine ()
+
+    END;			! End of routine vsta$sample_pointer
+
+
+%SBTTL 'vsta$sample_on_functionkey -- Sample Pointer on Function Key'
+GLOBAL ROUTINE vsta$sample_on_functionkey(
+			timeout,			!Timeout period
+			function_key,			!Function key value
+			user_response,			!"Boolean" indicator
+			x_coor,				!X-coordinate
+			y_coor				!Y-coordinate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will suspend execution of the calling process until
+! the following 3 things happen:
+!		1. The keyboard is attached to a viewport,
+!		2. The pointer is moved to inside the terminal's area,
+!		3. The function key is typed by the user
+! or until timeout seconds have elapsed. User_response returns true with
+! the X and Y coordinates of the current position if termination occurs
+! the first way and false otherwise.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT       : Longword number of seconds until timeout to occur
+!			(input parameter)
+!	FUNCTION_KEY  : Longword function key value
+!			(input parameter)
+!	USER_RESPONSE : "Boolean" indicator of user's response
+!			(output parameter)
+!	X_COOR        : Longword X-coordinate in selected terminal
+!			(output parameter)
+!	Y_COOR        : Longword Y-coordinate in selected terminal
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+	vsta_obsolete_routine ()
+
+    END;			! End of routine vsta$sample_on_functionkey
+
+
+%SBTTL 'vsta$sample_over_time -- Sample Pointer over Time'
+GLOBAL ROUTINE vsta$sample_over_time(
+			timeout,			!Timeout period
+			time_interval,			!Time interval
+			function_key,			!Function key value
+			max_no_of_samples,		!Max. number of samples
+			user_response,			!"Boolean" indicator
+			act_no_of_samples,		!Actual no. of samples
+			positions: REF BLOCKVECTOR[0,2,LONG]
+							!Coordinates over time
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will suspend execution of the calling process until
+! the following 3 things happen:
+!		1. The keyboard is attached to a viewport,
+!		2. The pointer is moved to inside the terminal's area,
+!		3. The function key is typed by the user or max_no_of_samples
+!		   is reached
+! or until timeout seconds have elapsed. User_response returns true with
+! act_no_of_samples set to the number of cursor position samples taken at each
+! time interval until termination and the blockvector containing these
+! positions over time. User_response returns false if a timeout occurred.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT           : Longword number of seconds until timeout to occur
+!				(input parameter)
+!	TIME_INTERVAL     : Longword specifying the time interval to take
+!			    samples on.
+!				(input parameter)
+!	FUNCTION_KEY      : Longword function key value
+!				(input parameter)
+!	MAX_NO_OF_SAMPLES : Longword specifying the maximum number of samples
+!			    to take.
+!				(input parameter)
+!	USER_RESPONSE     : "Boolean" indicator of user's response
+!				(output parameter)
+!	ACT_NO_OF_SAMPLES : Longword specifying the actual number of samples
+!			    taken.
+!				(output parameter)
+!	POSITIONS         : Blockvector containing all the cursor positions
+!			    over time (X and Y coordinates)
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+	vsta_obsolete_routine ()
+
+    END;			! End of routine vsta$sample_over_time
+
+
+%SBTTL 'vsta$sample_pointer_movements -- Sample Pointer Movements'
+GLOBAL ROUTINE vsta$sample_pointer_movements(
+			timeout,			!Timeout period
+			increment,			!Movement increments
+			function_key,			!Function key value
+			max_no_of_samples,		!Max. number of samples
+			user_response,			!"Boolean" indicator
+			act_no_of_samples,		!Actual no. of samples
+			positions: REF BLOCKVECTOR[0,2,LONG]
+							!Coordinates over time
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will suspend execution of the calling process until
+! the following 3 things happen:
+!		1. The keyboard is attached to a viewport,
+!		2. The pointer is moved to inside the terminal's area,
+!		3. The function key is typed by the user or max_no_of_samples
+!		   is reached
+! or until timeout seconds have elapsed. User_response returns true with
+! act_no_of_samples set to the number of cursor position samples taken for each
+! movement increment until termination and the blockvector containing these
+! positions. User_response returns false if a timeout occurred.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT           : Longword number of seconds until timeout to occur
+!				(input parameter)
+!	INCREMENT         : Longword specifying the number of pointer position
+!			    movements to wait before taking each sample.
+!				(input parameter)
+!	FUNCTION_KEY      : Longword function key value
+!				(input parameter)
+!	MAX_NO_OF_SAMPLES : Longword specifying the maximum number of samples
+!			    to take.
+!				(input parameter)
+!	USER_RESPONSE     : "Boolean" indicator of user's response
+!				(output parameter)
+!	ACT_NO_OF_SAMPLES : Longword specifying the actual number of samples
+!			    taken.
+!				(output parameter)
+!	POSITIONS         : Blockvector containing all the cursor positions
+!			    over time (X and Y coordinates)
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+	vsta_obsolete_routine ()
+
+    END;			! End of routine vsta$sample_pointer_movements
+
+END					!End of module
+ELUDOM

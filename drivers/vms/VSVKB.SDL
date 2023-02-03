@@ -1,0 +1,248 @@
+MODULE VS$VKB;
+
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*   This module contains all the data structures relevent to dealing with
+/*   the VAXstation Virtual Keyboard as an entity in the context of
+/*   a VAX workstation running the associated workstation display software;
+/*   an implementation of the System Display Architecture.
+/*
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/*
+/* Virtual Keyboard Module Constant Definitions
+/*
+    CONSTANT
+	first_state EQUALS 1 PREFIX vkb$;	/*First escape sequence state
+    CONSTANT(
+		not_doing_escape,
+		last_character_was_escape,
+		ctl_seq_prms,
+		esc_seq_int,
+		esco_seq_int,
+		escy_seq_int,
+		escy_seq_int_int,
+		ctl_seq_int
+	) EQUALS vkb$k_first_state INCREMENT 1 PREFIX vkb$;
+						/*Escape sequence verify states
+    CONSTANT
+	last_state EQUALS vkb$k_ctl_seq_int PREFIX vkb$;
+						/*Last escape sequence state
+    CONSTANT
+	vkb$k_unencoded EQUALS 18;		/*Unencoded keyboard for VKB
+    CONSTANT
+	vkb$k_gen_size EQUALS 30;		/*VKB generation buffer size
+    CONSTANT
+	vkb$k_level_1 EQUALS 1;			/*Level 1 keyboard conformance
+    CONSTANT
+	vkb$k_level_2 EQUALS 2;			/*Level 2 keyboard conformance
+    CONSTANT
+	vs$k_break_table_size EQUALS 32;	/*Break table size
+    CONSTANT
+	null EQUALS 0;				/*Null ascii code
+    CONSTANT
+	control_a EQUALS 1;			/*Control A ascii code
+    CONSTANT
+	control_b EQUALS 2;			/*Control B ascii code
+    CONSTANT
+	control_c EQUALS 3;			/*Control C ascii code
+    CONSTANT
+	control_d EQUALS 4;			/*Control D ascii code
+    CONSTANT
+	control_e EQUALS 5;			/*Control E ascii code
+    CONSTANT
+	control_f EQUALS 6;			/*Control F ascii code
+    CONSTANT
+	control_g EQUALS 7;			/*Control G ascii code (bell)
+    CONSTANT
+	backspace EQUALS 8;			/*Backspace ascii code
+    CONSTANT
+	tab EQUALS 9;				/*TAB ascii code
+    CONSTANT
+	line_feed EQUALS 10;			/*Line feed ascii code
+    CONSTANT
+	verticle_tab EQUALS 11;			/*Vertical TAB ascii code
+    CONSTANT
+	form_feed EQUALS 12;			/*Form feed ascii code
+    CONSTANT
+	carriage_return EQUALS 13;		/*Carriage return ascii code
+    CONSTANT
+	control_n EQUALS 14;			/*Control N ascii code
+    CONSTANT
+	control_o EQUALS 15;			/*Control O ascii code
+    CONSTANT
+	control_p EQUALS 16;			/*Control P ascii code
+    CONSTANT
+	control_q EQUALS 17;			/*Control Q ascii code
+    CONSTANT
+	control_r EQUALS 18;			/*Control R ascii code
+    CONSTANT
+	control_s EQUALS 19;			/*Control S ascii code
+    CONSTANT
+	control_t EQUALS 20;			/*Control T ascii code
+    CONSTANT
+	control_u EQUALS 21;			/*Control U ascii code
+    CONSTANT
+	control_v EQUALS 22;			/*Control V ascii code
+    CONSTANT
+	control_w EQUALS 23;			/*Control W ascii code
+    CONSTANT
+	control_x EQUALS 24;			/*Control X ascii code
+    CONSTANT
+	control_y EQUALS 25;			/*Control Y ascii code
+    CONSTANT
+	control_z EQUALS 26;			/*Control Z ascii code
+    CONSTANT
+	escape EQUALS 27;			/*Escape ascii code
+    CONSTANT
+	space EQUALS 32;			/*Space ascii code
+    CONSTANT
+	altmode_1 EQUALS 125;			/*Altmode 1 ascii code
+    CONSTANT
+	altmode_2 EQUALS 126;			/*Altmode 2 ascii code
+    CONSTANT
+	delete EQUALS 127;			/*Delete ascii code
+    CONSTANT
+	ss3 EQUALS 143;				/*Single shift three ascii code
+    CONSTANT
+	csi EQUALS 155;				/*Control seq. init. ascii code
+/*
+/* Virtual Keyboard Ring Buffer (non-paged pool)
+/*
+    AGGREGATE vkb_ring_buffer STRUCTURE PREFIX vs$rb_;
+	flink		 ADDRESS;		/*Ring buffer forward link
+	blink		 ADDRESS;		/*Ring buffer backward link
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	ring_buffer	 ADDRESS;		/*Ring buffer head address
+	buffer		 ADDRESS;		/*Typeahead buffer address
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END vkb_ring_buffer;
+/*
+/* Virtual Keyboard Ascii WORD descriptor block (NOTE: The order and values
+/* of these bits are hardcoded in the keyboard translation table. Any changes
+/* here must also be reflected in those entries).
+/*
+    AGGREGATE vkb_ascii_word STRUCTURE PREFIX vs$aw_;
+	char_code	 BYTE UNSIGNED;		/*DEC multinational char. code
+	tbs		 BITFIELD LENGTH 4;	/*Reserved for expansion
+	ignore		 BITFIELD;		/*Ignore key code flag
+	symbol		 BITFIELD;		/*Symbol (fnct) key code flag
+	dead		 BITFIELD;		/*Dead diacritical key flag
+	special		 BITFIELD;		/*Special key code flag
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END vkb_ascii_word;
+/*
+/* Virtual Keyboard Read Request Data Block
+/*
+    AGGREGATE vkb_read_request STRUCTURE PREFIX vs$rr_;
+	next_ptr	 ADDRESS;		/*Ptr to next read request
+	back_ptr	 ADDRESS;		/*Ptr to previous read request
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	vkb		 ADDRESS;		/*Virtual Keyboard Block address
+	irp		 ADDRESS;		/*I/O request packet address
+	function_code	 LONGWORD UNSIGNED;	/*I/O function code alone
+	full_function	 LONGWORD UNSIGNED;	/*I/O full function code + mod.
+	read_all	 LONGWORD UNSIGNED;	/*Read passall indicator (speed)
+	buffer		 ADDRESS;		/*User read buffer address
+	buffer_size	 LONGWORD UNSIGNED;	/*User buffer size
+	buffer_ptr	 LONGWORD UNSIGNED;	/*User buffer ptr
+	buffer_inc	 BYTE UNSIGNED;		/*User buffer increment (1 or 2)
+	timeout		 QUADWORD UNSIGNED;	/*System delta timeout time
+	break_table	 ADDRESS;		/*Read Request break table adr.
+	prompt_string	 ADDRESS;		/*Read w/prompt string address
+	prompt_length	 LONGWORD UNSIGNED;	/*Read w/prompt string length
+	terminator	 WORD UNSIGNED;		/*Read terminator
+	terminator_size	 WORD UNSIGNED;		/*Read terminator size
+	cursor_start	 WORD UNSIGNED;		/*Cursor position at read start
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END vkb_read_request;
+/*
+/* Virtual Keyboard Data Block Definition
+/*
+    AGGREGATE vkb_block STRUCTURE PREFIX vs$vkb_;
+	next_ptr	 ADDRESS;		/*Ptr to next virtual keyboard
+	back_ptr	 ADDRESS;		/*Ptr to previous vkb block
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	id		 LONGWORD UNSIGNED;	/*Virtual Keyboard ID
+	current_read	 ADDRESS;		/*Current VKB read context
+	pkb_chan	 WORD UNSIGNED;		/*Physical Keyboard channel no.
+	ring_buffer	 ADDRESS;		/*Ring buffer address
+	buffer_size	 LONGWORD UNSIGNED;	/*VKB typeahead buffer size
+	unsolicit_ptr	 LONGWORD UNSIGNED;	/*VKB unsolicited input pointer
+/*
+/* NOTE: These bits MUST correspond to the bit definitions in VSTAGBL.SDL for
+/*	 keyboard state with respect to order and padding. The first six bits
+/*	 are not program settable.
+/*
+	state_field	 UNION;
+	  state		 LONGWORD UNSIGNED;	/*VKB state (read-in-progress,)
+	  state_bits	 STRUCTURE;
+	    read	 BITFIELD	MASK;	/*Read active on VKB bit
+	    read_active	 BITFIELD	MASK;	/*Read in progress on VKB bit
+	    write	 BITFIELD	MASK;	/*Write active bit
+	    current	 BITFIELD	MASK;	/*Current VKB bit (on a PKB)
+	    read_asts	 BITFIELD	MASK;	/*VKB read ASTs in progress
+	    timeout	 BITFIELD	MASK;	/*VKB read timeout indicator
+	    level	 BITFIELD	MASK LENGTH 4; /*VKB level 1/2 conformance
+	    eightbit	 BITFIELD	MASK;	/*VKB native eight-bit/seven-bit
+	    keypad	 BITFIELD	MASK;	/*VKB keypad application mode
+	    cursor_key	 BITFIELD	MASK;	/*VKB cursor key mode
+	    vt52	 BITFIELD	MASK;	/*VKB VT52 mode
+	    new_line	 BITFIELD	MASK;	/*VKB new-line mode
+	    extra	 BITFIELD LENGTH 1 MASK;/*For future DEC abuse
+	  END state_bits;
+	END state_field;
+/*
+	state2_field	 UNION;
+	  state2	 LONGWORD UNSIGNED;	/*VKB state
+	  state2_bits	 STRUCTURE;
+	    ring_alloc	 BITFIELD	MASK;	/*VKB ring allocated bit
+	    extra2	 BITFIELD LENGTH 7 MASK;/*For future DEC abuse
+	  END state2_bits;
+	END state2_field;
+	char		 LONGWORD UNSIGNED;	/*VKB characteristics (noecho,)
+	escape_state	 LONGWORD UNSIGNED;	/*Escape sequence state
+	dead		 BYTE UNSIGNED;		/*Dead key character code
+	trans_table	 LONGWORD UNSIGNED;	/*Translation Table for VKB
+	nrc_table	 LONGWORD UNSIGNED;	/*NRC Table for VKB
+	break_table	 ADDRESS;		/*Default VKB break table adr.
+	control_y_ast	 ADDRESS;		/*Control Y AST list head addr.
+	control_c_ast	 ADDRESS;		/*Control C AST list head addr.
+	out_of_band_ast	 ADDRESS;		/*Out of band AST list head adr
+	out_of_band_mask LONGWORD UNSIGNED;	/*Active out of band AST mask
+	echo_routine	 ADDRESS;		/*Emulator echo routine address
+	gchar_routine	 ADDRESS;		/*Emulator trans. routine addr.
+	gen_index	 LONGWORD UNSIGNED;	/*Generation buffer index
+	gen_buffer	 ADDRESS;		/*VKB generation buffer
+	gen_buffer1	 ADDRESS;		/*VKB gen. buffer longword 2
+	gen_buffer2	 ADDRESS;		/*VKB gen. buffer longword 3
+	gen_buffer3	 ADDRESS;		/*VKB gen. buffer longword 4
+	gen_buffer4	 ADDRESS;		/*VKB gen. buffer longword 5
+	gen_buffer5	 ADDRESS;
+	gen_buffer6	 ADDRESS;
+	gen_buffer7	 ADDRESS;
+	vd_id		 LONGWORD UNSIGNED;	/*VD to use for output device
+	vd		 ADDRESS;		/*VD address for faster output
+	owner		 LONGWORD UNSIGNED;	/*Owner of native VKB
+	lower_symbol_map_boff	 LONGWORD;	/*B-offset to current symbol map
+	caps_symbol_map_boff	 LONGWORD;	/*B-offset to current symbol map
+	shift_symbol_map_boff	 LONGWORD;	/*B-offset to current symbol map
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END vkb_block;
+/*
+/* End of module VS$VKB
+/*
+    end_module;

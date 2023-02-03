@@ -1,0 +1,166 @@
+MODULE VS$SRV_FMIO (
+			IDENT = 'HI SERVER Forms IO'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module does form I/O for the human interface.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_open_a_doc,		!Open a document file
+    vsta$$srv_read_doc_block,		!Read a block of a document file
+    vsta$$srv_close_a_doc;		!Close document file
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols and macros
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Common VSTA symbols/macros
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+GLOBAL
+    srv$gl_doc_qio_efn;			!EFN to use to read document file.
+					!Setup when ACP starts up by
+					! vsta$$startup_efns
+
+GLOBAL ROUTINE vsta$$srv_open_a_doc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens a document file.
+! FORMAL PARAMETERS:
+	(doc_fab: REF BLOCK [,BYTE]	!Address of fab
+	) =
+!--
+BEGIN
+LOCAL
+    file_desc: VECTOR [2],
+    status;
+
+doc_fab [fab$v_ufo] = 1;		!User file open (return channel in STV)
+file_desc [0] = .doc_fab [fab$b_fns];
+file_desc [1] = .doc_fab [fab$l_fna];
+
+IF NOT (status =
+    $open	(FAB = .doc_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);			!Record RMS OPEN failure.
+    RETURN $error (vsta$_open_doc		!"Can't open document file"
+		,string_type, file_desc
+		);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_read_doc_block
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads block of document file
+! FORMAL PARAMETERS:
+	(doc_fab: REF BLOCK [,BYTE]	!Address of fab
+	,blknum			!Block number to read
+	,bufadr			!Place to put it
+	) =
+!--
+BEGIN
+LOCAL
+    f_channel,
+    doc_iosb: VECTOR [4,WORD],
+    status;
+
+f_channel = .doc_fab [fab$l_stv];	!Get channel number
+
+IF NOT (status =
+	$qiow	(CHAN = .f_channel
+		,FUNC = IO$_READVBLK
+		,IOSB = doc_iosb
+		,EFN = .srv$gl_doc_qio_efn
+		,P1 = .bufadr		!Buffer address
+		,P2 = 512		!Size of buffer
+		,P3 = .blknum		!starting virtual block of transfer
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Record QIOW error code.
+    RETURN $error (vsta$_qio
+		,string_type, %ASCID 'read'
+		,string_type, %ASCID 'document file block'
+		);
+    END;
+
+IF (.doc_iosb [0] NEQ SS$_NORMAL)
+  THEN
+    BEGIN
+    $system_error (.doc_iosb [0]);	!Record QIOW iosb error code.
+    RETURN $error (vsta$_qio_bad_iosb
+		,string_type, %ASCID 'read document file block'
+		,integer_type, .doc_iosb [0]
+		);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_close_a_doc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the specified file
+! FORMAL PARAMETERS:
+	(doc_fab: REF BLOCK [,BYTE]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If file isn't open, do nothing.  This occurs if session ends and no help
+! has been requested during the session (for instance).
+!
+IF .doc_fab [fab$l_stv] EQL 0
+  THEN RETURN SS$_NORMAL;
+!
+! This is done simply by deassigning the channel, in the STV
+!
+IF NOT (status =
+    $dassgn	(CHAN = .doc_fab [fab$l_stv])
+	)
+  THEN
+    BEGIN
+    LOCAL
+	file_desc: VECTOR [2];
+    $system_error (.status);		!Report $dassgn failure code
+    file_desc [0] = .doc_fab [fab$b_fns];
+    file_desc [1] = .doc_fab [fab$l_fna];
+    RETURN $error (vsta$_dassgn
+		,string_type, file_Desc
+		);
+    END;
+
+doc_fab [fab$l_stv] = 0;
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

@@ -1,0 +1,1406 @@
+MODULE VS$SRV_AUTH (
+			IDENT = 'HI SERVER Authorization'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VSTA)
+!
+! 	Human interface, in VSACP.
+!
+! ABSTRACT:
+!
+!	This module handles the authorization of the workstation user.
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_do_authorize,
+    set_rgns_selectable,	!Define regions and make them selectable.
+    username_field_read,	!Do Read to name field
+    password_field_read,	!Do read to password field
+    auth_username_done,		!Username field input
+    auth_password_done,		!Password field input
+    username_selected,		!Username field was selected.
+    password_selected,		!Password field was selected.
+    report_auth_error,		!Report error in doing authorize form
+    clear_auth_error,		!Clear error message in error field (if any)
+    clear_password,		!Clear password and password field
+    put_up_auth_form,		!Put the form on the screen
+    cleanup_putup,		!Cleanup from error putting up the form
+    write_auth_vd,		!Write the authorization VD
+    find_fld2_start,		!Find the best starting place for field 2.
+    setup_leftmargin,		!Get leftmargin on the form
+    write_sitename,		!Write the site name on the form.
+    write_version_info,		!Write the version number info on the form.
+    take_down_auth_form,	!Take the form down from the screen
+    vsta$$srv_auth_uetp,	!Authorize the UETP.
+    vsta$$srv_auth_end;		!End session actions
+
+! INCLUDE FILES:
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:TXTSYM';		!Symbols for text and font manipulation
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!HI data structures and symbols
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!For VS$M_VKB
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application symbols
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+LIBRARY 'SYS$LIBRARY:LIB';		!Global symbols
+
+! DEFINE PSECTS
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vs$$acp_usage_trace,
+    vs$$vds_create_vd,
+    vs$$txt_addLines,
+    vs$$txt_setWritingColor,
+    vs$$txt_setBackgroundColor,
+    vs$$txt_defineFont,
+    vs$$txt_setTypeface,
+    vs$$txt_setTypesize,
+    vs$$txt_deleteField,
+    vs$$txt_defineField,
+    vs$$txt_set_field_format,
+    vs$$txt_measure_text,
+    vs$$txt_writeText,
+    vs$$txt_appendText,
+    vs$$txt_deleteCharacters,
+    vs$$vds_delete_vd,
+    vs$$vds_create_pb,
+    vs$$vds_paste_vd_to_pb,
+    vs$$vds_delete_pb,
+    vs$$vds_create_term_window,
+    vs$$vds_delete_window,
+    vsta$$kbrd_sound_bell,	!Sound the keyboard bell
+    vsta$$set_vd_help,		!Specify help for particular vd
+    vsta$$srv_disp_help_kwd,	!Put up page of help document
+    vsta$$srv_write_truncated,	!Write a string and truncate if necessary
+    vsta$$srv_authwin_created,
+    vsta$$srv_get_message_text,
+    vsta$$rgn_define_region,
+    vsta$$rgn_set_region_selectable,
+    vsta$$edit_one,		!Prepare to let user edit a 1-line field
+    vsta$$hi_validate,		!Validate username and password.
+    vsta$$srv_init_after_auth,	!Initialize after authorize.
+    vsta$$srv_attach_kbd,	!Attach keyboard.
+    vs$$post_ast_request,	!Q up something
+    vsta$$srv_end_session,	!End workstation session.
+    vsta$$error,
+    str$upcase;			!Make a string upper-case.
+
+EXTERNAL
+    vs$gw_channel,		!Channel to the (only) device there is
+    vsta$gl_bldver_desc: VECTOR [2],
+    srv$gl_sitename_len,	!Length of site name if supplied
+    srv$gl_sitename;		!Sitename string
+
+GLOBAL
+    username_string: VECTOR [128,BYTE],	!Username string
+    srv$gl_username_desc: VECTOR [2]
+		INITIAL (0, username_string),
+    vsta$gl_uetp_username_desc: VECTOR [2],
+    vsta$gl_authorized;		!Set to 1 when user is authorized.
+
+OWN
+    password_string: VECTOR [128,BYTE],
+    password_desc: VECTOR [2]
+		INITIAL (128, password_string),
+    whole_username_desc: VECTOR [2]
+		INITIAL (128, username_string),
+    curr_username_len,
+    curr_password_len,
+    auth_pb_id,
+    auth_vd_id,
+    auth_window_id,
+    delim_type,			!Type of delimiter
+    fld2_start,			!Where the editable fields for name and
+				! passwords start.
+    fld2_width,			!Width of the field.
+    error_visible_flag;		!Set to 1 if an error is printed on
+				! the authorization form
+LITERAL
+    auth_lineheight = 16,		!Height of each line (Pellucida 15)
+					!   -- based on the largest font used,
+					!   which is the one used for the
+					!   authorization form header
+    auth_num_lines = 7,			!number of authorization form lines
+    sitename_line = 1,			!Which line "site name" is on
+    build_id_line = 2,			!Which line the build id is on.
+    username_line = 4,			!Which line "username" is on
+    password_Line = 5,			!Which line "password" is on
+    emsg_line = 7,			!Which line errors go on
+    vsta$K_auth_vd_height = auth_lineheight * auth_num_lines,
+					!height of authorization form
+    widest_char = 15,			!Width of largest character in the font
+					!   used for the username (Pellucida
+					!   12) = 'M' and 'W'
+    left_margin = 5,			!Spacing between window edge and header
+    right_margin = 4,			!Spacing between header and username
+    vsta$K_auth_vd_width = left_margin	!Width (in pixels) of authorization
+					!   form, including:  left margin;
+	+ 11 + 8 + 8 + 8 + 10 + 9 + 14 + 8 + 6 !width of 'Username:' prompt;
+					!      (note:  'Password:' prompt = 9
+					!          + 9 + 8 + 8 + 11 + 8 + 8
+					!          + 9 + 6, which is smaller
+					!          than the 'Username:' prompt
+					!          in Pellucida 12 font)
+	+ right_margin			!   right margin;
+	+ (auth_lineheight * 6) / 10	!   width of text cursor;
+	+ (uaf$s_username * widest_char), ! width of username (maximum)
+					!   (note:  the 'Username: ' and
+					!       'Password: ' prompts both use
+					!       Pellucida 12)
+    auth$K_timeout = 60 * 10;		! # seconds before timeout occurs
+!
+! The form looks like this:
+!
+!=====================================================
+!               Authorization form                   !
+!=====================================================
+!1                 SITE NAME                         !
+!2      VAXstation software, Version 1.1             !
+!3                                                   !
+!4  Username:                                        !
+!5  Password:                                        !
+!6                                                   !
+!7 <error message line >                             !
+!=====================================================
+!     
+
+GLOBAL ROUTINE vsta$$srv_do_authorize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Kicks off the authorization. This routine returns when the
+!	Authorization form is shown on the screen prompting for Username:.
+!	The ACP should go into normal QIO wait then, and when the
+!	user has filled out the form, the global variable
+!	"vsta$gl_authorized" is set to 1 and the workstation footer
+!	is displayed, etc.
+!
+! ROUTINE VALUE / COMPLETION CODES:
+!   Returns "ss$_normal" if successful, or
+!	VS facility error status code
+!--
+BEGIN
+OWN
+    status;			!Return status
+
+IF NOT (status =
+    put_up_auth_form ()
+	)
+  THEN RETURN $error (vsta$_put_up_auth);	!Can't put up the form.
+
+error_visible_flag = 0;		!No error message is printed yet.
+
+!
+! Ok, the authorization form is on the screen. Read it.
+!
+set_rgns_selectable ();		!make the regions selectable.
+
+!
+! Try to read the name field
+!
+IF NOT (status =
+    username_field_read ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL		!"ast" routines take over.
+END;
+
+ROUTINE set_rgns_selectable =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Define the regions for the username and password and
+!	make them SELECTable.
+!--
+BEGIN
+LOCAL
+    start_y1,
+    start_y2,
+    status;
+
+start_y1 = ((username_line - 1) * auth_lineheight);
+start_y2 = ((password_line - 1) * auth_lineheight);
+
+IF NOT (status =
+    vsta$$rgn_define_region
+		(.auth_vd_id
+		,0		!X
+		,.start_y1	!Y
+		,vsta$K_auth_vd_width	!Whole width of VD
+		,auth_lineheight	!Height of line
+		)
+	)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT (status =
+    vsta$$rgn_define_region
+		(.auth_vd_id
+		,0		!X
+		,.start_y2	!Y
+		,vsta$K_auth_vd_width	!Whole width of VD
+		,auth_lineheight	!Height of line
+		)
+	)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT (status =
+    vsta$$rgn_set_region_selectable
+		(.auth_vd_id
+		,0
+		,.start_y1
+		,username_selected
+		,0				!ASTPRM
+		,0, 0, 0			!Popup PB
+		,vsta$K_sel_text		!Selectable attribute
+		)
+	)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+IF NOT (status =
+    vsta$$rgn_set_region_selectable
+		(.auth_vd_id
+		,0
+		,.start_y2
+		,password_selected
+		,0				!ASTPRM
+		,0, 0, 0			!Popup PB
+		,vsta$K_sel_text		!Selectable attribute
+		)
+	)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE username_field_read =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Call the edit module to read the username field.
+!--
+BEGIN
+LOCAL
+    ypos,
+    status;
+!
+! vsta$$edit_one SETS UP for the read (it returns when the read is STARTED,
+! not when it is FINISHED). When the read is really finished, the routine
+! specified as an argument to vsta$$edit_one gets called.
+!
+ypos = (username_line - 1) * auth_lineheight;
+					!Y position where username line starts.
+
+IF NOT (status =
+    vsta$$edit_one	(.auth_pb_id	!Pb-Id
+			,.auth_vd_id	!Vd-id
+			,username_line	!line
+			,auth_lineheight !line height
+			,.ypos		!Y position where name line starts
+			,.fld2_start	!field
+			,.fld2_width	!Width of field
+			,whole_username_desc !Desc of space allowed
+			,0		!Flags
+			,curr_username_len !adr of Current length of string
+					! to edit
+			,delim_type	!Return delimiter type here
+			,auth_username_done !Routine to call when name field done.
+			,%ASCID 'Pellucida' !Typeface to set.
+			,12		!Typesize to set.
+			,rend_bold_bit, 0 !Turn off bold face type
+			,auth$K_timeout	!Timeout
+			)
+	    )
+  THEN RETURN $error	(vsta$_editone
+			,string_type, %ASCID 'username field'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE password_field_read =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Calls the edit module to read the password field.
+!--
+BEGIN
+LOCAL
+    ypos,
+    status;
+!
+! See comments in "username_field_read"
+!
+ypos = (password_Line - 1) * auth_lineheight;
+
+IF NOT (status =
+    vsta$$edit_one	(.auth_pb_id	!VKB
+			,.auth_vd_id	!Vd-id
+			,password_line	!line
+			,auth_lineheight !line height
+			,.ypos		!Y position on VD where line starts.
+			,.fld2_start	!field
+			,.fld2_width	!Width of field 2
+			,password_desc	!Desc of space allowed
+			,0		!Flags
+			,curr_password_len !adr of Current length of string
+					! to edit
+			,delim_type	!Return delimiter type here
+			,auth_password_done !Routine to call when pass fld done.
+			,%ASCID 'NOECHO' !Typeface to set.
+			,6		!Typesize to set.
+			,rend_bold_bit, 0 !Turn off bold face type
+			,auth$K_timeout	!Timeout
+			)
+	)
+  THEN RETURN $error	(vsta$_editone
+			,string_type, %ASCID 'password field'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE auth_username_done =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the username field is "done".
+!--
+BEGIN
+LOCAL
+    real_password_desc: VECTOR [2],
+    status;
+
+IF (.delim_type EQL vsta$K_edit_delim_yank)
+  THEN RETURN SS$_NORMAL;		!We were yanked out of that field
+IF (.delim_type EQL vsta$K_edit_delim_timeout)
+  THEN
+    BEGIN		!Timed out
+    vs$$post_ast_request (vsta$$srv_end_session);
+    RETURN SS$_NORMAL
+    END;
+
+clear_auth_error ();			!Clear error message, if any
+srv$gl_username_desc [0] = .curr_username_len; !Update the username length
+IF (.curr_username_len GTR uaf$s_username)
+  THEN
+    BEGIN
+    srv$gl_username_desc [0] = uaf$s_username; !Truncate the username length to
+				!    maximum allowed size
+    vsta$$kbrd_sound_bell (.vs$gw_channel) !Sound the keyboard bell to notify user
+    END;
+
+!
+! Try to authorize. It will succeed if the user's password field
+! is now correct. If he hasn't edited it yet, it will be blank, and
+! this will succeed if his password in the system authorization file
+! is blank.
+!
+real_password_desc [0] = .curr_password_len;
+real_password_desc [1] = password_string;
+IF NOT (status =
+    vsta$$hi_validate (srv$gl_username_desc, real_password_desc)
+	)
+  THEN
+    BEGIN
+    clear_password ();		!He must start from scratch.
+    password_field_read ()	! Go wait for password.
+    END
+  ELSE
+    BEGIN			!Authorize succeeded!
+    vsta$$srv_attach_kbd (0, 0);	!Detach keyboard from auth. form.
+    vsta$gl_authorized = 1;		!Set flag - user is authorized.
+    IF NOT (take_down_auth_form ())	!Done with this form!
+      THEN $error (vsta$_takdown_auth);
+    vs$$acp_usage_trace ($DESCRIPTOR('User Authorization'));
+    str$upcase	(srv$gl_username_desc
+		,srv$gl_username_desc
+		);		!Make sure our version of username is upcase
+  !
+  ! Initialize after authorize.
+  !
+    RETURN vsta$$srv_init_after_auth ();
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE auth_password_done =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when the password field is done.
+!--
+BEGIN
+LOCAL
+    real_password_desc: VECTOR [2],
+    err_desc_ptr,
+    err_desc: VECTOR [2],
+    err_str: VECTOR [128,BYTE],
+    err_len,
+    status;
+
+IF (.delim_type EQL vsta$K_edit_delim_yank)
+  THEN RETURN SS$_NORMAL;		!Started editing another field.
+IF (.delim_type EQL vsta$K_edit_delim_timeout)
+  THEN
+    BEGIN			!Timed out
+    vs$$post_ast_request (vsta$$srv_end_session);
+    RETURN SS$_NORMAL
+    END;
+!
+! User hit <CRLF> to end password field.
+!
+err_desc_ptr = err_desc;	!Prepare for error print
+err_desc [0] = 128;
+err_desc [1] = err_str;
+
+clear_auth_error ();		!Clear error message, if any.
+!
+! We will attempt to authorize the user.
+!
+IF (.curr_username_len EQL 0)
+  THEN
+    BEGIN
+    IF NOT vsta$$srv_get_message_text
+		(904
+		,err_desc
+		,err_len
+		)
+      THEN err_desc_ptr = %ASCID 'Must enter username'
+      ELSE err_desc [0] = .err_len;
+
+    IF NOT report_auth_error (.err_desc_ptr)
+      THEN $error (vsta$_repautherr);
+  !
+  ! Try to read the name field
+  !
+    username_field_read ();
+    RETURN SS$_NORMAL
+    END;
+
+vsta$$srv_attach_kbd (0, 0);	!Detach keyboard from authorization form.
+
+!
+! Validate the username and password fields (and lengths)
+!
+real_password_desc [0] = .curr_password_len;
+real_password_desc [1] = password_string;
+
+srv$gl_username_desc [0] = .curr_username_len; !Update the username length
+IF (.curr_username_len GTR uaf$s_username)
+  THEN
+    BEGIN
+    srv$gl_username_desc [0] = uaf$s_username; !Truncate the username length to
+				!    maximum allowed size
+    END;
+
+IF NOT vsta$$hi_validate (srv$gl_username_desc, real_password_desc)
+  THEN
+    BEGIN
+    clear_password ();
+    IF NOT vsta$$srv_get_message_text
+		(903
+		,err_desc
+		,err_len		!Returned length
+		)
+      THEN err_desc_ptr = %ASCID 'Invalid username or password'
+      ELSE err_desc [0] = .err_len;
+    IF NOT report_auth_error (.err_desc_ptr)
+      THEN $error (vsta$_repautherr);
+    username_field_read ();	!Return to the username field for another try
+    RETURN SS$_NORMAL
+    END;
+!
+! Authorize succeeded!
+!
+clear_password ();		!Delete the password field
+vsta$gl_authorized = 1;		!Set flag
+IF NOT take_down_auth_form ()	!Done with this form!
+  THEN $error (vsta$_takdown_auth);
+
+vs$$acp_usage_trace ($DESCRIPTOR('User Authorization'));
+str$upcase	(srv$gl_username_desc
+		,srv$gl_username_desc
+		);
+!
+! Initialize after authorize.
+!
+RETURN vsta$$srv_init_after_auth ();	!Then go to regular ACP QIO
+					! processing loop.
+END;
+
+ROUTINE username_selected =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the username field is selected.
+!	Start editing it.
+!--
+BEGIN
+LOCAL
+    status;
+
+username_field_read ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE password_selected =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the password field is selected.
+!	Start editing it.
+!--
+BEGIN
+LOCAL
+    status;
+
+password_field_read ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE report_auth_error
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Report authorization error.
+! FORMAL PARAMETERS:
+	(message_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+OWN
+    finger_byte: BYTE INITIAL (0),
+    finger_desc: VECTOR [2]
+		INITIAL (1, finger_byte);
+LOCAL
+    msg_len,
+    mess_desc: VECTOR [2],
+    status;
+
+msg_len = .message_desc [0];
+mess_desc [0] = .msg_len;
+mess_desc [1] = .message_desc [1];
+
+IF NOT (status =
+    vs$$txt_setTypeface
+		(.auth_vd_id
+		,%ASCID 'HISYMBOL'
+		)
+	)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'HISYMBOL'
+			);
+IF NOT (status =
+    vs$$txt_writeText
+		(.auth_vd_id
+		,finger_desc		!What to write
+		,emsg_line		!Line
+		,left_margin		!Field start
+		,1			!CPOS
+		)
+	)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'finger'
+			);
+
+IF NOT (status =
+    vs$$txt_setTypeface
+		(.auth_vd_id
+		,%ASCID 'vsta$standard_typeface'	!Not editable.
+		)
+	)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'VSTA$STANDARD_TYPEFACE'
+			);
+
+IF NOT (status =
+    vs$$txt_writeText
+		(.auth_vd_id
+		,mess_desc		!What to write
+		,emsg_line		!Line
+		,left_margin		!Field start
+		,2			!CPOS
+		)
+	)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'error message'
+			);
+
+error_visible_flag = 1;			!An error message is visible
+RETURN SS$_NORMAL
+END;
+
+ROUTINE clear_auth_error =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Clear authorization error (if any).
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (NOT (.error_visible_flag))
+  THEN RETURN SS$_NORMAL;		!No error to delete
+
+IF NOT (status =
+    vs$$txt_DeleteCharacters
+		(.auth_vd_id
+		,emsg_line		!Line
+		,left_margin		!Field
+		,1			!Char
+		,0			!n (0 means "all")
+		)
+	)
+  THEN RETURN $error	(vsta$_delauthmsg);
+
+error_visible_flag = 0;			!No error is visible now.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE clear_password =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Clear the password and delete the text.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.curr_password_len EQL 0)
+  THEN RETURN SS$_NORMAL;	!Blank password, nothing to delete
+!
+! For security reasons, we will delete the password string from our
+! memory.
+!
+CH$FILL	(0			!Fill character
+	,.curr_password_len	!Dest length
+	,password_string	!Dest ptr.
+	);
+
+IF NOT (status =
+    vs$$txt_DeleteCharacters
+		(.auth_vd_id
+		,password_line	!Line
+		,.fld2_start	!Field
+		,1		!Char
+		,0		!n (0 means "all")
+		)
+	)
+  THEN RETURN $error	(vsta$_delchs
+			,string_type, %ASCID 'password field in authorization form'
+			);
+
+curr_password_len = 0;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_up_auth_form =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do all the SDA calls needed to put up the auth form.
+!--
+BEGIN
+MACRO
+    $cleanup = (
+	cleanup_putup (.cleanup_flags);
+		) %;
+LOCAL
+    vd_id,		!Holds the VD-id until it is correctly written.
+    cleanup_flags,	!What we've done so far.
+			!1= created PB
+			!2 = created VD
+			!4 = window
+    name_desc: VECTOR [2],
+    name_itself: VECTOR [128,BYTE],
+    name_real_len,
+    status;
+
+cleanup_flags = 0;
+!
+! Get name of this document
+!
+name_desc [0] = 128;
+name_desc [1] = name_itself;	!Initialize descriptor.
+IF NOT (status =
+    vsta$$srv_get_message_text
+		(900		!Message number
+		,name_desc	!Descriptor
+		,name_real_len	!Return length here
+		)
+	)
+  THEN RETURN .status;		!Error logged.
+
+name_desc [0] = .name_real_len;	!Get true descriptor to name.
+
+IF NOT (status =
+    vs$$vds_create_pb
+		(auth_pb_id		!Return pasteboard here
+		,1			!Owned by ACP
+		,vsta$K_color_white	!Color
+		,vsta$K_auth_vd_width	!Same size as the VD
+		,vsta$K_auth_vd_height	! . .
+		,0			!UIC
+		,vs$m_vkb		!Keyboard
+		,vsta$k_default_protection
+					!Protection
+		)
+	)
+  THEN RETURN $error	(vsta$_crepb_for
+			,string_type, %ASCID 'Authorization form'
+			);
+
+cleanup_flags = .cleanup_flags OR 1;	!Remember we created the PB
+
+IF NOT (status =
+    vs$$vds_create_vd
+		(vsta$K_auth_vd_height
+		,vsta$K_auth_vd_width
+		,1			!1 bitplane
+		,vsta$K_color_white	!background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,2			!Text only
+		,0			!UIC
+		,0			!Temporary
+		,0			!UIC protection
+		,vd_id			!Return vd-id here
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_crevd_for
+		,string_type, %ASCID 'Authorization form'
+		);
+    END;
+
+auth_vd_id = .vd_id;
+cleanup_flags = .cleanup_flags OR 2;	!Remember we got the VD
+
+!
+! Specify keyword for finding help page to display when help requested for
+! the authorization form.
+!
+IF NOT (status = vsta$$set_vd_help (
+	    .vd_id,			! which vd we're setting help for
+	    vsta$$srv_disp_help_kwd,	! routine to call when hlp btn pressed
+	    %ASCID 'Authorization form'	! keyword for finding correct page
+	    ))
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN .status;
+    END;
+
+IF NOT (status =
+    write_auth_vd (.vd_id)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_wrtauthvd);
+    END;
+
+IF NOT (status =
+    vs$$vds_paste_vd_to_pb
+		(.auth_pb_id		!Pb
+		,.auth_vd_id		!vd
+		,0			!x,y
+		,0			!..
+		,0			!on top
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'Authorization VD'
+			,string_type, %ASCID 'PB'
+			);
+    END;
+
+IF NOT (status =
+    vs$$vds_create_term_window
+		(.auth_pb_id		!Pb
+		,auth_window_id		!ret window-id
+		,name_desc		!"Authorization form"
+		,0			!X
+		,0			!Y
+		,vsta$K_auth_vd_width
+		,vsta$K_auth_vd_height
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error	(vsta$_crewin_for
+			,string_type, %ASCID 'Authorization form'
+			);
+    END;
+
+cleanup_flags = .cleanup_flags OR 4;	!Remember we got a window
+
+!
+! Make it appear.
+!
+IF NOT (status =
+    vsta$$srv_authwin_created
+		(.auth_window_id	!Window id
+		,vsta$K_auth_vd_width	!x-extent of window
+		,vsta$K_auth_vd_height	!Y-extent of window
+		,.auth_pb_id		!PB id
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_authapp);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cleanup_putup
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Cleanup from error putting up the authorization form.
+! FORMAL PARAMETERS:
+	(cleanup_flags		!1 = created PB
+				!2 = created VD
+				!4 = created term window
+	) =
+!--
+BEGIN
+
+IF ((.cleanup_flags AND 4) NEQ 0)
+  THEN
+    BEGIN
+    LOCAL
+	srv_gl_ignore_delw;
+    srv_gl_ignore_delw = 1;		!HI: ignore this delete window call.
+    vs$$vds_delete_window (.auth_window_id);
+    srv_gl_ignore_delw = 0;
+    END;
+
+IF ((.cleanup_flags AND 2) NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.auth_vd_id);
+    auth_vd_id = 0;
+    END;
+
+IF ((.cleanup_flags AND 1) NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_pb (.auth_pb_id);
+    auth_pb_id = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_auth_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do txt calls to write into the authorization VD.
+! FORMAL PARAMETERS:
+	(vd_id
+	) =
+!--
+BEGIN
+LOCAL
+    txt_desc_username: VECTOR [2],
+    txt_desc_ptr_username,
+    txt_str_username: VECTOR [128, BYTE],
+    txt_desc_password: VECTOR [2],
+    txt_desc_ptr_password,
+    txt_str_password: VECTOR [128, BYTE],
+    txt_len,
+    status;
+!
+! Get text strings for "username" and "password" for the current language.
+!
+txt_desc_username [0] = 128;
+txt_desc_password [0] = 128;
+txt_desc_username [1] = txt_str_username;
+txt_desc_password [1] = txt_str_password;
+txt_desc_ptr_username = txt_desc_username;
+txt_desc_ptr_password = txt_desc_password;
+
+IF NOT vsta$$srv_get_message_text
+		(901
+		,txt_desc_username
+		,txt_len
+		)
+  THEN txt_desc_ptr_username = %ASCID 'Username:'	!Can't get message str.
+  ELSE txt_desc_username [0] = .txt_len;
+
+IF NOT vsta$$srv_get_message_Text
+		(902
+		,txt_desc_password
+		,txt_len
+		)
+  THEN txt_desc_ptr_password = %ASCID 'Password:'	!Can't get message str.
+  ELSE txt_desc_password [0] = .txt_Len;
+
+!
+! Do the txt calls.
+!
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,auth_num_lines		!Number of text lines
+		,auth_lineheight	!Height of each line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT vs$$txt_defineFont
+		(.vd_id
+		,%ASCID 'VSTA$FONT:NOECHO6.FNT'	
+		,%ASCID 'NOECHO'	!Typeface
+		,6			!Typesize	
+		,0			!Rendition
+		)
+  THEN RETURN $error	(vsta$_bad_fnt
+			,string_type, %ASCID 'VSTA$FONT:NOECHO6.FNT'
+			);
+
+IF NOT (status =
+    find_fld2_start (.vd_id, .txt_desc_ptr_username, .txt_desc_ptr_password)
+	)
+  THEN RETURN .status;
+
+IF NOT (status = 
+    setup_leftmargin (.vd_id)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    write_sitename (.vd_id)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    write_version_info (.vd_id)
+	)
+  THEN RETURN .status;
+
+!
+! Write "Username:"
+!
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,.txt_desc_ptr_username	!Text descriptor
+		,username_line		!line
+		,left_margin		!Field start
+		,1			!Cpos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"Username:"'
+			);
+
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,.txt_desc_ptr_password
+		,password_line		!Line
+		,left_margin		!Field start
+		,1			!Cpos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"Password:"'
+			);
+
+RETURN SS$_NORMAL	!return success
+END;
+
+ROUTINE find_fld2_start
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given the strings "Username:" and "Password:" (or their equivalents),
+!	find the best place for the editable fields to start.
+! FORMAL PARAMETERS:
+	(vd_id
+	,uname_desc: REF VECTOR [2]
+	,pass_desc: REF VECTOR [2]
+	) =
+! IMPLICIT OUTPUTS:
+!	fld2_start, fld2_width
+!--
+BEGIN
+LOCAL
+    name_len: WORD,
+    tx1,		!Width of string 1
+    ty,
+    tx2,		!Width of string 2
+    status;
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'Pellucida'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'Pellucida'
+			);
+
+IF NOT vs$$txt_setTypesize
+		(.vd_id
+		,12
+		)
+  THEN RETURN $error	(vsta$_setts);
+
+name_len = .uname_desc [0];	!Get length of name field.
+IF NOT vs$$txt_measure_Text
+		(.vd_id
+		,.name_len, .uname_desc [1]
+		,%CHARCOUNT ('Pellucida'), UPLIT ('PELLUCIDA') !Typeface
+		,1, UPLIT (12)	!Typesize = 12
+		,1, UPLIT (0)	!Turn off bold face type, italic, etc.
+		,tx1, ty	!Return x,y here
+		)
+  THEN RETURN $error	(vsta$_meastxt_for
+			,string_type, %ASCID 'username field'
+			);
+
+name_len = .pass_desc [0];	!Get length of password string.
+IF NOT vs$$txt_measure_Text
+		(.vd_id
+		,.name_len, .pass_Desc [1]
+		,%CHARCOUNT ('Pellucida'), UPLIT ('PELLUCIDA') !Typeface
+		,1, UPLIT (12)	!Typesize = 12
+		,1, UPLIT (0)	!Turn off bold face type, italic, etc.
+		,tx2, ty	!Return x,y here
+		)
+  THEN RETURN $error	(vsta$_meastxt_for
+			,string_type, %ASCID 'password field'
+			);
+
+tx1 = MAX (.tx1, .tx2);
+!
+! Start field after a little space
+!
+fld2_start = left_margin + .tx1 + right_margin;
+fld2_width = vsta$K_auth_vd_width - .fld2_start;	!Width of field 2
+
+IF (.fld2_width LSS 8)		!No room for echoing?
+  THEN RETURN $error (vsta$_noauthrmecho);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_leftmargin
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete the default field, setup leftmargin for other fields.
+!	Also define 2 fields on username and password line.
+! FORMAL PARAMETERS:
+	(vd_id		!Vd-id of the authorization form
+	) =
+! IMPLICIT INPUTS:
+!	auth_num_lines - number of lines on the virtual display
+!	fld2_start, fld2_width
+!--
+BEGIN
+LOCAL
+    status;
+
+INCR i FROM 1 TO auth_num_lines DO
+    BEGIN
+  !
+    IF NOT vs$$txt_deleteField
+		(.vd_id
+		,.i		!LINE
+		,1		!Field
+		)
+      THEN RETURN $error (vsta$_deldeffld);
+
+    END;
+!
+! For all lines except the username and password lines, define
+! one field at the left margin.
+!
+INCR i FROM 1 TO 7 DO
+    BEGIN
+    IF ((.i NEQ username_line) AND (.i NEQ password_line))
+      THEN
+	BEGIN
+	IF NOT vs$$txt_defineField
+			(.vd_id
+			,.i		!line
+			,left_margin	!Field
+			,vsta$K_auth_vd_width - left_margin	!Width
+			)
+	  THEN RETURN $error (vsta$_deffld);
+	END;
+    END;
+
+! For the username and password fields, define 2 fields on each line.
+! The second one is editable.
+!
+IF NOT vs$$txt_defineField
+		(.vd_id
+		,username_line	!Line
+		,left_margin	!Pos
+		,.fld2_start - left_margin !Size
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+IF NOT vs$$txt_defineField
+		(.vd_id
+		,username_line	!line
+		,.fld2_start	!pos
+		,vsta$K_auth_vd_width - .fld2_start	!size
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+IF NOT vs$$txt_defineField
+		(.vd_id
+		,password_line	!line
+		,left_margin	!pos
+		,.fld2_start - left_margin	!size
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+IF NOT vs$$txt_defineField
+		(.vd_id
+		,password_line	!Line
+		,.fld2_start	!pos
+		,vsta$K_auth_vd_width - .fld2_start	!size
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_sitename
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write the site name on sitename_line
+! FORMAL PARAMETERS:
+	(vd_id		!Vd-id of the authorization form
+	) =
+!--
+BEGIN
+LOCAL
+    sitename_desc: VECTOR [2],
+    sitename_desc_ptr: REF VECTOR [2],
+    len_wrote,
+    len_wanted: WORD,
+    status;
+!
+! Center the field.
+!
+IF NOT vs$$txt_set_Field_format
+		(.vd_id			!vd
+		,sitename_line		!line
+		,left_margin		!field
+		,ff_center
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+IF (.srv$gl_sitename_len GTR 0)
+  THEN
+    BEGIN	!Site name was specified in system profile.
+    sitename_desc_ptr = sitename_desc;
+    sitename_desc [0] = .srv$gl_sitename_len;
+    sitename_desc [1] = srv$gl_sitename;
+    END
+  ELSE
+    sitename_desc_ptr = %ASCID '<Site name>';	!Not specified.
+
+!
+! Write sitename on the authorization form
+!    
+IF NOT vsta$$srv_write_truncated
+		(.vd_id
+		,.sitename_desc_ptr	!Text
+		,sitename_line		!line
+		,left_margin		!field
+		,vsta$K_auth_vd_width - left_margin	!Field width
+		,len_wrote
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Site name on authorization form'
+			);
+
+len_wanted = .sitename_desc_ptr [0];
+IF (.len_wanted NEQ .len_wrote)
+  THEN $log_error (vsta$_sitenamtrun);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_version_info
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the version information on the authorization form.
+! FORMAL PARAMETERS:
+	(vd_id		!Vd-id of the authorization form
+	) =
+! IMPLICIT INPUTS:
+!	vsta$gl_bldver_desc - descriptor to build version number string.
+!--
+BEGIN
+!
+! Center the field.
+!
+IF NOT vs$$txt_set_Field_format
+		(.vd_id			!vd
+		,build_id_line		!line
+		,left_margin		!field
+		,ff_center
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,%ASCID 'VAXstation software, '
+		,build_id_line		!line
+		,left_margin		!field
+		,1			!cpos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"VAXstation software"'
+			);
+
+IF NOT vs$$txt_appendText
+		(.vd_id
+		,vsta$gl_bldver_desc	!Text
+		,build_id_line		!line
+		,left_margin		!field
+		)
+  THEN RETURN $error	(vsta$_apptxt
+			,string_type, %ASCID 'build version description'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE take_down_auth_form =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Removes the authorization form from the screen.
+!--
+BEGIN
+!
+! Delete the PB, which will delete the window and cause the VSS
+! module to delete it's stuff, and the JRB, and of course, deactivate
+! the VKB.
+!
+IF NOT vs$$vds_delete_pb (.auth_pb_id)
+  THEN $error	(vsta$_delpb_for
+		,string_type, %ASCID 'Authorization form'
+		);
+
+auth_pb_id = 0;			!Note that the PB is gone.
+!
+! Delete the VD and we're home free.
+!
+IF NOT vs$$vds_delete_vd (.auth_vd_id)
+  THEN $error	(vsta$_delvd_for
+		,string_type, %ASCID 'Authorization form'
+		);
+
+auth_vd_id = 0;			!Note that the VD is gone.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_auth_uetp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Authorize the UETP. It did a priv QIO to start the session.
+! IMPLICIT INPUTS:
+!	vsta$gl_uetp_username_desc - descriptor to username.
+!--
+BEGIN
+LOCAL
+    name_len: WORD,
+    status;
+
+name_len = .vsta$gl_uetp_username_desc [0];
+IF (.name_len EQL 0)
+  THEN RETURN $bug (SS$_BADPARAM);
+
+!
+! Setup the authorized username and upper-case it.
+!
+srv$gl_username_Desc [0] = .name_len;
+CH$MOVE	(.srv$gl_username_desc [0]
+	,.vsta$gl_uetp_username_desc [1]
+	,username_string
+	);
+str$upcase	(srv$gl_username_desc
+		,srv$gl_username_desc
+		);
+
+!
+! Set flag saying we're now authorized.
+!
+vsta$gl_authorized = 1;
+vs$$acp_usage_trace ($DESCRIPTOR('UETP Authorization'));
+
+!
+! Do "after_auth_actions"
+!
+IF NOT (status =
+    vsta$$srv_init_after_auth ()
+	)
+  THEN
+    BEGIN
+    vsta$$srv_auth_end ();		!End session.
+    RETURN .status
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_auth_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	End session actions.
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! If the VD exists, then the form must be taken down.
+!
+IF (.auth_vd_id NEQ 0)
+  THEN
+    BEGIN
+    take_down_auth_form ();
+    END;
+!
+! Clear out username.
+!
+srv$gl_username_desc [0] = 0;		!User name field has no length
+curr_username_len = 0;
+IF (.curr_password_len GTR 0)
+  THEN
+    BEGIN
+    CH$FILL (0, .curr_password_len, password_string);
+    curr_password_len = 0;
+    END;
+
+vsta$gl_authorized = 0;			!User no longer authorized.
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

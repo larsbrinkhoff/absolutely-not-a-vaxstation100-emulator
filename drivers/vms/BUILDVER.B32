@@ -1,0 +1,21 @@
+MODULE BUILDVER =
+BEGIN
+!++
+! Specify the "build" version number for VAXstation software
+! This build number will appear in the authorization form.
+!--
+!===================================!
+MACRO bldver = 'VSTA X2.0-01  9-JAN-1986 02:10' %;
+!===================================!
+!
+! Make sure length will fit
+!
+%IF %CHARCOUNT (bldver) GTR 30
+  %THEN %ERROR ('? bldver string too long');
+%FI
+
+GLOBAL
+    vsta$gl_bldver_desc: VECTOR [2]
+		INITIAL (%CHARCOUNT (bldver), UPLIT (bldver));
+END
+ELUDOM

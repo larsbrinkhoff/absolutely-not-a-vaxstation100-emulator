@@ -1,0 +1,913 @@
+! VSGIPA.BLI - VaxStation GIdis Pathed Processes, Bliss source
+!
+MODULE VSTA$GID_pa(
+    IDENT = 'GIDIS pathed processes',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This file contains routines for drawing paths.  There are 6
+!	kinds of paths, shaded and non-shaded forms of each of vector,
+!	open curve, and closed curve.  Each is treated differently.
+!	Circles are special cases of the curves.
+!
+!	To use this module, require VSGIPA.REQ to declare the routines
+!	and symbols.
+!
+! Environment:
+!
+!
+GLOBAL LITERAL GID$$PA_Edit_level = 10;
+!
+!--
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgipp';			! Gidis position processes
+LIBRARY 'VSTA$LIBRARY:vsgicc';			! Character cell routines
+LIBRARY 'VSTA$LIBRARY:vsgisp';			! Shaded path routines
+LIBRARY 'VSTA$LIBRARY:vsgilp';			! Linear path routines
+LIBRARY 'VSTA$LIBRARY:vsgicx';			! Coordinate translator
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+EXTERNAL ROUTINE GID$$AR_draw_arc;		! Arc module
+
+library_file_crock;
+
+$vsta_psect;
+
+EXTERNAL ROUTINE vsta$$error;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_flush_path =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Call to release pending path buffers to the device, and initialize
+!	a new set.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    SELECTONE .sf[ pathing_mode] OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! Flush the linear path
+	status = GID$$LP_flush_lines();
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! Flush the shaded path
+	status = GID$$SP_flush_shaded();
+	END;
+    [ GID$$PA_text_path]:
+	BEGIN ! Flush the character cell (text) path
+	status = GID$$CC_flush_characters();
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, just do the position
+	status = 1;
+    TES;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_change_mode( new_mode) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Call to release pending path buffers to the device, and change modes
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    SELECTONE .sf[ pathing_mode] OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! flush the linear path
+	status = GID$$LP_end_lines();
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! Flush the shaded path
+	status = GID$$SP_end_shaded();
+	END;
+    [ GID$$PA_text_path]:
+	BEGIN ! Flush the character cell (text) path
+	status = GID$$CC_end_characters();
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, just do the position
+	status = 1;
+    TES;
+
+    sf[ pathing_mode] = GID$$PA_no_path_in_progress;
+    IF NOT .status THEN VSTA$$Error( .status);
+
+    SELECTONE .new_mode OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! create the linear path
+	status = GID$$LP_new_lines();
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! create the shaded path
+	status = GID$$SP_new_shaded();
+	END;
+    [ GID$$PA_text_path]:
+	BEGIN ! create the character cell (text) path
+	status = GID$$CC_new_characters();
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, just do the position
+	status = 1;
+    TES;
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    sf[ pathing_mode] = .new_mode;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_curve_continue(	! Continue a path
+    X,					! Ending X in Gidis coordinate space
+    Y					! Ending Y in Gidis coordinate space
+    )  =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Continue a path in the current shading mode and path type
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    sf[ x_soft_pos] = .X;
+    sf[ y_soft_pos] = .Y;
+    X = GID$$CX_Map_coordinate( .X); 
+    Y = GID$$CX_Map_coordinate( .Y);
+
+    status = (SELECTONE .sf[ pathing_mode] OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! Insert positon in the linear path
+	GID$$LP_linear_continue( .X, .Y)
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! Insert position in the shaded path
+	GID$$SP_shade_continue( .X, .Y)
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, just do the position
+	1;! No action !
+    TES);
+    sf[ x_hard_pos] = .X;
+    sf[ y_hard_pos] = .Y;
+    .status
+    END;
+
+GLOBAL ROUTINE GID$$PA_nxcurve_continue(	! Continue a path
+    X,					! Ending X in hardware coordinate space
+    Y					! Ending Y in hardware coordinate space
+    )  =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Continue a path in the current shading mode and path type
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    sf[ x_soft_pos] = GID$$CX_UNMap_coordinate( .X); 
+    sf[ y_soft_pos] = GID$$CX_UNMap_coordinate( .Y);
+
+    status = (SELECTONE .sf[ pathing_mode] OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! Insert positon in the linear path
+	GID$$LP_linear_continue( .X, .Y)
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! Insert position in the shaded path
+	GID$$SP_shade_continue( .X, .Y)
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, just do the position
+	1;! No action !
+    TES);
+    sf[ x_hard_pos] = .X;
+    sf[ y_hard_pos] = .Y;
+    .status
+    END;
+
+GLOBAL ROUTINE GID$$PA_position(
+	X,
+	Y
+	) =
+! Routine value:
+!	Success code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    GID$$PP_reposition( .X, .Y);
+    SELECTONE .sf[ pathing_mode]
+    OF SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! Intersperse positon in the linear path
+	GID$$LP_reposition( .sf[ x_hard_pos], .sf[ y_hard_pos]);
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! Intersperse positon in the linear path
+	GID$$SP_reposition( .sf[ x_hard_pos], .sf[ y_hard_pos]);
+	END;
+    [ GID$$PA_text_path]:
+	BEGIN ! We can intersperse a position on the print-text control string
+	GID$$CC_reposition( .sf[ x_hard_pos], .sf[ y_hard_pos]);
+	END;
+    [ OTHERWISE]: ! We cannot intersperse a position in the path, so flush it
+	BEGIN
+	GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+	END;
+    TES;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_vector(		! Draw vector in current writing mode
+    X,					! Ending X in Gidis coordinate space
+    Y					! Ending Y in Gidis coordinate space
+    ) =
+! Routine value:
+!	Success status indicator
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    IF .sf[ shading_mode] EQL GID$$AS_not_shading
+    THEN ! Linear path needed, create if needed and then send this coordinate
+	BEGIN
+	IF .sf[ pathing_mode] NEQ GID$$PA_linear_path
+	THEN ! Mode is not set for linear paths, start a new path buffer
+	    BEGIN
+	    status = GID$$PA_change_mode( GID$$PA_linear_path);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    END;
+	status = GID$$LP_polygon_begin_open();
+	END
+    ELSE
+	BEGIN ! A shading mode is needed, create if needed, and send this X & Y
+	IF .sf[ pathing_mode] NEQ GID$$PA_shaded_path
+	THEN ! Mode is not set for shaded paths, start a new path buffer
+	    BEGIN
+	    status = GID$$PA_change_mode( GID$$PA_shaded_path);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    END;
+	status = GID$$SP_polyshade_begin_open();
+	END;
+    IF NOT .status THEN VSTA$$Error( .status);
+    GID$$PA_curve_continue( .X, .Y)
+    END;
+
+GLOBAL ROUTINE GID$$PA_vector_pop =
+! Routine value:
+! Implicit inputs:
+!	x_hard_pos and y_hard_pos from state fetcher
+! Implicit outputs:
+!	Updated position stack
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ top_of_position_stack] GTR 0
+    THEN !	Stack pointer is in range [1,inf], okay to pop
+	BEGIN
+	sf[ top_of_position_stack] = .sf[ top_of_position_stack] - 1;
+	GID$$PA_vector(
+	    .sf[ position_x_stack, .sf[ top_of_position_stack]],
+	    .sf[ position_y_stack, .sf[ top_of_position_stack]]);
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_curve_begin_open =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] EQL GID$$AS_not_shading
+    THEN ! Linear path needed, create if needed and then send this coordinate
+	BEGIN
+	IF .sf[ pathing_mode] NEQ GID$$PA_linear_path
+	THEN ! Mode is not set for linear paths, start a new path buffer
+	    BEGIN
+	    GID$$PA_change_mode( GID$$PA_linear_path);
+	    END;
+	GID$$LP_curveline_begin_open();
+	END
+    ELSE
+	BEGIN ! A shading mode is needed, create if needed, and send this X & Y
+	IF .sf[ pathing_mode] NEQ GID$$PA_shaded_path
+	THEN ! Mode is not set for shaded paths, start a new path buffer
+	    BEGIN
+	    GID$$PA_change_mode( GID$$PA_shaded_path);
+	    END;
+	GID$$SP_curveshade_begin_open();
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_curve_begin_closed =
+! Routine value:
+!	Success code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] EQL GID$$AS_not_shading
+    THEN ! Linear path needed, create if needed and then send this coordinate
+	BEGIN
+	IF .sf[ pathing_mode] NEQ GID$$PA_linear_path
+	THEN ! Mode is not set for linear paths, start a new path buffer
+	    BEGIN
+	    GID$$PA_change_mode( GID$$PA_linear_path);
+	    END;
+	GID$$LP_curveline_begin_closed();
+	END
+    ELSE
+	BEGIN ! A shading mode is needed, create if needed, and send this X & Y
+	IF .sf[ pathing_mode] NEQ GID$$PA_shaded_path
+	THEN ! Mode is not set for shaded paths, start a new path buffer
+	    BEGIN
+	    GID$$PA_change_mode( GID$$PA_shaded_path);
+	    END;
+	GID$$SP_curveshade_begin_closed();
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_character(	! Do a character opcode
+    char				! Character code to output
+    ) =
+! Routine value:
+!	Success code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Do the pathing functions needed for characters
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+    IF .sf[ pathing_mode] NEQ GID$$PA_text_path
+    THEN ! Mode is not set for text, start a new path buffer
+	BEGIN
+	status = GID$$PA_change_mode( GID$$PA_text_path);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    GID$$CC_character( .char)
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_curve_end =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    (SELECTONE .sf[ pathing_mode] OF
+    SET
+    [ GID$$PA_linear_path]:
+	BEGIN ! End a linear path
+	GID$$LP_linear_end()
+	END;
+    [ GID$$PA_shaded_path]:
+	BEGIN ! End a shaded path
+	GID$$SP_shade_end()
+	END;
+    [ OTHERWISE]: ! We are not in a coordinate path, don't care
+	1;! No action !
+    TES)
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_filled_poly_begin =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+!	Change to shaded mode with change_mode.
+!	Selected and initialize the polygon-fill sub-mode of shaded mode
+!	with GID$$SP_filled_poly_begin.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    status = GID$$PA_change_mode( GID$$PA_shaded_path);
+    IF NOT .status THEN VSTA$$Error( .status);
+    status = GID$$SP_filled_poly_begin();
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_fill_to_X(
+    X	! X coordinate of mast to fill to
+    ) =
+! Routine value:
+!	Always success
+! Implicit inputs:
+!	shading mode state
+! Implicit outputs:
+!	updated shading mode state
+! Function:
+!	Change pathing module to fill_to_X mode
+! Algorithm:
+!	Flush any pending operations in old state, and change to new state.
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] NEQ GID$$AS_shade_to_mast
+    THEN GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    sf[ shading_mode] = GID$$AS_shade_to_mast;
+    sf[ shading_x] = GID$$CX_map_coordinate( .X);
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_fill_to_Y(
+    Y	! Mast to fill to
+    ) =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] NEQ GID$$AS_shade_to_boom
+    THEN GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    sf[ shading_mode] = GID$$AS_shade_to_boom;
+    sf[ shading_y] = GID$$CX_map_coordinate( .Y);
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_fill_to_XY(
+    X,	! Point to fill to
+    Y
+    ) =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] NEQ GID$$AS_shade_to_point
+    THEN GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    sf[ shading_mode] = GID$$AS_shade_to_point;
+    sf[ shading_x] = GID$$CX_map_coordinate( .X);
+    sf[ shading_y] = GID$$CX_map_coordinate( .Y);
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_fill_off(
+    X	! Mast to fill to
+    ) =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ shading_mode] NEQ GID$$AS_not_shading
+    THEN GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+    sf[ shading_mode] = GID$$AS_not_shading;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$PA_do_arc(
+    xc, yc,		! Center of arc in Gidis coordinate space
+    x1, y1,		! Starting point in Gidis coordinate space
+			! (Must already be current position)
+    length		! Arc length in degrees 
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+!	This is almost the same code as in GID$$PA_Vector
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    IF .sf[ shading_mode] EQL GID$$AS_not_shading
+    THEN ! Linear path needed, create if needed and then send this coordinate
+	BEGIN
+	IF .sf[ pathing_mode] NEQ GID$$PA_linear_path
+	THEN ! Mode is not set for linear paths, start a new path buffer
+	    BEGIN
+	    status = GID$$PA_change_mode( GID$$PA_linear_path);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    END;
+	status = GID$$LP_polygon_begin_open();
+	END
+    ELSE
+	BEGIN ! A shading mode is needed, create if needed, and send this X & Y
+	IF .sf[ pathing_mode] NEQ GID$$PA_shaded_path
+	THEN ! Mode is not set for shaded paths, start a new path buffer
+	    BEGIN
+	    status = GID$$PA_change_mode( GID$$PA_shaded_path);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    END;
+	status = GID$$SP_polyshade_begin_open();
+	END;
+    IF NOT .status THEN VSTA$$Error( .status);
+    GID$$AR_draw_arc(
+	GID$$CX_map_coordinate( .xc),
+	GID$$CX_map_coordinate( .yc),
+	GID$$CX_map_coordinate( .x1),
+	GID$$CX_map_coordinate( .y1),
+	.length)
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_circum_arc(
+    X, Y,
+    degrees
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    GID$$PA_do_arc( .x, .y, .sf[ x_soft_pos], .sf[ y_soft_pos], .degrees)
+    END;
+
+!+
+GLOBAL ROUTINE GID$$PA_center_arc(
+    X, Y,
+    degrees
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL xc, yc, status;
+
+    xc = .sf[ x_soft_pos];
+    yc = .sf[ y_soft_pos];
+    GID$$PA_position( .x, .y);
+    status = GID$$PA_do_arc(
+	.xc, .yc, .sf[ x_soft_pos], .sf[ y_soft_pos], .degrees);
+    GID$$PA_position( .xc, .yc);
+    .status
+    END;
+
+
+END
+ELUDOM
+
+
+! VSGIAR.BLI - VaxStation GIdis Pathed Processes, Bliss source
+!
+MODULE VSTA$GID_ar(
+    IDENT = 'GIDIS ARc processes',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	Contains algorithms for drawing circles with short lines
+!
+!	To use this module, require VSGIAR.REQ to declare the routines
+!	and symbols.
+!
+! Environment:
+!
+!
+GLOBAL LITERAL GID$$AR_Edit_level = 1;
+!
+LIBRARY 'VSTA$LIBRARY:vsgipa';
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+
+$vsta_psect;					! Define PSECTs
+
+ROUTINE square_root( i) =
+!
+!	Function:
+!	    Computes and returns the largest integer that when squared will
+!	    not exceed the value of the parameter.  To get the nearest integer
+!	    to the actual square root, you may do (SQUARE_ROOT( i*4)+1)/2.
+!	Algorithm:
+!	    Binary search the entire range of integers for the desired value.
+!	Side effects:
+!	    Must be used on 32-bit processors.
+    BEGIN
+    LOCAL root, top, bottom;
+
+    i = .i ^ 2;
+    bottom = 0;
+    top = 65536;
+    WHILE .bottom+1 LSSU .top DO
+	BEGIN
+	root = .bottom + ((.top - .bottom) ^ -1);
+	IF (.root * .root) GTRU .i
+	THEN top = .root
+	ELSE bottom = .root;
+	END;
+    .root ^ -1
+    END;
+
+!+
+!	The routines move_to and add_pixel are used to take the output
+!	from an incremental point generator and form them into
+!	combinations of horizontal, diagonal, and vertical vectors. Call
+!	move_to to initialize the system, call add_pixel to incrementally
+!	add pixels to the system, and call draw_vector( .last_x, .last_y)
+!	to terminate the system.
+!-
+
+OWN
+    last_x, last_y,
+    current_direction;
+
+ROUTINE move_to( x, y) : NOVALUE =
+    BEGIN
+    last_x = .x; last_y = .y;
+    current_direction = 0;
+    END;
+
+ROUTINE add_pixel( x, y) =
+    BEGIN
+    LOCAL
+	status,
+	added_direction;
+
+    status = 1;
+    added_direction< 0, 16, 0> = .x - .last_x;
+    added_direction< 16, 16, 0> = .y - .last_y;
+    IF .current_direction NEQ 0
+    THEN
+	BEGIN
+	IF .added_direction NEQ .current_direction
+	THEN
+	    BEGIN
+	    status = GID$$PA_nxcurve_continue( .last_x, .last_y);
+	    END;
+	END;
+    current_direction = .added_direction;
+    last_x = .x; last_y = .y;
+    .status
+    END;
+
+!+
+!	From here to end of module is "A Linear Algorithm for Incremental
+!	Digital Display of Circular Arcs", written from algorithms described
+!	in the Feb. 1977 (Volume 20 Number 2) issue of the Communications
+!	of the ACM, by Jack Bresenham.
+!-
+
+OWN x, y, xc, yc, pixels, quadrant;
+
+ROUTINE plot =
+    BEGIN
+    LOCAL
+	status;
+
+    pixels = .pixels + 1;
+    CASE .quadrant FROM -4 TO 4 OF
+    SET
+    [ 0,1]: status = add_pixel( .xc + .x, .yc + .y);
+    [-1]: status = add_pixel( .xc + .y, .yc + .x);
+    [ 2]: status = add_pixel( .xc - .y, .yc + .x);
+    [-2]: status = add_pixel( .xc - .x, .yc + .y);
+    [ 3]: status = add_pixel( .xc - .x, .yc - .y);
+    [-3]: status = add_pixel( .xc - .y, .yc - .x);
+    [ 4]: status = add_pixel( .xc + .y, .yc - .x);
+    [-4]: status = add_pixel( .xc + .x, .yc - .y);
+    TES;
+    .status
+    END;
+
+GLOBAL ROUTINE GID$$AR_draw_arc(
+    xcp, ycp,		! Center of arc 
+    x1, y1,		! Starting point 
+    length		! Arc length in degrees 
+    ) =
+    BEGIN
+    LOCAL
+	d, s,		! Bresenham's error terms delta and sigma
+	direction,	! 1 for clockwise, -1 for counter-clockwise
+	rsquared,	! Square of arc radius
+	circumference,	! Number of pixels in the arc
+	status;
+
+    MACRO M1 =
+	BEGIN
+	x = .x + 1;
+	d = .d + 2*.x + 1;
+	plot();
+	END%;
+
+    MACRO M2 =
+	BEGIN
+	x = .x + 1;
+	y = .y - 1;
+	d = .d + 2*.x - 2*.y + 2;
+	plot();
+	END%;
+
+    MACRO M3 =
+	BEGIN
+	y = .y - 1;
+	d = .d - 2*.y + 1;
+	plot();
+	END%;
+
+    xc = .xcp;
+    yc = .ycp;
+
+!	Determine what quadrant we are in, and ititialize accordingly:
+!	(Derived from "Table 1. Transformation Table...")
+!	In our up-side-down coordinate space, quadrants are numbered as
+!	follows.  Also notice that the meanings of "clockwise" and
+!	"counter-clockwise" are reversed from what they are in the article.
+!			|
+!		      3	| 4
+!		    ----+--->
+!		      2	| 1
+!			V
+!	Also remember that Gidis defines negative arc length as true clockwise,
+!	and positive arc length as true counter-clockwise.
+!
+    IF .x1 LSS .xc
+    THEN	! Starting in a "left" quadrant, one of 2 or 3
+	BEGIN
+	IF .y1 LSS .yc
+	THEN quadrant = 3	! Starting in top-left, quadrant 3.
+	ELSE quadrant = 2	! Staring in bottom-left, quadrant 2.
+	END
+    ELSE	! Starting in a "right" quadrant, one of 1 or 4
+	BEGIN
+	IF .y1 LSS .yc
+	THEN quadrant = 4	! Starting in top-right, quadrant 4.
+	ELSE quadrant = 1;	! Staring in bottom-right, quadrant 1.
+	END;
+
+    IF .length GTR 0 THEN direction = 1
+    ELSE	! Direction is clockwise (the "other" way), flip things around.
+	BEGIN
+	direction = -1;
+	length = -.length;
+	quadrant = -.quadrant
+	END;
+   
+    IF ((.direction GTR 0) AND .quadrant)
+    OR ((.direction LSS 0) AND NOT .quadrant)
+    THEN
+	BEGIN
+	x = .x1 - .xc;
+	y = .y1 - .yc;
+	END
+    ELSE
+	BEGIN
+	y = .x1 - .xc;
+	x = .y1 - .yc;
+	END;
+
+    IF .x LSS 0 THEN x = -.x;
+    IF .y LSS 0 THEN y = -.y;
+
+    pixels = 0;
+    move_to( .x1, .y1);
+    rsquared = .x*.x + .y*.y;
+
+!	Compute the number of pixels in the full 360 degree circle:
+!	This value is 8 * square_root(2) * radius.  Computing this integers
+!	requires that the square root be rounded to the nearest integer, so
+!	all is multiplied by 2 first, and divided back later.
+
+    circumference = square_root( .rsquared*8) + 1;
+
+!	The following must NOT be .circumference*2, or rounding will be wrong!
+
+    circumference = (.circumference/2)*4; 
+    circumference = .circumference * .length / 360;
+
+!	Compute the initial value for error term delta
+
+    d = (.x+1)*(.x+1) + (.y-1)*(.y-1) - .rsquared;
+
+!	Draw the arc, one pixel at a time
+
+    WHILE .pixels LSS .circumference DO
+    	BEGIN	! For each pixel in this arc
+	IF .y GTR 0
+	THEN ! Have not reached a quadrant boundary, increment to the next pixel
+	    BEGIN
+	    IF .d LSS 0
+	    THEN ! First half of quadrant
+		BEGIN
+		s = 2*.d+2*.y - 1;
+		IF .s LEQ 0 THEN M1 ELSE M2;
+		END
+	    ELSE ! Second half of quadrant
+		BEGIN
+		s = 2*.d - 2*.x - 1;
+		IF .s LEQ 0 THEN M2 ELSE M3;
+ 		END
+	    END
+	ELSE ! Reached quadrant boundary, re-init and move on to next quadrant
+	    BEGIN
+	    d = .d - 4*.x;
+	    y = .x; x = 0;
+	    quadrant = .quadrant - 1;
+	    IF .quadrant EQL 0
+	    THEN quadrant = 4
+	    ELSE IF .quadrant EQL -5 THEN quadrant = -1;
+	    END
+	END;
+    status = GID$$PA_nxcurve_continue( .last_x, .last_y);
+
+    .status
+    END;
+
+END
+ELUDOM

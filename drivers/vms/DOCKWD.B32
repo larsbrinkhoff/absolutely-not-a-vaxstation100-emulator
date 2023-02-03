@@ -1,0 +1,420 @@
+MODULE DOC$KWD (
+		IDENT = 'VSTADOC Utility Keyword routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides subroutines for dealing with KEYWORDs.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$kwd_init,		!Initialize to process keywords
+    doc$$gen_keyword,		!Define a keyword for this page.
+    doc$$kwd_crossref,		!Crossref the keywords
+    lookup_keyword,		!Lookup keyword and return page number
+    doc$$kwd_read_setup,	!Setup to read from KWD file ($rewind it)
+    doc$$get_next_kwd,		!Read next KWD from file.
+    open_kwd_file,		!Open temp keyword file
+    build_record,		!Build the keyword record
+    close_kwd_file;		!Close the keyword file
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$error,			!Report an error
+    doc$$gen_error,		!Report a GENERATE error
+    doc$$type_line;		!Type out a line on TTY
+
+EXTERNAL
+    fatal_error,
+    num_user_errors,		!Number of user errors processed
+    doc$gl_page_q: VECTOR [2],	!Page block queue
+    doc$gl_cur_page_num;	!Current page number
+
+GLOBAL
+    doc$gl_num_kwds;		!Number of keywords defined since file was
+				! opened.
+
+OWN
+    record_buf: kwd_rec_block,	!VECTOR [kwd$K_rec_length, BYTE],
+    rec_desc: VECTOR [2]
+		INITIAL (kwd$K_rec_length, record_buf),
+    kwd_open_flag,		!=1 if keyword file is open
+
+    kwd_key_xab:
+	$XABKEY	(DTP = STG	!String datatype
+		,POS = 0	!Starts in first byte
+		,SIZ = kwd$K_key_size
+		),
+    kwd_fab: $FAB
+		(ORG = IDX
+		,FNM = 'KEYTEMP.IDX'
+		,FAC = <GET,PUT>
+		,ALQ = 50
+		,BKS = 4
+		,DEQ = 100	!Default extension quantity
+		,FOP = <CBT,DFW,TMD,TMP>
+		,MRS = kwd$K_rec_length !Max record size
+		,RFM = <FIX>	!Fixed length records
+		,XAB = kwd_key_xab
+		),
+    kwd_rab: $RAB
+		(FAB = kwd_fab
+		,RBF = record_buf
+		,UBF = record_buf
+		,RSZ = kwd$K_rec_length
+		,USZ = kwd$K_rec_length
+		);
+
+GLOBAL ROUTINE doc$$kwd_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize module to process keywords
+!--
+BEGIN
+
+IF (.kwd_open_flag)
+  THEN close_kwd_file ();
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_keyword
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when a keyword is defined for this page.
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (build_record (.str_desc))
+  THEN RETURN .status;		!Already printed error
+
+IF (NOT (.kwd_open_flag))
+  THEN
+    BEGIN
+    IF NOT (status =
+	open_kwd_file ()
+	    )
+      THEN
+	BEGIN
+	fatal_error = 1;
+	$typeline ('%FATAL: Error opening KEYWORD sorting file');
+	RETURN doc$$error (.status)
+	END;
+    END;
+!
+! Insert record if we can
+!
+IF NOT (status =
+    $put	(RAB = kwd_rab)
+	)
+  THEN
+    BEGIN
+    IF (.kwd_rab [rab$l_sts] EQL RMS$_DUP)
+      THEN
+	BEGIN
+	$typeline ('%WARN: Duplicate KEYWORD definition, ignored');
+	doc$$append_list_line (%ASCID '%WARN: Duplicate KEYWORD definition, ignored');
+	doc$$put_list_line ();
+	END
+      ELSE
+	BEGIN
+	fatal_error = 1;
+	$typeline ('%FATAL: Cant $put KEYWORD record');
+	RETURN doc$$error (.status);
+	END;
+    END;
+!
+! Record stored in file
+!
+doc$gl_num_kwds = .doc$gl_num_kwds + 1;		!Remember # of keywords defined
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$kwd_crossref =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Loop thru the RCAL's looking for keyword references. Look them
+!	up, and print errors if keywords are not found. Write the page
+!	numbers in the keyword references.
+!--
+BEGIN
+LOCAL
+    pagb: REF page_block,
+    this_page_num,
+    linb: REF txt_line_block,
+    irb_hdr: REF ir_hdr,
+    irsel: REF ir_sel,
+    kwd_desc: VECTOR [2],
+    typeout_len: WORD,
+    typeout_str: BLOCK [256,BYTE],
+    typeout_desc: VECTOR [2],
+    status;
+
+IF (NOT (.kwd_open_flag))
+  THEN RETURN SS$_NORMAL;	!If no keywords, then nothing to do
+
+kwd_desc [0] = kwd$K_key_length;	!All keywords are this big.
+!
+! Loop through the data structure
+!
+pagb = .doc$gl_page_q [0];	!Get first page
+WHILE (.pagb NEQ doc$gl_page_q) DO
+    BEGIN			!For each page...
+    this_page_num = .pagb [pgb$w_page_num];
+    linb = .pagb [pgb$a_line_q_hdr_fl];
+
+    WHILE (.linb NEQ pagb [pgb$a_line_q_hdr_fl]) DO
+	BEGIN			!For each line...
+	irb_hdr = .linb [lin$a_rcal_list];
+	WHILE (.irb_hdr NEQ 0) DO
+	    BEGIN		!For each RCAL...
+	    IF (.irb_hdr [irb$w_type] EQL doc_rcal$K_set_selectable)
+	      THEN
+		BEGIN		!SELECTABLE
+		irsel = .irb_hdr + irb$S_ir_hdr;	!Point to ir_sel block
+		IF (.irsel [irb$w_sel_link] EQL 0)
+		  THEN
+		    BEGIN	!SELECTABLE with keyword.
+		    kwd_desc [1] = irsel [irb$b_sel_kwd];
+		    IF NOT (status =
+			lookup_keyword	(kwd_desc
+					,irsel [irb$w_sel_page]
+					)
+			    )
+		      THEN
+			BEGIN
+		    !
+		    !   do $fao to get string...
+		    !
+			typeout_desc [0] = 256;
+			typeout_desc [1] = typeout_str;
+			IF NOT (status =
+			    $fao
+	(%ASCID '%ERR: Reference on page !SL to undefined keyword !AS'	!CTRSTR
+	,typeout_len		!OUTLEN
+	,typeout_desc		!OUTBUF
+	,.this_page_num		!P1
+	,kwd_desc		!P2
+	)
+				)
+			  THEN RETURN doc$$error (.status);
+			typeout_desc [0] = .typeout_len;
+			doc$$gen_error (typeout_desc);
+			irsel [irb$w_sel_page] = 1;		!Just go to page 1.
+			END;		!Keyword not found
+		    END;		!SELECTABLE with keyword
+		END;			!SELECTABLE
+	    irb_hdr = .irb_hdr [irb$a_flink];
+	    END;
+
+	linb = .linb [lin$a_flink];	!Go to next line
+	END;
+
+    pagb = .pagb [pgb$a_flink];	!Go to next page
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE lookup_keyword
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Looks up the keyword. If not found, return error status.
+!	If found, return page number where defined.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,page_num_addr: REF VECTOR [1,WORD]	!Write page number here
+	) =
+!--
+BEGIN
+LOCAL
+    err_str: BLOCK [256,BYTE],
+    err_str_desc: VECTOR [2],
+    kwd_len,
+    status;
+
+IF NOT (.kwd_open_flag)
+  THEN RETURN 0;		!Not defined
+!
+! Remember the key to lookup
+!
+kwd_rab [RAB$B_KSZ] = kwd$K_key_length;
+kwd_rab [RAB$L_KBF] = .str_desc [1];
+
+IF NOT (status =
+    $get	(RAB = kwd_rab)
+	)
+  THEN RETURN .status;
+
+page_num_addr[0] = .record_buf [kwd$w_pagedef];	!Get pagenumber from record
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$kwd_read_setup =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Rewind KWD file and prepare to read sequentially.
+!--
+BEGIN
+LOCAL
+    status;
+
+kwd_rab [rab$b_rac] = rab$c_seq;		!Note sequential access desired
+IF NOT (status =
+    $rewind	(RAB = kwd_rab)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t $rewind kwd file');
+    RETURN doc$$error (.status)
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_next_kwd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read next KWD from the keyword file, and
+!	write the kw$ entry at the address specified.
+! FORMAL PARAMETERS:
+	(kw_addr: REF keyword_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $get	(RAB = kwd_rab)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t read keyword file');
+    RETURN doc$$error (.status)
+    END;
+!
+! Put stuff at the address.
+!
+CH$MOVE	(kwd$K_key_length
+	,record_buf [kwd$b_key_to_sort]
+	,kw_addr [kw$b_ascii]
+	);
+kw_addr [kw$w_page_number] = .record_buf [kwd$w_pagedef];
+RETURN SS$_NORMAL
+END;
+
+ROUTINE open_kwd_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open the temp. keyword file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $create	(FAB = kwd_fab)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t $create the temp keyword file');
+    RETURN doc$$error (.status)
+    END;
+
+IF NOT (status =
+    $connect	(RAB = kwd_rab)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t $connect to temp keyword file');
+    RETURN doc$$error (.status)
+    END;
+!
+! Note in the RAB that we want KEY access.
+!
+kwd_rab [rab$b_rac] = rab$c_key;
+
+kwd_open_flag = 1;		!Remember keyword file is open
+doc$gl_num_kwds = 0;		!No keywords have been defined yet.
+    
+RETURN SS$_NORMAL
+END;
+
+ROUTINE build_record
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given a keyword, build the record for the keyword file.
+! FORMAL PARAMETERS:
+	(kwd_desc: REF VECTOR [2]
+	) =
+! IMPLICIT INPUTS:
+!	doc$gl_cur_page_num - current page number
+!--
+BEGIN
+LOCAL
+    kwd_len,
+    status;
+
+kwd_len = MIN (kwd$K_key_length, .kwd_desc [0]);
+
+CH$COPY	(.kwd_len		!Length of source
+	,.kwd_desc [1]		!Source ptr1
+	,%C' '			!Fill character
+	,kwd$K_key_length	!Dest length
+	,record_buf		!Dest ptr.
+	);
+
+record_buf [kwd$w_pagedef] = .doc$gl_cur_page_num;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE close_kwd_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Close the temporary keyword file
+!--
+BEGIN
+LOCAL
+    status;
+
+kwd_open_flag = 0;		!Note file not open
+
+IF NOT (status =
+    $close	(FAB = kwd_fab)
+	)
+  THEN
+    BEGIN
+    $typeline ('%FATAL: Can''t close KEYWORD temp file');
+    RETURN doc$$error (.status)
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

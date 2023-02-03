@@ -1,0 +1,435 @@
+module txtdelete (
+		ADDRESSING_MODE (EXTERNAL = GENERAL,
+				NONEXTERNAL = GENERAL) ) =
+begin
+
+
+! Text deletion and clearing functions for vax workstation.
+
+forward routine
+
+	vs$$txt_deleteCharacters,
+				! delete text from a field
+	finish_deletion,	! update screen after internal text deletion
+	delete_portion;		! delete portion of string
+
+external routine
+
+	connect,		! connect two string blocks
+	findLeft,		! find fringe strings
+	findRight,
+	mergeStrings,		! merge two strings if of same attributes
+	printField,		! show field after deletion
+	releaseStringsBetween,	! release some consecutive strings
+	sameAttributes,		! compare two string blocks
+	truncate,		! truncate characters from string
+	updateEnds;		! update string ends after deletion
+
+library 'vsta$library:txtsym';
+library 'vsta$library:libmacros';	! symbols like $return_error
+library 'vsta$library:termio';
+
+$vsta_psect;			! Define PSECTs for code/data
+
+
+global routine vs$$txt_deleteCharacters
+!++
+!
+! Functional description:
+!
+!	Delete n characters from a field, starting from a
+!	specified character position.
+!
+!	Deletion always includes the character at the specified position,
+!	with the others deleted on the left for a negative n and on the
+!	right for a positive n.
+!
+!	The character position may be specified as 0, which indicates the
+!	rightmost position occupied by text, thus allowing the common case
+!	of deleting from the right without having to know how many characters
+!	exist.
+!
+!	n may be specified as 0, which causes all characters to the right of
+!	and including the one at the specified position to be deleted.
+!
+!	This routine is faced with the task of deleting some strings partially
+!	and some strings completely, as shown in the following diagram:
+!
+!	+-----------------------------------------------------+
+!	| existing string | existing string | existing string |
+!	+-------+-----------------------------+---------------+
+!		|	portion being deleted |
+!		+-----------------------------+
+!
+!	If given the above configuration, the routine has to know to
+!	delete portions of the leftmost and rightmost strings, to completely
+!	delete the center string, and then to decide whether the left and
+!	right fringes can be merged due to being of the same attributes.
+!
+! Formal parameters:
+ (
+	id,			! virtual display id
+	lineNum,		! line whose field is being edited
+	fieldPos,		! position of field being edited
+	charPos,		! position of first character to delete
+	n			! |n| is number of characters, sgn(n) is
+				! direction
+ ) =
+!
+! Side effects:
+!
+!	Text is updated on the screen to reflect the deletion.
+!
+! Completion codes:
+!
+!	If charPos and n describe an area not totally covering existing text,
+!	no error results. Instead, only the text that intersects the specified
+!	region is deleted.
+!
+!	This allows callers to say things like "make sure characters three
+!	through the end are gone, but if they were already gone, don't
+!	complain".  Hence callers don't have to carefully keep track of
+!	what characters exist.
+!--
+
+	begin
+
+	bind
+!
+! Get address of text block.
+!
+	    txtBlk = getTextBlock (.id) : text_block,
+!
+! Get address of field block.
+!
+	    fldBlk = getFieldBlock (txtBlk[base], .lineNum, .fieldPos)
+		: field_block,
+!
+! Get number of defined strings and characters for this field.
+!
+	    nStrings = .fldBlk[fld_nStrings],
+	    nChars = .fldBlk[fld_nChars],
+!
+! Calculate starting position, which for a non-0 charPos is
+! merely it, and for a 0 charPos is the last character position
+! of the field occupied by a character.
+!
+	    firstPos =
+		begin
+		if .charPos neq 0
+		then .charPos
+		else nChars
+		end,
+!
+! Set up amountVector which has encoded in it the number of
+! characters being deleted, as well as which direction the
+! deletion should take place.  If n was specified as non-0,
+! amountVector is merely n.  If n was specified as 0, amountVector
+! is set as though n were a positive number indicating that all
+! characters at and to the right of the specified position should
+! be deleted.
+!
+	    amountVector =
+		begin
+		if .n neq 0
+		then .n
+		else nChars - firstPos + 1
+		end,
+
+	    ! Create flag indicating whether deleting right or left.
+	    !
+	    delRightFlag = amountVector gtr 0,
+
+	    ! Calculate leftmost and rightmost character ranks for characters
+	    ! being deleted.  If the the right rank is greater than the
+	    ! number of characters in the field then let the right rank be
+	    ! the last char in the field. /dcc
+	    !
+	    leftRank =
+		begin
+		if delRightFlag
+		then max (1, firstPos)
+		else max (1, firstPos + amountVector + 1)
+		end,
+	    rightRank =
+		begin
+		if delRightFlag
+		then MIN (firstPos + amountVector - 1, nChars)
+		else MIN (firstPos, nChars)
+		end,
+
+	    ! Get ranks of the strings that comprise the fringe strings
+	    ! affected by the deletion.  All strings between the fringes are
+	    ! the ones that will get entirely deleted.
+	    !
+	    leftFringeRank = findLeft (fldBlk[base], leftRank),
+	    rightFringeRank = findRight (fldBlk[base], rightRank+1),
+
+	    ! Get list of strings for this field.
+	    strLst = .fldBlk[fld_strings] : vector,
+
+	    ! Decide which fringes exist.
+	    !
+	    leftFringeExists = leftFringeRank neq 0,
+	    rightFringeExists = rightFringeRank leq nStrings,
+	    bothFringesExist = leftFringeExists and rightFringeExists,
+
+	    ! Get addresses of fringe string blocks, but get 0 if the fringe
+	    ! string doesn't exist.  The fringe won't exist either because the
+	    ! deletion includes the rightmost of leftmost character of the
+	    ! field, or because the deletion is attempting to delete characters
+	    ! that don't exist, the latter to be caught as an error.
+	    !
+	    leftStrBlk =
+		begin
+		if leftFringeExists
+		then .strLst[leftFringeRank]
+		else 0
+		end : string_block,
+	    rightStrBlk =
+		begin
+		if rightFringeExists
+		then .strLst[rightFringeRank]
+		else 0
+		end : string_block;
+
+	!
+	! If no strings exist in this field then return success because the
+	! characters that the caller specified to delete are deleted. /dcc
+	if (nStrings leq 0 or nChars leq 0)
+	then return true;
+
+	if (leftRank gtr nChars)
+	then return true;
+
+	! If caller is trying to delete 0 characters, succeed.
+	if amountVector eql 0
+	  then return true;
+
+	! Handle case of both fringe strings being one in the same.  This is
+	! the case of the deletion entirely falling within one string, as in
+	!
+	!	+-------------------------------------------------------+
+	!	| existing string |  existing string  | existing string |
+	!	+-------------------------------------------------------+
+	!			   | being deleted |
+	!			   +---------------+
+	!
+	! Note that this special case does NOT include the situation where
+	! the string being deleted exactly covers one string, as in
+	!
+	!	+-------------------------------------------------------+
+	!	| existing string |  existing string  | existing string |
+	!	+-------------------------------------------------------+
+	!			  | being deleted     |
+	!			  +-------------------+
+	!
+	! since in this case we want to check to see if the left and right
+	! strings can be connected after the deletion.
+	!
+	! If we've got the single fringe case, we'll trim the single string,
+	! and transfer directly to the cleanup code.
+	!
+	if bothFringesExist and leftFringeRank eql rightFringeRank
+	then
+	    begin
+	    delete_portion (leftStrBlk[base], leftRank, rightRank);
+	    return finish_deletion (.id, txtBlk[base], .lineNum, fldBlk[base],
+		leftRank)
+	    end;
+
+	! Trim the left fringe according to the portion of the deletion
+	! request that overlaps it.  However, don't trim if the left fringe
+	! string doesn't exist due to the leftmost character of the field
+	! being included in the portion being deleted.
+	!
+	if leftFringeExists
+	then delete_portion (leftStrBlk[base], leftRank, rightRank);
+
+	! Trim right fringe as long as it exists.  It won't exist at
+	! all if our field has exactly one string, the rightmost character of
+	! which we're deleting.
+	!
+	if rightFringeExists
+	then delete_portion (rightStrBlk[base], leftRank, rightRank);
+
+	! If the left and right fringes, which now abut each other, are
+	! of the same attributes, we can join them into one string, and
+	! release the right fringe string.
+	!
+	if bothFringesExist
+	then
+	    if sameAttributes (leftStrBlk[base], rightStrBlk[base])
+	    then
+		begin
+		connect (leftStrBlk[base], rightStrBlk[base]);
+		releaseStringsBetween (fldBlk[base], rightFringeRank-1,
+		    rightFringeRank+1)
+		end;
+
+	! Delete all strings that are completely eclipsed by portion of
+	! the field being deleted.
+	!
+	releaseStringsBetween (fldBlk[base], leftFringeRank, rightFringeRank);
+
+	! goto finish-deletion to finish up.
+	!
+	finish_deletion(.id, txtBlk[base], .lineNum, fldBlk[base], leftRank)
+
+	end;
+
+routine finish_deletion
+!++
+!
+! Functional description:
+!
+!	During character deletion, after the characters have been deleted
+!	internally, update the string beginning and end marks, and call the
+!	display driver to update the screen.
+!
+! Formal parameters:
+ (
+	id,				! virtual display id
+	txtBlk : ref text_block,	! which text block field belongs to
+	lineNum,			! which line number
+	fldBlk : ref field_block,	! which field the deletion occurred in
+	left_char			! leftmost character deleted
+ ) =
+!--
+
+	begin
+
+	local refresh_left_flag, refresh_right_flag, left_rank, right_rank;
+!
+! Update the endpoints of strings in the field, and cause field
+! width (taken up by characters) to be recomputed.
+!
+	updateEnds(fldBlk[base], 0);
+!
+! Set refresh_left_flag, which indicates if the white space to the left of
+! the deleted characters needs to be repainted.  This is so if:
+!
+! 	The field is not left-justified, and hence the left white space grows
+!	as characters are deleted.
+!
+!
+	if .fldBlk[fld_format] neq ff_left
+	then refresh_left_flag = 1
+	else refresh_left_flag = 0;
+!
+! Compute the leftmost character that needs to be redisplayed.  If we
+! decided to refresh the left whitespace, then we'll redisplay starting at
+! the beginning of the field.  Otherwise, we'll redisplay starting with
+! the leftmost character that got deleted.
+!
+	if .refresh_left_flag
+	then left_rank = 1
+	else left_rank = .left_char;
+!
+! For now, we won't actually think about a clear_old_text_flag.  We'll
+! just always clear old text under the text being redisplayed.  IF the
+! hardware promised to fill in o's and a's for us, and IF the redisplayed
+! text were known to totally encompass the old text height-wise, we could
+! be more efficient by telling printField NOT to clear out the text area
+! before redisplaying.
+!
+	! clear_old_text_flag = . . .
+!
+! Decide the highest-ranked character needed to be redisplayed.  For
+! left-justified text, if the deletion was at the end of the field, we
+! really needn't redisplay any text (which we'll indicate by setting
+! right_rank equal to left_rank - 1), but if deletion was anywhere but the
+! end, we'll need to redisplay through the end.
+!
+	if .fldBlk[fld_format] eql ff_left
+	then
+	    if .left_char gtr .fldBlk[fld_nChars]
+	    then right_rank = .left_rank - 1	! deleted at end of
+						! left-justified field, so
+						! no text to clear.
+	    else right_rank = .fldBlk[fld_nChars];
+						! middle deletion in
+						! left-justified field
+!
+! For right-justified field, if the deletion was at the beginning of the
+! field, we needn't redisplay any text, which we indicate by setting
+! the right_rank to one less than left_rank.  If it's a middle deletion
+! and right-justified field, then we need to redisplay through one less
+! than the rank of the leftmost character that was deleted.  (For
+! instance, if the third through seventh characters are deleted, then
+! redisplaying characters one and two shows them moved to the right to
+! abut eight, which we needn't redisplay).
+!
+	if .fldBlk[fld_format] eql ff_right
+	then
+	    if .left_char eql 1
+	    then right_rank = .left_rank - 1
+	    else right_rank = .left_char - 1;
+!
+! For centered text, we'll always redisplay all the text on every
+! deletion.
+!
+	if .fldBlk[fld_format] eql ff_center
+	then right_rank = .fldBlk[fld_nChars];
+!
+! Set up refresh_right_flag which shows whether the white space to the
+! right of the text needs to be updated.  We'll update that white space
+! unless this is a right-justified field.
+!
+	if .fldBlk[fld_format] neq ff_right
+	then refresh_right_flag = 1
+	else refresh_right_flag = 0;
+!
+! Update the text as directed with the above flags and values.
+!
+	printField (
+	    .id,
+	    txtBlk[base],
+	    .lineNum,
+	    .fldBlk[fld_pos],
+	    .left_rank,
+	    .right_rank,
+	    .refresh_left_flag,
+	    1,			! always clear old text when showing new
+	    .refresh_right_flag
+	    );
+
+	true
+
+	end;
+
+routine delete_portion
+!++
+! Functional description:
+!
+!	During a delete text procedure, delete the appropiate portion of a
+!	given fringe string.
+!
+! Formal parameters:
+ (
+	strBlk : ref string_block,	! block to be trunctated
+	leftPos,			! leftmost character rank being deleted
+	rightPos			! rightmost character
+ ) =
+
+	begin
+
+	bind
+
+	    ! Get rank of first  and last character of string
+	    strbeg = .strBlk[str_beg],
+	    strEnd = .strBlk[str_end] - 1,
+
+	    ! Calculate leftmost character to be deleted.
+	    leftDel = max (strBeg, .leftPos) - strBeg + 1,
+
+	    ! Calculate rightmost character to be deleted.
+	    rightDel = min (strEnd, .rightPos) - strBeg + 1;
+
+	! Delete the portion of the string.
+	truncate (strBlk[base], leftDel, rightDel)
+
+	end;
+
+end
+eludom

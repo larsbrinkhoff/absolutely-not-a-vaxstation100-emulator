@@ -1,0 +1,551 @@
+MODULE DOC$TOC (
+		IDENT = 'VSTADOC Utility Table of Contents routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides subroutines for the table of contents.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$toc_init,		!Init table of contents routines
+    doc$$gen_toc,		!Put a table of contents entry into queue
+    doc$$write_toc,		!Put table of contents into the file
+    gen_toc_pages,		!Generate the TOC pages
+    write_toc_header,		!Write the TOC header
+    gen_and_write_toc_line,	!Write a normal TOC line
+    doc$$cleanup_toc;		!Cleanup toc
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:DOCDATA';		!Various internal data structures
+					! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';		!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';		!Macros
+REQUIRE 'VSTA$SOURCE:TXTSYM.REQ';	!rend-bold-bit
+!!!LIBRARY 'SYS$LIBRARY:STARLET';	!Taken care of by TXTSYM.REQ
+
+EXTERNAL ROUTINE
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type out a line on TTY
+    doc$$gen_error,		!Report a GENERATE error
+    doc$$open_toc_line_file,	!Open the TOC line file
+    doc$$gen_set_linesize,	!##: SET LINESIZE :##
+    doc$$gen_lm,		!##: LM :##
+    doc$$gen_rm,		!##: RM :##
+    doc$$gen_eol,		!<eol>
+    doc$$gen_blank,		!blank line
+    doc$$gen_ff,		!<FF>
+    doc$$gen_nofill,		!##: NOFILL :##
+    doc$$gen_set_typeface,	!##: SET TYPEFACE :##
+    doc$$gen_set_typesize,	!##: SET TYPESIZE :##
+    doc$$gen_set_rendition,	!##: SET RENDITION :##
+    doc$$gen_center,		!Centered string
+    doc$$gen_text_string,	!Insert text string
+    doc$$gen_off_pagenums,	!Turn off pagenum generation
+    doc$$measure_text,		!Get width and height of text string
+    doc$$gen_skip,		!Skip n pixels
+    doc$$gen_add_irb,		!Add IRB to line
+    doc$$change_fld,		!Change field format
+    lib$get_vm,
+    lib$free_vm;
+
+EXTERNAL
+    doc$gl_cur_page_num,	!Current page number
+    doc$gl_cur_gen_vd,		!Generate vd
+    fatal_error,
+    num_user_errors,		!Number of user errors processed
+    last_pagex,
+    last_pagey,
+    lineb: REF txt_line_block,	!Current line block address
+    pageb;			!Current page block address
+!
+! Parameters for Table of contents
+!
+MACRO
+   tf_str = 'PELLUCIDA' %,	!Typeface used for TOC lines
+   hdr_tf_str = 'PELLUCIDA' %;	!Typeface used for TOC header
+LITERAL
+   hdr_line_height = 80,	!Line height of hdr line
+   reg_line_height = 16,	!Line height of normal line
+   reg_typesize = 15,		!Typesize for regular lines
+   reg_rend = rend_bold_bit,	!Rendition for regular lines
+   hdr_typesize = 20,		!Typesize for header lines
+   hdr_rend = 0,		!Rendition for header lines
+   line_leftmargin = 5,		!Where leftmargin should go
+   line_rightmargin = 5,	!Space in from right
+   space_after_header = 30;	!# pixels between header line and first regular
+!
+!...[ end of TOC parameters ]
+!
+LITERAL
+   tf_len = %CHARCOUNT (tf_str),
+   hdr_tf_len = %CHARCOUNT (hdr_tf_str);
+BIND
+   toc_typeface_str = UPLIT (tf_str),
+   toc_hdr_typeface_str = UPLIT (hdr_tf_str);
+
+GLOBAL
+    doc$gl_num_toc_pages,	!How many pages are in the TOC
+    doc$gl_toc_pageb;		!First pageb address of TOC
+OWN
+    num_toc_entries,		!Number of TOC entries
+    toc_q_hdr: VECTOR [2]
+	INITIAL (toc_q_hdr, toc_q_hdr),
+    reg_typeface_desc: VECTOR [2]
+	INITIAL (tf_len, toc_typeface_str),
+    hdr_typeface_desc: VECTOR [2]
+	INITIAL (hdr_tf_len, toc_hdr_typeface_str),
+    page_ctrstr_str: VECTOR [20,BYTE],
+    page_ctrstr_desc: VECTOR [2]
+	INITIAL (0, page_ctrstr_str),
+    dotdah_size,		!X-size of ". "
+    toc_str_itself: VECTOR [80,BYTE],
+    toc_str_desc: VECTOR [2]
+		INITIAL (0, toc_str_itself),
+    pn_field_width;		!Width of page-number field
+
+BUILTIN
+    INSQUE, REMQUE;
+
+GLOBAL ROUTINE doc$$toc_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize table of contents generation
+!	Called at start of GENERATE.
+!--
+BEGIN
+LOCAL
+    toc_str_desc_len: WORD,
+    str_desc_addr: REF VECTOR [2];
+
+doc$gl_num_toc_pages = 0;
+!
+! Get the string "table of contents" in the appropriate language.
+!
+str_desc_addr = %ASCID 'Table of Contents';	!English
+
+toc_str_desc_len = .str_desc_addr [0];
+toc_str_desc [0] = .toc_str_desc_len;
+! toc_str_desc [1] initialized to "toc_str_itself"
+
+CH$MOVE	(.toc_str_desc_len
+	,.str_desc_addr [1]
+	,toc_str_itself
+	);
+!
+! Translate tilda sequences.
+!
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_toc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Adds toc entry to list.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    toc: REF toc_block,
+    status;
+
+IF NOT (status =
+    lib$get_vm	(%REF (toc$K_hdr_size + .str_desc [0]), toc)
+	)
+  THEN
+    BEGIN
+    $gen_error ('%FATAL: Can''t get memory for TOC block');
+    fatal_error = 1;
+    RETURN doc$$error (.status);
+    END;
+
+toc [toc$w_size] = toc$K_hdr_size + .str_desc [0];	!Size of block
+toc [toc$w_pagenum] = .doc$gl_cur_page_num;	!Store page number
+!
+! Copy the whole string to the TOC block
+!
+IF (.str_desc [0] NEQ 0)
+  THEN
+    CH$MOVE	(.str_desc [0]
+		,.str_desc [1]
+		,.toc + toc$K_hdr_size
+		);
+
+INSQUE (.toc, .toc_q_hdr [1]);
+num_toc_entries = .num_toc_entries + 1;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$write_toc =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write the table of contents into the file.
+! IMPLICIT OUTPUTS:
+!	doc$gl_num_toc_pages
+!--
+BEGIN
+LOCAL
+   start_pagenum,
+   num_digs,		!# of digits in page numbers
+   y_size,
+   start_pageb: REF page_block,
+   status;
+
+IF (.num_toc_entries EQL 0)
+   THEN RETURN SS$_NORMAL;		!No table of contents pages
+!
+! Check to make sure that at least 1 line of TOC fits on each page.
+! (If not, then give error and return immediately).
+!
+IF (.last_pagey LSS (hdr_line_height + reg_line_height + space_after_header))
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Page height too small to hold table of contents');
+    RETURN SS$_BADPARAM
+    END;
+
+start_pagenum = .doc$gl_cur_page_num;
+start_pageb = .pageb;		!Remember current pageb.
+
+!
+! Set parameters to do the table of contents.
+!
+doc$$gen_nofill ();
+doc$$gen_lm (0, line_leftmargin);
+doc$$gen_rm (0, .last_pagex - line_rightmargin);
+doc$$gen_set_typeface (reg_typeface_desc);
+doc$$gen_set_typesize (reg_typesize);
+doc$$gen_set_rendition (reg_rend, -1);
+!
+! Compute size of ". ", and make sure Y dimension is big enough
+!
+IF NOT (status =
+    doc$$measure_text	(.doc$gl_cur_gen_vd
+			,2		!Size
+			,UPLIT ('. ')	!Addr of string
+			,dotdah_size	!Returned x size
+			,y_size		!Returned y size
+			)
+	)
+  THEN RETURN .status;
+IF (.y_size GTR reg_line_height)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: TOC line font is too high for line');
+    RETURN SS$_BADPARAM    
+    END;
+!
+! Compute size of page number field, which will be right justified.
+!
+num_digs = 1;			!Maybe all pages less than 10.
+IF (.doc$gl_cur_page_num GEQ 10)
+  THEN
+    BEGIN
+    num_digs = 2;
+    IF (.doc$gl_cur_page_num GEQ 100)
+      THEN
+	BEGIN
+	num_digs = 3;
+	IF (.doc$gl_cur_page_num GEQ 1000)
+	  THEN
+	    BEGIN
+	    num_digs = 4;
+	    END;
+	END;
+    END;
+
+IF NOT (status =
+    doc$$measure_text	(.doc$gl_cur_gen_vd
+			,.num_digs
+			,UPLIT ('8888')	!Widest number
+			,pn_field_width	!X-dim
+			,y_size		!Y-dim
+			)
+	)
+  THEN RETURN .status;
+!
+! Generate the pages
+!
+gen_toc_pages ();
+
+doc$gl_num_toc_pages = .doc$gl_cur_page_num - .start_pagenum;    
+doc$gl_toc_pageb = .start_pageb [pgb$a_flink];	!First page of TOC
+RETURN SS$_NORMAL
+END;
+
+ROUTINE gen_toc_pages =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Generate the TOC pages.
+!--
+BEGIN
+LOCAL
+    lines_this_page,
+    lines_cango,
+    toc: REF toc_block,
+    status;
+
+lines_cango = (.last_pagey - hdr_line_height - space_after_header)
+		/ reg_line_height;	!How many regular lines will fit
+lines_this_page = 0;
+doc$$gen_ff ();			!End last page, start this page
+doc$$gen_off_pagenums ();	!Turn off pagenumber generation, if on.
+doc$$open_toc_line_file ();	!Write lines to the TOC file (a separate
+				! lines file so we can read from it first,
+				! to get the table of contents first in
+				! the review file).
+				!(The open routine sets the "current" lines
+				!file to the TOC one).
+toc = .toc_q_hdr [0];		!Get first TOC entry
+
+WHILE (.toc NEQ toc_q_hdr) DO
+    BEGIN
+    IF (.lines_this_page EQL .lines_cango)
+      THEN
+	BEGIN
+	doc$$gen_ff ();
+	lines_this_page = 0;
+	END;
+    IF (.lines_this_page EQL 0)
+      THEN write_toc_header ();
+    IF NOT (status =
+	gen_and_write_toc_line (.toc)
+	    )
+      THEN RETURN .status;
+
+    lines_this_page = .lines_this_page + 1;
+    toc = .toc [toc$a_flink];	!Point to next TOC entry    
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_toc_header =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the TOC header.
+!	Leaves font settings for normal lines.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Set linesize and font parameters, then write the centered line.
+!
+doc$$gen_set_linesize (hdr_line_height);
+doc$$gen_set_typeface (hdr_typeface_desc);
+doc$$gen_set_typesize (hdr_typesize);
+doc$$gen_set_rendition (hdr_rend, -1);
+doc$$gen_center (toc_str_desc);	!Leaves us at beginning of next line
+!
+! Write a blank line to leave some space before normal lines
+!
+IF (space_after_header NEQ 0)
+  THEN
+    BEGIN
+    doc$$gen_set_linesize (space_after_header);
+    doc$$gen_blank (1);
+    END;
+!
+! Set linesize and font parameters for normal lines.
+!
+doc$$gen_set_linesize (reg_line_height);
+doc$$gen_set_typeface (reg_typeface_desc);
+doc$$gen_set_typesize (reg_typesize);
+doc$$gen_set_rendition (reg_rend, -1);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE gen_and_write_toc_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the next TOC line.
+! FORMAL PARAMETERS:
+	(toc: REF toc_block
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    pn_desc: VECTOR [2],
+    pn_str_len: WORD,
+    pn_str: VECTOR [20,BYTE],
+    pn_len_pixels,
+    str_len_pixels,
+    spare_space,		!# pixels available for ". " repetition
+    times_dotdah,		!# of times ". " is written.
+    rem_dotdah,			!Remaining # of pixels
+    line_str: VECTOR [512,BYTE],
+    line_str_desc: VECTOR [2],
+    irsel: ir_sel,		!SELECTable IRB
+    junk,
+    status;
+
+str_desc [0] = .toc [toc$w_size] - toc$K_hdr_size;
+str_desc [1] = .toc + toc$K_hdr_size;	!Point to string itself
+pn_desc [0] = 20;
+pn_desc [1] = pn_str;
+
+IF NOT (status =
+    $fao	(%ASCID '!SL'		!CTRSTR
+		,pn_str_len		!OUTLEN
+		,pn_desc		!OUTSTR
+		,.toc [toc$w_pagenum]	!P1
+		)
+	    )
+      THEN
+	BEGIN
+	$typeline ('? $fao failed to get TOC page number');
+	RETURN doc$$error (.status)
+	END;
+
+pn_desc [0] = .pn_str_len;	!Get real string descriptor
+!
+! Measure the strings and make sure they'll fit
+!
+IF NOT (status =
+    doc$$measure_text	(.doc$gl_cur_gen_vd
+			,.str_Desc [0]		!Length of string
+			,.str_desc [1]		!Address of string
+			,str_len_pixels		!Returned x dimension
+			,junk			!Returned y dimension
+			)
+	)
+  THEN RETURN .status;
+
+
+IF NOT (status =
+    doc$$measure_text	(.doc$gl_cur_gen_vd
+			,.pn_desc [0]
+			,.pn_desc [1]		!Address of string
+			,pn_len_pixels		!returned X dimension
+			,junk			!returned Y dimension
+			)
+	)
+  THEN RETURN .status;
+
+IF (.pn_len_pixels GTR .pn_field_width)
+  THEN
+    BEGIN
+    $typeline ('? page number doesn''t fit in computed field!');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Compute how many times ". " will be used to complete the line
+!
+spare_space = (.last_pagex - line_leftmargin - line_rightmargin
+		- .str_len_pixels - .pn_field_width);
+IF (.spare_space LSS 0)
+  THEN
+    BEGIN
+    $gen_error ('%WARN: TOC line too long');
+    RETURN SS$_NORMAL		!Don't do anything, but appear successful.
+    END;
+
+times_dotdah = .spare_space / .dotdah_size;	!# times to put ". " in
+rem_dotdah = .spare_space - (.times_dotdah * .dotdah_size); !remainder
+
+! Each line has 3 TXT fields.
+! Write the TOC string in the first field
+!
+doc$$gen_text_string	(str_desc);
+!
+! The next field starts after rem_dotdah pixels, and is right justified
+! (so dots line up).
+!
+doc$$gen_skip	(.rem_dotdah);
+doc$$change_fld (1, doc$K_ff_rj);	!Extra-field 1, right just.
+
+IF (.times_dotdah NEQ 0)
+  THEN
+    BEGIN
+    INCR i FROM 0 TO (.times_dotdah - 1) DO
+	BEGIN
+	CH$MOVE	(2
+		,UPLIT ('. ')
+		,line_str + (2*.i)
+		);
+	END;
+    line_str_desc [0] = 2 * .times_dotdah;
+    line_str_desc [1] = line_str;
+    doc$$gen_text_string (line_str_desc);
+    END;
+!
+! The third field is for the page number, and is right-justified
+!
+doc$$gen_skip (0);
+doc$$change_fld (2, doc$K_ff_rj);	!Extra-field 2, right just.
+doc$$gen_text_string (pn_desc);
+!
+! Make the whole line selectable
+!
+irsel [irb$w_sel_cidx] = 0;
+irsel [irb$w_sel_len] = .lineb [lin$w_cidx];
+irsel [irb$w_sel_xstart] = 1;
+irsel [irb$w_sel_len_pixels] = .lineb [lin$w_rightmargin] - 1;
+irsel [irb$w_sel_link] = 0;
+irsel [irb$w_sel_page] = .toc [toc$w_pagenum];
+IF NOT (status =
+    doc$$gen_add_irb
+		(doc_rcal$K_set_selectable
+		,irb$S_ir_sel
+		,irsel
+		)
+	)
+  THEN RETURN .status;
+
+doc$$gen_eol ();			!and end the line
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$cleanup_toc =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes all TOC entries.
+!--
+BEGIN
+LOCAL
+    toc: REF toc_block,
+    temp,
+    status;
+
+toc = .toc_q_hdr [0];		!Get first toc entry
+WHILE (.toc NEQ toc_q_hdr) DO
+    BEGIN
+    REMQUE (.toc, temp);	!Remove entry from queue
+    temp = .toc [toc$w_size];	!Get size of entry
+    IF NOT (status =
+	lib$free_vm	(temp, toc)
+	    )
+      THEN
+	BEGIN
+	$typeline ('?Error releasing memory for TOC entry');
+	doc$$error (.status);
+	END;
+    toc = .toc_q_hdr [0];
+    END;
+
+num_toc_entries = 0;
+doc$gl_num_toc_pages = 0;
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

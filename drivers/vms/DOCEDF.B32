@@ -1,0 +1,1148 @@
+MODULE DOC$EDF (
+		IDENT = 'VSTADOC Utility Encoded file routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module generates the EDF file from the
+!	internal data structures.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$do_edf_file,		!Write the file
+    dump_keywords,		!Write out the keywords
+    write_portion,		!Write a portion of the file
+    dump_picture_info,		!Dump picture info for a page
+    dump_checkoff_info,		!Dump checkoff info for a page
+    dump_editable_info,		!Dump editable field info for a page.
+    process_line,		!Write RCALs for one line (clineb)
+    setup_fields,		!define and undefine fields for a line
+    set_field_format,		!Set format of a field
+    ins_string,			!Insert text string
+    app_string,			!Append string
+    app_rcal;			!Append an RCAL to the data for this page.
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$open_edf_out,		!Open EDF file for output
+    doc$$write_edf_file,	!Write a block to EDF file
+    doc$$close_edf,		!Close EDF file
+    doc$$rewind_line_file,	!Start reading regular lines file from beg.
+    doc$$rewind_toc_line_file,	!Start reading TOC lines file from beg.
+    doc$$get_line_file,		!Get next record from line file
+    doc$$kwd_read_setup,	!Setup to read KWD file
+    doc$$get_next_kwd,		!Get next keyword from file
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type out a line on TTY
+    lib$get_vm,
+    lib$free_vm;
+
+EXTERNAL
+    doc$gl_page_q: VECTOR [2],	!Page queue
+    doc$gl_num_toc_pages,	!Number of TOC pages
+    doc$gl_toc_pageb,		!PAGEB for 1st TOC page
+    doc$gl_num_index_pages,	!Number of IDX pages
+    doc$gl_num_body_pages,	!Number of body pages
+    doc$gl_line_buf,		!Line file record
+    last_pagex,
+    last_pagey,
+    doc_language,
+    doc$gl_num_kwds,		!Number of keywords there are
+    title_str_Desc: VECTOR [2];	!Descriptor to title
+!
+OWN
+    pgblk: REF page_block,	!Ptr to current page-block
+    clineb: REF txt_line_block,	!Pointer to line block
+    kwd_block_addr,		!Pointer to keyword block buffer
+    total_hdr_blocks,		!Total number of header blocks
+    num_kwds_per_block,		!Number of keyword entries in a block
+    num_ppes_per_block,		!Number of page-ptr-entries in a block
+    num_ppes_this_block,	!How many have been written in the curr block
+    curr_pe_block_number,	!Current block number of PE's.
+    curr_pe_buf_addr,		!Current buffer address of PE's.
+    curr_data_block,		!Current data block being written
+    datablock_space_left,	!# bytes left in current datablock
+    datablk: VECTOR [512,BYTE],	!Current data block (for pe, lde, & rcal blks)
+    cpos,			!Current position on line
+    cur_y_of_Line;		!Current y position of this line.
+
+MACRO
+   $catch_up =
+	BEGIN
+	IF (.str_desc [0] GTR 0)
+	  THEN
+	    BEGIN
+	    str_desc [1] = doc$gl_line_buf + .cpos;
+	    IF (.inserted_yet)
+	      THEN
+		status = app_string (.line_num, .field_id, str_desc)
+	      ELSE
+		BEGIN
+		status = ins_string (.line_num, .field_id, str_desc);
+		inserted_yet = 1;	!Remember we inserted
+		END;
+	    cpos = .cpos + .str_desc [0];
+	    END;
+	END %;
+
+GLOBAL ROUTINE doc$$do_edf_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attempts to generate EDF file from the internal data structures.
+! FORMAL PARAMETERS:
+	(file_desc
+	) =
+!--
+BEGIN
+LOCAL
+    hdr_block_buffer: VECTOR [512,BYTE],
+    cpageb: REF page_block,
+    hdr_block_addr: REF header_block,	!Pointer to block 1 buffer
+    num_kwd_blocks,
+    num_idxhdr_blocks,
+    num_tochdr_blocks,
+    num_bodyhdr_blocks,
+    running_block_number,
+    running_buf_addr,
+    status;
+!
+! The file is structured as follows:
+!
+! Block 1: header block
+! Block 2,...: Keywords (if any)
+! Then: Table of contents page blocks
+! then: Body page blocks
+! then: Index page blocks
+! then: Table of contents (if any)
+! then: Body (if any)
+! then: Index (if any)
+! (future: Internal data structure dump).
+!
+
+!
+! Open the EDF file for output
+!
+IF NOT (status =
+    doc$$open_edf_out	(.file_desc)
+	)
+  THEN RETURN .status;
+
+!
+! Compute number of blocks needed for the index information.
+!
+num_kwds_per_block = 512 / kw$S_keyword_block;
+num_kwd_blocks = (.doc$gl_num_kwds + .num_kwds_per_block - 1)
+			/ .num_kwds_per_block;	!Round up to whole # blocks
+
+num_ppes_per_block = 512 / ppe$S_page_ptr_entry;
+num_idxhdr_blocks = (.doc$gl_num_index_pages + .num_ppes_per_block - 1)
+			/ .num_ppes_per_block;
+num_tochdr_blocks = (.doc$gl_num_toc_pages + .num_ppes_per_block - 1)
+			/ .num_ppes_per_block;
+num_bodyhdr_blocks = (.doc$gl_num_body_pages + .num_ppes_per_block - 1)
+			/ .num_ppes_per_block;
+total_hdr_blocks =	1		!1 for block 1 information
+			+ .num_kwd_blocks	!Keyword blocks
+			+ .num_idxhdr_blocks	!Index page header blocks
+			+ .num_tochdr_blocks	!TOC pagehdr blocks
+			+ .num_bodyhdr_blocks;	!Main body pagehdr blocks
+
+hdr_block_addr = hdr_block_buffer;	!Get ptr to header block
+!
+! Write the first (header) block
+!
+hdr_block_addr [hdr$l_sanity] = hdr$K_sanity_data; !Identify this type of file
+hdr_block_addr [hdr$l_version] = 3;	!This is version 3
+hdr_block_addr [hdr$l_language_key] = .doc_language;
+hdr_block_addr [hdr$w_page_width] = .last_pagex;
+hdr_block_addr [hdr$w_page_length] = .last_pagey;
+hdr_block_addr [hdr$w_num_toc_pages] = .doc$gl_num_toc_pages;
+hdr_block_addr [hdr$w_toc_ppe_block] = 2 + .num_kwd_blocks;
+hdr_block_addr [hdr$w_num_body_pages] = .doc$gl_num_body_pages;
+hdr_block_addr [hdr$w_body_ppe_block] = 2 + .num_kwd_blocks
+					+ .num_tochdr_blocks;
+hdr_block_addr [hdr$w_num_index_pages] = .doc$gl_num_index_pages;
+hdr_block_addr [hdr$w_index_ppe_block] = 2 + .num_kwd_blocks
+				+ .num_tochdr_blocks + .num_bodyhdr_blocks;
+hdr_block_addr [hdr$w_num_keywords] = .doc$gl_num_kwds;
+hdr_block_addr [hdr$w_kwd_num_blocks] = .num_kwd_blocks;
+hdr_block_addr [hdr$w_title_len] = .title_str_desc [0];
+CH$MOVE	(.title_str_desc [0]
+	,.title_str_desc [1]
+	,hdr_block_addr [hdr$b_title_string]
+	);
+IF NOT (status =
+    doc$$write_edf_file (1, hdr_block_buffer)
+	)
+  THEN RETURN .status;
+!
+! Write keywords and output blocks, if any.
+!
+IF (.doc$gl_num_kwds NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	dump_keywords ()
+	    )
+      THEN RETURN .status;
+    END;
+
+curr_pe_block_number = 2 + .num_kwd_blocks;
+curr_data_block = .total_hdr_blocks + 1; !Get block number of 1st data block
+datablock_space_left = 512;		!# bytes left
+!
+! Write TOC, if any
+!
+IF (.doc$gl_num_toc_pages NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$rewind_toc_line_file ()
+	    )
+      THEN RETURN .status;
+
+    pgblk = .doc$gl_toc_pageb;	!Get starting pageb for TOC
+
+    IF NOT (status =
+	write_portion	(.doc$gl_num_toc_pages)	!# of pages
+	    )
+      THEN RETURN .status;
+    END;		!Of table of contents write
+!
+! Write BODY
+!
+IF NOT (status =
+    doc$$rewind_line_file ()
+	)
+  THEN RETURN .status;
+
+pgblk = .doc$gl_page_q [0];	!Get first body pageb
+
+IF NOT (status =
+    write_portion	(.doc$gl_num_body_pages)	!# of pages
+	)
+  THEN RETURN .status;
+!
+! Write IDX
+!
+! Note: pgblk already updated!
+
+IF NOT (status =
+    write_portion	(.doc$gl_num_index_pages)	!# of pages
+	)
+  THEN RETURN .status;
+
+!
+! All done, close EDF file
+!
+
+IF NOT (status =
+    doc$$close_edf ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE dump_keywords =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Dump all keywords into the EDF file.
+! IMPLICIT INPUTS:
+!	kwd_block_addr 		!Address of keyword block
+!	num_kwds_per_block	!Number of keywords in a block
+!--
+BEGIN
+LOCAL
+    kwd_block_buffer: VECTOR [512,BYTE],
+    blknum,			!Current block number
+    kwd_block_ptr: REF keyword_block,	!Addr of current keyword block
+    num_kwds_this_block,
+    status;
+
+IF NOT (status =
+    doc$$kwd_read_setup ()
+	)
+  THEN RETURN .status;
+
+kwd_block_ptr = kwd_block_buffer;	!Start putting keywords here.
+num_kwds_this_block = 0;
+blknum = 2;			!Which block to write
+
+INCR i FROM 1 TO .doc$gl_num_kwds DO
+    BEGIN
+  !
+  ! Get next keyword and write it into its place
+  !
+    IF NOT (status =
+	doc$$get_next_kwd (.kwd_block_ptr)
+	    )
+      THEN RETURN .status;
+  !
+  ! Update ptr to keyword block; go to a new block if required
+  !
+    num_kwds_this_block = .num_kwds_this_block + 1;
+    IF (.num_kwds_this_block LSS .num_kwds_per_block)
+      THEN
+	kwd_block_ptr = .kwd_block_ptr + kw$S_keyword_block
+      ELSE
+	BEGIN
+	IF NOT (status =
+	    doc$$write_edf_file (.blknum, kwd_block_buffer) !Write full block
+		)
+	  THEN RETURN .status;
+	blknum = .blknum + 1;
+	kwd_block_ptr = kwd_block_buffer;
+	num_kwds_this_block = 0;
+	END;
+    END;
+!
+! Write last partial block (if any)
+!
+IF (.kwd_block_ptr NEQ kwd_block_buffer)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$write_edf_file (.blknum, kwd_block_buffer)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_portion
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes a portion of the file and updates page_entry blocks
+! FORMAL PARAMETERS:
+	(number_of_pages	!# of pages
+	) =
+! IMPLICIT INPUTS:
+!	num_ppes_per_block	!Number of page-ptr-entries per block
+! IMPLICIT I/O:
+!	pgblk - address of current page-block
+!--
+BEGIN
+LOCAL
+    starting_db_num,		!Which data block this page starts with
+    ppe_buffer: VECTOR [512,BYTE],
+    pe: REF page_entry,
+    lde: REF lindef_entry,
+    curr_ppe: REF page_ptr_entry,
+    line_len,			!Length of line from lines file
+				!(Not currently checked)
+    line_num,			!Which line we're processing.
+    pic_block_num,		!Block number where picture info starts
+    pic_num_blks,		!Number of blocks used for picture info
+    chk_block_num,		!Block number where checkoff info starts
+    chk_num_blks,		!Number of blocks used for checkoff info
+    edit_num_blks,		!Number of blocks used for editable info
+    edit_block_num,		!Block number where edit info starts.
+    status;
+
+IF (.number_of_pages EQL 0)
+  THEN RETURN SS$_NORMAL;	!Nothing to do, return.
+
+pe = datablk + 4;		!Page-entry is always just below num_rcals
+
+num_ppes_this_block = 0;	!No PPE's have been written in the new block
+INCR i FROM 1 TO .number_of_pages DO
+    BEGIN
+
+    dump_picture_info (pic_block_num, pic_num_blks);
+    dump_checkoff_info (chk_block_num, chk_num_blks);
+    dump_editable_info (edit_block_num, edit_num_blks);
+
+    datablk = 0;		!Count # RCALs in this page here.
+    pe [pe$w_checkoff_block] = .chk_block_num;
+    pe [pe$w_num_ck_blocks] = .chk_num_blks;
+    pe [pe$w_picture_block] = .pic_block_num;
+    pe [pe$w_num_pic_blocks] = .pic_num_blks;
+    pe [pe$w_num_edit_blocks] = .edit_num_blks;
+    pe [pe$w_editable_block] = .edit_block_num;
+    pe [pe$w_num_ldes] = 1;		!Maybe just one LDE
+
+    starting_db_num = .curr_data_block;	!Remember where curr datablock is
+  !
+  ! Write linedef information in the data block
+  !
+    clineb = .pgblk [pgb$a_line_q_hdr_fl];
+    IF (.clineb EQL pgblk [pgb$a_line_q_hdr_fl])
+      THEN
+	BEGIN
+	$typeline ('? Page with no line entries!');	!Guard against this
+	RETURN SS$_BADPARAM
+	END;
+    lde = .pe + pe$S_page_entry;	!Start of first LDE
+    lde [lde$w_lin_size] = .clineb [lin$w_lineheight];
+    lde [lde$w_num_lines] = 1;		!1 line so far
+  !
+  ! Space left = 512 - 4 bytes for this page's RCAL counter,
+  !		     - 1 page-entry, - 1 lde entry. (so far).
+  !
+    datablock_space_left = 512 - 4 - pe$S_page_entry - lde$S_lindef_entry;
+
+    clineb = .clineb [lin$a_flink];	!Go to next line
+    WHILE (.clineb NEQ pgblk [pgb$a_line_q_hdr_fl]) DO
+	BEGIN
+	IF (.lde [lde$w_lin_size] NEQ .clineb [lin$w_lineheight])
+	  THEN
+	    BEGIN
+	    pe [pe$w_num_ldes] = .pe [pe$w_num_ldes] + 1;	!Another LDE
+	    lde = .lde + lde$S_lindef_entry;
+	    lde [lde$w_lin_size] = .clineb [lin$w_lineheight];
+	    lde [lde$w_num_lines] = 1;		!1 line so far
+	    datablock_space_left = .datablock_space_left - lde$S_lindef_entry;
+	    END
+	  ELSE				!Another line of the same height
+	    lde [lde$w_num_lines] = .lde [lde$w_num_lines] + 1;
+
+	clineb = .clineb [lin$a_flink];		!Go to next line
+	END;
+  !
+  ! Now loop thru the lines again, this time doing all the other RCAL's    
+  !
+    clineb = .pgblk [pgb$a_line_q_hdr_fl];
+    line_num = 1;
+    cur_y_of_line = 0;
+    WHILE (.clineb NEQ pgblk [pgb$a_line_q_hdr_fl]) DO
+	BEGIN
+	IF NOT (status =
+	    doc$$get_line_file (line_len)
+		)
+	  THEN RETURN .status;
+	!
+	! Process next line
+	!
+	IF NOT (status =
+	    process_line	(.line_num)
+		)
+	  THEN RETURN .status;
+	cur_y_of_line = .cur_y_of_line + .clineb [lin$w_lineheight];
+	clineb = .clineb [lin$a_flink];	!Go on to next line
+	line_num = .line_num + 1;
+	END;
+  !
+  ! Write last data block
+  !
+    IF NOT (status =
+	doc$$write_edf_file (.curr_data_block, datablk)
+	    )
+      THEN RETURN .status;
+    curr_data_block = .curr_data_block + 1;
+  !
+  ! Now we can write this ppe.
+  !
+    IF (.num_ppes_this_block EQL .num_ppes_per_block)
+      THEN
+	BEGIN			!Time to write this header block
+	IF NOT (status =
+	    doc$$write_edf_file (.curr_pe_block_number, ppe_buffer)
+		)
+	  THEN RETURN .status;
+	num_ppes_this_block = 0;
+	curr_pe_block_number = .curr_pe_block_number + 1;
+	END;
+
+    curr_ppe = ppe_buffer + (.num_ppes_this_block * ppe$S_page_ptr_entry);
+    curr_ppe [ppe$w_block] = .starting_db_num;
+    curr_ppe [ppe$w_num_blocks] = .curr_data_block - .starting_db_num;
+    num_ppes_this_block = .num_ppes_this_block + 1;
+
+    pgblk = .pgblk [pgb$a_flink];	!Go on to next page
+    END;
+!
+! Write last ppe block, if not empty.
+!
+IF (.num_ppes_this_block NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$write_edf_file (.curr_pe_block_number, ppe_buffer)
+	    )
+      THEN RETURN .status;
+    num_ppes_this_block = 0;
+    curr_pe_block_number = .curr_pe_block_number + 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE dump_picture_info
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Takes pgblk picture entries and dumps them into the file.
+!	Returns first block number and number of blocks used.
+! FORMAL PARAMETERS:
+	(first_block_num
+	,num_blks
+	) =
+!--
+BEGIN
+LOCAL
+    buffr: VECTOR [512,BYTE],
+    pich: REF picture_block_header,	!Block header
+    pic: REF picture_entry,		!Picture entry itself
+    buf_space_used,			!# bytes used in buffer so far
+    pic_q_entry,
+    status;
+!
+! Return 0's if there are no pictures in this page.
+!
+.num_blks = 0;
+IF (.pgblk [pgb$w_num_ovls] EQL 0)
+  THEN
+    BEGIN
+    .first_block_num = 0;
+    RETURN SS$_NORMAL
+    END;
+
+.first_block_num = .curr_data_block;	!Return first block number used.
+pic_q_entry = .pgblk [pgb$a_ovl_q_hdr_fl];
+
+pich = buffr;		!Top of buffer
+pich [pich$w_num_ents] = 0;
+buf_space_used = pich$S_picture_block_header;	!# bytes used in this block
+pic = buffr + pich$S_picture_block_header;	!First entry goes here.
+INCR i FROM 1 TO .pgblk [pgb$w_num_ovls] DO
+    BEGIN
+    IF ((.buf_space_used + pic$S_picture_entry) GTR 512)
+      THEN
+	BEGIN		!Write out this block, and get a new block
+	IF NOT (status =
+	    doc$$write_edf_file (.curr_data_block, buffr)
+		)
+	  THEN RETURN .status;
+	curr_data_block = .curr_data_block + 1;
+	.num_blks = ..num_blks + 1;
+	pich [pich$w_num_ents] = 0;
+	buf_space_used = pich$S_picture_block_header;
+	pic = buffr + pich$S_picture_block_header;
+	END;
+    CH$MOVE	(pic$S_picture_entry
+		,.pic_q_entry + 8
+		,.pic
+		);			!Copy the picture info
+    buf_space_used = .buf_space_used + pic$S_picture_entry;
+    pic = .pic + pic$S_picture_entry;
+    pich [pich$w_num_ents] = .pich [pich$w_num_ents] + 1;
+
+    pic_q_entry = ..pic_q_entry;		!FLINK
+    END;
+!
+! Write out last block
+!
+IF NOT (status =
+    doc$$write_edf_file (.curr_data_block, buffr)
+	)
+  THEN RETURN .status;
+curr_data_block = .curr_data_block + 1;
+.num_blks = ..num_blks + 1;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE dump_checkoff_info
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+	(first_block_num
+	,num_blks
+	) =
+BEGIN
+LOCAL
+    buffr: VECTOR [512,BYTE],
+    ckh: REF checkoff_header,
+    cke: REF checkoff_entry,		!Current checkoff entry
+    chk_q_entry,
+    buf_space_used,			!How many bytes used so far
+    status;
+!
+! Return 0's if there are no checkoff's in this page.
+!
+.num_blks = 0;
+IF (.pgblk [pgb$w_num_chks] EQL 0)
+  THEN
+    BEGIN
+    .first_block_num = 0;
+    RETURN SS$_NORMAL
+    END;
+
+.first_block_num = .curr_data_block;	!Return first block number used.
+chk_q_entry = .pgblk [pgb$a_chk_q_hdr_fl];
+
+ckh = buffr;		!Top of buffer
+ckh [ckh$w_num_ents] = 0;
+buf_space_used = ckh$S_checkoff_header;		!# bytes used in this block
+cke = buffr + ckh$S_checkoff_header;		!First entry goes here.
+
+INCR i FROM 1 TO .pgblk [pgb$w_num_chks] DO
+    BEGIN
+    IF ((.buf_space_used + cke$S_checkoff_entry) GTR 512)
+      THEN
+	BEGIN		!Write out this block, and get a new block
+	IF NOT (status =
+	    doc$$write_edf_file (.curr_data_block, buffr)
+		)
+	  THEN RETURN .status;
+	curr_data_block = .curr_data_block + 1;
+	.num_blks = ..num_blks + 1;
+	ckh [ckh$w_num_ents] = 0;
+	buf_space_used = ckh$S_checkoff_header;
+	cke = buffr + ckh$S_checkoff_header;
+	END;
+    CH$MOVE	(cke$S_checkoff_entry
+		,.chk_q_entry + 8
+		,.cke
+		);			!Copy the checkoff info
+    buf_space_used = .buf_space_used + cke$S_checkoff_entry;
+    cke = .cke + cke$S_checkoff_entry;
+    ckh [ckh$w_num_ents] = .ckh [ckh$w_num_ents] + 1;
+
+    chk_q_entry = ..chk_q_entry;		!FLINK
+    END;
+!
+! Write out last block
+!
+IF NOT (status =
+    doc$$write_edf_file (.curr_data_block, buffr)
+	)
+  THEN RETURN .status;
+curr_data_block = .curr_data_block + 1;
+.num_blks = ..num_blks + 1;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE dump_editable_info
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+	(first_block_num
+	,num_blks
+	) =
+BEGIN
+LOCAL
+    buffr: VECTOR [512,BYTE],
+    edh: REF editable_header,
+    ede: REF editable_entry,		!Current editable entry
+    edit_q_entry,
+    iede: REF editable_entry,
+    ede_size,				!Size in bytes of this entry
+    buf_space_used,			!How many bytes used so far
+    status;
+!
+! Return 0's if there are no editable items in this page.
+!
+.num_blks = 0;
+IF (.pgblk [pgb$w_num_edits] EQL 0)
+  THEN
+    BEGIN
+    .first_block_num = 0;
+    RETURN SS$_NORMAL
+    END;
+
+.first_block_num = .curr_data_block;	!Return first block number used.
+edit_q_entry = .pgblk [pgb$a_edit_q_hdr_fl];
+
+edh = buffr;		!Top of buffer
+edh [edh$w_num_ents] = 0;
+buf_space_used = edh$S_editable_header;		!# bytes used in this block
+ede = buffr + edh$S_editable_header;		!First entry goes here.
+
+INCR i FROM 1 TO .pgblk [pgb$w_num_edits] DO
+    BEGIN
+    iede = .edit_q_entry + 8;			!Point at the EDE
+    ede_size = .iede [ede$w_size];		!Get size of entry
+    IF ((.buf_space_used + .ede_size) GTR 512)
+      THEN
+	BEGIN		!Write out this block, and get a new block
+	IF NOT (status =
+	    doc$$write_edf_file (.curr_data_block, buffr)
+		)
+	  THEN RETURN .status;
+	curr_data_block = .curr_data_block + 1;
+	.num_blks = ..num_blks + 1;
+	edh [edh$w_num_ents] = 0;
+	buf_space_used = edh$S_editable_header;
+	ede = buffr + edh$S_editable_header;
+	END;
+    CH$MOVE	(.ede_size
+		,.iede
+		,.ede
+		);			!Copy the checkoff info
+    buf_space_used = .buf_space_used + cke$S_checkoff_entry;
+    ede = .ede + .ede_size;
+    edh [edh$w_num_ents] = .edh [edh$w_num_ents] + 1;
+
+    edit_q_entry = ..edit_q_entry;		!FLINK
+    END;
+!
+! Write out last block
+!
+IF NOT (status =
+    doc$$write_edf_file (.curr_data_block, buffr)
+	)
+  THEN RETURN .status;
+curr_data_block = .curr_data_block + 1;
+.num_blks = ..num_blks + 1;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write out all RCALs for this line
+! FORMAL PARAMETERS:
+	(line_num		!Line number
+	) =
+!--
+BEGIN
+LOCAL
+    irb_hdr: REF ir_hdr,
+    irb_addr,
+    irsel: REF ir_sel,
+    irtf: REF ir_settf,
+    irts: REF ir_setts,
+    irr: REF ir_setrend,
+    irdeff: REF ir_deff,
+    irmf: REF ir_markf,
+    iredit: REF ir_editable,
+    some_space: VECTOR [512,BYTE],
+    rcinst: rcal_insert_text,
+    rcappt: rcal_append_text,
+    rcsel: rcal_set_selectable,
+    rcdeffont: REF rcal_def_font,	!Variable length block
+    rcsettf: REF rcal_set_typeface,	!Variable length block
+    rcedit: REF rcal_editable,		!Variable length block
+    rcsetts: rcal_set_typesize,
+    rcsetr: rcal_set_rendition,
+    othfld: REF fld_block,
+    field_num,			!Number of the current field
+    field_id,			!Current field id
+    inserted_yet,		!Set to 1 if "ins_string" called for this field
+    str_desc: VECTOR [2],
+    status;
+
+rcdeffont = rcsettf = rcedit = some_space;	!Incase we use these..
+othfld = .clineb [lin$a_fld_block];	!Point to 1st extra fld (or 0)
+inserted_yet = 0;		!Didn't insert into field yet.
+cpos = 0;			!Now at char pos 0 on this line.
+!
+! Start out by defining/undefining all fields.
+!
+IF NOT (status =
+    setup_fields (.line_num)
+	)
+  THEN RETURN .status;
+
+field_num = 1;				!Start out with field 1
+field_id = .clineb [lin$w_leftmargin];	!Get the actual field id
+!
+irb_hdr = .clineb [lin$a_rcal_list];
+WHILE (.irb_hdr NEQ 0) DO
+    BEGIN
+    irb_addr = .irb_hdr + irb$S_ir_hdr;	!Get address of the main IRB block
+    (SELECTONE (.irb_hdr [irb$w_type]) OF
+	SET
+	[doc_rcal$K_set_selectable]:
+	    BEGIN
+	    irsel = .irb_addr;
+	    str_desc [0] = .irsel [irb$w_sel_cidx] - .cpos;
+	    $catch_up;
+	    rcsel [rcl$w_sel_x_orig] = .irsel [irb$w_sel_xstart];
+	    rcsel [rcl$w_sel_y_orig] = .cur_y_of_line;
+	    rcsel [rcl$w_sel_x_extent] = .irsel [irb$w_sel_len_pixels];
+	    rcsel [rcl$w_sel_y_extent] = .clineb [lin$w_lineheight];
+	    rcsel [rcl$w_sel_link] = .irsel [irb$w_sel_link];
+	    rcsel [rcl$w_sel_docpage] = .irsel [irb$w_sel_page];
+	    IF NOT (status =
+		app_rcal (doc_rcal$K_set_selectable, rcl$S_rcal_set_selectable, rcsel)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_typeface]:
+	    BEGIN
+	    irtf = .irb_addr;
+	    str_desc [0] = .irtf [irb$w_typeface_cidx] - .cpos;
+	    $catch_up;
+	    rcsettf [rcl$w_typeface_len] = .irtf [irb$w_typeface_len];
+	    CH$MOVE	(.irtf [irb$w_typeface_len]
+			,irtf [irb$b_typeface_str]
+			,.rcsettf + rcl$K_typeface_str
+			);
+	    IF NOT (status =
+		app_rcal
+			(doc_rcal$K_set_typeface	!Type of RCAL
+			,rcl$S_rcal_set_typeface + .irtf [irb$w_typeface_len] !Size of block
+			,.rcsettf			!Addr of block
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_typesize]:
+	    BEGIN
+	    irts = .irb_addr;
+	    str_desc [0] = .irts [irb$w_typesize_cidx] - .cpos;
+	    $catch_up;
+	    rcsetts [rcl$w_typesize] = .irts [irb$w_typesize];
+	    IF NOT (status =
+		app_rcal (doc_rcal$K_set_typesize, rcl$S_rcal_set_typesize, rcsetts)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_set_rendition]:
+	    BEGIN
+	    irr = .irb_addr;
+	    str_desc [0] = .irr [irb$w_rend_cidx] - .cpos;
+	    $catch_up;
+	    rcsetr [rcl$l_rend_on] = .irr [irb$l_rend_on];
+	    rcsetr [rcl$l_rend_off] = .irr [irb$l_rend_off];
+	    IF NOT (status =
+		app_rcal (doc_rcal$K_set_rendition, rcl$S_rcal_set_rendition, rcsetr)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_def_font]:
+	    BEGIN
+	    irdeff = .irb_addr;
+	    rcdeffont [rcl$w_deffont_fn_len] = .irdeff [irb$w_deffont_fn_len];
+	    rcdeffont [rcl$w_deffont_tf_len] = .irdeff [irb$w_deffont_tf_len];
+	    rcdeffont [rcl$w_deffont_ts] = .irdeff [irb$w_deffont_ts];
+	    rcdeffont [rcl$l_deffont_rend] = .irdeff [irb$l_deffont_rend];
+	    CH$MOVE	(.irdeff [irb$w_deffont_fn_len]
+			,irdeff [irb$b_deffont_fn_str]
+			,.rcdeffont + rcl$K_deffont_fn_str
+			);
+	    CH$MOVE	(.irdeff [irb$w_deffont_tf_len]
+			,irdeff [irb$b_deffont_tf_str]
+			,.rcdeffont + rcl$K_deffont_fn_str + .irdeff [irb$w_deffont_fn_len]
+			);
+	    IF NOT (status =
+		app_rcal
+			(doc_rcal$K_def_font		!Type of RCAL block
+			,rcl$S_rcal_def_font + .irdeff [irb$w_deffont_tf_len]
+			 + .irdeff [irb$w_deffont_fn_len] !Size of RCAL block
+			,.rcdeffont			!Addr of RCAL block
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_editable]:			!Set editable field
+	    BEGIN
+	    iredit = .irb_addr;
+	    rcedit [rcl$w_ed_id] = .iredit [irb$w_ed_id];
+	    IF NOT (status =
+		app_rcal
+			(doc_rcal$K_editable	!Type of RCAL block
+			,rcl$S_rcal_editable
+			,.rcedit
+			)
+		    )
+	      THEN RETURN .status;
+	    END;
+	[doc_rcal$K_mark_field]:		!Go on to the next field
+	    BEGIN
+	    irmf = .irb_addr;
+	    str_desc [0] = .irmf [irb$w_markf_cidx] - .cpos;
+	    $catch_up;
+	    inserted_yet = 0;
+	    field_id = .othfld [fld$w_start];
+	    othfld = .othfld + fld$S_fld_block;
+	    END;
+	TES
+    );
+    irb_hdr = .irb_hdr [irb$a_flink];	!Go to next IRB
+    END;
+!
+! Finish line
+!
+str_desc [0] = .clineb [lin$w_cidx] - .cpos;
+$catch_up;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_fields
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Defines and undefines fields for a line
+! FORMAL PARAMETERS:
+	(line_num
+	) =
+! IMPLICIT INPUTS:
+!	clineb - current line block
+!--
+BEGIN
+LOCAL
+    rcdeffld: rcal_def_field,
+    rcundef: rcal_undef_field,
+    othfld: REF fld_block,
+    format,
+    field_id,
+    status;
+
+othfld = .clineb [lin$a_fld_block];	!Point to 1st extra fld (or 0)
+
+IF ((.clineb [lin$w_leftmargin] NEQ 1)
+		OR
+    (.clineb [lin$w_num_extra_flds] NEQ 0))
+  THEN
+    BEGIN			!Have to undefine the default field!
+    rcundef [rcl$w_undef_fld_line] = .line_num;
+    IF NOT (status =
+	app_rcal (doc_rcal$K_undef_field, rcl$S_rcal_undef_field, rcundef)
+	    )
+      THEN RETURN .status;
+  !
+  ! Define the 1st field
+  !
+    rcdeffld [rcl$w_def_fld_line] = .line_num;
+    rcdeffld [rcl$w_def_fstart] = .clineb [lin$w_leftmargin];
+    IF (.clineb [lin$w_num_extra_flds] NEQ 0)
+      THEN
+	rcdeffld [rcl$w_def_fsize] = .othfld [fld$w_start]
+				- .clineb [lin$w_leftmargin]
+      ELSE
+	rcdeffld [rcl$w_def_fsize] = .clineb [lin$w_rightmargin]
+				- .clineb [lin$w_leftmargin];
+    IF NOT (status =
+	app_rcal (doc_rcal$K_def_field, rcl$S_rcal_def_field, rcdeffld)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! First field is now defined. It start at leftmargin.
+! Change format of first field, if necessary.
+!
+format = .clineb [lin$l_fld0_attrib];
+IF (.format NEQ 0)
+  THEN
+    BEGIN
+    field_id = .clineb [lin$w_leftmargin];
+    IF NOT (status =
+	set_field_format (.line_num, .field_id, .format)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! If there are more fields, define them and set the format.
+!
+IF (.othfld NEQ 0)
+  THEN
+    INCR i FROM 1 TO .clineb [lin$w_num_extra_flds] DO
+	BEGIN
+!	rcdeffld [rcl$w_def_fld_line] = .line_num;	!(already done)
+	rcdeffld [rcl$w_def_fstart] = field_id = .othfld [fld$w_start];
+	format = .othfld [fld$l_attrib];
+	othfld = .othfld + fld$S_fld_block;
+	IF (.i EQL .clineb [lin$w_num_extra_flds])
+	  THEN			!This is the last field
+	    rcdeffld [rcl$w_def_fsize] = .clineb [lin$w_rightmargin]
+					- .rcdeffld [rcl$w_def_fstart]
+	  ELSE			!Sandwiched between 2 fields
+	    rcdeffld [rcl$w_def_fsize] = .othfld [fld$w_start]
+					- .rcdeffld [rcl$w_def_fstart];
+	IF NOT (status =
+	    app_rcal (doc_rcal$K_def_field, rcl$S_rcal_def_field, rcdeffld)
+		)
+	  THEN RETURN .status;
+	IF (.format NEQ 0)
+	  THEN
+	    IF NOT (status =
+		set_field_format (.line_num, .field_id, .format)
+		    )
+	      THEN RETURN .status;
+	END;		!Of INCR loop to define the fields
+!
+! All fields are now defined.
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_field_format
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends an RCAL to set field format
+! FORMAL PARAMETERS:
+	(line_num
+	,field_id
+	,format
+	) =
+!--
+BEGIN
+LOCAL
+    rccenf: rcal_center_field,
+    rcrjf: rcal_rj_field,
+    status;
+
+IF (.format EQL doc$K_ff_center)
+  THEN
+    BEGIN			!Center this field
+    rccenf [rcl$w_cen_fld_line] = .line_num;
+    rccenf [rcl$w_cen_fld_id] = .field_id;
+    IF NOT (status =
+	app_rcal (doc_rcal$K_center_field, rcl$S_rcal_center_field, rccenf)
+	    )
+      THEN RETURN .status;
+    END
+  ELSE
+    BEGIN			!Right just this field
+    rcrjf [rcl$w_rj_fld_line] = .line_num;
+    rcrjf [rcl$w_rj_fld_id] = .field_id;
+    IF NOT (status =
+	app_rcal (doc_rcal$K_rj_field, rcl$S_rcal_rj_field, rcrjf)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE ins_string
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Append an RCAL to insert text.
+! FORMAL PARAMETERS:
+	(line
+	,field_id
+	,str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    some_space: VECTOR [512,BYTE],
+    rcins: REF rcal_insert_text,
+    status;
+
+rcins = some_space;
+rcins [rcl$w_ins_txt_line] = .line;
+rcins [rcl$w_ins_txt_fld] = .field_id;
+rcins [rcl$w_ins_txt_size] = .str_desc [0];
+CH$MOVE	(.str_desc [0]
+	,.str_desc [1]
+	,.rcins + rcl$K_ins_txt_str
+	);
+
+IF NOT (status =
+    app_rcal	(doc_rcal$K_insert_text			!Type of RCAL
+		,rcl$S_rcal_insert_text + .str_desc [0]	!Size of RCAL block
+		,.rcins					!Address of RCAL block
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE app_string
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Append an RCAL to append text
+! FORMAL PARAMETERS:
+	(line
+	,field_id
+	,str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    some_space: VECTOR [512,BYTE],
+    rcapp: REF rcal_append_text,
+    status;
+
+rcapp = some_space;
+rcapp [rcl$w_app_txt_line] = .line;
+rcapp [rcl$w_app_txt_fld] = .field_id;
+rcapp [rcl$w_app_txt_size] = .str_desc [0];
+CH$MOVE	(.str_desc [0]
+	,.str_desc [1]
+	,.rcapp + rcl$K_app_txt_str
+	);
+
+IF NOT (status =
+    app_rcal	(doc_rcal$K_append_text			!Type of RCAL
+		,rcl$S_rcal_append_text + .str_desc [0]	!Size of RCAL block
+		,.rcapp					!Address of RCAL block
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE app_rcal
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Append an RCAL to the current data block. Spill over
+!	into another data block if we ran out of room.
+! FORMAL PARAMETERS:
+	(type		!Type of RCAL
+	,rc_len		!Length of entry (no header)
+	,rc_adr		!Address of RCAL
+	) =
+!--
+BEGIN
+LOCAL
+    total_len,		!Total length of entry with header
+    rc_hdr: rcal_header,
+    status;
+
+total_len = .rc_len + rcl$S_rcal_header;
+rc_hdr [rcl$w_type] = .type;
+rc_hdr [rcl$w_size] = .total_len;
+
+IF (.total_len GTR 512-4)		!Must be able to fit in 1 block
+  THEN
+    BEGIN
+    $typeline ('?BUG: RCAL won''t fit within a block of EDF file');
+    RETURN SS$_BADPARAM;
+    END;
+
+IF (.total_len GTR .datablock_space_left)
+  THEN
+    BEGIN		!No room, write out this block
+    IF NOT (status =
+	doc$$write_edf_file  (.curr_data_block, datablk)
+	    )
+      THEN RETURN .status;
+    curr_data_block = .curr_data_block + 1;
+    datablk = 0;		!No RCAL's yet.
+    datablock_space_left = 512 - 4;	!# bytes left for RCALs
+    END;
+!
+! We're home free.
+!
+CH$MOVE	(rcl$S_rcal_header	!First copy the header
+	,rc_hdr
+	,datablk + (512 - .datablock_space_left)
+	);
+CH$MOVE	(.rc_len		!Then the data itself
+	,.rc_adr
+	,datablk + (512 - .datablock_space_left + rcl$S_rcal_header)
+	);
+datablock_space_left = .datablock_space_left - .total_len;
+datablk = .datablk + 1;		!Increment number of RCAL's in this block.
+RETURN SS$_NORMAL		!Return
+END;
+
+END
+ELUDOM

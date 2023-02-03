@@ -1,0 +1,44 @@
+!
+!	VBLINKAGE.R32
+!	Version 01-000
+!
+!++
+! Facility:
+!
+!	VAX/VMS Onyx display driver BLISS routines
+!
+!--
+
+linkage SUB_LOCK = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Starting address of buffer
+	register=1,	! Length of buffer in bytes
+	register=2,	! Address of routine to execute
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    preserve( ! Routine arguments
+	4,5,6,7,8)
+    nopreserve( ! Scratch registers
+	1,2,3)
+    notused( ! Not used registers
+	9,10,11);
+
+linkage SUB_UNLOCK = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3):	! IRP - I/O request packet
+    preserve( ! Routine arguments
+	1,2,3,4)
+    notused( ! Not used registers
+	5,6,7,8,9,10,11);
+
+macro
+
+    $VB$$SUB_LOCK(ADDR,LEN,ROU) =
+	(external routine VB$$SUB_LOCK: SUB_LOCK;
+	VB$$SUB_LOCK(ADDR,LEN,ROU,.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY)) %;

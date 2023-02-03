@@ -1,0 +1,4632 @@
+%TITLE 'VSTA$DRIVE  --  Driver Interface Routines'
+module VSTA$DRIVE ( 
+		addressing_mode (external = general,
+				 nonexternal= general),
+		ident = '1-001'		! Version
+		 ) =
+begin
+!++
+! FACILITY:
+!	Workstation Interface Routines to VBDRIVER
+!
+! ABSTRACT:
+!
+! ENVIRONMENT:
+!	Runs in any access mode
+!	AST re-entrant
+!
+!--
+
+%sbttl	'Declarations'
+!
+! 		$INCLUDE SECTION$
+!
+
+library	'SYS$LIBRARY:LIB.L32';		! SS,RMS, etc. symbols and constants
+library 'VSTA$LIBRARY:VSTAMACS';	! Keyword macro's for routine calls
+library 'VSTA$LIBRARY:VSTAGBL';		! Global symbol definitions
+require 'VSTA$LIBRARY:VSTANATIV';	! Bitmap descriptor definitions
+library 'VSTA$LIBRARY:VSTADEF';		! Definition of QIO packets
+library 'VSTA$LIBRARY:LIBMACROS';	! Symbols like "$base"
+library 'VSTA$LIBRARY:VSERRORS';	! Get error logging constants
+require 'VSTA$LIBRARY:LINKAGE';		! Get linkage defs for system routines
+require 'VSTA$LIBRARY:VBDEF';		! Get internal VBDRIVER symbols
+
+!
+! PSECTS
+!
+$VSTA_PSECT;
+
+!
+!		$ROUTINE SECTION$
+!
+forward routine!s
+
+	!
+	!  Control section
+	!
+	 VSTA$$DRIVE_INIT_MODULE	! Setup module
+	,VSTA$$DRIVE_LOCK_CODE		! Locks down Hi IPL code
+	,VSTA$$DRIVE_CHKQUO		! Check quota routine
+	,VSTA$$DRIVE_INIT_SESSION	! Inits map tables
+	,VSTA$$DRIVE_PIO_CLEANUP
+
+	!
+	!  Lock Down code section
+	!
+	,VSTA$$DRIVE_START_LOCK		! Start the locked code section
+	,VSTA$$DRIVE_GET_VB_UCB_K
+	,VSTA$$DRIVE_PIO_K
+	,VSTA$$DRIVE_PIO_CLEANUP_K
+	,VSTA$$DRIVE_CHKQUO_K		! Access PCB to get quotas
+	,VSTA$$DRIVE_END_LOCK		! End the locked code section
+
+	!
+	!  Device memory function routines
+	!
+	,VSTA$$DRIVE_SET_VB_WCP_CACHE	! Sets the VBDRIVER WCP cache
+	,VSTA$$DRIVE_MAP_BLOCK		! Map block to device addressing
+	,VSTA$$DRIVE_UNMAP_BLOCK	! Unmap block from device addressing
+	,VSTA$$DRIVE_MAP_DISPLAY	! Map display section
+	,VSTA$$DRIVE_UNMAP_DISPLAY	! Unmap display section
+	,VSTA$$DRIVE_CHKADR		! Checks address to see if mapped
+
+	!
+	!  Error recovery and conversion routines
+	!
+	,VSTA$$DRIVE_REPORT_ERROR	! Converts ONYX errors to VSTA$_
+
+	!
+	!  Simplified output Jacket routines
+	!
+	,VSTA$$DRIVE_BACKGROUND		! Jacket routine to COPY
+	,VSTA$$DRIVE_PAINT_BG		! Jacket routine to COPY
+	,VSTA$$DRIVE_TRANSLATE_COLOR	! Change SDA color WGA color
+
+	!
+	!  WGA output access routines
+	!
+	,VSTA$$DRIVE_COPY_AREA		
+	,VSTA$$DRIVE_DRAW_CURVE		
+	,VSTA$$DRIVE_PRINT_TEXT		
+	,VSTA$$DRIVE_FILL_AREA
+	,VSTA$$DRIVE_FLOOD_AREA
+	,VSTA$$DRIVE_MOVE_OBJECT
+	,VSTA$$DRIVE_LOAD_CURSOR
+	,VSTA$$DRIVE_NOOP
+
+	!
+	!  Device control routines
+	!
+	,VSTA$$DRIVE_EXIT_IDLE		! Set exit-idle (user hit button
+					!  to start) AST
+	,VSTA$$DRIVE_RESET		! Reset the ONYX
+	,VSTA$$DRIVE_LINK_AST		! Set link online/offline AST
+	,VSTA$$DRIVE_LIGHT_ON		! Turn fiber light on
+	,VSTA$$DRIVE_SET_FO_EXIT	! Set FO off at deassign
+	,VSTA$$DRIVE_SET_FO_NO_EXIT	! Leave FO on at deassign
+	,VSTA$$DRIVE_SETMOUSE		! Set mouse characteristics
+	,VSTA$$DRIVE_ATTACH_CURSOR	! Attach the mouse cursor
+	,VSTA$$DRIVE_REPORT_TO_VB	! Tell ONYX to report info to VBDRIVER
+	,VSTA$$DRIVE_GET_VB_STATUS	! Get VB status ("report_to_vb" must
+					!  have been called previously)
+	,VSTA$$DRIVE_POWERUP		! Return ONYX to initial idle loop.
+	,VSTA$$DRIVE_MOVEDISP		! Move to display memory
+	,VSTA$$DRIVE_STARTM		! Start the microcode
+
+	!
+	!  Output completion and clean up routines
+	!
+	,VSTA$$DRIVE_AST_HANDLER	! Ast handler for output completions
+	,VSTA$$DRIVE_CLEAN_UP		! Clean up from output comp. or error.
+	;
+
+
+!
+! 		$EXTERNAL SECTION$
+!
+external routine!s
+	 VS$$ACP_GET_VM
+	,VS$$ACP_FREE_VM
+	,VSTA$$GET_EF
+	,VSTA$$ERROR_LOGGER
+	,LIB$FREE_EF
+	,VSTA$$DMM_GET_MAPPED_MEM	! Allocates memory from unibus cache
+	,VSTA$$DMM_FREE_MAPPED_MEM	! Deallocates mem from unibus cache
+	,VSTA$$KERNEL_CALL
+	,EXE$ALLOCIRP: ALLOCIRP
+	,EXE$DEANONPAGED: DEANONPAGED novalue 	! VMS deallocation
+	,EXE$INSIOQ: QIODRVPKT 
+	,IOC$SEARCHDEV: SEARCHDEV	! VMS Locates the UCB for a name
+	,SCH$IOLOCKR: IOLOCKW novalue	! VMS Mutex acquisition
+	,SCH$IOLOCKW: IOLOCKW novalue	! VMS Mutex acquisition
+	,SCH$IOUNLOCK: IOUNLOCK novalue	! VMS Mutex return
+	;
+
+
+builtin!s
+	 MTPR				! To raise or lower IPL
+	,MFPR				! To determine the current IPL
+	,INSQUE
+	,REMQUE
+	;
+
+literal!s
+	 TRUE = 1
+	,FALSE = 0
+	;
+
+
+
+
+!
+!		$GLOBAL SECTION$
+!
+global!s
+	 VSTA$GL_HALFTONE_SIZE: 
+		initial (16)
+	,VSTA$GWV_HALFTONES: vector[15,long] 
+		initial	
+
+	       (uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'0000')),
+		uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'1111')),
+		uplit word (rep 4 of (%x'0000',%x'4444',%x'0000',%x'5555')),
+		uplit word (rep 4 of (%x'0000',%x'5555',%x'0000',%x'5555')),
+		uplit word (rep 4 of (%x'0000',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'8888',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'2222',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'AAAA',%x'5555')),
+		uplit word (rep 4 of (%x'AAAA',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'BBBB',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'EEEE',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'FFFF',%x'5555')),
+		uplit word (rep 4 of (%x'FFFF',%x'5555',%x'FFFF',%x'7777')),
+		uplit word (rep 4 of (%x'FFFF',%x'DDDD',%x'FFFF',%x'7777')),
+		uplit word (rep 4 of (%x'FFFF',%x'FFFF',%x'FFFF',%x'7777'))
+		)
+	;
+
+!
+!		$DATA SECTION$
+!
+global
+
+	 DRV$Q_BASE		: vector [2,long] 
+					initial (DRV$Q_BASE,DRV$Q_BASE);
+
+own!s
+
+	 DRV$L_CODE_LOCKED	: initial (0)
+	,DRV$L_MIN_AST_SLOTS	: initial (4)
+	,DRV$L_EXQCNT		: initial (0)
+	,DRV$Q_DMAP		: vector [2,long]
+					initial (DRV$Q_DMAP,DRV$Q_DMAP)
+	,DRV$A_VB_UCB		: ref block [,byte]
+	;
+
+external!s
+	 SCH$GL_CURPCB			! System pointer to current PCB
+	,PMS$GL_IOPFMSEQ 
+	;
+
+
+
+!
+!		$MACRO SECTION$
+!
+macro!s
+	 $DEFS =
+		 local
+
+			 STATUS
+			,S
+			,LOC
+			,ADR
+			,DSC		: ref vector [,long] initial (0)
+			,IOSB		: ref vector [,word]
+			,P1_PACKET	: DSC_BLOCK 
+			,P2_PACKET	: P2_BLOCK 
+			,P3_PACKET	: P3_BLOCK 
+			,P4_PACKET	: P4_BLOCK 
+			,P5_PACKET	: P5_BLOCK 
+			,VAX_MEM	: initial (0)
+			,CMD_PKT	: ref COMMAND_PACKET_BLOCK
+			;
+		%
+
+	,$DMKSET =
+		(
+		case .RC_COUNT from 0 to 1 
+		of set
+			[0]:    begin
+				P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_NONE;
+		
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+								VB$K_MOD_DMK_NONE;
+				end;
+			[1]: 
+				!
+				!  If one rectangle, set up single rectangle mask
+				!
+				begin
+				P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_RECTANGLE;
+				P3_PACKET [P3_DMK$W_LT_OFF_X] = .RC_ADDR [0];
+				P3_PACKET [P3_DMK$W_LT_OFF_Y] = .RC_ADDR [1];
+				P3_PACKET [P3_DMK$W_LT_EXT_X] = .RC_ADDR [2];
+				P3_PACKET [P3_DMK$W_LT_EXT_Y] = .RC_ADDR [3];
+
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_DMK_RECTANGLE;
+
+				end;
+
+			[outrange]: 
+				!
+				!  If list, set up rectangle list
+				!
+				begin
+				local
+					 LOC, ADR;
+
+				VSTA$$DRIVE_CHKADR( .RC_ADDR, ADR, LOC);
+
+				if .LOC eql VSTA$K_VAXMEM
+				then VAX_MEM = 1;
+
+				P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_RECLIST
+								+ .LOC;
+				P3_PACKET [P3_DMK$A_RC_ADDR] = .ADR;
+				P3_PACKET [P3_DMK$W_RC_COUNT] = .RC_COUNT;
+
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+								VB$K_MOD_DMK_RECLIST;
+
+				end;
+			tes;
+
+		)
+		%
+	,$MAPSET =
+		(
+		!
+		! Set up Map parameters
+		!
+		case .MAP_TYPE from 0 to VSTA$K_MAP_TYPES of
+		
+			set
+			[VSTA$K_MAP_IDENTITY]: 
+				begin
+
+				P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_IDEN ;
+
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+								VB$K_MOD_MAP_IDEN;
+
+				end;
+
+			[VSTA$K_MAP_S_LITERAL,VSTA$K_MAP_SOURCE]:
+				begin
+				P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SLIT;
+				P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+								VB$K_MOD_MAP_SLIT;
+
+				end;
+			[VSTA$K_MAP_SD_LITERAL,VSTA$K_MAP_SOURCEDEST]:
+				begin
+				P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SDLIT;
+				P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+
+				CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+								VB$K_MOD_MAP_SDLIT;
+
+				end;
+			tes;
+
+		)
+		%
+	,$PIOREQ (type) =
+		(
+		if not .VAX_MEM
+		then begin
+		
+			VSTA$$KERNEL_CALL ( VSTA$$DRIVE_PIO_K, .CMD_PKT, P2_PACKET, 
+						P3_PACKET, P4_PACKET, P5_PACKET,
+						.ASTADR, .ASTPRM, type);
+
+			return SS$_NORMAL;
+
+		     end;
+
+
+		VSTA$$DMM_FREE_MAPPED_MEM( %ref (VB$S_COMMAND_PACKET_BLOCK), 
+					CMD_PKT, 0);
+
+		)
+		%
+
+	,$GETCMDPKT =
+		(
+		begin
+
+			local
+				 LOC
+				;
+
+			!
+			!  Allocate PALM for WGA command descriptor
+			!
+			VSTA$$DMM_GET_MAPPED_MEM( %ref (VB$S_COMMAND_PACKET_BLOCK), 
+						CMD_PKT, 0);
+
+			!
+			!  Check to see if it is in device address space
+			!
+			VSTA$$DRIVE_CHKADR( .CMD_PKT, CMD_PKT [VB$L_LINK], LOC);
+
+			if .LOC eql VSTA$K_VAXMEM
+			then begin
+				VAX_MEM = 1;
+			     end;
+
+		end;
+		)
+		%
+
+	,$DEVREQ (type) =
+		(
+
+		!
+		!  Get a operation descriptor to queue 
+		!
+		$GET32B( DSC);
+
+		!
+		!  Identify the operation
+		!
+		DSC [2] = TYPE;
+
+		!
+		!  Save the synchronization parameters
+		!
+		DSC [3] = .ASTADR;
+		DSC [4] = .ASTPRM;
+
+		!
+		!  The iosb will be stored in the next two longwords of the descriptor
+		!
+		IOSB = DSC [5];
+
+		!
+		!  Now put the request descriptor at the end of the queue
+		!
+		INSQUE( DSC [0], .DRV$Q_BASE [1])
+		)
+		%
+
+	,$DRVQIO( fn) =
+		(
+		local ST;
+
+
+		!
+		!  Check the ACP process quotas if it fails then make
+		!  this a qio with wait so as not to exceed the quotas
+		!
+		if not VSTA$$DRIVE_CHKQUO()
+		then EFN = max (1, .EFN);
+
+
+		if .EFN eql 0
+		then begin			! Do qio without wait
+			!
+			!  Get a operation descriptor to queue 
+			!
+			if not (ST = $GET32B( DSC))
+			then begin		! If memory allocation fails
+
+				VSTA$$DRIVE_CLEAN_UP( .DSC, .EFN, 
+							.ASTADR, .ASTPRM, .ST);
+				return .ST;
+
+			     end;		! End Memory allocation failed
+
+			!
+			!  Identify the operation
+			!
+			DSC [2] = FN;
+
+			!
+			!  Save the synchronization parameters
+			!
+			DSC [3] = .ASTADR;
+			DSC [4] = .ASTPRM;
+
+			!
+			!  The iosb will be stored in the next two longwords of the descriptor
+			!
+			IOSB = DSC [5];
+
+			!
+			!  Now put the request descriptor at the end of the queue
+			!
+			INSQUE( DSC [0], .DRV$Q_BASE [1]);
+
+			if not (ST=$QIO	 (	
+				 chan = .CHANNEL
+				,func = FN
+				,iosb = IOSB [0]
+				,astadr = VSTA$$DRIVE_AST_HANDLER
+				,p1   = P1_PACKET
+				,p2   = P2_PACKET
+				,p3   = P3_PACKET
+				,p4   = P4_PACKET 
+				,p5   = P5_PACKET
+				))
+			then begin
+
+				!
+				!  Remove the latest request from the end of the queue
+				!
+				REMQUE( .DRV$Q_BASE [1], DSC);
+				VSTA$$DRIVE_CLEAN_UP( .DSC, .EFN, .ASTADR, .ASTPRM, .ST);
+
+			     end;		! End of qio failure.
+
+			return .ST;		! Send back the qio status
+
+		     end			! End of nowait qio
+
+		else begin			! Wait qio
+
+			local EF;
+
+			!
+			!  Get a operation descriptor to carry asychronus pars
+			!
+			if not (ST = $GET32B( DSC))
+			then begin		! If memory allocation fails
+
+				VSTA$$DRIVE_CLEAN_UP( .DSC, .EFN, 
+							.ASTADR, .ASTPRM, .ST);
+				return .ST;
+
+			     end;		! End Memory allocation failed
+
+			!
+			!  Identify the operation
+			!
+			DSC [2] = FN;
+
+			!
+			!  Save the synchronization parameters
+			!
+			DSC [3] = .ASTADR;
+			DSC [4] = .ASTPRM;
+
+			!
+			!  The iosb will be stored in the next two longwords of the descriptor
+			!
+			IOSB = DSC [5];
+
+			!
+			!  Get a unique event flag to use for the qiow
+			!
+			if not (st = VSTA$$GET_EF( EF))
+			then return .st;
+
+			ST = $QIOW (	
+				 CHAN = .CHANNEL
+				,FUNC = FN
+				,IOSB = IOSB [0]
+				,EFN  = .EF
+				,P1   = P1_PACKET
+				,P2   = P2_PACKET
+				,P3   = P3_PACKET
+				,P4   = P4_PACKET
+				,P5   = P5_PACKET 
+					);
+
+
+			!
+			!  If the efn is gtr 1 then set the event
+			!  flag
+			!
+			if .EFN gtr 1 
+			then $SETEF(EFN = .EFN);
+
+			!
+			!  If the qio was good then check the iosb
+			!
+			if .ST 
+			then VSTA$$DRIVE_REPORT_ERROR( IOSB [0], ST);
+
+			!
+			!  Call the clean up routine to satisfy any completion
+			!  routine requests
+			!
+			VSTA$$DRIVE_CLEAN_UP(.DSC,.EFN, .ASTADR, .ASTPRM, .ST);
+
+			!
+			!  Free the event flag
+			!
+			LIB$FREE_EF( EF);
+			
+
+
+			!
+			!
+			!  Return the value of the qio
+			!
+			return .ST
+
+		     end	! end of I/O with wait
+		)
+		%
+	;
+
+
+!
+!		$BODY$
+!
+
+
+
+%sbttl 'VSTA$$DRIVE_PIO_CLEANUP'
+global routine VSTA$$DRIVE_PIO_CLEANUP =
+!++
+!  Functional Description
+!
+!--
+begin
+
+local
+	 S
+	,IOSB : vector [2,long]
+	,ASTADR
+	,ASTPRM
+	,EMPTY : initial (0)
+	,VSTA_STATUS
+	,CMD_PKT
+	;
+
+
+while .EMPTY eql 0
+do begin
+
+	VSTA$$KERNEL_CALL( VSTA$$DRIVE_PIO_CLEANUP_K, 
+				CMD_PKT, ASTADR, ASTPRM, IOSB, EMPTY);
+
+	if .EMPTY neq 3
+	then begin
+
+		VSTA$$DMM_FREE_MAPPED_MEM( %ref (VB$S_COMMAND_PACKET_BLOCK),
+						CMD_PKT, 0);
+
+		VSTA$$DRIVE_REPORT_ERROR(
+			 IOSB
+			,VSTA_STATUS
+			);
+
+		if .ASTADR neq 0
+		then (.ASTADR)(.ASTPRM, .VSTA_STATUS);
+
+	     end;
+
+   end;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_INIT_MODULE -- SETUP MODULE'
+global routine VSTA$$DRIVE_INIT_MODULE =
+!++
+!  Functional Description
+!
+!  This routine will call the code locking routine and
+!  perform any other services necessary at ACP setup time.
+!
+!--
+begin
+
+local
+	 DMAP		: ref vector [,long]
+	,S
+	;
+
+
+!
+!  Call the code locking routine to prepare for quota checking for the
+!  ACP process
+!
+if not (S = VSTA$$DRIVE_LOCK_CODE())
+then return .S;
+
+!
+!  Get the address of the VB UCB
+!
+if not (S = VSTA$$KERNEL_CALL (VSTA$$DRIVE_GET_VB_UCB_K, 0))
+then return .S;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+%sbttl 'VSTA$$DRIVE_INIT_SESSION  -- SETUP FOR SESSION'
+global routine VSTA$$DRIVE_INIT_SESSION( VBCHAN) =
+!++
+!  Functional Description
+!
+!  This routine will init the memory map data regions.
+!
+!--
+begin
+
+local
+	 DMAP		: ref vector [,long]
+	,IOSB		: vector [2,long]
+	,EFN
+	,S
+	;
+
+
+
+!
+!  Note that the map base has been initialized in the module.  So now
+!  loop thru any DMAP's it contains from the last session and delete them.
+!
+while REMQUE( .DRV$Q_DMAP [0], DMAP) eql 0	! While queue not empty
+do $FREE32B( DMAP [0]);				! Delete the DMAP packet
+
+if not (S = VSTA$$GET_EF( EFN))
+then return .S;
+
+!
+!  Allocate the PALM functions for future use in the session.
+!
+S = $QIOW(
+	 CHAN	= .VBCHAN
+	,EFN	= .EFN
+	,FUNC	= (IO$_VB_PIO or IO$M_VB_PIO_ENABLE)
+	,IOSB	= IOSB [0]
+     );
+
+LIB$FREE_EF( EFN);
+
+!
+!  Return the QIO status
+!
+if not .S
+then return .S;
+
+if not .IOSB [0]
+then return .IOSB [0];
+
+
+return SS$_NORMAL;
+
+end;
+
+
+
+%sbttl 'VSTA$$DRIVE_LOCK_CODE -- SETUP LOCKED CODE'
+global routine VSTA$$DRIVE_LOCK_CODE =
+!++
+!  Functional Description
+!
+!  This routine will lock down any code which needs to run at IPL>0 for
+!  the vstadrive module
+!  When this routine is called the code is locked and the variable 
+!  	drv$l_code_locked is set.
+!
+!--
+begin
+
+local
+	 S
+	;
+
+!
+!  If code already locked then just return good status
+!
+if .DRV$L_CODE_LOCKED
+then return SS$_NORMAL;
+
+!
+!  Lock the specified code between the start_lock and end_lock routines
+!
+S = $LKWSET ( 
+		INADR = uplit(VSTA$$DRIVE_START_LOCK, VSTA$$DRIVE_END_LOCK)
+		);
+
+if .S
+then DRV$L_CODE_LOCKED = 1;
+
+return .S;
+
+end;
+
+
+
+%sbttl 'VSTA$$DRIVE_CHKQUO -- Checks acp process quotas'
+global routine VSTA$$DRIVE_CHKQUO =
+!++
+!
+!  Functional Description
+!
+!--- This routine will call the kernel mode routine to ckeck the PCB
+!    to determine the number of AST slots available to the ACP currently
+!--- and return error if the number of AST slots are less than the minimum
+!
+!--
+begin
+
+local
+	 ARGS: vector [2,long]
+	,AST_SLOTS
+	;
+
+!
+!  If the raised IPL code has not been locked down then let the number of
+!  ast slots be one more than the min required.  Otherwise call the
+!  Kernel mode routine to look into the PCB for the number of slots available
+!
+if not .DRV$L_CODE_LOCKED
+then AST_SLOTS = .DRV$L_MIN_AST_SLOTS + 1
+else begin
+	ARGS [0] = 1;
+	ARGS [1] = AST_SLOTS;
+
+	!
+	!  Call the kernel mode routine to read the available ast slots left
+	!
+	$CMKRNL( 
+		 ROUTIN	= VSTA$$DRIVE_CHKQUO_K
+		,ARGLST	= ARGS [0]
+		)
+     end;
+!
+!  Check to see if there are enough slots available
+!
+if .AST_SLOTS leq .DRV$L_MIN_AST_SLOTS
+then begin
+	!
+	!  If not then return exceeded quota status
+	!
+	DRV$L_EXQCNT = .DRV$L_EXQCNT + 1;	! Keep count of how many
+	return SS$_EXQUOTA;			! times this occurs.
+     end;
+
+return SS$_NORMAL;
+
+end;
+
+
+routine VSTA$$DRIVE_START_LOCK = 1;
+
+
+
+
+%sbttl 'VSTA$$DRIVE_PIO_CLEANUP_K -- '
+global routine VSTA$$DRIVE_PIO_CLEANUP_K (
+					 CMD_PKT
+					,ASTADR
+					,ASTPRM
+					,IOSB : ref vector [,long]
+					,EMPTY
+					) =
+!++
+!  Functional Description
+!
+!--
+begin
+
+local
+	 CMD_IRP : ref block [,byte]
+	,S
+	;
+
+!
+!  Remove entry from queue
+!
+.EMPTY = REMQUE ( .DRV$A_VB_UCB [UCB$L_VB_PIO_POST_FL], CMD_IRP);
+
+if ..EMPTY eql 3
+then begin
+	return SS$_NORMAL;
+     end
+else begin
+	.CMD_PKT = .CMD_IRP [IRP$L_EXTEND];	! Get the virt adr of CMD_PKT
+	.ASTADR = .CMD_IRP [IRP$L_ABCNT];	! Get the AST routine adr
+	.ASTPRM = .CMD_IRP [IRP$L_OBCNT];	! Get AST parameter
+	IOSB [0] = .CMD_IRP [IRP$L_IOST1];	! Get Completion status
+	IOSB [1] = .CMD_IRP [IRP$L_IOST2];
+     end;
+
+EXE$DEANONPAGED( .CMD_IRP);
+
+MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_PIO_K -- SETUP MODULE'
+global routine VSTA$$DRIVE_PIO_K (
+					 CMD_PKT   : ref COMMAND_PACKET_BLOCK
+					,P2_PACKET : ref P2_BLOCK
+					,P3_PACKET : ref P3_BLOCK
+					,P4_PACKET : ref P4_BLOCK
+					,P5_PACKET : ref P5_BLOCK
+					,ASTADR
+					,ASTPRM
+					,CMD_TYPE
+				   ) =
+!++
+!  Functional Description
+!
+!--
+begin
+
+local
+	 S
+	,CMD_IRP : ref block [,byte]
+	,SIZE
+	,PCB : ref block [,byte]
+	;
+
+
+
+ch$move(VSTA$K_SRC_LENGTH+VSTA$K_SMK_LENGTH,	! Source and source mask
+	P2_PACKET [P2$W_SRC_PACKET], CMD_PKT [VB$W_COP_SRC]);
+	
+ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3_PACKET [P3$W_DST_PACKET], CMD_PKT [VB$W_COP_DST]);
+
+ch$move(VSTA$K_DMK_LENGTH,			! Destination mask
+	P3_PACKET [P3$W_DMK_PACKET], CMD_PKT [VB$W_COP_DMK]);
+
+ch$move(VSTA$K_MAP_LENGTH,			! Map
+	P4_PACKET [P4$W_MAP_PACKET], CMD_PKT [VB$W_COP_MAP]);
+
+selectone .CMD_TYPE
+of set
+	[IO$_COPY]:;
+	[IO$_DRAW]:
+		ch$move(VSTA$K_P5_DRW_LENGTH,	! Draw specific parameters
+			P5_PACKET [P5$W_CMD_PACKET], CMD_PKT [VB$W_DRW_DRAW]);
+	[IO$_PRINT]:
+		ch$move(VSTA$K_P5_PRT_LENGTH,	! Print specific parameters
+			P5_PACKET [P5$W_CMD_PACKET], CMD_PKT [VB$W_PRT_PRINT]);
+	[IO$_FILL]:
+		ch$move(VSTA$K_P5_FIL_LENGTH,	! Fill specific parameters
+			P5_PACKET [P5$W_CMD_PACKET], CMD_PKT [VB$W_FIL_FILL]);
+	[IO$_FLOOD]:
+		ch$move(VSTA$K_P5_FLD_LENGTH,	! Flood specific parameters
+			P5_PACKET [P5$W_CMD_PACKET], CMD_PKT [VB$W_FLD_FLOOD]);
+   tes;
+
+
+!
+!  Get process PCB
+!
+PCB = .SCH$GL_CURPCB;
+
+!
+!  Allocate IRP for command descriptor
+!
+if not (S = EXE$ALLOCIRP(.PCB; SIZE, CMD_IRP))
+then return .S;
+
+CMD_IRP [ IRP$L_SEQNUM] = .PMS$GL_IOPFMSEQ;	! Get IRP sequence number
+PMS$GL_IOPFMSEQ = .PMS$GL_IOPFMSEQ + 1;		! Increment IRP sequence number
+
+CMD_IRP [ IRP$B_PRI] = .PCB [PCB$B_PRIB];	! Store process priority
+CMD_IRP [ IRP$W_STS] = 0;			! Init status
+CMD_IRP [ IRP$L_SVAPTE] = 0;			! Init system virt adr to 0
+CMD_IRP [ IRP$L_PID] = 0;			! Set pid field to 0
+CMD_IRP [ IRP$L_WIND] = .PCB [PCB$L_PID];	! Put pid into WIND field
+
+CMD_IRP [ IRP$W_FUNC] = IO$_PIO_PACKET;		! Identify special IRP
+
+CMD_IRP [ IRP$L_UCB] = .DRV$A_VB_UCB;		! Store the UCB
+CMD_IRP [ IRP$L_ABCNT] = .ASTADR;		! Store the AST routine
+CMD_IRP [ IRP$L_OBCNT] = .ASTPRM;		! Store the AST parameter
+
+CMD_IRP [ IRP$L_EXTEND] = .CMD_PKT;		! Store the virt adr of CMD_PKT
+CMD_IRP [ IRP$L_SEGVBN] = .CMD_PKT [VB$L_LINK];	! Store the 68K adr of CMD_PKT
+CMD_IRP [ IRP$W_CHAN] = .CMD_TYPE;		! Store the command type
+
+EXE$INSIOQ( .CMD_IRP, .PCB, .DRV$A_VB_UCB);	! Put on UCB I/O queue
+
+MTPR(%ref(0),PR$_IPL);	! Set IPL to 0		! Make shure IPL is 0
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_GET_VB_UCB_K'
+routine VSTA$$DRIVE_GET_VB_UCB_K =
+!++
+!
+!  Functional Description
+!
+!--
+begin
+
+local
+	 PCB : ref block [,byte]
+	,S
+	,VB_UCB
+	;
+
+own
+	 VB_NAME_DESC: vector [2,long]
+	,VB_NAME_STR: vector [5,byte]
+	;
+
+external 
+	 VS$GL_VD_NAME_DESC: vector [2,long]
+	;
+
+
+CH$MOVE (5
+	,.VS$GL_VD_NAME_DESC [1]
+	,VB_NAME_STR
+	);
+
+VB_NAME_STR [1] = %C'B';
+
+VB_NAME_DESC [0] = 5;
+VB_NAME_DESC [1] = VB_NAME_STR;
+
+PCB = .SCH$GL_CURPCB;
+
+SCH$IOLOCKW (.PCB);			! Obtain the mutex
+
+if not (S = IOC$SEARCHDEV( VB_NAME_DESC, .PCB; VB_UCB))
+then begin
+
+	SCH$IOUNLOCK(.PCB);	! Give the mutex back, now
+	MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+
+	return .S;	
+
+     end;
+
+SCH$IOUNLOCK(.PCB);		! Give the mutex back, now
+MTPR(%ref(0),PR$_IPL);		! Set IPL to 0
+
+DRV$A_VB_UCB = .VB_UCB;
+
+DRV$A_VB_UCB [UCB$L_VB_PIO_POST_FL] = DRV$A_VB_UCB [UCB$L_VB_PIO_POST_FL];
+DRV$A_VB_UCB [UCB$L_VB_PIO_POST_BL] = DRV$A_VB_UCB [UCB$L_VB_PIO_POST_FL];
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_CHKQUO_K -- Kernel routine check ast count'
+routine VSTA$$DRIVE_CHKQUO_K (
+				 AST_SLOTS_A
+		        ) =
+!++
+!
+!  Functional Description
+!
+!--- This routine raises its IPL to SYNCH looks into the PCB to determine
+!--- the number of available AST'S for the ACP and returns that number.
+!
+!--
+begin
+
+local
+	 PCB		: ref block [,byte]
+	,AST_SLOTS
+	;
+
+!
+!  Get the address of the PCB
+!
+PCB = .SCH$GL_CURPCB;
+
+!
+!  Raise IPL to synch
+!
+mtpr (%ref (IPL$_SYNCH), PR$_IPL);
+
+!
+!  Store the number of available ast slots in a local variable.
+!
+!  NOTE:  That we cannot return this count to the caller directly
+!  since we can only access locked down memory.  Put the count on
+!  the kernel stack until IPL is lowered.
+!
+AST_SLOTS = .PCB [PCB$W_ASTCNT];
+
+!
+!  Set the IPL to 0
+!
+mtpr ( %REF( 0), PR$_IPL );
+
+!
+!  After lower IPL return the number of ast slots to the caller
+!
+.AST_SLOTS_A = .AST_SLOTS;
+
+return SS$_NORMAL;
+end;
+
+
+
+
+routine VSTA$$DRIVE_END_LOCK = 1;
+
+
+
+%sbttl 'VSTA$$DRIVE_SET_VB_WCP_CACHE -- Sets vb device packet cache'
+global routine VSTA$$DRIVE_SET_VB_WCP_CACHE (
+				 CHAN
+				,CACHE_SIZE
+					) =
+!++
+! Functional Description
+! 
+!   This routine interfaces with the VBDRIVER qio to set the device
+!   command packet cache maintained inside VBDRIVER.
+!
+! Formal Parameters
+!
+!   CHAN	Channel to VB device.
+!   CACHE_SIZE	Number of packets for VB to put in cache.
+!
+!
+! Notes:
+!
+!   VBDRIVER will be responsible for clean up of the cache after deassign
+!   time.
+!
+!--
+begin
+
+local
+	 IOSB	: vector [2,long]
+	,EFN
+	,S
+	;
+
+!
+!  Get a unique event flag to use for the qiow
+!
+if not (s = VSTA$$GET_EF( EFN))
+then return .s;
+
+!
+!  Do qio to allocate packets for WCP cache.
+!
+S = $QIOW (
+		 CHAN	= .CHAN
+		,FUNC	= (IO$_VB_PIO or IO$M_VB_PIO_ENABLE)
+		,IOSB	= IOSB
+		,EFN	= .EFN
+	);
+
+!
+!  Check for qio errors
+!
+if not .S
+then return .S;
+
+VSTA$$DRIVE_REPORT_ERROR( IOSB [0], S);
+
+return .S;
+
+end;			! VSTA$$DRIVE_SET_VB_WCP_CACHE
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_MAP_BLOCK -- Maps block to device'
+global routine VSTA$$DRIVE_MAP_BLOCK (
+				 CHAN
+				,BCNT
+				,BADR
+				) =
+!++
+! Functional Description:
+!
+!   This routine issues a QIO to the device to lock and map to unibus 
+!   a block of memory.
+!
+! Formal Parameters:
+!
+!   CHAN		Which device
+!   BCNT		How many bytes to lock and map 
+!   BADR		The starting address of block to map
+!
+! Caution:
+!
+!   Never send a byte count of less than 1
+!
+!--
+begin
+
+local
+	 IOSB	: vector [2,long]
+	,EFN
+	,DMAP	: ref vector [,long]
+	,S
+	;
+
+!
+!  Get a unique event flag to use for the qiow
+!
+if not (s = VSTA$$GET_EF( EFN))
+then return .s;
+
+
+!
+!  Perform qio to map the block
+!
+s = $QIOW(
+	 CHAN	= .CHAN
+	,FUNC	= (IO$_VB_PIO or IO$M_VB_PIO_CREATE_DB)
+	,EFN	= .EFN
+	,IOSB	= IOSB [0]
+	,P1	= .BADR
+	,P2	= .BCNT
+	);
+
+!
+!  Free the unique event flag to used for the qiow
+!
+LIB$FREE_EF( EFN);
+
+!
+!  Check for errors.  If any then return it.
+!
+if not .S
+then return .S;
+
+VSTA$$DRIVE_REPORT_ERROR( IOSB [0], S);
+
+if not .S
+then return .S;
+
+!
+!  If all goes well then get a map descriptor if that fails then return the
+!  error.
+!
+if not $GET32B ( DMAP)
+then return SS$_INSFMEM;
+
+!
+!  Fill the DMAP SLOT
+!
+DMAP [2] = .BADR;		! Store the ACP starting address of block
+DMAP [3] = .BADR + .BCNT - 1;	! Store the ACP ending address of block
+DMAP [4] = .IOSB [1];		! Store the Device starting address of block
+				! returned by VBDRIVER.
+
+!
+!  Now put the map descriptor at the end of the queue. NOte: only put the
+!  packet on the queue after it is filled.
+!
+INSQUE( DMAP [0], .DRV$Q_DMAP [1]);
+
+
+return SS$_NORMAL;
+end;			!  End vsta$$drive_map_block
+
+
+
+%sbttl 'VSTA$$DRIVE_UNMAP_BLOCK -- Unmaps block from device'
+global routine VSTA$$DRIVE_UNMAP_BLOCK (
+				 CHAN
+				,BCNT
+				,BADR
+				) =
+!++
+! Functional Description:
+!
+!   This routine issues a QIO to the device to unlock and unmap from unibus 
+!   a block of memory.
+!
+! Formal Parameters:
+!
+!   CHAN		Which device
+!   BCNT		How many bytes to unmap
+!   BADR		The starting address of block to unmap
+!
+! Caution:
+!
+!   This routine should never be called at ast level.  There is no
+!   protection for other routines which are accessing a DMAP descriptor
+!   while this routine has deleted it.
+!
+!--
+begin
+
+local
+	 IOSB	: vector [2,long]
+	,EFN
+	,DMAP	: ref vector [,long]
+	,S
+	;
+
+
+!
+!  Find the DMAP that maps the block to display memory
+!  Loop thru all the DMAPs in the queue until it is found.
+!  If is not found then return the error.
+!
+DMAP = .DRV$Q_DMAP [0];
+
+until .DMAP eql DRV$Q_DMAP
+do begin
+	!
+	!  Do the starting and ending addresses match
+	!
+	if (.DMAP [2] eql .BADR) and (.DMAP [3] eql (.BADR + .BCNT - 1) ) 
+	then begin
+		!
+		!  Take the DMAP out of the queue
+		!
+		REMQUE( DMAP [0], DMAP);
+
+		!
+		!  Get a unique event flag to use for the qiow
+		!
+		if not (s = VSTA$$GET_EF( EFN))
+		then return .s;
+
+		!
+		!  Perform qio to VBDRIVER to unmap the block and return the
+		!  status.
+		!
+		S = $QIO(
+			 CHAN	= .CHAN
+			,FUNC	= IO$_NOOP
+			,IOSB	= IOSB [0]
+			,EFN	= .EFN
+			,P1	= .BADR
+			,P2	= .BCNT
+			);
+
+		!
+		!  Free the event flag from qio
+		!
+		LIB$FREE_EF ( EFN);
+
+		!
+		!  Free the DMAP descriptor
+		!
+		$FREE32B ( DMAP [0]);
+		
+		!
+		!  REturn the status of the qio
+		!
+		return .S;
+
+	     end;	! End if matching block found
+
+	DMAP = .DMAP [0];
+
+     end;		! End of loop thru all the DMAP descriptors
+
+return SS$_NOSUCHSEC;	! Return no such section error
+
+end;			! End of vsta$$drive_unmap_block
+
+
+
+
+%sbttl 'VSTA$$DRIVE_MAP_DISPLAY -- Map the onyx memory'
+global routine VSTA$$DRIVE_MAP_DISPLAY (
+				 BCNT
+				,DADR
+				,BADR
+					) =
+!++
+!  Functional Description:
+!
+!   This routine will map the display memory block specified to S1 space.
+!   NOte that display memory is never accessable to the VAX therefor we
+!   need an address map that is also never accessable to the VAX.  S1 space
+!   is such an addressing range.
+!
+!  Formal Parameters:
+!
+!   BCNT	Number of bytes in block
+!   DADR	Starting address of display memory
+!   BADR	Returned address of display memory block mapped to S1 space.
+!
+!  Caution:
+!
+!   Always send send an address with the upper two bits clear (P0) space
+!   This will always be true for the device memory.
+!   Never send a byte count of 0 or less
+!--
+begin
+
+local
+	 DMAP	: ref vector [,long]
+	;
+
+!
+!  Get a map descriptor if that fails then return the
+!  error.
+!
+if not $GET32B ( DMAP)
+then return SS$_INSFMEM;
+
+!
+!  Fill the DMAP SLOT
+!
+DMAP [2] = .DADR or %X'C0000000';	! Store the ACP starting address of the
+					! block it will be put in S1 space
+DMAP [3] = .DMAP [2] + .BCNT - 1;	! Store the ACP ending address of block
+DMAP [4] = .DADR;			! Store the Device starting address of 
+					! block.
+
+!
+!  Send the S1 map to the caller
+!
+.BADR = .DMAP [2];
+
+!
+!  Now put the map descriptor at the end of the queue. NOte: only put the
+!  packet on the queue after it is filled.
+!
+INSQUE( DMAP [0], .DRV$Q_DMAP [1]);
+
+return SS$_NORMAL;
+end;
+
+
+
+
+%sbttl 'VSTA$$DRIVE_UNMAP_DISPLAY -- Unmap the onyx memory'
+global routine VSTA$$DRIVE_UNMAP_DISPLAY (
+				 BCNT
+				,BADR
+					) =
+!++
+!  Functional Description:
+!
+!   This routine will unmap the display memory block specified from S1 space.
+!   NOte that display memory is never accessable to the VAX therefor we
+!   need an address map that is also never accessable to the VAX.  S1 space
+!   is such an addressing range.
+!
+!  Formal Parameters:
+!
+!   BCNT	Number of bytes in block
+!   BADR	Supplied address of display memory block mapped to S1 space.
+!
+!  Caution:
+!
+!   Always send an address with the upper two bits set (S1) space
+!   This will always be true for the device memory.
+!   Never send a byte count of 0 or less
+!--
+begin
+
+local
+	 DMAP	: ref vector [,long]
+	;
+
+
+!
+!  Find the DMAP that maps the block to display memory
+!  Loop thru all the DMAPs in the queue until it is found.
+!  If is not found then return the error.
+!
+DMAP = .DRV$Q_DMAP [0];
+
+until .DMAP eql DRV$Q_DMAP
+do begin
+	!
+	!  Do the starting and ending addresses match
+	!
+	if (.DMAP [3] eql .BADR) and (.DMAP [2] eql .BADR + .BCNT - 1) 
+	then begin
+		!
+		!  Take the DMAP out of the queue
+		!
+		REMQUE( DMAP [0], DMAP);
+
+		!
+		!  Free the DMAP descriptor
+		!
+		$FREE32B ( DMAP [0]);
+		
+		return SS$_NORMAL;
+
+	     end;	! End if matching block found
+
+	DMAP = .DMAP [0];
+
+     end;		! End of loop thru all the DMAP descriptors
+
+return SS$_NOSUCHSEC;	! Return no such section error
+
+end;
+
+
+
+%sbttl 'VSTA$$DRIVE_CHKADR -- Check address mapping'
+global routine VSTA$$DRIVE_CHKADR (
+				 ADDR
+				,RET_ADDR
+				,RET_SPACE
+				) =
+!++
+! Functional Description
+!
+!   This routine looks thru the DMAPs to see if the address is currently
+!   mapped to unibus.  If it is then it return the device address and
+!   indicates that it is VSTA$K_DISPMEM otherwise it returns the the
+!   same address as send and indicates that it is VSTA$K_VAXMEM.
+!
+! Formal Parameters
+!
+!   ADDR	Address of block to ckeck for mapping
+!   RET_ADDR	Place to return the new address
+!   RET_SPACE	Place to return the address space (vsta$k_vaxmem or
+!		vsta$k_dispmem.
+!
+! Caution:
+!
+!   This routine only checks to see if the address specified in within
+!   a mapped block.  There is no check to see if the buffer that
+!   ADDR points to is all within the mapped block.
+!--
+begin
+
+local
+	 DMAP	: ref vector [,long]
+	;
+
+
+!
+!  Find the DMAP that maps the block to display memory
+!  Loop thru all the DMAPs in the queue until it is found.
+!  If is not found then return the error.
+!
+DMAP = .DRV$Q_DMAP [0];
+
+until .DMAP eql DRV$Q_DMAP
+do begin
+	!
+	!  Do the starting and ending addresses match
+	!
+	if (.ADDR geq .DMAP [2]) and (.ADDR leq .DMAP [3])
+	then begin
+		.RET_ADDR = .DMAP [4] + .ADDR - .DMAP [2];
+		.RET_SPACE = VSTA$K_DISPMEM;
+		return SS$_NORMAL;
+	     end;	! End if in mapped block 
+
+	!
+	!  Look at next map
+	!
+	DMAP = .DMAP [0];
+
+     end;		! End of loop thru all the DMAP descriptors
+
+!
+!  If we got here then the address was not in a device mapped block
+!  so return the sent address and the indicator that it is in vax mem
+!
+.RET_ADDR = .ADDR;
+.RET_SPACE = VSTA$K_VAXMEM;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+%sbttl 'VSTA$$DRIVE_REPORT_ERROR - CONVERTS WGA ERROR TO VSTA$_... ERROR'
+routine VSTA$$DRIVE_REPORT_ERROR (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This function converts the iosb returned from the device into a vsta
+! error code.
+! 
+! FORMAL PARAMETERS:
+!	
+	 STATUS_BLOCK: ref vector [4,word] 
+	,VSTA_STATUS_A
+	) =
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! value of vsta$_ error code from vstaerrs which corresponds to error
+! reported by vb: driver.
+!
+! COMPLETION CODES:
+!
+! NONE
+!
+! SIDE EFFECTS:
+!
+! NONE
+!
+!--
+BEGIN
+
+local
+	 ERROR_CODE
+	;
+
+bind
+	 STATUS = .VSTA_STATUS_A
+	;
+!
+! Innocent until proven guilty:
+!
+	STATUS = ss$_normal;
+!
+! If the user turned the device off WHILE the operation was happening, a
+! cleanup operation will be happening.  In order to avoid hundreds of errors
+! before that happens though, we must pretend that operations succeed.
+! Otherwise, the acp will die miserably if the user turned the device off
+! DURING an operation such as session startup.
+!
+	if (external vsta$gl_vb_off ; .vsta$gl_vb_off)
+	then return .status;
+!
+!  Get status part of iosb
+!
+ERROR_CODE = .STATUS_BLOCK [1] and %x'7fff';
+
+!
+!  If the status is an abort then there is information about error
+!  in error_code
+!
+if .STATUS_BLOCK [0] eql SS$_ABORT
+then begin
+	case .ERROR_CODE/10 from 0 to 17 of
+	   set
+	   [0]: case .ERROR_CODE from 0 to 9 of
+		set
+
+		[0]: STATUS=$EXTSYM(VSTA$_NYI);	
+		[1]: STATUS=$EXTSYM(VSTA$_IFC);	
+		[2]: STATUS=$EXTSYM(VSTA$_ICC);	
+		[3]: STATUS=$EXTSYM(VSTA$_RN);
+		[4]: STATUS=$EXTSYM(VSTA$_RO);
+		[5]: STATUS=$EXTSYM(VSTA$_LE);
+		[6]: STATUS=$EXTSYM(VSTA$_BUSERR);	
+		[7]: STATUS=$EXTSYM(VSTA$_ADRERR);	
+		[8]: STATUS=$EXTSYM(VSTA$_SPURINT);
+		[9]: STATUS=$EXTSYM(VSTA$_II);
+
+		tes;
+	   [1]: case .ERROR_CODE from 10 to 19 of
+		set
+
+		[10]: STATUS=$EXTSYM(VSTA$_BN);
+		[11]: STATUS=$EXTSYM(VSTA$_NBI);
+		[12]: STATUS=$EXTSYM(VSTA$_KOO);
+		[13]: STATUS=$EXTSYM(VSTA$_TOO);
+		[14]: STATUS=$EXTSYM(VSTA$_DEQO);
+!
+! The commented errors (and unedited into correct "CASE" format) are not
+! installed because they are errors that user programs shouldn't ever
+! receive.  Hence for now it's better that they remain "undefined" until
+! someone adds a dimension to the entire list so we can separate expected
+! and unexpected errors.
+!
+!ERR_TEQO	equ	INT_ERROR+15	; tablet event queue overflow
+!ERR_ABORT	equ	INT_ERROR+16	; unable to abort BBA
+!ERR_KEQO	equ	INT_ERROR+17	; keyboard event queue overflow
+!ERR_KOR	equ	INT_ERROR+18	; keyboard overrun
+!ERR_TOR	equ	INT_ERROR+19	; tablet overrun
+!ERR_KFE	equ	INT_ERROR+20	; keyboard framing error
+!ERR_TFE	equ	INT_ERROR+21	; tablet framing error
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+		tes;
+	   [3]: case .ERROR_CODE from 30 to 39 of
+		set
+
+		[32]: STATUS=$EXTSYM(VSTA$_ISRCMB);
+		[33]: STATUS=$EXTSYM(VSTA$_ISRCBW);
+		[34]: STATUS=$EXTSYM(VSTA$_ISRCBH);
+		[35]: STATUS=$EXTSYM(VSTA$_ISRCC); ! invalid src constant
+		[36]: STATUS=$EXTSYM(VSTA$_ISRCBD); ! invalid src bitmap depth
+		[37]: STATUS=$EXTSYM(VSTA$_ISRCD); ! invalid src bitmap dmnsion
+		[38]: STATUS=$EXTSYM(VSTA$_IMSKMB);
+		[39]: STATUS=$EXTSYM(VSTA$_IMSKBW);
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;		
+	   [4]: case .ERROR_CODE from 40 to 49 of
+		set
+
+		[40]: STATUS=$EXTSYM(VSTA$_IMSKBH);
+		[41]: STATUS=$EXTSYM(VSTA$_IMSKBD); ! invalid msk bitmap depth
+		[44]: STATUS=$EXTSYM(VSTA$_IDSTMB);
+		[45]: STATUS=$EXTSYM(VSTA$_IDSTBW);
+		[46]: STATUS=$EXTSYM(VSTA$_IDSTBH);
+		[47]: STATUS=$EXTSYM(VSTA$_IDSTBD); ! invalid dst bitmap depth
+		[48]: STATUS=$EXTSYM(VSTA$_NOAREA); ! no resultant area
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	   [5]: case .ERROR_CODE from 50 to 59 of
+		set
+
+		[50]: STATUS=$EXTSYM(VSTA$_IMAPMB);
+		[51]: STATUS=$EXTSYM(VSTA$_IMAPFC); ! invalid map function code
+		[52]: STATUS=$EXTSYM(VSTA$_ZIMAP); ! depth incompatible wth map
+		[53]: STATUS=$EXTSYM(VSTA$_ZCIMAP); ! depth combo incompatible
+		[54]: STATUS=$EXTSYM(VSTA$_ICLPMB);
+		[55]: STATUS=$EXTSYM(VSTA$_ICLPRC);
+!ERR_SMC_ITC	equ	INT_ERROR+56	; invalid tracking constant
+!*					;    (set_mouse_characteristics)
+
+!ERR_SCL_DC	equ	INT_ERROR+58	; detached cursor (set_cursor_location)
+
+		[59]: STATUS=$EXTSYM(VSTA$_ICD);
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	   [6]: case .ERROR_CODE from 60 to 69 of
+		set
+
+		[60]: STATUS=$EXTSYM(VSTA$_IBC);
+!ERR_MO_IOT	equ	INT_ERROR+61	; invalid object type (move_object)
+!ERR_MO_IDT	equ	INT_ERROR+62	; invalid device type (move_object)
+
+		[63]: STATUS=$EXTSYM(VSTA$_DC_IPC);
+		[64]: STATUS=$EXTSYM(VSTA$_DC_IPC);
+		[65]: STATUS=$EXTSYM(VSTA$_DC_IPSL);
+		[66]: STATUS=$EXTSYM(VSTA$_DC_IPSM);
+		[67]: STATUS=$EXTSYM(VSTA$_DC_ICF);
+		[68]: STATUS=$EXTSYM(VSTA$_DC_IPSI);
+		[69]: STATUS=$EXTSYM(VSTA$_DC_IPSMB); ! invalid ptrn strng mdfr
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	  [7]: case .ERROR_CODE from 70 to 79 of
+		set
+
+		[70]: STATUS=$EXTSYM(VSTA$_DC_IPMMB); ! invld ptrn mod mdfr bts
+		[71]: STATUS=$EXTSYM(VSTA$_DC_IPSC); ! invalid pattern count
+		[72]: STATUS=$EXTSYM(VSTA$_DC_ISSRCBW); ! invld 2 src btmp wth
+		[73]: STATUS=$EXTSYM(VSTA$_DC_ISSRCBH); ! invld 2 src btmp hgt
+		[74]: STATUS=$EXTSYM(VSTA$_DC_ISSRCBD); ! invld 2 src btmp dpth
+		[75]: STATUS=$EXTSYM(VSTA$_DC_ISSRCC); ! invld 2 src constant
+		[76]: STATUS=$EXTSYM(VSTA$_DC_IDPM); ! incmptbl drwing/ptrn mds
+		[77]: STATUS=$EXTSYM(VSTA$_DC_DXO); ! delta_x overflow
+		[78]: STATUS=$EXTSYM(VSTA$_DC_DYO); ! delta_y overflow
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	  [8]: case .ERROR_CODE from 80 to 89 of
+		set
+
+		[80]: STATUS=$EXTSYM(VSTA$_PT_ICSL);
+		[81]: STATUS=$EXTSYM(VSTA$_PT_ICSO);
+		[82]: STATUS=$EXTSYM(VSTA$_PT_ICSP);
+		[83]: STATUS=$EXTSYM(VSTA$_PT_ITSL);
+		[84]: STATUS=$EXTSYM(VSTA$_PT_ICI);
+		[85]: STATUS=$EXTSYM(VSTA$_PT_TSE);
+		[86]: STATUS=$EXTSYM(VSTA$_PT_NFP); ! no font present
+		[87]: STATUS=$EXTSYM(VSTA$_PT_ISRCFW); ! invalid src font width
+		[88]: STATUS=$EXTSYM(VSTA$_PT_ISRCFH); ! invalid src font hgt
+		[89]: STATUS=$EXTSYM(VSTA$_PT_ISRCFD); ! invalid src font depth
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	  [9]: case .ERROR_CODE from 90 to 99 of
+		set
+
+		[90]: STATUS=$EXTSYM(VSTA$_PT_IMSKFW); ! invalid msk font width
+		[91]: STATUS=$EXTSYM(VSTA$_PT_IMSKFH); ! invalid msk font hgt
+		[92]: STATUS=$EXTSYM(VSTA$_PT_IMSKFD); ! invalid msk font depth
+		[93]: STATUS=$EXTSYM(VSTA$_PT_CSMF); ! conflicting src/msk fnts
+		[94]: STATUS=$EXTSYM(VSTA$_PT_ILB); ! invalid left_array bounds
+		[95]: STATUS=$EXTSYM(VSTA$_PT_ILE); ! invld left_array element
+		[96]: STATUS=$EXTSYM(VSTA$_FA_IBS);
+		[97]: STATUS=$EXTSYM(VSTA$_FA_TMCR);
+		[98]: STATUS=$EXTSYM(VSTA$_FA_SPIOB);
+		[99]: STATUS=$EXTSYM(VSTA$_FA_SO);
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+	  [10]: case .ERROR_CODE from 100 to 109 of
+		set
+
+		[100]: STATUS=$EXTSYM(VSTA$_FA_IBMMB); ! nvld bndry mp mdfr bts
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+
+	  [11]: case .ERROR_CODE from 110 to 119 of
+		set
+!
+! Fill polygon errors . . .
+!
+		[112]: STATUS=$EXTSYM(VSTA$_FP_IBS);
+		[113]: STATUS=$EXTSYM(VSTA$_FP_TMCR);
+		[114]: STATUS=$EXTSYM(VSTA$_FP_IPC);
+		[115]: STATUS=$EXTSYM(VSTA$_FP_ICF);
+		[116]: STATUS=$EXTSYM(VSTA$_FP_DXO); ! delta_x overflow
+		[117]: STATUS=$EXTSYM(VSTA$_FP_DYO); ! delta_y overflow
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+		tes;
+
+	  [16]: case .ERROR_CODE from 160 to 169 of
+		set
+
+		[161]: STATUS=$EXTSYM(VSTA$_ISRCHW); ! invalid src halftone wth
+		[162]: STATUS=$EXTSYM(VSTA$_ISRCHH); ! invalid src halftone hgt
+		[163]: STATUS=$EXTSYM(VSTA$_ISRCHD); ! invalid src halftone z
+		[164]: STATUS=$EXTSYM(VSTA$_DC_ISSRCHW);
+						     ! invld 2nd src hftne wth
+		[165]: STATUS=$EXTSYM(VSTA$_DC_ISSRCHH);
+						     ! invld 2nd src hftne hght
+		[166]: STATUS=$EXTSYM(VSTA$_DC_ISSRCHD);
+						     ! invld 2nd src hftne z
+!ERR_LC_ICTX	equ	INT_ERROR+167	; invalid cursor tip x coordinate
+!ERR_LC_ICTY	equ	INT_ERROR+168	; invalid cursor tip y coordinate
+!ERR_LC_ICCX	equ	INT_ERROR+169	; invalid cursor centre x coordinate
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+
+		tes;
+
+	  [17]: case .ERROR_CODE from 170 to 179 of
+		set
+
+		[173]: STATUS=$EXTSYM(VSTA$_PT_DXO); ! dest offset_x overflow
+
+		[inrange,outrange]: 
+			   begin
+				VSTA$$ERROR_LOGGER(
+					 $EXTSYM(VSTA$_UNDHARDERROR)
+					,INTEGER_TYPE
+					,.STATUS_BLOCK [1]
+						  );
+				STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+			    end;
+
+		tes;
+
+	[inrange,outrange]: 
+		   begin
+			VSTA$$ERROR_LOGGER(
+				 $EXTSYM(VSTA$_UNDHARDERROR)
+				,INTEGER_TYPE
+				,.STATUS_BLOCK [1]
+					  );
+			STATUS=$EXTSYM(VSTA$_UNDHARDERROR);
+		    end;
+
+
+	  tes;		
+
+     end
+
+else STATUS = .STATUS_BLOCK [0];
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_BACKGROUND--  COLORS A REGION'
+global routine VSTA$$DRIVE_BACKGROUND (
+				 CHANNEL
+				,COLOR
+				,DST			: ref block [,byte]
+				,OFF_X
+				,OFF_Y
+				,SIZE_X
+				,SIZE_Y
+				,RC_COUNT
+				,RC_ADDR
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides the simple function of coloring a region
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel,		channel to use
+!	color,			color - 0 thru 15 (0=black, 1=white, 2-15 halftone)
+!	dst,			destination bitmap
+!	off_x,			x offset
+!	off_y,			y offset
+!	size_x,			x extent
+!	size_y,			y extent
+!	rc_count,		number of clipping rectangles
+!	rc_addr			address of clipping rectangles
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+local
+	 HALFTONE_BM: block [MBMD$S_MODIFIED_BMDS,byte]
+	,MASK_EXTENT: vector [2,word]
+	,SRC
+	,SRC_TYPE
+	,STATUS
+	,EFN
+	,S
+	;
+
+!
+!  Translate the color into WGA color
+!
+if not (S=vsta$$drive_translate_color(.COLOR,SRC_TYPE,SRC,HALFTONE_BM))
+then return .S;
+
+
+MASK_EXTENT [0] = .SIZE_X;
+MASK_EXTENT [1] = .SIZE_Y;
+ 
+if not (S=$DRIVECOPY(
+		 CHAN 	= .CHANNEL
+		,SRCTYP	= .SRC_TYPE
+		,SOURCE = .SRC
+		,MSKTYP = VSTA$K_MSK_RECTANGLE
+		,MASK	= MASK_EXTENT
+		,DST	= .DST
+		,DSTOFX	= .OFF_X
+		,DSTOFY = .OFF_Y
+		,RECNUM = .RC_COUNT
+		,RECADR = .RC_ADDR 
+		,EFN	= 1			! Make this case synchronus
+		))
+then return .S;
+
+return SS$_NORMAL;
+
+end;			!End of vsta$$drive_background
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_PAINT_BG -- cOLORS A REGION'
+global routine VSTA$$DRIVE_PAINT_BG (
+				 CHANNEL
+				,COLOR
+				,DST			: ref block [,byte]
+				,OFF_X
+				,OFF_Y
+				,SIZE_X
+				,SIZE_Y
+				,RC_COUNT
+				,RC_ADDR
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides the simple function of coloring a region
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel,		channel to use
+!	color,			color - 0 thru 15 (0=black, 1=white, 2-15 halftone)
+!	dst,			destination bitmap
+!	off_x,			x offset
+!	off_y,			y offset
+!	size_x,			x extent
+!	size_y,			y extent
+!	rc_count,		number of clipping rectangles
+!	rc_addr			address of clipping rectangles
+!	efn			event flag
+! 	astadr			address of completion routine
+!	astprm			value of parameter to pass to completion routine
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+local
+	 HALFTONE_BM: block [MBMD$S_MODIFIED_BMDS,byte]
+	,MASK_EXTENT: vector [2,word]
+	,SRC
+	,SRC_TYPE
+	,STATUS
+	,S
+	;
+
+
+!
+!  Now translate the specified color into WGA color
+!
+if not (S=VSTA$$DRIVE_TRANSLATE_COLOR(.COLOR,SRC_TYPE,SRC,HALFTONE_BM))
+then begin
+	if .EFN neq 0 
+	then $setef(efn = .EFN);
+
+	if .ASTADR neq 0
+	then (.ASTADR)(.ASTPRM,.S);
+
+	return .S;
+
+     end;
+
+MASK_EXTENT [0] = .SIZE_X;
+MASK_EXTENT [1] = .SIZE_Y;
+ 
+if not (S=$DRIVECOPY(
+		 CHAN 	= .CHANNEL
+		,SRCTYP	= .SRC_TYPE
+		,SOURCE = .SRC
+		,MSKTYP = VSTA$K_MSK_RECTANGLE
+		,MASK	= MASK_EXTENT
+		,DST	= .DST
+		,DSTOFX	= .OFF_X
+		,DSTOFY = .OFF_Y
+		,RECNUM = .RC_COUNT
+		,RECADR = .RC_ADDR 
+		,EFN	= .EFN
+		,ASTADR = .ASTADR
+		,ASTPRM	= .ASTPRM
+		))
+then return .S;
+
+return SS$_NORMAL;
+
+end;			!End of vsta$$drive_paint_bg
+
+
+
+
+%sbttl	'VSTA$$DRIVE_TRANSLATE_COLOR --  sda COLOR TO wga COLOR'
+global routine VSTA$$DRIVE_TRANSLATE_COLOR (
+					 SDA_COLOR
+					,SRC_TYPE
+					,SRC
+					,HT_MBMD: ref block [,byte]
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the copy_area function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	sda_color	SDA color index to be translated to WGA color or
+!			WGA halftone.
+!	src_type	tells whether constant, halftone, or bitmap
+!	src		value (if constant) or address source descriptor
+!	ht_mbmd		place to build the halftone bitmap descriptor
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+if .SDA_COLOR eql VSTA$K_COLOR_WHITE
+then begin
+	.SRC_TYPE = VSTA$K_SRC_CONST;
+	.SRC = 1;
+	return SS$_NORMAL;
+     end
+else if .SDA_COLOR eql VSTA$K_COLOR_BLACK
+then begin
+	.SRC_TYPE = VSTA$K_SRC_CONST;
+	.SRC = 0;
+	return SS$_NORMAL;
+     end
+else if (.SDA_COLOR geq VSTA$K_COLOR_HT1) and 
+	(.SDA_COLOR leq VSTA$K_COLOR_HT15)
+then begin
+	!
+	!  Temporarily the color number ranges from 2 to 17 and this section
+	!  uses that number as an index into the halftone table
+	!
+	.SRC_TYPE = VSTA$K_SRC_HT_BITMAP;
+	.SRC = .HT_MBMD;
+	HT_MBMD [MBMD$W_SIZE_X] = .VSTA$GL_HALFTONE_SIZE;
+	HT_MBMD [MBMD$W_SIZE_Y] = .VSTA$GL_HALFTONE_SIZE;
+	HT_MBMD [MBMD$W_SIZE_Z] = 1;
+	HT_MBMD [MBMD$W_LOCATE] = VSTA$K_VAXMEM;
+	HT_MBMD [MBMD$A_ADDR] = .VSTA$GWV_HALFTONES [.SDA_COLOR - 2];
+     end;
+
+return SS$_NORMAL;
+
+end;
+
+
+
+
+%sbttl	'VSTA$$DRIVE_COPY_AREA--  cOPIES A REGION'
+global routine VSTA$$DRIVE_COPY_AREA (
+				 CHANNEL
+				,SRC_TYPE
+				,SRC		: ref block [,byte]
+				,SRC_OFF_X
+				,SRC_OFF_Y
+				,MSK_TYPE
+				,MSK		: ref block [,byte]
+				,DST		: ref block [,byte]
+				,DST_OFF_X
+				,DST_OFF_Y
+				,MAP_TYPE
+				,MAP_VALUE
+				,RC_COUNT
+				,RC_ADDR	: ref vector [,word]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the copy_area function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		channel number of device to use
+!	src_type	tells whether constant, halftone, or bitmap
+!	src		value (if constant) or address source descriptor
+!	src_off_x	source x offset
+!	src_off_y	source y offset
+!	msk_type	tells whether no mask, rectangular, bitmap, etc...
+!	msk		address of mask subbitmap descriptor
+!	dst		address of destination descriptor
+!	dst_off_x	destination x offset
+!	dst_off_y	destination y offset
+!	map_type	tells whether map is source, source/dest
+!	map_value		value of map
+!	rc_addr			address of rectangle list 
+!	rc_count		number of rectangles in rectangle list
+!	efn			event flag number to be set by ast handler
+!	astadr			routine to be scheduled by the ast handler
+!	astprm			a parameter to pass to such a routine
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+local
+	 MSK_MBMD	: ref block [,byte]
+	;
+
+!
+!  Define vector version of mask for the case where it's a rectangle
+!
+bind
+	 MASK_RECT = MSK: ref vector [2,word]
+	;
+
+if .EFN neq 0
+then VAX_MEM=1;
+
+$GETCMDPKT;
+
+CMD_PKT [VB$L_OPCODE] = VB$K_OPC_COPY;
+
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SRC_CONSTANT;
+
+
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		end;
+	[VSTA$K_SRC_BM,VSTA$K_SRC_VD]:		!if bitmap, "src" points to descriptor
+		begin
+		!
+		!  Build the WGA bitmap descriptor from the modified bitmap
+		!  descriptor used by the ACP
+		!
+		if .SRC [MBMD$W_LOCATE] eql VSTA$K_VAXMEM
+		then VAX_MEM = 1;
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SRC_BITMAP;
+
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_INTRNL_BITMAP or  
+					     .SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_BM_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_BM_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = .SRC_OFF_X;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = .SRC_OFF_Y;
+		end;
+	[VSTA$K_SRC_HT_BITMAP,VSTA$K_SRC_HT_VD]:	!If halftone, "src" points to halftone bitmap descriptor
+		begin
+		!
+		!  Build the WGA bitmap descriptor from the modified bitmap
+		!  descriptor used by the ACP
+		!
+		VAX_MEM = 1;
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+					     .SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+!
+!  Construct the WGA mask descriptor from the mask argument
+!
+case .MSK_TYPE from 0 to VSTA$K_MSK_TYPES of
+
+	set
+	[VSTA$K_MSK_NONE]:	!no mask implies rectangle same size as source
+		begin
+		!
+		!  If source not bitmap, no rectangle defined, so error
+		!
+		if .SRC_TYPE neq VSTA$K_SRC_BM 
+		then return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+		!
+		!  If ok then just use the src as mask bitmap
+		!
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = 0;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = 0;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .SRC [MBMD$W_SIZE_Y];
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_RECTANGLE;
+
+
+		end;
+	[VSTA$K_MSK_RECTANGLE]: !mask rectangle means "msk" is vector with extent
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .MASK_RECT [0];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .MASK_RECT [1];
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_RECTANGLE;
+
+		end;
+	[VSTA$K_MSK_BITMAP,VSTA$K_MSK_VD]: !bitmap means "msk" points to a subbitmap descriptor
+		begin
+		VAX_MEM = 1;
+		MSK_MBMD = .MSK [MSBMD$A_MBMD_ADDR];
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_BITMAP
+					+ .MSK_MBMD [MBMD$W_LOCATE];
+		P2_PACKET [P2_SMK$A_BM_ADDR] = .MSK_MBMD [MBMD$A_ADDR];
+		P2_PACKET [P2_SMK$W_BM_SIZE_X] = .MSK_MBMD [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Y] = .MSK_MBMD [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Z] = .MSK_MBMD [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SMK$W_BM_OFF_X] = .MSK [MSBMD$W_OFF_X];
+		P2_PACKET [P2_SMK$W_BM_OFF_Y] = .MSK [MSBMD$W_OFF_Y];
+		P2_PACKET [P2_SMK$W_BM_EXT_X] = .MSK [MSBMD$W_EXT_X];
+		P2_PACKET [P2_SMK$W_BM_EXT_Y] = .MSK [MSBMD$W_EXT_Y];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+!
+!  Set up destination bitmap descriptor
+!
+if .DST [MBMD$W_LOCATE] eql VSTA$K_VAXMEM
+then VAX_MEM = 1;
+
+P1_PACKET [DSC$W_DST_DESC] = .DST [MBMD$W_LOCATE];
+P3_PACKET [P3_DST$A_BM_ADDR] = .DST [MBMD$A_ADDR];
+P3_PACKET [P3_DST$W_BM_SIZE_X] = .DST [MBMD$W_SIZE_X];
+P3_PACKET [P3_DST$W_BM_SIZE_Y] = .DST [MBMD$W_SIZE_Y];
+P3_PACKET [P3_DST$W_BM_SIZE_Z] = .DST [MBMD$W_SIZE_Z];
+P3_PACKET [P3_POS$W_OFF_X] = .DST_OFF_X;
+P3_PACKET [P3_POS$W_OFF_Y] = .DST_OFF_Y;
+
+$DMKSET;
+
+$MAPSET;
+
+$PIOREQ( IO$_COPY);
+
+$DRVQIO (IO$_COPY);
+
+end;			!End of vsta$$drive_copy_area
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_DRAW_CURVE - DRAWS A CURVE THROUGH A SERIES OF POINTS'
+global routine VSTA$$DRIVE_DRAW_CURVE (
+				 CHANNEL
+				,SRC_TYPE
+				,SRC		: ref block [,byte]
+				,SRC_OFF_X
+				,SRC_OFF_Y
+				,MSK_TYPE
+				,MSK		: ref block [,byte]
+				,DST		: ref block [,byte]
+				,DST_OFF_X
+				,DST_OFF_Y
+				,MAP_TYPE
+				,MAP_VALUE
+				,PATH_COUNT
+				,PATH_ADDR	: ref vector [,word]
+				,PATTERN_MODE
+				,PATTERN_ACTION
+				,PATTERN_BLOCK	: ref vector [,word]
+				,PATTERN_STATE	: ref vector [,word]
+				,SEC_TYPE
+				,SEC		: ref block [,byte]
+				,SEC_OFF_X
+				,SEC_OFF_Y
+				,RC_COUNT
+				,RC_ADDR	: ref vector [,word]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the draw_curve function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!
+!	channel		channel number of device to use
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+local
+	 MSK_MBMD	: ref block [,byte]
+	;
+
+!
+!  Define vector version of mask for the case where it's a rectangle
+!
+bind
+	 MASK_RECT = MSK: ref vector [,word]
+	;
+
+
+$GETCMDPKT;
+
+CMD_PKT [VB$L_OPCODE] = VB$K_OPC_DRAW;
+
+!
+!  Set up the Source parameters
+!
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SRC_CONSTANT;
+		end;
+	[VSTA$K_SRC_HT_VD,VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+		begin
+		VAX_MEM = 1;
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[VSTA$K_SRC_VD,VSTA$K_SRC_BM]:	!if bitmap, "src" points to descriptor
+		begin
+		VAX_MEM = 1;
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_INTRNL_BITMAP or  
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_BM_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_BM_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = .SRC_OFF_X;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = .SRC_OFF_Y;
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+
+!
+!  Set up second source if there is one
+!
+if .PATTERN_MODE eql VSTA$K_PTN_ALTERN_SRC
+then begin
+	VAX_MEM = 1;
+	case .SEC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+		set
+		[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+			begin
+			P1_PACKET [DSC$W_SEC_DESC] = VSTA$K_SEC_CONSTANT;
+			P5_PACKET [P5_DRW$W_CN_CONSTANT] = .SEC;
+			end;
+		[VSTA$K_SRC_HT_VD,VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+			begin
+			P1_PACKET [DSC$W_SEC_DESC] = VSTA$K_SEC_HALFTONE or 
+							.SEC [MBMD$W_LOCATE];
+			P5_PACKET [P5_DRW$A_HT_ADDR] = .SEC [MBMD$A_ADDR];
+			P5_PACKET [P5_DRW$W_HT_SIZE_X] = .SEC [MBMD$W_SIZE_X];
+			P5_PACKET [P5_DRW$W_HT_SIZE_Y] = .SEC [MBMD$W_SIZE_Y];
+			P5_PACKET [P5_DRW$W_HT_SIZE_Z] = .SEC [MBMD$W_SIZE_Z];
+			end;
+		[VSTA$K_SRC_VD,VSTA$K_SRC_BM]:	!if bitmap, "src" points to descriptor
+			begin
+			P1_PACKET [DSC$W_SEC_DESC] = VSTA$K_SEC_BITMAP or  
+							.SEC [MBMD$W_LOCATE];
+			P5_PACKET [P5_DRW$A_BM_ADDR] = .SEC [MBMD$A_ADDR];
+			P5_PACKET [P5_DRW$W_BM_SIZE_X] = .SEC [MBMD$W_SIZE_X];
+			P5_PACKET [P5_DRW$W_BM_SIZE_Y] = .SEC [MBMD$W_SIZE_Y];
+			P5_PACKET [P5_DRW$W_BM_SIZE_Z] = .SEC [MBMD$W_SIZE_Z];
+			P5_PACKET [P5_DRW$W_BM_OFF_X] = .SEC_OFF_X;
+			P5_PACKET [P5_DRW$W_BM_OFF_Y] = .SEC_OFF_Y;
+			end;
+		[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+		[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+		tes;
+	     end
+	else begin
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SEC_NONE;
+
+
+		P1_PACKET [DSC$W_SEC_DESC] = VSTA$K_SEC_NONE;
+	     end;		
+
+
+!
+!  Set up mask
+!
+case .MSK_TYPE from 0 to VSTA$K_MSK_TYPES of
+
+	set
+	[VSTA$K_MSK_NONE]:	!no mask implies rectangle same size as source
+		begin
+		!
+		!  If source not bitmap, no rectangle defined, so error
+		!
+		if .SRC_TYPE neq VSTA$K_SRC_BM 
+		then return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+		!
+		!  If source is bitmap, define mask rectangle same as source
+		!
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = 0;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = 0;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .SRC [MBMD$W_SIZE_Y];
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_RECTANGLE;
+		end;
+	[VSTA$K_MSK_RECTANGLE]: !mask rectangle means "msk" is vector with extent
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .MASK_RECT [0];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .MASK_RECT [1];
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_RECTANGLE;
+		end;
+	[VSTA$K_MSK_VD,VSTA$K_MSK_BITMAP]: !bitmap means "msk" points to a subbitmap descriptor
+		begin
+		VAX_MEM = 1;
+		MSK_MBMD = .MSK [MSBMD$A_MBMD_ADDR];
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_BITMAP
+					+ .MSK_MBMD [MBMD$W_LOCATE];
+		P2_PACKET [P2_SMK$A_BM_ADDR] = .MSK_MBMD [MBMD$A_ADDR];
+		P2_PACKET [P2_SMK$W_BM_SIZE_X] = .MSK_MBMD [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Y] = .MSK_MBMD [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Z] = .MSK_MBMD [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SMK$W_BM_OFF_X] = .MSK [MSBMD$W_OFF_X];
+		P2_PACKET [P2_SMK$W_BM_OFF_Y] = .MSK [MSBMD$W_OFF_Y];
+		P2_PACKET [P2_SMK$W_BM_EXT_X] = .MSK [MSBMD$W_EXT_X];
+		P2_PACKET [P2_SMK$W_BM_EXT_Y] = .MSK [MSBMD$W_EXT_Y];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+!
+!  Set up destination bitmap descriptor
+!
+if .DST [MBMD$W_LOCATE] eql VSTA$K_VAXMEM
+then VAX_MEM = 1;
+
+P1_PACKET [DSC$W_DST_DESC] = .DST [MBMD$W_LOCATE];
+P3_PACKET [P3_DST$A_BM_ADDR] = .DST [MBMD$A_ADDR];
+P3_PACKET [P3_DST$W_BM_SIZE_X] = .DST [MBMD$W_SIZE_X];
+P3_PACKET [P3_DST$W_BM_SIZE_Y] = .DST [MBMD$W_SIZE_Y];
+P3_PACKET [P3_DST$W_BM_SIZE_Z] = .DST [MBMD$W_SIZE_Z];
+P3_PACKET [P3_POS$W_OFF_X] = .DST_OFF_X;
+P3_PACKET [P3_POS$W_OFF_Y] = .DST_OFF_Y;
+
+$DMKSET;
+
+$MAPSET;
+
+!
+!  Set up path block
+!
+VSTA$$DRIVE_CHKADR( .PATH_ADDR, ADR, LOC);
+
+if .LOC eql VSTA$K_VAXMEM
+then VAX_MEM = 1;
+
+P1_PACKET [DSC$W_PTH_DESC] = .LOC;
+P5_PACKET [P5_DRW$A_PT_ADDR] = .ADR;
+P5_PACKET [P5_DRW$W_PT_COUNT] = .PATH_COUNT;
+
+if (.PATTERN_MODE eql VSTA$K_PTN_IDENT) or
+   (.PATTERN_BLOCK [0] eql 0) or
+   (.PATTERN_BLOCK [1] eqlu (1 ^ .PATTERN_BLOCK [0]) - 1)
+then begin
+	P1_PACKET [DSC$W_PTN_DESC] = VSTA$K_PTN_NONE;
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_PTN_NONE;
+     end
+else begin
+	if .PATTERN_ACTION eql VSTA$K_PTN_UPDATE
+	then begin
+
+		VAX_MEM = 1;
+
+		VSTA$$DRIVE_CHKADR( .PATTERN_STATE, ADR, LOC);
+
+		p1_PACKET [DSC$W_PTN_DESC] = VSTA$K_PTN_UPDPTR or 
+						.LOC;
+		p5_PACKET [P5_DRW$A_STATE] = .ADR;
+	     end
+	else begin
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_PTN_LITERAL;
+
+		P1_PACKET [DSC$W_PTN_DESC] = VSTA$K_PTN_LITERAL;
+		p5_PACKET [P5_DRW$W_POSIT] = 0;
+		P5_PACKET [P5_DRW$W_PCOUNT] = 0;
+	     end;
+
+	P5_PACKET [P5_DRW$W_COUNT] = .PATTERN_BLOCK [0];
+	P5_PACKET [P5_DRW$W_PATTERN] = .PATTERN_BLOCK [1];
+	P5_PACKET [P5_DRW$W_MULT] = .PATTERN_BLOCK [2];
+
+     end;
+
+$PIOREQ (IO$_DRAW);
+
+$DRVQIO (IO$_DRAW);
+
+end;			!End of vsta$$drive_draw_curve
+
+
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_PRINT_TEXT - PRINTS TEXT'
+global routine VSTA$$DRIVE_PRINT_TEXT (
+				 CHANNEL
+				,SRC_TYPE
+				,SRC			: ref block [,byte]
+				,MASK_TYPE
+				,MASK			: ref block [,byte]
+				,DST			: ref block [,byte]
+				,DST_OFF_ACTION
+				,DST_OFFSET		: ref vector [,word]
+				,MAP_TYPE
+				,MAP_VALUE
+				,TEXT_TYPE		
+				,TEXT_COUNT
+				,TEXT_ADDR
+				,CTRL_COUNT
+				,CTRL_ADDR
+				,CHAR_PAD
+				,SPACE_PAD
+				,RC_COUNT
+				,RC_ADDR		: ref vector [,word]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the print_text function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		channel number of device to use
+!
+!	(see native spec for description of other parameters)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+local
+	 MSK_MBMD	: ref block [,byte]
+	;
+
+!
+!  Define vector version of mask for the case where it's a rectangle
+!
+bind
+	 MASK_RECT = MASK: ref vector [,word]
+	;
+
+
+$GETCMDPKT;
+
+CMD_PKT [VB$L_OPCODE] = VB$K_OPC_PRINT;
+
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SRC_CONSTANT;
+
+		end;
+	[VSTA$K_SRC_HT_VD,VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+		begin
+
+		VAX_MEM = 1;
+
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[VSTA$K_SRC_FONT_BITMAP]:
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_FONT or 
+						.SRC [MFBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_FN_ADDR] = .SRC [MFBMD$A_SFBMD_ADDR];
+
+		if .SRC [MFBMD$W_LOCATE] eql VSTA$K_VAXMEM
+		then VAX_MEM = 1;
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SRC_FONT;
+
+		end;
+
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+case .MASK_TYPE from 0 to VSTA$K_MSK_TYPES of
+
+	set
+	[VSTA$K_MSK_NONE]:	!no mask implies rectangle same size as source
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_NONE;
+		end;
+	[VSTA$K_MSK_RECTANGLE]: !mask rectangle means "msk" is vector with extent
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .MASK_RECT [0];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .MASK_RECT [1];
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_RECTANGLE;
+		end;
+	[VSTA$K_MSK_VD,VSTA$K_MSK_BITMAP]: !bitmap means "msk" points to a subbitmap descriptor
+		begin
+
+		VAX_MEM = 1;
+
+		MSK_MBMD = .MASK [MSBMD$A_MBMD_ADDR];
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_BITMAP
+					+ .MSK_MBMD [MBMD$W_LOCATE];
+		P2_PACKET [P2_SMK$A_BM_ADDR] = .MSK_MBMD [MBMD$A_ADDR];
+		P2_PACKET [P2_SMK$W_BM_SIZE_X] = .MSK_MBMD [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Y] = .MSK_MBMD [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Z] = .MSK_MBMD [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SMK$W_BM_OFF_X] = .MASK [MSBMD$W_OFF_X];
+		P2_PACKET [P2_SMK$W_BM_OFF_Y] = .MASK [MSBMD$W_OFF_Y];
+		P2_PACKET [P2_SMK$W_BM_EXT_X] = .MASK [MSBMD$W_EXT_X];
+		P2_PACKET [P2_SMK$W_BM_EXT_Y] = .MASK [MSBMD$W_EXT_Y];
+		end;
+
+	[VSTA$K_MSK_FONT_BITMAP] : 
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_FONT or 
+						.MASK [MFBMD$W_LOCATE];
+		P2_PACKET [P2_FNT$A_FN_ADDR] = .MASK [MFBMD$A_SFBMD_ADDR];
+
+		if .MASK [MFBMD$W_LOCATE] eql VSTA$K_VAXMEM
+		then VAX_MEM = 1;
+
+		CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_SMK_FONT;
+		
+		end;		
+
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+
+!
+!  Set up destination bitmap descriptor
+!
+if .DST [MBMD$W_LOCATE] eql VSTA$K_VAXMEM
+then VAX_MEM = 1;
+
+P1_PACKET [DSC$W_DST_DESC] = .DST [MBMD$W_LOCATE];
+P3_PACKET [P3_DST$A_BM_ADDR] = .DST [MBMD$A_ADDR];
+P3_PACKET [P3_DST$W_BM_SIZE_X] = .DST [MBMD$W_SIZE_X];
+P3_PACKET [P3_DST$W_BM_SIZE_Y] = .DST [MBMD$W_SIZE_Y];
+P3_PACKET [P3_DST$W_BM_SIZE_Z] = .DST [MBMD$W_SIZE_Z];
+
+$DMKSET;
+
+$MAPSET;
+
+!
+!  Set up initial position
+!
+if .DST_OFF_ACTION eql VSTA$K_DST_UPDATE
+then begin
+
+	VSTA$$DRIVE_CHKADR( .DST_OFFSET, ADR, LOC);
+
+	P1_PACKET [DSC$W_INI_DESC] = VSTA$K_INI_UPDPTR or .LOC;
+	P3_PACKET [P3_POS$A_IN_ADDR] = .ADR;
+
+	VAX_MEM = 1;
+
+     end
+else begin
+	P1_PACKET [DSC$W_INI_DESC] = VSTA$K_INI_LITERAL;
+	P3_PACKET [P3_POS$W_LT_OFF_X] = .DST_OFFSET [0]; 
+	P3_PACKET [P3_POS$W_LT_OFF_Y] = .DST_OFFSET [1]; 
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_INI_LITERAL;
+ 
+     end;
+
+
+!
+!  Set up the text descriptor
+!
+VSTA$$DRIVE_CHKADR( .TEXT_ADDR, ADR, LOC);
+
+if .LOC eql VSTA$K_VAXMEM
+then VAX_MEM = 1;
+
+if .TEXT_TYPE eql VSTA$K_TXT_8BITS
+then P1_PACKET [DSC$W_TXT_DESC] = (.LOC or  VSTA$K_TXT_8BIT)
+else P1_PACKET [DSC$W_TXT_DESC] = (.LOC or  VSTA$K_TXT_16BIT);
+
+if .TEXT_TYPE eql VSTA$K_TXT_8BITS
+then 
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_TXT_8BIT
+else 
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_TXT_16BIT;
+ 
+
+P5_PACKET [P5_PRT$A_TX_ADDR] = .ADR;
+P5_PACKET [P5_PRT$W_TX_COUNT] = .TEXT_COUNT;
+
+!
+!set up control string block
+!
+if .CTRL_COUNT eql 0
+then begin
+	P1_PACKET [DSC$W_CTL_DESC] = VSTA$K_CTL_NONE;
+	P5_PACKET [P5_PRT$W_CN_COUNT] = 0;
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_CTL_NONE;
+      end
+else begin
+	VSTA$$DRIVE_CHKADR( .CTRL_ADDR, ADR, LOC);
+
+	if .LOC eql VSTA$K_VAXMEM
+	then VAX_MEM = 1;
+
+	P1_PACKET [DSC$W_CTL_DESC] = .LOC
+					+ VSTA$K_CTL_STRING;
+	P5_PACKET [P5_PRT$A_CN_ADDR] = .ADR;
+	P5_PACKET [P5_PRT$W_CN_COUNT] = .CTRL_COUNT;
+
+	CMD_PKT [VB$L_OPCODE] = .CMD_PKT [VB$L_OPCODE] or
+						VB$K_MOD_CTL_STRING;
+     end;
+
+!
+!  Set up text padding
+!
+P5_PACKET [P5_PRT$W_INTER] = .CHAR_PAD;
+P5_PACKET [P5_PRT$W_SPACE] = .SPACE_PAD;
+
+$PIOREQ (IO$_PRINT);
+
+$DRVQIO (IO$_PRINT);
+
+end;			!End of vsta$$drive_print_text
+
+
+
+%sbttl	'VSTA$$DRIVE_FILL_AREA - VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_FILL_AREA(
+				 CHANNEL
+				,SRC_TYPE
+				,SRC			: ref block [,byte]
+				,DST			: ref block [,byte]
+				,DST_OFF_X
+				,DST_OFF_Y
+				,MAP_TYPE
+				,MAP_VALUE
+				,PATH_COUNT
+				,PATH_ADDR
+				,RC_COUNT
+				,RC_ADDR		: ref vector [,word]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the fill_area function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		channel number of device to use
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+!
+!  Set up the Source parameters
+!
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		end;
+	[VSTA$K_SRC_HT_VD,VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+!
+!  Set up destination bitmap descriptor
+!
+P1_PACKET [DSC$W_DST_DESC] = .DST [MBMD$W_LOCATE];
+P3_PACKET [P3_DST$A_BM_ADDR] = .DST [MBMD$A_ADDR];
+P3_PACKET [P3_DST$W_BM_SIZE_X] = .DST [MBMD$W_SIZE_X];
+P3_PACKET [P3_DST$W_BM_SIZE_Y] = .DST [MBMD$W_SIZE_Y];
+P3_PACKET [P3_DST$W_BM_SIZE_Z] = .DST [MBMD$W_SIZE_Z];
+P3_PACKET [P3_POS$W_OFF_X] = .DST_OFF_X;
+P3_PACKET [P3_POS$W_OFF_Y] = .DST_OFF_Y;
+
+!
+!  Set up the destination mask
+!
+case .RC_COUNT from 0 to 1
+of set
+	[0]: P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_NONE;
+	[1]: 
+		!
+		!  If one rectangle, set up single rectangle mask
+		!
+		BEGIN
+		P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_RECTANGLE;
+		P3_PACKET [P3_DMK$W_LT_OFF_X] = .RC_ADDR [0];
+		P3_PACKET [P3_DMK$W_LT_OFF_Y] = .RC_ADDR [1];
+		P3_PACKET [P3_DMK$W_LT_EXT_X] = .RC_ADDR [2];
+		P3_PACKET [P3_DMK$W_LT_EXT_Y] = .RC_ADDR [3];
+		end;
+
+	[outrange]:
+		return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+	tes;
+
+!
+!  Set up Map parameters
+!
+case .MAP_TYPE from 0 to VSTA$K_MAP_TYPES of
+
+	set
+	[VSTA$K_MAP_IDENTITY]: P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_IDEN ;
+	[VSTA$K_MAP_S_LITERAL,VSTA$K_MAP_SOURCE]:
+		begin
+		P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SLIT;
+		P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+		end;
+	[VSTA$K_MAP_SD_LITERAL,VSTA$K_MAP_SOURCEDEST]:
+		begin
+		P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SDLIT;
+		P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+!
+!  Set up path block
+!
+VSTA$$DRIVE_CHKADR( .PATH_ADDR, ADR, LOC);
+
+P1_PACKET [DSC$W_PTH_DESC] = .LOC;
+P1_PACKET [DSC$W_PTN_DESC] = VSTA$K_PTN_LITERAL;
+P5_PACKET [P5_FIL$A_PT_ADDR] = .ADR;
+P5_PACKET [P5_FIL$W_PT_COUNT] = .PATH_COUNT;
+
+$DRVQIO (IO$_FILL)
+
+end;
+
+
+
+%sbttl	'VSTA$$DRIVE_FLOOD_AREA - VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_FLOOD_AREA(
+				 CHANNEL
+				,SRC_TYPE
+				,SRC			: ref block [,byte]
+				,DST			: ref block [,byte]
+				,DST_OFF_X
+				,DST_OFF_Y
+				,BOUNDARY_MAP
+				,SEED_POINT_X
+				,SEED_POINT_Y
+				,RC_COUNT
+				,RC_ADDR		: ref vector [,word]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the fill_area function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		channel number of device to use
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+!
+!  Set up the Source parameters
+!
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		end;
+	[VSTA$K_SRC_HT_VD,VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+!
+!  Set up destination bitmap descriptor
+!
+P1_PACKET [DSC$W_DST_DESC] = .DST [MBMD$W_LOCATE];
+P3_PACKET [P3_DST$A_BM_ADDR] = .DST [MBMD$A_ADDR];
+P3_PACKET [P3_DST$W_BM_SIZE_X] = .DST [MBMD$W_SIZE_X];
+P3_PACKET [P3_DST$W_BM_SIZE_Y] = .DST [MBMD$W_SIZE_Y];
+P3_PACKET [P3_DST$W_BM_SIZE_Z] = .DST [MBMD$W_SIZE_Z];
+P3_PACKET [P3_POS$W_OFF_X] = .SEED_POINT_X;
+P3_PACKET [P3_POS$W_OFF_Y] = .SEED_POINT_Y;
+
+!
+!  Set up the destination mask
+!
+case .RC_COUNT from 0 to 1
+of set
+	[0]: P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_NONE;
+	[1]: 
+		!
+		!  If one rectangle, set up single rectangle mask
+		!
+		begin
+		P1_PACKET [DSC$W_DMK_DESC] = VSTA$K_DMK_RECTANGLE;
+		P3_PACKET [P3_DMK$W_LT_OFF_X] = .RC_ADDR [0];
+		P3_PACKET [P3_DMK$W_LT_OFF_Y] = .RC_ADDR [1];
+		P3_PACKET [P3_DMK$W_LT_EXT_X] = .RC_ADDR [2];
+		P3_PACKET [P3_DMK$W_LT_EXT_Y] = .RC_ADDR [3];
+		end;
+
+	[outrange]:
+		return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+	tes;
+
+!
+!  Set up boundary map it is always a literal in this version
+!
+P1_PACKET [DSC$W_BND_DESC] = VSTA$K_BND_LITERAL;
+P5_PACKET [P5_FLD$L_BOUNDRY] = .BOUNDARY_MAP;
+
+$DRVQIO (IO$_FLOOD);
+
+end;
+
+
+
+%sbttl	'VSTA$$DRIVE_MOVE_OBJECT - FOR MOVING FONTS INTO DISPLAY MEMORY'
+global routine VSTA$$DRIVE_MOVE_OBJECT (
+				 CHANNEL
+				,SRC_TYPE
+				,SRC_ADDRESS
+				,DST_ADDRESS
+				,LENGTH
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the move object function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		!channel of vs100 device
+!	src_type,	!source object type
+!	src_address,	!source object address
+!	dst_address,	!destination object address
+!	length		!length in bytes
+!	efn		!event flag to set on completion
+!	astadr		!completion routine to call when finished
+!	astprm		!parameter to the completion routine
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO (whichever is more ambiguous)
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_VAXMEM;
+P1_PACKET [DSC$W_DST_DESC] = VSTA$K_DISPMEM;
+
+P5_PACKET [P5_MOV$W_TYPE] = .SRC_TYPE;
+P5_PACKET [P5_MOV$L_LENGTH] = .LENGTH;
+P5_PACKET [P5_MOV$A_OBJ] = .SRC_ADDRESS;	
+P5_PACKET [P5_MOV$A_DST] = .DST_ADDRESS;
+
+$DRVQIO (IO$_MOVEOBJ);
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_LOADCUR - VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_LOAD_CURSOR(
+				 CHANNEL
+				,SRC_TYPE
+				,SRC			: ref block [,byte]
+				,SRC_OFF_X
+				,SRC_OFF_Y
+				,MSK_TYPE
+				,MSK			: ref block [,byte]
+				,MAP_TYPE		
+				,MAP_VALUE
+				,BLINK
+				,TIP_X
+				,TIP_Y
+				,CENTER_X
+				,CENTER_Y
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =
+!++
+!  Functional description
+!
+!  This routine provides access to the WGA load cursor function.
+!
+!  Formal Parameters:
+!
+!	(See WGA for description)
+!
+!  Implicit Inputs: none
+!
+!  Implicit Outputs: none
+!
+!  Side Effects: 
+!
+!       Causes the form of the mouse cursor to change.
+!  
+!
+!---
+begin
+
+$DEFS;
+
+local
+	 MSK_MBMD	: ref block [,byte]
+	,LB : LOD_BLOCK
+	,AST_SLOTS
+	;
+
+bind
+	 MASK_RECT = .MSK: vector [,word]
+	;
+
+!
+!  Set up the Source parameters
+!
+case .SRC_TYPE from 0 to VSTA$K_SRC_TYPES of
+
+	set
+	[VSTA$K_SRC_CONST]:	!if constant source, "src" contains the value
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_CONSTANT;
+		P2_PACKET [P2_SRC$W_CN_CONSTANT] = .SRC;
+		end;
+	[VSTA$K_SRC_HT_BITMAP]:	!if halftone, "src" points to halftone bitmap descriptor
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_HALFTONE or 
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_HT_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_HT_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_HT_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		end;
+	[VSTA$K_SRC_BM]:	!if bitmap, "src" points to descriptor
+		begin
+		P1_PACKET [DSC$W_SRC_DESC] = VSTA$K_SRC_INTRNL_BITMAP or  
+						.SRC [MBMD$W_LOCATE];
+		P2_PACKET [P2_SRC$A_BM_ADDR] = .SRC [MBMD$A_ADDR];
+		P2_PACKET [P2_SRC$W_BM_SIZE_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Y] = .SRC [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SRC$W_BM_SIZE_Z] = .SRC [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = .SRC_OFF_X;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = .SRC_OFF_Y;
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+
+!
+!  Set up mask
+!
+case .MSK_TYPE from 0 to VSTA$K_MSK_TYPES of
+
+	set
+	[VSTA$K_MSK_NONE]:	!no mask implies rectangle same size as source
+		begin
+		!
+		!  If source not bitmap, no rectangle defined, so error
+		!
+		if .SRC_TYPE neq VSTA$K_SRC_BM 
+		then return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+		!
+		!  If source is bitmap, define mask rectangle same as source
+		!
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SRC$W_BM_OFF_X] = 0;
+		P2_PACKET [P2_SRC$W_BM_OFF_Y] = 0;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .SRC [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .SRC [MBMD$W_SIZE_Y];
+		end;
+	[VSTA$K_MSK_RECTANGLE]: !mask rectangle means "msk" is vector with extent
+		begin
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_RECTANGLE;
+		P2_PACKET [P2_SMK$W_RC_EXT_X] = .MASK_RECT [0];
+		P2_PACKET [P2_SMK$W_RC_EXT_Y] = .MASK_RECT [1];
+		end;
+	[VSTA$K_MSK_BITMAP]: !bitmap means "msk" points to a subbitmap descriptor
+		begin
+		MSK_MBMD = .MSK [MSBMD$A_MBMD_ADDR];
+		P1_PACKET [DSC$W_SMK_DESC] = VSTA$K_SMK_BITMAP
+					+ .MSK_MBMD [MBMD$W_LOCATE];
+		P2_PACKET [P2_SMK$A_BM_ADDR] = .MSK_MBMD [MBMD$A_ADDR];
+		P2_PACKET [P2_SMK$W_BM_SIZE_X] = .MSK_MBMD [MBMD$W_SIZE_X];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Y] = .MSK_MBMD [MBMD$W_SIZE_Y];
+		P2_PACKET [P2_SMK$W_BM_SIZE_Z] = .MSK_MBMD [MBMD$W_SIZE_Z];
+		P2_PACKET [P2_SMK$W_BM_OFF_X] = .MSK [MSBMD$W_OFF_X];
+		P2_PACKET [P2_SMK$W_BM_OFF_Y] = .MSK [MSBMD$W_OFF_Y];
+		P2_PACKET [P2_SMK$W_BM_EXT_X] = .MSK [MSBMD$W_EXT_X];
+		P2_PACKET [P2_SMK$W_BM_EXT_Y] = .MSK [MSBMD$W_EXT_Y];
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+!
+!  Set up Map parameters
+!
+case .MAP_TYPE from 0 to VSTA$K_MAP_TYPES of
+
+	set
+	[VSTA$K_MAP_IDENTITY]: P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_IDEN ;
+	[VSTA$K_MAP_SOURCE, VSTA$K_MAP_S_LITERAL]:
+		begin
+		P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SLIT;
+		P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+		end;
+	[VSTA$K_MAP_SOURCEDEST, VSTA$K_MAP_SD_LITERAL]:
+		begin
+		P1_PACKET [DSC$W_MAP_DESC] = VSTA$K_MAP_SDLIT;
+		P4_PACKET [P4_MAP$W_LT_LITERAL] = .MAP_VALUE;
+		end;
+	[inrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	[outrange]: return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+	tes;
+!
+! Set up block denoting where visible tip of mouse is, and center for icon.
+! Set up whether mouse should blink or not.
+!
+LB[LOD$V_BLINK] = .BLINK;
+LB[LOD$V_TC] = 1;
+LB[LOD$W_TIP_X] = .TIP_X;
+LB[LOD$W_TIP_Y] = .TIP_Y;
+LB[LOD$W_CENTER_X] = .CENTER_X;
+LB[LOD$W_CENTER_Y] = .CENTER_Y;
+
+if (.BLINK neq 0) and (.BLINK neq 1)
+then return VSTA$$DRIVE_CLEAN_UP (.DSC,.EFN,.ASTADR,.ASTPRM,SS$_BADPARAM);
+
+!
+!  Check the ACP process quotas if it fails then do QIO with wait
+!
+if not VSTA$$DRIVE_CHKQUO()
+then EFN = max( 1, .EFN);
+
+$DEVREQ (IO$_LOADCUR);
+
+if not (S= (if .EFN neq 0
+then $QIO	 (	
+				 CHAN = .CHANNEL
+				,FUNC = IO$_LOADCUR
+				,IOSB = IOSB [0]
+				,ASTADR = VSTA$$DRIVE_AST_HANDLER
+				,P1   = P1_PACKET
+				,P2   = P2_PACKET
+				,P3   = P3_PACKET
+				,P4   = P4_PACKET 
+				,P5   = LB[$BASE]
+			)
+	ELSE BEGIN
+		!
+		!  Get a unique event flag
+		!
+		local EF,ST;
+
+		if not (st = VSTA$$GET_EF( EF))
+		then return .st;
+
+		ST = $QIOW	 (	
+				 CHAN = .CHANNEL
+				,FUNC = IO$_LOADCUR
+				,IOSB = IOSB [0]
+				,EFN	= .EF
+				,ASTADR = VSTA$$DRIVE_AST_HANDLER
+				,P1   = P1_PACKET
+				,P2   = P2_PACKET
+				,P3   = P3_PACKET
+				,P4   = P4_PACKET
+				,P5   = LB[$BASE]
+			);
+
+		!
+		!  Free the event flag
+		!
+		LIB$FREE_EF( EF);
+			
+
+		!
+		!  Temporary
+		!
+		if .EFN gtr 1
+		then $setef( efn = .EFN);
+
+		!
+		!  Return qio status
+		!
+		.ST
+	     end
+	))
+then begin
+	!
+	!  Remove the latest request from the end of the queue
+	!
+	REMQUE( .DRV$Q_BASE [1], DSC);
+	VSTA$$DRIVE_CLEAN_UP( .DSC, .EFN, .ASTADR, .ASTPRM, .S);
+	RETURN .S;
+     end;
+
+
+return SS$_NORMAL
+end;
+
+
+
+
+%sbttl	'VSTA$$DRIVE_NOOP - VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_NOOP(
+				 CHANNEL
+				,EFN
+				,ASTADR
+				,ASTPRM
+				) =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine provides general-purpose access to the no-op function
+! of the hardware device.
+! 
+! FORMAL PARAMETERS:
+!	
+!	channel		channel number of device to use
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! ss$_badparam or value returned by $QIO
+!
+! COMPLETION CODES:
+!
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+$DEFS;
+
+VSTA$$DRIVE_PIO_CLEANUP();
+
+if .EFN gtr 0
+then begin
+	
+	local EF;
+
+	if not (s = VSTA$$GET_EF( EF))
+	then return .s;
+
+	S = $QIOW(
+		 CHAN	= .CHANNEL
+		,FUNC	= IO$_NOOP
+		,EFN	= .EF
+		,ASTADR	= .ASTADR
+		,ASTPRM	= .ASTPRM
+	     );
+
+	!
+	!  Temporary
+	!
+	if .EFN gtr 1
+	then $setef( efn = .EFN);
+
+	!
+	!  Free the allocated event flag
+	!
+	LIB$FREE_EF( EF);
+
+	return .S;
+	
+     end;
+!
+!  If $DEVREQ eql 1 that means that the device request queue was empty
+!  so the noop gets performed immediatly not later
+!
+if $DEVREQ( IO$_NOOP) eql 1
+then begin
+	REMQUE( .DRV$Q_BASE [1], DSC);
+	VSTA$$DRIVE_CLEAN_UP( .DSC, .EFN, .ASTADR, .ASTPRM, SS$_NORMAL);
+	RETURN SS$_NORMAL;
+     end;
+
+return ss$_normal
+
+end;
+
+
+%sbttl	'VSTA$$DRIVE_EXIT_IDLE -- Set AST on exit idle'
+global routine VSTA$$DRIVE_EXIT_IDLE
+	(
+	 CHANNEL		!VB channel
+	,ASTADR			!AST routine to call when link is broken.
+	) =
+!++
+! Functional description:
+!
+!	Set exit-idle (user hit button to start) AST
+!	The AST will be called when VB is powered up, shows
+!	"press mouse button to start" icon, and then the user
+!	hits the mouse button.
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 chan 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_BUTTON OR IO$M_VB_EXIT_IDLE)
+			,P3 	= .ASTADR
+			,P4 	= 0
+			))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_RESET -- Reset device'
+global routine VSTA$$DRIVE_RESET
+	(
+	 CHANNEL		!VB channel
+	) =
+!++
+! Functional description:
+!
+!	Reset the ONYX - called when exit-idle AST.
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_FUNC OR IO$M_VB_RESET)
+			))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_LINK_AST -- Set AST for when link changes'
+global routine VSTA$$DRIVE_LINK_AST
+	(
+	 CHANNEL		!VB channel
+	,ASTADR			!AST routine address
+	) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Set link online/offline AST
+!
+! FORMAL PARAMETERS:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+		 	 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_FIBER OR IO$M_VB_LINK_AST)
+			,P3 	= .ASTADR
+			,P4 	= 0
+		))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_LIGHT_ON -- Turn the fiber light on'
+global routine VSTA$$DRIVE_LIGHT_ON
+	(
+	 CHANNEL		!VB channel
+	) =
+!++
+! Functional description:
+!
+!	Turn fiber light on.
+!	(When the ONYX is running and the cable is OK, the microcode
+!	will turn its light on).
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_FIBER OR IO$M_VB_LIGHT_ON)
+		))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_SET_FO_EXIT -- Set FO link off on deassign'
+global routine VSTA$$DRIVE_SET_FO_EXIT(
+					 CHAN
+				      ) =
+!++
+!  Functional Description
+!
+!   This routine interfaces to VBDRIVER qio to have the fiber optic
+!   light turned off on channel deassign time.  This is not the usual
+!   case for VBDRIVER.
+!
+!  Formal Parameters
+!
+!   CHAN	VB device channel
+!
+!--
+begin
+
+local
+	 IOSB	: vector [2,long]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+!
+!  Do the qio to set FO light off at deassign time
+!
+STATUS = $QIOW (
+		 CHAN 	= .CHAN
+		,EFN	= .EFN
+		,FUNC	= (IO$_VB_FIBER or IO$M_VB_LINK_ONEXIT)
+		,IOSB	= IOSB
+	 );
+
+LIB$FREE_EF( EFN);
+
+!
+!  Check for qio failure and return it
+!
+if not .STATUS
+then return .STATUS;
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;				! End of VSTA$$DRIVE_SET_FO_EXIT
+
+
+
+
+
+
+
+%sbttl 'VSTA$$DRIVE_SET_FO_NO_EXIT -- Set FO link stay on deassign'
+global routine VSTA$$DRIVE_SET_FO_NO_EXIT(
+					 CHAN
+				      ) =
+!++
+!  Functional Description
+!
+!   This routine interfaces to VBDRIVER qio to have the fiber optic
+!   light left on at channel deassign time.  This allows
+!   the acp to deassign the vb channel near the beginning of session
+!   end without the "finger" icon appearing.  Then, later, when the
+!   session is really ended (i.e. VMS has gotten around to telling us
+!   to delete all user vd's), the acp executes some other function
+!   to explicitly put up the finger.
+!
+!   In this way, a user doesn't really see the finger until the acp is
+!   really ready to start a new session.
+!
+!  Formal Parameters
+!
+!   CHAN	VB device channel
+!
+!--
+begin
+
+local
+	 IOSB	: vector [2,long]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+!
+!  Do the qio to leave light on at deassign time
+!
+STATUS = $QIOW (
+		 CHAN 	= .CHAN
+		,EFN	= .EFN
+		,FUNC	= (IO$_VB_FIBER + IO$M_VB_LINK_ONEXIT + IO$M_VB_CANCEL)
+		,IOSB	= IOSB
+	 );
+
+LIB$FREE_EF( EFN);
+
+!
+!  Check for qio failure and return it
+!
+if not .STATUS
+then return .STATUS;
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;				! End of VSTA$$DRIVE_SET_FO_NO_EXIT
+
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_SETMOUSE -- Set mouse tracking ratio'
+global routine VSTA$$DRIVE_SETMOUSE
+	(
+	 CHANNEL		!VB channel
+	,MULTIPLIER		! multi/div for mouse movement
+	,DIVISOR		!. .
+	) =
+!++
+! Functional description:
+!
+!	Set mouse characteristics
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= IO$_SETMOUSE
+			,P1 	= .MULTIPLIER
+			,P2 	= .DIVISOR
+			))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_ATTACH_CURSOR -- Attach cursor to mouse'
+global routine VSTA$$DRIVE_ATTACH_CURSOR
+	(
+	 CHANNEL		!VB channel
+	) =
+!++
+! Functional description:
+!
+!	Attach the mouse cursor
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= IO$_ATTCUR
+			,P1 	= 1		!?Don't know why, this is stolen from AUTOLOAD
+		))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_REPORT_TO_VB -- Have device report to driver'
+global routine VSTA$$DRIVE_REPORT_TO_VB
+	(
+	 CHANNEL
+	) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Tell ONYX to report info to VBDRIVER
+!
+! FORMAL PARAMETERS:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,EFN
+	,STATUS
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= IO$_REPORT
+			))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_GET_VB_STATUS -- Report driver status'
+global routine VSTA$$DRIVE_GET_VB_STATUS
+	(
+	 channel		!VB channel
+	,returned_info		!See comments
+	) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Get VB status ("report_to_vb" must have been called previously)
+!
+! FORMAL PARAMETERS:
+! Note:
+!	Will always return successfully; will not timeout.
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_STATUS)
+			,P1 	= .RETURNED_INFO	!Buffer address
+			,P2 	= VSTA$K_CHR_LENGTH	!Whole length
+		))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_POWERUP -- Power up device'
+global routine VSTA$$DRIVE_POWERUP
+	(
+	 channel		!VB channel
+	) =
+!++
+! Functional description:
+!
+!	Return ONYX to initial idle loop.
+!
+! Formal parameters:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_FUNC OR IO$M_VB_POWERUP)
+			))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_MOVEDISP -- Move data to display memory'
+global routine VSTA$$DRIVE_MOVEDISP
+	(
+	 CHANNEL		!vb CHANNEL
+	,LENGTH
+	,SOURCE_ADDR
+	,DEST_ADDR
+	) =
+!++
+! Functional description:
+!
+!	Moves stuff to display memory
+!
+! FORMAL PARAMETERS:
+!--
+begin
+local
+	 P1_BLK: DSC_BLOCK
+	,P5_BLK: P5_BLOCK
+	,VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+P1_BLK [DSC$W_SRC_DESC] = VSTA$K_VAXMEM;
+P1_BLK [DSC$W_DST_DESC] = VSTA$K_DISPMEM;
+P5_BLK [P5_MOV$W_TYPE] = 1;			! Memory to Memory move
+P5_BLK [P5_MOV$L_LENGTH] = .LENGTH;
+P5_BLK [P5_MOV$A_OBJ] = .SOURCE_ADDR;
+P5_BLK [P5_MOV$A_DST] = .DEST_ADDR;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB	= VB_IOSB
+			,FUNC 	= IO$_MOVEOBJ
+			,P1 	= P1_BLK
+			,P5 	= P5_BLK
+		))
+then return .STATUS;
+
+LIB$FREE_EF ( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+%sbttl	'VSTA$$DRIVE_STARTM -- Start microcode'
+global routine VSTA$$DRIVE_STARTM
+	(
+	 channel
+	) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Starts the microcode (at 1000)
+!
+! FORMAL PARAMETERS:
+!--
+begin
+local
+	 VB_IOSB: vector [4,word]
+	,STATUS
+	,EFN
+	;
+
+if not (STATUS = VSTA$$GET_EF( EFN))
+then return .STATUS;
+
+if not (STATUS = $QIOW (
+			 CHAN 	= .CHANNEL
+			,EFN	= .EFN
+			,IOSB 	= VB_IOSB
+			,FUNC 	= (IO$_VB_FUNC OR IO$M_VB_STARTM)
+			,P1 	= %X'1000'
+		))
+then return .STATUS;
+
+LIB$FREE_EF( EFN);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 VB_IOSB
+		,STATUS
+		);
+
+return .STATUS;
+
+end;
+
+
+
+
+
+%sbttl	'VSTA$$DRIVE_AST_HANDLER -- VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_AST_HANDLER =
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine receives ast's delivered from vbdriver and performs the
+!   appropriate post processing for the previous io operation.  The ast
+!   parameter has no meaning.  This routine will remove the next packet 
+!   on the device request queue and process its completion routine and
+!   status.  If any NOOP packets follow this packet then they are removed
+!   and the completion routines for them are processed.
+!   Errors back from the device must be converted into vsta
+!---error codes and passed as a parameter to the completion routine.
+!
+!
+!  FORMAL PARAMETERS:
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+
+begin
+
+local 
+	 VSTA_STATUS
+	,STATUS
+	,DSC	: REF VECTOR [,LONG]
+	;
+
+!
+! Remove the descriptor from the beginning of the queue
+!
+REMQUE( .DRV$Q_BASE [0], DSC);
+
+!
+! Check the iosb for error codes returned from the hardware
+! if it is a bad status from the device then convert it to a vsta code
+! and pass it as a parameter to the completion routine.
+!
+VSTA$$DRIVE_REPORT_ERROR(
+		 DSC [5]
+		,VSTA_STATUS
+		);
+
+
+!
+!  Call the clean up routine to deliver the callers completion routine
+!
+VSTA$$DRIVE_CLEAN_UP(
+		 .DSC
+		,0
+		,.DSC [3]
+		,.DSC [4]
+		,.VSTA_STATUS
+		     );
+
+!
+!  Look thru the rest of the queue until the end is reached or a non
+!  noop function is found
+!
+DSC = .DRV$Q_BASE [0];
+
+while (DSC [0] neq DRV$Q_BASE [0]) and (.DSC [2] eql IO$_NOOP)
+do begin
+
+	!
+	!  Remove the noop from the device queue
+	!
+	REMQUE( .DRV$Q_BASE [0], DSC);
+
+	!
+	!  Clean up for the noop request
+	!
+	VSTA$$DRIVE_CLEAN_UP(
+		 .DSC
+		,0
+		,.DSC [3]
+		,.DSC [4]
+		,SS$_NORMAL
+			     );
+
+	!
+	!  Get next request in the device queue
+	!
+	DSC = .DRV$Q_BASE [0];
+
+   end;
+!
+! If we're ending a session, wake up main loop, since it may very well
+! currently be asleep expecting to be awakened in order to check to see
+! if this ast is the last to be processed.  (See module VSACP.B32, routine
+! MAKE_SURE_ALL_OBJECTS_GONE).
+!
+	if .$extsym (vsta$gl_end_session_flag)
+	then $wake ();
+
+return .VSTA_STATUS;
+
+end;
+
+
+
+%sbttl	'VSTA$$DRIVE_CLEAN_UP -- VSTADRIVE INTERNAL ROUTINE'
+global routine VSTA$$DRIVE_CLEAN_UP(
+				 DSC: ref block [,byte]
+				,EFN
+				,ASTADR
+				,ASTPRM
+				,VSTA_STATUS 
+				   ) =
+!++
+!  Functional description
+!
+!  this routine cleans up after error detection and io completion.
+!  It is responsible for call the completion routine and setting the
+!  EFN.  The status sent to it is returned as the value of the routine.
+!
+!  
+!  Formal Parameters:
+!
+!--
+BEGIN
+
+!
+! Call the completion routine if there is one
+!
+if .ASTADR gtr 512 
+then (.ASTADR)(.ASTPRM,.VSTA_STATUS);
+
+!
+!  De-allocate the device operation descriptor packet for this ast
+!
+if .DSC gtr 0
+then $FREE32B( .DSC);
+
+!
+!  Call sin cleanup just to give back resources
+!
+VSTA$$DRIVE_PIO_CLEANUP();
+
+return .VSTA_STATUS;
+
+end;
+
+
+
+
+end				!End of module VSTA$DRIVE
+eludom

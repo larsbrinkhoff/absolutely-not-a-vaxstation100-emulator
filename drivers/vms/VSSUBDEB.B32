@@ -1,0 +1,151 @@
+MODULE VS$SUB_DEBUG (
+			IDENT = 'ACP Subprocess Debug routines'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Subprocess of the ACP
+!
+! ABSTRACT:
+!
+!   This module provides debugging aids to VSSUBACP.
+!
+! ENVIRONMENT:
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+	vsta$$sub_deb_broad,		!Broadcast a string to the OPR
+	vsta$$sub_deb_hi_done,		!Tell OPR that HI terminated.
+	append_string;			!Append string 1 to string 2
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+!EXTERNAL ROUTINE
+!	routine_name;
+
+
+GLOBAL ROUTINE vsta$$sub_deb_broad
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Broadcasts a message to the operator.
+!
+! FORMAL PARAMETERS:
+	(string_desc		!Address of string descriptor
+	)=
+!
+! ROUTINE VALUE
+!   Returns "ss$_normal" if successful, or
+!	VS facility error status code
+!--
+BEGIN
+OWN
+    msgbuf: BLOCK [250,BYTE],	!A buffer
+    msg_desc: VECTOR [2]
+		INITIAL	(0
+			,msgbuf);
+LOCAL
+    status;			!Return status
+
+msg_desc [0] = 0;		!Set string length = 0
+!
+! Put header in message
+!
+append_string (%ASCID '[ SUBACP: ', msg_desc);
+!
+! Append given string to message
+!
+append_string (.string_desc, msg_desc);
+!
+! And give message a trailer
+!
+append_string (%ASCID ' ]', msg_desc);
+
+IF NOT (status =
+   $brdcst	(MSGBUF = msg_desc	!Address of descriptor
+		,DEVNAM = %ASCID 'SYS$ERROR'
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL		!Return success
+
+END;
+
+GLOBAL ROUTINE vsta$$sub_deb_hi_done
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Tells the opr what the HI termination status is.
+!
+! FORMAL PARAMETERS:
+	(code			!Status code
+	)=
+BEGIN
+OWN
+    sts_message_real_len: WORD,		!Real message length returned
+    message_buf: BLOCK [256,BYTE],	!A message
+    message_desc: VECTOR [2],		!Descriptor to it
+    message_id,				!Message id input to $getmsg
+    status;				!Our status code
+
+message_desc [0] = 256;			!Max # chars in message
+message_desc [1] = message_buf;		!Fix descriptor
+message_id = .code;			!Get message id (s.b. shifted??)
+
+IF NOT (status =
+    $getmsg	(MSGID = .message_id
+		,MSGLEN = sts_message_real_len !Where to put real len.
+		,BUFADR = message_desc	!Desc - where to put message
+		)			!No flags - default to all info
+	)
+  THEN RETURN .status;
+
+message_desc [0] = .sts_message_real_len; !Put real length in descriptor
+
+vsta$$sub_deb_broad (%ASCID 'HI process terminated, status was:');
+vsta$$sub_deb_broad (message_desc);	!Tell opr what status was
+
+RETURN SS$_NORMAL		!Return normally
+
+END;
+
+ROUTINE append_string
+! ++
+! FUNCTIONAL DESCRIPTION:
+!	Appends string 1 to string 2
+! FORMAL PARAMETERS:
+	(str_1_desc		!String to append
+	,str_2_desc		!String appended to
+	)=
+BEGIN
+MAP
+    str_1_desc: ref VECTOR[2],
+    str_2_desc: ref VECTOR[2];
+OWN
+    msg_length: WORD,
+    addr_buf_1,
+    addr_buf_2;
+
+msg_length = .str_1_desc [0];	!Length of message 1
+				! Get rid of type bits, just want length
+addr_buf_2 = .str_2_desc [0] + .str_2_desc [1];	!Address of place to
+						! append string
+addr_buf_1 = .str_1_desc [1];			!Address of string to append
+
+str_2_desc [0] = .str_2_desc [0] + .msg_length;	!Add lengths
+CH$MOVE	(.msg_length		!Number of bytes to move
+	,.addr_buf_1		!From here
+	,.addr_buf_2		!To here
+	);
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

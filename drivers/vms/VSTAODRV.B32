@@ -1,0 +1,1950 @@
+%TITLE 'vsta$output_driver -- VAXSTATION OUTPUT TERMINAL DRIVER'
+MODULE vsta$output_driver (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!	This module contains all the routines required for performing generic
+!   output driver functions as indicated by the device state in the UCB.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Public routines (to the ACP)
+!
+	vsta$$odrv_create,		!Create output driver data base for VD
+	vsta$$odrv_delete,		!Delete output driver data base for VD
+	vsta$$odrv_write,		!Convert buffer and send to emulator
+	vsta$$odrv_control_o,		!Toggle device control-o
+	vsta$$odrv_mbx_enable,		!Toggle unsolicited data mbx enable
+	vsta$$odrv_send_lf,		!Is free line-feed currently required?
+	vsta$$odrv_skip_lf,		!Skip leading <LF> on next operation
+	vsta$$odrv_last_char_output,	!Get last character output to device
+	vsta$$odrv_delete_last_char,	!Delete last character output to device
+	vsta$$odrv_current_column,	!Get current cursor column of device
+!
+! Private routines
+!
+	vsta$$odrv_last_char_input,	!Get last character input to device
+	vsta$$odrv_delete_tab,		!Delete tab character
+	vsta$$odrv_compute_bs,		!Compute number of BSs to delete TAB
+	vsta$$odrv_get_char,		!Get virtual device dependent char.bits
+	vsta$$odrv_scan_everyday_chars,	!Quickly parse uninteresting characters
+	vsta$$odrv_addon_memory,	!Extend memory block
+	vsta$$odrv_term_found;		!Find device data base by VD_ID
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	vs$$escape_done,		!Escape sequence syntax validation
+	vs$$vds_synchronize_echo,	!Synchronize echo-type output to VD
+	vs$$acp_get_vm,			!Allocate memory
+	vs$$acp_free_vm;		!Deallocate memory
+!
+! INCLUDE FILES:
+!
+REQUIRE 'VSTA$LIBRARY:VSTAODRV.R32';	! Output driver definitions
+REQUIRE 'VSTA$LIBRARY:VSVKB.R32';	! Common constants
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! Common macros definitions
+LIBRARY 'SYS$LIBRARY:LIB';		! Get access to VMS stuff
+!
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+! BUILT-IN VAX-32 MACHINE INSTRUCTIONS
+!
+BUILTIN
+	INSQUE,				!Insert into queue
+	REMQUE;				!Remove from queue
+!
+! OWN STORAGE:
+!
+LITERAL
+	true = 1,
+	false = 0;
+
+OWN
+	vsta$odrv_list: VECTOR[2] INITIAL(vsta$odrv_list[0],vsta$odrv_list[0]),
+	special_char_table: VECTOR[256,BYTE]
+	  INITIAL(BYTE( REP 32 OF (vsta$m_special_char),
+			REP 65 OF (0),
+			REP 26 OF (vsta$m_lower_case),
+			REP 4 OF (0),
+			vsta$m_special_char,
+			REP 128 OF (0)));
+
+!
+!
+
+
+%SBTTL 'vsta$$odrv_create -- Create Output Driver Data Base for VD'
+GLOBAL ROUTINE vsta$$odrv_create(
+				vd_id			!Virtual Display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating and initializing the output
+! driver data base for a virtual device. Generic, device-independent data is
+! maintained here (that which is normally maintained in the UCB and processed
+! by the terminal driver).
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID : Longword virtual display ID to create data base for
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vsta$odrv_list : Queue of known virtual output devices
+!
+! IMPLICIT OUTPUTS:
+!
+!	vsta$odrv_list : Queue of known virtual output devices
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service error status values
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be consumed if possible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE],	 !Output driver data base entry
+	status;				 !To contain return status value
+!
+! Allocate a block for this virtual displays output driver data base
+!
+	IF (NOT (status = vs$$acp_get_vm(
+				UPLIT(vs$odrv_k_block_size),
+				odrv_adr,0))) THEN
+	  $return_error(vsta$_odrvcrfai);
+!
+! Initialize the data base and add it to the queue of known output devices
+!
+	odrv_adr[vs$odrv_w_size] = vs$odrv_k_block_size;
+	odrv_adr[vs$odrv_w_type] = 0;
+	odrv_adr[vs$odrv_l_vd_id] = .vd_id;
+	odrv_adr[vs$odrv_l_state] = vs$odrv_m_mbx_enable;
+	odrv_adr[vs$odrv_b_column] = 1;
+	odrv_adr[vs$odrv_b_line] = 1;
+!
+	INSQUE(.odrv_adr,vsta$odrv_list[0]);
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_create
+
+
+%SBTTL 'vsta$$odrv_delete -- Delete Output Driver Data Base for VD'
+GLOBAL ROUTINE vsta$$odrv_delete(
+				vd_id			!Virtual Display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting the output driver data base
+! for a virtual device. Generic, device-independent data is maintained here
+! (that which is normally maintained in the UCB and processed by the terminal
+! driver).
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID : Longword virtual display ID to delete data base for
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vsta$odrv_list : Queue of known virtual output devices
+!
+! IMPLICIT OUTPUTS:
+!
+!	vsta$odrv_list : Queue of known virtual output devices
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service error status values
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be release if possible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE];		!Data base entry address
+!
+! Find the data base entry for this virtual display ID
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  $return_error(vsta$_nosuchtty);
+!
+! Remove this entry from the queue of known output devices
+!
+	REMQUE(.odrv_adr,odrv_adr);
+	vs$$acp_free_vm(
+			UPLIT(vs$odrv_k_block_size),
+			odrv_adr,0);
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_delete
+
+
+%SBTTL 'vsta$$odrv_write -- Output Driver Generic Device Write Processing'
+GLOBAL ROUTINE vsta$$odrv_write(
+			vd_id,			  !Virtual Display ID
+			func,			  !Function code for write
+			iosb: REF VECTOR[0,WORD], !I/O status block to fill in
+			original_size,		  !Original string size
+			original_adr: REF VECTOR[0,BYTE],
+						  !Original string addr.
+			emulator_write_routine	  !Output routine adr.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for taking the buffer to be output and
+! adjusting it according to the device state and the current state of the
+! data base. These adjustements are device-independent interpretations of
+! certain characters, padding, etc. depending on certain terminal settings
+! as specified in the device UCB. The specified emulator output routine is
+! then called for device specific interpretation of the output buffer. The
+! call format must be as follows for all emulator output routines:
+!
+!		emulator_write_routine(
+!					.vd_id,
+!					original_adr[0],
+!					.original_size);
+!
+!	For character echo, specify zero for function code and I/O status
+! block address and they will be ignored. All other processing is identical.
+!					
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID : Longword virtual display ID
+!				(input parameter)
+!	FUNC	       : Longword write function code and modifiers
+!				(input parameter)
+!	IOSB	       : Address of I/O status block to fill in
+!				(output parameter)
+!	ORIGINAL_SIZE  : Longword original string size
+!				(input parameter)
+!	ORIGINAL_ADR   : Original string address
+!				(input parameter)
+!	EMULATOR_WRITE_ROUTINE : Address of emulator output routine
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service error status values
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	arg_list: VECTOR[5],		 !$CMKRNL argument block
+	char_bits: BLOCK[4,BYTE],	 !Device dependent characteristics
+	width,				 !Total device width (in columns)
+	rows,				 !Total device height (lines or rows)
+	tab_stop,			 !Spaces required to next tab stop
+	number_lfs,			 !LFs required to next page stop
+	escape_state,			 !Current state of esc sequence
+	escape_done,			 !"Boolean" esc sequence done indicator
+	escape_status,			 !Escape sequence status code
+	odrv_adr: REF BLOCK[0,BYTE],	 !Data base entry address
+	new_string: REF VECTOR[0,BYTE],	 !New output buffer
+	new_string_size: INITIAL(0),	 !Buffer size allocated for new string
+	memory_chunk_size,		 !Size of memory chunks to allocate
+	index,				 !Index into original output buffer
+	string_ptr,			 !Ptr into new output buffer
+	line_count: WORD,		 !To keep track of lines written
+	function_code,			 !Write function code only
+	scan_criteria,			 !Special characters for this write
+	status;				 !To contain return status value
+!
+! If this output device doesn't have an entry in our list, don't process the
+! request
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  $return_error(vsta$_nosuchtty);
+!
+! Cancel control-o on the device if specified
+!
+	IF (.func AND IO$M_CANCTRLO) NEQ 0 THEN
+	  odrv_adr[vs$odrv_v_control_o] = false;
+!
+! Enable unsolicited data mailbox messages on the device if specified
+!
+	IF (.func AND IO$M_ENABLMBX) NEQ 0 THEN
+	  odrv_adr[vs$odrv_v_mbx_enable] = true;
+!
+! If control-O is in effect, discard the output
+!
+	IF .odrv_adr[vs$odrv_v_control_o] THEN
+	  RETURN SS$_CONTROLO;
+!
+! Now that we've handled all the write function modifiers, if the buffer size
+! is zero, we are done
+!
+	IF .original_size LEQ 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! Get the current settings for this device in its UCB
+!
+	arg_list[0] = 4;
+	arg_list[1] = .vd_id;
+	arg_list[2] = char_bits;
+	arg_list[3] = width;
+	arg_list[4] = rows;
+!
+	$CMKRNL(
+		ARGLST = arg_list[0],
+		ROUTIN = vsta$$odrv_get_char);
+	
+!
+! See if this is a "passall" type write operation
+!
+	function_code = .func AND %X'3f';
+	IF (.function_code EQL IO$_WRITEPBLK) OR
+	  ((.func AND IO$M_NOFORMAT) NEQ 0) OR
+	   (.char_bits[TT$V_PASSALL]) THEN
+	  char_bits[TT$V_PASSALL] = true
+	ELSE
+	  char_bits[TT$V_PASSALL] = false;
+!
+! If this is a PASSALL write, fix the data base for next write operation and
+! pass the input buffer off to the emulator in a hurry!
+!
+	IF .char_bits[TT$V_PASSALL] THEN
+	  BEGIN
+	    odrv_adr[vs$odrv_b_column] = 1;
+	    odrv_adr[vs$odrv_b_last_char] = 0;
+	    odrv_adr[vs$odrv_v_skip_lf] = true;
+!
+! Make sure that the right things go into the IOSB if one has been specified
+!
+	    IF .iosb NEQ 0 THEN
+	      BEGIN
+		iosb[1] = .original_size;
+		iosb[2] = 0;
+		iosb[3] = (.odrv_adr[vs$odrv_b_line] ^ 8) +
+					.odrv_adr[vs$odrv_b_column];
+	      END;
+!
+! Call the specified emulator output routine with the input buffer and then
+! return immediately
+!
+	    RETURN (.emulator_write_routine)(
+				.vd_id,
+				.original_adr,
+				.original_size);
+	  END;
+!
+! If skip_lf is true, then any leading line-feed is to be stripped from the
+! buffer
+!
+	IF .odrv_adr[vs$odrv_v_skip_lf] THEN
+	  BEGIN
+	    odrv_adr[vs$odrv_v_skip_lf] = false;
+	    IF .original_adr[0] EQL line_feed THEN
+	      BEGIN
+		original_size = .original_size - 1;
+		original_adr = .original_adr + 1;
+	      END
+	    ELSE
+	      IF .original_size GTR 1 THEN
+		IF (.original_adr[0] EQL carriage_return) AND
+		   (.original_adr[1] EQL line_feed) THEN
+		  BEGIN
+		    original_adr[1] = carriage_return;
+		    original_size = .original_size - 1;
+		    original_adr = .original_adr + 1;
+		  END;
+	  END;
+!
+! If we stripped off so much carriage control that we have nothing left, then
+! no need to waste any more time
+!
+	IF .original_size LEQ 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! Mark the "special" characters for this write operation
+!
+	scan_criteria = vsta$m_special_char;
+	IF NOT .char_bits[TT$V_LOWER] THEN
+	  scan_criteria = .scan_criteria OR vsta$m_lower_case;
+!
+! Get a buffer to use for the converted output (we don't know how much we'll
+! need so we'll get a big chunk now and more later if we need it. This is to
+! avoid parsing the buffer twice where once is already too many times).
+!
+	memory_chunk_size = .original_size * (1 + .rows);   !Worst case/char.
+!
+	IF (NOT (status = vsta$$odrv_addon_memory(
+				.memory_chunk_size,
+				new_string_size,
+				new_string))) THEN
+	  RETURN .status;
+!
+! Initialize the line count and pointers into both source and destination
+! buffers and scan the source for anything which requires special processing.
+!
+	line_count = 0;
+	string_ptr = 0;
+	index = 0;
+!
+! If something strange is encountered like a special character or the
+! end of the current line, then do specialized processing.
+!
+	WHILE .index LSS .original_size DO
+	  BEGIN
+	    odrv_adr[vs$odrv_b_last_char] = .original_adr[.index];
+!
+! If we are approaching the end of the new_string block, add on some memory
+!
+	    IF (.new_string_size - .string_ptr) LSS .original_size THEN
+	      vsta$$odrv_addon_memory(
+				.memory_chunk_size,
+				new_string_size,
+				new_string);
+!
+! Characters get processed differently while validating escape sequences on
+! output
+!
+	    IF .odrv_adr[vs$odrv_v_doing_esc] THEN
+	      BEGIN
+		vs$$escape_done(
+			escape_state,
+			.original_adr[.index],
+			escape_done,
+			escape_status);
+		IF .escape_done THEN
+		  odrv_adr[vs$odrv_v_doing_esc] = false;
+		CH$MOVE(
+			1,
+			original_adr[.index],
+			new_string[.string_ptr]);
+		string_ptr = .string_ptr + 1;
+	      END
+	    ELSE
+	      BEGIN
+!
+! If the character is not special, then just put it into the buffer as is
+! and increment the pointer (Certain non-printable characters have no effect
+! on the column pointer).
+!
+		CASE .original_adr[.index] FROM null TO us OF
+		  SET
+!
+! Backspace causes the cursor to be decremented
+!
+		    [backspace] :
+			  BEGIN
+			    CH$MOVE(
+				1,
+				original_adr[.index],
+				new_string[.string_ptr]);
+			    string_ptr = .string_ptr + 1;
+			    odrv_adr[vs$odrv_b_column] = MAX(1,
+					.odrv_adr[vs$odrv_b_column] - 1);
+			  END;
+!
+! TABs move the cursor position to the next "tab stop".
+!
+		    [tab] :
+			  BEGIN
+			    tab_stop = 8 -
+				(MAX(0,.odrv_adr[vs$odrv_b_column] - 1) AND 7);
+			    IF .char_bits[TT$V_MECHTAB] THEN
+!
+! Do not interpret TAB character
+!
+			      BEGIN
+				CH$MOVE(
+					1,
+					original_adr[.index],
+					new_string[.string_ptr]);
+				string_ptr = .string_ptr + 1;
+			      END
+			    ELSE
+!
+! Expand tab into the column MODULO 8 spaces to move to next default tab stop
+!
+			      BEGIN
+				CH$FILL(
+					%C' ',
+					.tab_stop,
+					new_string[.string_ptr]);
+				string_ptr = .string_ptr + .tab_stop;
+			      END;
+			    odrv_adr[vs$odrv_b_column] =
+				.odrv_adr[vs$odrv_b_column] + .tab_stop;
+			  END;
+!
+! Form-feeds do all sorts of strange things on scope terminals
+!
+		    [form_feed] :
+			  BEGIN
+			    number_lfs = (.rows - .odrv_adr[vs$odrv_b_line])+1;
+			    IF .char_bits[TT$V_MECHFORM] THEN
+!
+! Do not interpret FF character
+!
+			      BEGIN
+				CH$MOVE(
+					1,
+					original_adr[.index],
+					new_string[.string_ptr]);
+				string_ptr = .string_ptr + 1;
+			      END
+			    ELSE
+!
+! Expand form-feed into line-feeds
+!
+			      BEGIN
+				CH$FILL(
+					line_feed,
+					.number_lfs,
+					new_string[.string_ptr]);
+				string_ptr = .string_ptr + .number_lfs;
+!
+! Insert a carriage return into the output buffer to position to column 1
+!
+				CH$MOVE(
+					1,
+					UPLIT BYTE(carriage_return),
+					new_string[.string_ptr]);
+				string_ptr = .string_ptr + 1;
+				odrv_adr[vs$odrv_b_column] = 1;
+			      END;
+!
+			    line_count = .line_count + .number_lfs;
+			    odrv_adr[vs$odrv_b_line] = 1;
+			  END;
+!
+! Carriage returns cause the column position to return to 1
+!
+		    [carriage_return] :
+			  BEGIN
+			    CH$MOVE(
+				1,
+				original_adr[.index],
+				new_string[.string_ptr]);
+			    string_ptr = .string_ptr + 1;
+			    odrv_adr[vs$odrv_b_column] = 1;
+			  END;
+!
+! Line feed (or vertical tab) cause new lines to be started
+!
+		    [line_feed,verticle_tab] :
+			  BEGIN
+			    IF .original_adr[.index] EQL line_feed THEN
+			      number_lfs = 1
+			    ELSE
+			      number_lfs = 4;
+!
+			    CH$FILL(
+				line_feed,
+				.number_lfs,
+				new_string[.string_ptr]);
+			    string_ptr = .string_ptr + .number_lfs;
+			    line_count = .line_count + .number_lfs;
+			    odrv_adr[vs$odrv_b_line] =
+				.odrv_adr[vs$odrv_b_line] + .number_lfs;
+			    IF .odrv_adr[vs$odrv_b_line] GTR .rows THEN
+			      odrv_adr[vs$odrv_b_line] =
+					.odrv_adr[vs$odrv_b_line] - .rows;
+			  END;
+!
+! Escapes cause the column position to return to 1 and signal the beginning of
+! escape sequence validation
+!
+		    [escape] :
+			  BEGIN
+			    CH$MOVE(
+				1,
+				original_adr[.index],
+				new_string[.string_ptr]);
+			    string_ptr = .string_ptr + 1;
+			    odrv_adr[vs$odrv_b_column] = 1;
+			    odrv_adr[vs$odrv_v_doing_esc] = true;
+			    escape_state = vkb$k_last_character_was_escape;
+			  END;
+!
+! Control characters not mentioned thus far do not effect the column pointer
+! or line pointer at all
+!
+		    [INRANGE] :
+			  BEGIN
+			    CH$MOVE(
+				1,
+				original_adr[.index],
+				new_string[.string_ptr]);
+			    string_ptr = .string_ptr + 1;
+			  END;
+!
+! Characters outside the control character range (except for delete) are
+! considered printable and cause the column pointer to be incremented as well
+! (For Level 2 conformance, SS3 and CSI are processed like <ESC>O and <ESC>[
+! respectively).
+!
+		    [OUTRANGE] :
+			BEGIN
+			  SELECTONE .original_adr[.index] OF
+			    SET
+			      [ss3]       :
+				odrv_adr[vs$odrv_b_column] = 1;
+			      [csi]       :
+				BEGIN
+				  odrv_adr[vs$odrv_b_column] = 1;
+				  odrv_adr[vs$odrv_v_doing_esc] = true;
+				  escape_state = vkb$k_ctl_seq_prms;
+				END;
+			      [OTHERWISE] :
+				BEGIN
+				  IF .original_adr[.index] NEQ delete THEN
+				    odrv_adr[vs$odrv_b_column] =
+					.odrv_adr[vs$odrv_b_column] + 1;
+!
+! Convert lowercase to uppercase if necessary
+!
+				  IF (.scan_criteria AND vsta$m_lower_case)
+					NEQ 0 THEN
+				    IF ((.original_adr[.index] GEQ %C'a') AND
+					(.original_adr[.index] LEQ %C'z')) THEN
+				      original_adr[.index] =
+					      .original_adr[.index] AND %X'df';
+				END;
+			    TES;
+!
+			  CH$MOVE(
+				1,
+				original_adr[.index],
+				new_string[.string_ptr]);
+			  string_ptr = .string_ptr + 1;
+			END;
+		  TES;
+	      END;		!If not processing escape sequence
+!
+! If the device is set to wrap and the max width (in columns) has been reached
+! insert a carriage return - line feed into the converted output buffer and
+! adjust the appropriate pointers
+!
+	    IF .odrv_adr[vs$odrv_b_column] GTR .width THEN
+	      IF .char_bits[TT$V_WRAP] THEN
+		BEGIN
+		  CH$MOVE(
+			2,
+			UPLIT BYTE(carriage_return,line_feed),
+			new_string[.string_ptr]);
+		  string_ptr = .string_ptr + 2;
+		  odrv_adr[vs$odrv_b_last_char] = line_feed;
+		  odrv_adr[vs$odrv_b_column] = 1;
+		  odrv_adr[vs$odrv_v_skip_lf] = true;
+		  line_count = .line_count + 1;
+		  IF .odrv_adr[vs$odrv_b_line] LSS .rows THEN
+		    odrv_adr[vs$odrv_b_line] = .odrv_adr[vs$odrv_b_line] + 1
+		  ELSE
+		    odrv_adr[vs$odrv_b_line] = 1;
+		END;
+!
+! Point to next interesting character
+!
+	    index = .index + 1;
+	    IF (NOT .odrv_adr[vs$odrv_v_doing_esc]) AND
+	       (.index LSS .original_size) THEN
+	      vsta$$odrv_scan_everyday_chars(
+			.odrv_adr,
+			.width,
+			char_bits,
+			.scan_criteria,
+			.original_adr,
+			.original_size,
+			index,
+			.new_string,
+			.new_string_size,
+			string_ptr);
+!
+! If we wrapped at some point (i.e. odrv_adr[vs$odrv_v_skip_lf] = true) and
+! have advanced the cursor beyond column 1, then see that we don't skip any
+! leading <LF> on the next operation
+!
+	    IF .odrv_adr[vs$odrv_v_skip_lf] THEN
+	      IF .odrv_adr[vs$odrv_b_column] NEQ 1 THEN
+		odrv_adr[vs$odrv_v_skip_lf] = false;
+	  END;
+!
+! If we are in column 1 and the last character output was a line-feed, then
+! we should skip the leading line-feed on the next operation (read or write).
+!
+	IF .odrv_adr[vs$odrv_b_last_char] EQL line_feed THEN
+	  IF .odrv_adr[vs$odrv_b_column] EQL 1 THEN
+	    odrv_adr[vs$odrv_v_skip_lf] = true;
+!
+! Make sure that the right things go into the IOSB (let the emulator fill in
+! the status portion) if one has been specified
+!
+	IF .iosb NEQ 0 THEN
+	  BEGIN
+	    iosb[1] = .original_size;
+	    iosb[2] = .line_count;
+	    iosb[3] = (.odrv_adr[vs$odrv_b_line] ^ 8) +
+					.odrv_adr[vs$odrv_b_column];
+	  END;
+!
+! Call the specified emulator output routine with the new buffer and then
+! deallocate it
+!
+	status = (.emulator_write_routine)(
+				.vd_id,
+				.new_string,
+				.string_ptr);
+!
+	vs$$acp_free_vm(new_string_size,new_string,0);
+!
+	RETURN .status;		! Status return value
+    END;			! End of routine vsta$$odrv_write
+
+
+%SBTTL 'vsta$$odrv_control_o -- Toggle Output Device Control-O'
+GLOBAL ROUTINE vsta$$odrv_control_o(
+			vd_id,				!Virtual Display ID
+			control_o_state: BITVECTOR	!New control-o state
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for toggling the control-o state of the
+! output device specified by VD_ID or merely to find out what the current
+! state is. The current state of the control-o bit is always returned, but if
+! a second parameter is passed to this routine, it will be the new state.
+!	This means that when control-o is "on", all output to the device is
+! discarded. When control-o is "off", output behaves normally. This naturally
+! assumes cooperation between the virtual keyboard module and the terminal
+! emulators sensitive to control-o behavior.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID		: Longword virtual display ID
+!				(input parameter)
+!	CONTROL_O_STATE : Bit indicating whether to turn on or off control-o
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1)	!Control-o is currently in effect => output discarded
+!	false (=0)	!Control-o is NOT in effect => output normal
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;			 !Number of parameters actually passed
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE],	 !Output driver data base entry
+	status;				 !To contain return status value
+!
+! If this output device doesn't have an entry in our list, make the caller
+! think that output should be discarded
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  RETURN true;
+!
+! If a second parameter was specified, the caller wants to change the state
+! of the control-o bit
+!
+	IF actualcount() GTR 1 THEN
+	  odrv_adr[vs$odrv_v_control_o] = .control_o_state[0];
+!
+	RETURN .odrv_adr[vs$odrv_v_control_o];	! Return current state
+    END;			! End of routine vsta$$odrv_control_o
+
+
+%SBTTL 'vsta$$odrv_mbx_enable -- Toggle Device Unsolicited Data MBX Enable'
+GLOBAL ROUTINE vsta$$odrv_mbx_enable(
+			vd_id,				!Virtual Display ID
+			mbx_state: BITVECTOR		!New MBX state
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for toggling the unsolicited data mailbox
+! state of the output device specified by VD_ID or merely to find out what the
+! current state is. The current state of the MBX enable bit is always returned,
+! but if a second parameter is passed to this routine, it will be the new
+! state.
+!	This means that when MBX_ENABLE is "on", application programs can
+! receive notification when unsolicited data is available for the device. It
+! must be explicitly disabled with a corresponding read function modifier.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID	  : Longword virtual display ID
+!				(input parameter)
+!	MBX_STATE : Bit indicating whether to turn on or off MBX data messages
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1)	!MBX-ENABLE is currently in effect => Messages sent
+!	false (=0)	!MBX-ENABLE is NOT in effect => No messages sent
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount;			 !Number of parameters actually passed
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE],	 !Output driver data base entry
+	status;				 !To contain return status value
+!
+! If this output device doesn't have an entry in our list, don't process the
+! request
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  RETURN false;
+!
+! If a second parameter was specified, the caller wants to change the state
+! of the mbx_enable bit
+!
+	IF actualcount() GTR 1 THEN
+	  odrv_adr[vs$odrv_v_mbx_enable] = .mbx_state[0];
+!
+	RETURN .odrv_adr[vs$odrv_v_mbx_enable];	! Return current state
+    END;			! End of routine vsta$$odrv_mbx_enable
+
+
+%SBTTL 'vsta$$odrv_send_lf -- Is Free Line-feed Currently Required'
+GLOBAL ROUTINE vsta$$odrv_send_lf(
+			vd_id				!Virtual Display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the current position
+! for the specified output device and the last character output to it dictate
+! the need for a free line-feed to be sent preceeding a read operation. Free
+! line-feeds are sent to insure that data typed will start on a new line.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID		: Longword virtual display ID
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1)	! Force free line-feed
+!	false (=0)	! Do NOT force free line-feed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE],	 !Output driver data base entry
+	status;				 !To contain return status value
+!
+! If this output device doesn't have an entry in our list, don't process the
+! request
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  RETURN false;
+!
+! If skip_lf is true, then any leading line-feed is to be stripped from either
+! the output buffer or read prompt string, depending on the operation. This
+! being true also implies that no free line-feed need be output if its a read
+! operation.
+!
+	IF .odrv_adr[vs$odrv_v_skip_lf] THEN
+	  RETURN false;
+!
+! If last character was a carriage return, it will be necessary to force out
+! a free line-feed and skip any leading line-feed in the read prompt string
+!
+	IF .odrv_adr[vs$odrv_b_last_char] EQL carriage_return THEN
+	  RETURN true;
+!
+	RETURN false;
+    END;			! End of routine vsta$$odrv_send_lf
+
+
+%SBTTL 'vsta$$odrv_skip_lf -- Skip Leading <LF> on Next Operation'
+GLOBAL ROUTINE vsta$$odrv_skip_lf(
+			vd_id				!Virtual Display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the state which indicates
+! that a leading line-feed character in the next write operation or read
+! with prompt (in the prompt string) will be removed. This would be the case
+! after a carriage return has been typed (which echos <CR><LF>) since it takes
+! the place of any explicit line-feeds specified in the subsequent operation.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID		: Longword virtual display ID
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successfull completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE];	 !Output driver data base entry
+!
+! If this output device doesn't have an entry in our list, don't process the
+! request
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+! Set the skip_lf state bit and return
+!
+	odrv_adr[vs$odrv_v_skip_lf] = true;
+!
+	RETURN SS$_NORMAL;
+    END;			! End of routine vsta$$odrv_skip_lf
+
+
+%SBTTL 'vsta$$odrv_last_char_output -- Get Last Character Output to Device'
+GLOBAL ROUTINE vsta$$odrv_last_char_output(
+			vd_id,				!Virtual Display ID
+			last_char: REF VECTOR[0,BYTE]	!Last character code
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining the last character (ascii
+! code) which was output to the device specified and returning it to the
+! caller. This is used by the virtual keyboard module to determine when free
+! line-feeds need be sent on read requests and to determine how to delete
+! the last character (tabs, <CR>, etc. more involved than normal characters).
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID	  : Longword virtual display ID
+!				(input parameter)
+!	LAST_CHAR : Address of byte to contain last ascii code output
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL	!Normal successful completion
+!	VSTA$_NOSUCHTTY !Virtual device specified does not exist
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE],	 !Output driver data base entry
+	status;				 !To contain return status value
+!
+! If this output device doesn't have an entry in our list, return an error
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  $return_error(vsta$_nosuchtty);
+!
+! Return the last character output to the device to the caller
+!
+	last_char[0] = .odrv_adr[vs$odrv_b_last_char];
+!
+	RETURN SS$_NORMAL;	! Normal successful completion
+    END;			! End of routine vsta$$odrv_last_char_output
+
+
+%SBTTL 'vsta$$odrv_last_char_input -- Get Last Character Input to Device'
+ROUTINE vsta$$odrv_last_char_input(
+			read_buffer: REF VECTOR[0,BYTE], !Read buffer address
+			read_buffer_ptr,		 !Read buffer pointer
+			last_char: REF VECTOR[0,BYTE]	 !Last character code
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining the last character (ascii
+! code) which was input to the virtual keyboard whose read buffer and pointer
+! into it has been specified and returning it to the caller. This is needed for
+! delete purposes since the delete action with regards to screen updates is
+! governed by the character to be deleted.
+!
+! FORMAL PARAMETERS:
+!
+!	READ_BUFFER     : Address of virtual keyboard read buffer
+!				(input parameter)
+!	READ_BUFFER_PTR : Longword virtual keyboard read buffer pointer
+!				(input parameter)
+!	LAST_CHAR       : Address of byte to contain last ascii code input
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL	!Normal successful completion
+!	VSTA$_NOSUCHTTY !Virtual device specified does not exist
+!
+! SIDE EFFECTS:
+!
+!	If the read buffer is in system space, this routine must be called from
+! kernel mode.
+!
+!--
+
+    BEGIN
+
+!
+! Return the last character input to the device to the caller
+!
+	last_char[0] = .read_buffer[.read_buffer_ptr - 1];
+!
+	RETURN SS$_NORMAL;	! Normal successful completion
+    END;			! End of routine vsta$$odrv_last_char_input
+
+
+%SBTTL 'vsta$$odrv_delete_last_char -- Delete Last Character Output to Device'
+GLOBAL ROUTINE vsta$$odrv_delete_last_char(
+			vd_id,				!Virtual Display ID
+			read_start_column,		!Column at read start
+			read_buffer,			!Read buffer address
+			read_buffer_ptr,		!Read buffer pointer
+			emulator_routine,		!Emulator write routine
+			control_r_flag			!Do control-R indicator
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting the last character (ascii
+! code) which was output to the device specified. This is used by the virtual
+! keyboard module to erase whatever the last output character left on the
+! screen.
+!	This routine assumes that the character to be deleted has not yet
+! been removed from the read buffer and that the read buffer pointer is
+! pointing to where the next character in the read would go.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID		  : Longword virtual display ID
+!				(input parameter)
+!	READ_START_COLUMN : Longword column position at read start
+!				(input parameter)
+!	READ_BUFFER	  : Address of read buffer
+!				(input parameter)
+!	READ_BUFFER_PTR	  : Longword read buffer pointer
+!				(input parameter)
+!	EMULATOR_ROUTINE  : Address of emulator write routine
+!				(input parameter)
+!	CONTROL_R_FLAG	  : Address for do-control-R-to-refresh indicator
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	SPECIAL_CHAR_TABLE : Table indicating special characters
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL	!Normal successful completion
+!	VSTA$_NOSUCHTTY !Virtual device specified does not exist
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	CALLG,				 !Call with general argument block
+	argptr;				 !Argument pointer
+
+    OWN
+	delete_string: VECTOR[3,BYTE]
+	  INITIAL(BYTE(backspace,space,backspace));
+
+    LOCAL
+	arg_list: VECTOR[5],		 !$CMKRNL argument block
+	char_bits: REF BLOCK[0,BYTE],	 !Device characteristics
+	width,				 !Width of device (columns)
+	rows,				 !Height of device (lines or rows)
+	last_char: BYTE,		 !Character to be deleted
+	string_adr: INITIAL(delete_string), !Address of string to output
+	string_size: INITIAL(3),	 !Size of output string
+	odrv_adr: REF BLOCK[0,BYTE];	 !Output driver data base entry
+!
+! If this output device doesn't have an entry in our list, return an error
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  $return_error(vsta$_nosuchtty);
+!
+! Get the character to be deleted out of the read buffer
+!
+	arg_list[0] = 3;
+	arg_list[1] = .read_buffer;
+	arg_list[2] = .read_buffer_ptr;
+	arg_list[3] = last_char;
+!
+	$CMKRNL(
+		ARGLST = arg_list[0],
+		ROUTIN = vsta$$odrv_last_char_input);
+!
+! If the last character was a tab, figure out how many backspaces we need to
+! output and do it
+!
+	IF .last_char EQL tab THEN
+	  BEGIN
+	    CALLG(argptr(),vsta$$odrv_delete_tab);
+	    RETURN SS$_NORMAL;
+	  END;
+!
+! If this wasn't even a printable character, don't output anything
+!
+	IF (.special_char_table[.last_char] AND vsta$m_special_char) NEQ 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! Get the current settings for this device in its UCB
+!
+	arg_list[0] = 4;
+	arg_list[1] = .vd_id;
+	arg_list[2] = char_bits;
+	arg_list[3] = width;
+	arg_list[4] = rows;
+!
+	$CMKRNL(
+		ARGLST = arg_list[0],
+		ROUTIN = vsta$$odrv_get_char);
+!
+! Printable character - If at left margin, do a ^R instead of the normal
+! leading backspace and adjust cursor
+!
+	IF .odrv_adr[vs$odrv_b_column] EQL 1 THEN
+	  BEGIN
+	    .control_r_flag = true;
+	    odrv_adr[vs$odrv_b_column] = .width;
+	    odrv_adr[vs$odrv_b_line] = MAX(1,.odrv_adr[vs$odrv_b_line] - 1);
+	    RETURN SS$_NORMAL;
+	  END;
+!
+! If cursor not on the screen, prepare to output space only and adjust cursor
+! in either case. (Mid-screen character deletes get the standard
+! backspace-space-backspace string output).
+!
+	IF .odrv_adr[vs$odrv_b_column] GTR .width THEN
+	  BEGIN
+	    string_adr = .string_adr + 1;
+	    string_size = 1;
+	  END;
+!
+! Send the string built above to the specified emulator write routine to
+! effectively erase the character from the screen (it will automatically
+! go through the output driver to adjust the cursor position)
+!
+	vs$$vds_synchronize_echo(
+			.vd_id,
+			.emulator_routine,
+			.string_adr,
+			.string_size);
+!
+	RETURN SS$_NORMAL;	! Normal successful completion
+    END;			! End of routine vsta$$odrv_delete_last_char
+
+
+%SBTTL 'vsta$$odrv_delete_tab -- Delete TAB Character'
+ROUTINE vsta$$odrv_delete_tab(
+			vd_id,				!Virtual Display ID
+			read_start_column,		!Column at read start
+			read_buffer,			!Read buffer address
+			read_buffer_ptr,		!Read buffer pointer
+			emulator_routine,		!Emulator write routine
+			control_r_flag			!Do control-R indicator
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting tab characters (ascii
+! code) which was output to the device specified. This is used by the virtual
+! keyboard module to compute the cursor adjustment and erase the tab character
+! by outputting the correct number of backspaces.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID		  : Longword virtual display ID
+!				(input parameter)
+!	READ_START_COLUMN : Longword column position at read start
+!				(input parameter)
+!	READ_BUFFER	  : Address of read buffer
+!				(input parameter)
+!	READ_BUFFER_PTR	  : Longword read buffer pointer
+!				(input parameter)
+!	EMULATOR_ROUTINE  : Address of emulator write routine
+!				(input parameter)
+!	CONTROL_R_FLAG	  : Address for do-control-R-to-refresh indicator
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	SPECIAL_CHAR_TABLE : Table indicating special characters
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL	!Normal successful completion
+!	VSTA$_NOSUCHTTY !Virtual device specified does not exist
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    OWN
+	backspace_string: VECTOR[8,BYTE]
+	  INITIAL(BYTE(backspace,backspace,backspace,backspace,
+			backspace,backspace,backspace,backspace)),
+	delete_string: VECTOR[3,BYTE]
+	  INITIAL(BYTE(backspace,space,backspace));
+
+    LOCAL
+	arg_list: VECTOR[5],		 !$CMKRNL argument block
+	char_bits: REF BLOCK[0,BYTE],	 !Device characteristics
+	width,				 !Width of device (columns)
+	rows,				 !Height of device (lines or rows)
+	number_of_backspaces,		 !Number of backspaces to output
+	string_adr: INITIAL(delete_string), !Address of string to output
+	string_size: INITIAL(3),	 !Size of output string
+	odrv_adr: REF BLOCK[0,BYTE];	 !Output driver data base entry
+!
+! If this output device doesn't have an entry in our list, return an error
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  $return_error(vsta$_nosuchtty);
+!
+! Get the current settings for this device in its UCB
+!
+	arg_list[0] = 4;
+	arg_list[1] = .vd_id;
+	arg_list[2] = char_bits;
+	arg_list[3] = width;
+	arg_list[4] = rows;
+!
+	$CMKRNL(
+		ARGLST = arg_list[0],
+		ROUTIN = vsta$$odrv_get_char);
+!
+! If at left margin, do a ^R
+!
+	IF .odrv_adr[vs$odrv_b_column] EQL 1 THEN
+	  BEGIN
+	    .control_r_flag = true;
+	    odrv_adr[vs$odrv_b_column] = .width;
+	    odrv_adr[vs$odrv_b_line] = MAX(1,.odrv_adr[vs$odrv_b_line] - 1);
+	    RETURN SS$_NORMAL;
+	  END;
+!
+! Compute the number of backspaces required to reposition the cursor
+!
+	arg_list[0] = 4;
+	arg_list[1] = .read_start_column;
+	arg_list[2] = .read_buffer;
+	arg_list[3] = .read_buffer_ptr;
+	arg_list[4] = number_of_backspaces;
+!
+	$CMKRNL(
+		ARGLST = arg_list[0],
+		ROUTIN = vsta$$odrv_compute_bs);
+!
+! If at right edge of screen, adjust number of backspaces for right-hand-edge
+! effects
+!
+	IF .odrv_adr[vs$odrv_b_column] EQL .width THEN
+	  BEGIN
+	    number_of_backspaces = (.number_of_backspaces + 1) AND %X'7';
+	    IF .number_of_backspaces EQL 0 THEN
+	      BEGIN
+		string_adr = .string_adr + 1;
+		string_size = .string_size - 1;
+	      END
+	    ELSE
+	      BEGIN
+		string_adr = backspace_string;
+		string_size = .number_of_backspaces;
+		odrv_adr[vs$odrv_b_column] = .odrv_adr[vs$odrv_b_column] - 1;
+	      END;
+	  END
+	ELSE
+!
+! If beyond right edge (nowrap in effect), then perform delete-at-edge
+!
+	  IF .odrv_adr[vs$odrv_b_column] GTR .width THEN
+	    BEGIN
+	      string_adr = .string_adr + 1;
+	      string_size = .string_size - 1;
+	      odrv_adr[vs$odrv_b_column] = .odrv_adr[vs$odrv_b_column] -
+						(7 - .number_of_backspaces);
+	    END
+	  ELSE
+!
+! Mid-screen tab deletes just use the computed number of backspaces to
+! reposition the cursor
+!
+	    BEGIN
+	      string_adr = backspace_string;
+	      string_size = .number_of_backspaces;
+	    END;
+!
+! Send the string built above to the specified emulator write routine to
+! effectively erase the tab from the screen (it will automatically go through
+! the output driver to adjust the cursor position)
+!
+	vs$$vds_synchronize_echo(
+			.vd_id,
+			.emulator_routine,
+			.string_adr,
+			.string_size);
+!
+	RETURN SS$_NORMAL;	! Normal successful completion
+    END;			! End of routine vsta$$odrv_delete_tab
+
+
+%SBTTL 'vsta$$odrv_current_column -- Get Current Device Cursor Column'
+GLOBAL ROUTINE vsta$$odrv_current_column(
+			vd_id				!Virtual Display ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning the current cursor column
+! position of the device specified. If the specified device does not exist,
+! a value of 0 is returned instead.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID	  : Longword virtual display ID to create data base for
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	Current_column  => Current device cursor column position
+!	0		=> Device does not have data base entry
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_adr: REF BLOCK[0,BYTE];	 !Output driver data base entry
+!
+! If this output device doesn't have an entry in our list, return 0
+!
+	IF NOT vsta$$odrv_term_found(.vd_id,odrv_adr) THEN
+	  RETURN 0;
+!
+! Return the output device cursor column position to the caller
+!
+	RETURN .odrv_adr[vs$odrv_b_column];
+!
+    END;			! End of routine vsta$$odrv_current_column
+
+
+%SBTTL 'vsta$$odrv_compute_bs -- Compute Number of Backspaces for TAB Delete'
+ROUTINE vsta$$odrv_compute_bs(
+			cursor_start,			!Cursor start on read
+			read_buffer: REF VECTOR[0,BYTE],!Read buffer
+			read_buffer_ptr,		!Read buffer pointer
+			number_of_backspaces		!Number of backspaces
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for computing the number of backspaces
+! required to delete a TAB character from the screen. (This isn't really true
+! since it will then be readjusted at a higher level based on the current
+! cursor position). This routine searches for a reference point (another TAB,
+! a carriage return, or the beginning of the buffer) and computes the MOD 8
+! of the reference point position to figure out how many backspaces we need in
+! order to get there.
+!
+! FORMAL PARAMETERS:
+!
+!	CURSOR_START	     : Longword cursor start position on read
+!				(input parameter)
+!	READ_BUFFER	     : Address of read buffer
+!				(input parameter)
+!	READ_BUFFER_PTR	     : Longword read buffer pointer or index
+!				(input parameter)
+!	NUMBER_OF_BACKSPACES : Address for number of backspaces
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	Call this routine in kernel mode if the read buffer is in system space.
+! This routine assumes that the character being deleted has not yet been
+! removed from the read buffer.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	char_count: INITIAL(0),			!Printable character count
+	found: INITIAL(false);			!Reference point found flag
+!
+! Find either a reference point or the beginning of the buffer (whichever
+! comes first) starting with the second-to-last character in the buffer
+!
+	read_buffer_ptr = MAX(0,.read_buffer_ptr - 1);
+!
+	WHILE (.read_buffer_ptr GTR 0) AND
+	      (NOT .found) DO
+	  BEGIN
+	    read_buffer_ptr = .read_buffer_ptr - 1;
+	    IF (.read_buffer[.read_buffer_ptr] EQL carriage_return) OR
+	       (.read_buffer[.read_buffer_ptr] EQL tab) THEN
+	      found = true
+	    ELSE
+	      IF (.special_char_table[.read_buffer[.read_buffer_ptr]] AND
+		  vsta$m_special_char) EQL 0 THEN
+		char_count = .char_count + 1;
+	  END;
+!
+! If no reference point was found, adjust the character count with the
+! cursor position at read start
+!
+	IF NOT .found THEN
+	  char_count = .char_count + MAX(0,.cursor_start - 1);
+!
+! Return the number of backspaces needed to reposition before last tab
+! character
+!
+	.number_of_backspaces = 8 - (.char_count AND 7);
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_compute_bs
+
+
+%SBTTL 'vsta$$odrv_get_char -- Get Current Device Characteristics'
+ROUTINE vsta$$odrv_get_char(
+				vd_id,			!Virtual Display ID
+				vd_char,		!Device characteristics
+				vd_columns,		!Current no. of columns
+				vd_rows			!Current no. of rows
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the device dependent
+! characteristics for a virtual display from its unit control block. VDDRIVER
+! and existing operating system routines insure that this is kept up to date
+! via SET TERM/xxx, etc. It will be these characteristics bits and the device
+! independent data maintained for each device that determine the affect on
+! the output buffer to be sent to a device emulator.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID      : Longword virtual display ID of data base
+!			(input parameter)
+!	VD_CHAR    : Address to contain device dependent characteristics
+!			(output parameter)
+!	VD_COLUMNS : Address to contain current number of columns on device
+!			(output parameter)
+!	VD_ROWS	   : Address to contain current number of lines on device
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	This routine must be called in kernel mode.
+!
+!--
+
+    BEGIN
+
+    EXTERNAL
+	vs$al_vd_ucb: VECTOR;		 !List of UCBs (by VD_ID)
+
+    LOCAL
+	ucb_adr: REF BLOCK[0,BYTE];	 !Device unit control block
+!
+! Get the UCB address and extract the DEVDEPEND field which contains all
+! the characteristic bits of interest
+!
+	ucb_adr = .vs$al_vd_ucb[.vd_id];
+	.vd_char = .ucb_adr[UCB$L_DEVDEPEND];
+	.vd_columns = .ucb_adr[UCB$W_DEVBUFSIZ];
+	.vd_rows = .ucb_adr[UCB$B_VERTSZ];
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_get_char
+
+
+%SBTTL 'vsta$$odrv_scan_everyday_chars -- Quickly Parse Uninteresting Chars.'
+ROUTINE vsta$$odrv_scan_everyday_chars(
+			odrv_adr: REF BLOCK[0,BYTE],	!Data base address
+			width,				!Device width (columns)
+			char_bits: REF BLOCK[0,BYTE],	!Device characteristics
+			scan_criteria,			!Marked special chars.
+			source_adr: REF VECTOR[0,BYTE],	!Source string address
+			source_size,			!Source string size
+			source_ptr,			!Source string index
+			dest_adr: REF VECTOR[0,BYTE],	!Dest. string address
+			dest_size,			!Dest. string size
+			dest_ptr			!Dest. string index
+				) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for scanning the source string input,
+! starting at the specified index and looking for designated special
+! characters. All non-special characters found either before finding a special
+! character or the end of the source string will be moved into the destination
+! string (at the specified index), updating both source and destination
+! pointers, the column pointer and the last character field. This routine will
+! not scan beyond the width of the current line and requires that wrapping be
+! done at a higher level.
+!
+! FORMAL PARAMETERS:
+!
+!	ODRV_ADR	: Output driver device data base address
+!				(input parameter)
+!	WIDTH		: Word device width (columns)
+!				(input parameter)
+!	CHAR_BITS	: Address of output device characteristics
+!				(input parameter)
+!	SCAN_CRITERIA	: Mask on which to base SCANC stop (special characters)
+!				(input parameter)
+!	SOURCE_ADR	: Source string address
+!				(input parameter)
+!	SOURCE_SIZE	: Longword source string size
+!				(input parameter)
+!	SOURCE_PTR	: Address of longword source string index
+!				(input and output parameter)
+!	DEST_ADR	: Destination string address
+!				(input parameter)
+!	DEST_SIZE	: Longword destination string size
+!				(input parameter)
+!	DEST_PTR	: Address of longword destination string index
+!				(input and output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	SPECIAL_CHAR_TABLE : 256 byte translation table to scan which indicates
+!			     special characters
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	SCANC;				!Scan character string
+
+    LOCAL
+	special_char,			!Address of special character found
+	scan_range: WORD,		!Number of bytes to scan in source
+	byte_count;			!Number of transferable bytes
+!
+! Find out how many bytes we are allowed to scan (limited by both the end of
+! the source string and the remaining characters allowed on the current line).
+!
+	IF .char_bits[TT$V_WRAP] THEN
+	  scan_range = MIN(
+			.source_size - ..source_ptr,
+			.width - .odrv_adr[vs$odrv_b_column])
+	ELSE
+	  scan_range = .source_size - ..source_ptr;
+!
+! If nothing to scan, just return
+!
+	IF .scan_range LEQ 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! Given this scan range, find the first special character in the source string
+! or the end of the source string (whichever comes first).
+!
+	special_char = SCANC(
+			scan_range,
+			source_adr[..source_ptr],
+			special_char_table[0],
+			scan_criteria);
+!
+! Determine how many bytes can be copied into the destination string (limited
+! by the number of everyday characters discovered above and the room left in
+! the destination string).
+!
+	IF .special_char EQL 0 THEN
+	  byte_count = MIN(
+			.dest_size - ..dest_ptr,
+			.scan_range)
+	ELSE
+	  byte_count = MIN(
+			.dest_size - ..dest_ptr,
+			.special_char - source_adr[..source_ptr]);
+!
+! If we've got anything left to transfer, then copy it into the destination
+! string and adjust the pointers appropriately.
+!
+	IF .byte_count GTR 0 THEN
+	  BEGIN
+	    CH$MOVE(
+		.byte_count,
+		source_adr[..source_ptr],
+		dest_adr[..dest_ptr]);
+	    .source_ptr = ..source_ptr + .byte_count;
+	    .dest_ptr = ..dest_ptr + .byte_count;
+	    odrv_adr[vs$odrv_b_column] =
+			.odrv_adr[vs$odrv_b_column] + .byte_count;
+	    odrv_adr[vs$odrv_b_last_char] = .source_adr[..source_ptr - 1];
+	  END;
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_scan_everyday_chars
+
+
+%SBTTL 'vsta$$odrv_addon_memory -- Extend Dynamic Memory Block'
+ROUTINE vsta$$odrv_addon_memory(
+				add_on,			!Bytes to add on
+				current_size,		!Current size (bytes)
+				current_adr		!Current buffer adr.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for effectively extending the dynamic
+! memory of the block specified. This is actually done by allocating a new
+! block which is the total size, moving the old data into the new block,
+! deallocating the old block, and setting up the parameters to point to the
+! new block address and size.
+!
+! FORMAL PARAMETERS:
+!
+!	ADD_ON	   : Longword number of bytes to extend block by
+!			(input parameter)
+!	CURRENT_SIZE : Address containing current size
+!			(input and output parameter)
+!	CURRENT_ADR  : Address containing block address
+!			(input and output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	total_size,				!Total block size
+	new_block;				!New block address
+!
+! Compute the total size and allocate a new block of that size
+!
+	total_size = .add_on + ..current_size;
+	IF (NOT (status = vs$$acp_get_vm(
+				total_size,
+				new_block,0))) THEN
+	  RETURN .status;
+!
+! Copy the old data into the new block and get rid of the old block (if there
+! was an old block)
+!
+	IF ..current_size GTR 0 THEN
+	  BEGIN
+	    CH$MOVE(
+		..current_size,
+		..current_adr,
+		.new_block);
+	    vs$$acp_free_vm(.current_size,.current_adr,0);
+	  END;
+!
+! Adjust the parameters to point to the new block size and address
+!
+	.current_size = .total_size;
+	.current_adr = .new_block;
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine vsta$$odrv_addon_memory
+
+
+%SBTTL 'vsta$$odrv_term_found -- Find Output Driver Data Base for VD'
+ROUTINE vsta$$odrv_term_found(
+				vd_id,			!Virtual Display ID
+				odrv_adr		!Data base address
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the output driver data base
+! for a virtual device by VD_ID. Generic, device-independent data is
+! maintained here (that which is normally maintained in the UCB and processed
+! by the terminal driver).
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID    : Longword virtual display ID to create data base for
+!			(input parameter)
+!	ODRV_ADR : Address to contain output driver data base address for VD
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vsta$odrv_list : Queue of known virtual output devices
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	true  (=1)		!Successful return - Entry found
+!	false (=0)		!No data base entry found for VD_ID
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	odrv_ptr: REF BLOCK[0,BYTE];	!Ptr to arbitrary data base entry
+!
+! Search through the list for a virtual display ID that matches and return
+! its address if found
+!
+	odrv_ptr = .vsta$odrv_list[0];
+	WHILE .odrv_ptr NEQ vsta$odrv_list[0] DO
+	  IF .odrv_ptr[vs$odrv_l_vd_id] EQL .vd_id THEN
+	    BEGIN
+	      .odrv_adr = .odrv_ptr;
+	      RETURN true;
+	    END
+	  ELSE
+	    odrv_ptr = .odrv_ptr[vs$odrv_a_flink];
+!
+	RETURN false;		! Return that entry was NOT found
+    END;			! End of routine vsta$$odrv_term_found
+
+
+
+END				! End of module
+ELUDOM

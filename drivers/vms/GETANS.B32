@@ -1,0 +1,145 @@
+MODULE GETANS (
+		IDENT = 'VSTAMF utility - get answer'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!	Ask a question and return with a (string).
+!--
+! ENVIRONMENT:
+!	VaxSTAtion 100
+!
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    init_ans,			!initialize answer mechanism.
+    get_ans,			!Ask a question and get answer.
+    cmd_parser,
+    put_status;			!Write a status
+
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'SYS$LIBRARY:HELPUSER';
+
+EXTERNAL ROUTINE
+    lib$parse_line,
+    lib$parse_field,
+    lib$put_output;		!Write a line on the terminal
+
+OWN
+    atom_buffr: BLOCK [512,BYTE],
+    atom_str_desc: VECTOR [2]
+		INITIAL (512, atom_buffr),
+    ccab: $CAB	(PMT = %ASCID 'Some question?'
+		,CMD = atom_str_desc		!Filled in
+		,ATM = atom_str_desc
+		),
+    str_pat: $PAB	(TYP = TEXT
+			,CAB = ccab
+			);
+
+GLOBAL ROUTINE init_ans =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize the getans module.
+!--
+BEGIN
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_ans
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Ask a question and get an answer.
+! FORMAL PARAMETERS:
+	(prompt_str
+	,ans_str: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+ccab [cab$a_pmt] = .prompt_str;
+ccab [cab$a_cmd] = .ans_str;
+
+lib$put_output (%ASCID ' ');	!so line won't be overwritten
+
+IF NOT (status =
+    lib$parse_line	(ccab, cmd_parser)
+	)
+  THEN RETURN .status;
+
+ans_str [0] = .ccab [cab$w_cln];	!Return length of cmd line
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cmd_parser =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Actually parse the line
+!--
+BEGIN
+LOCAL
+    junk_desc: VECTOR [2],
+    junk_itself: VECTOR [256,BYTE],
+    status;
+
+junk_desc [0] = 256;
+junk_desc [1] = junk_itself;
+
+str_pat [pab$l_arg] = junk_desc;
+IF NOT (status =
+    lib$parse_field	(str_pat)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Error reading string');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_status
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes status value on the terminal
+! FORMAL PARAMETERS:
+	(code
+	) =
+!--
+BEGIN
+LOCAL
+    msg_desc: VECTOR [2],
+    msg_itself: VECTOR [256,BYTE],
+    msg_len: WORD,
+    status;
+
+msg_desc [0] = 256;
+msg_desc [1] = msg_itself;
+
+IF NOT (status =
+    $getmsg	(MSGID = .code
+		,MSGLEN = msg_len
+		,BUFADR = msg_desc
+		)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Error in $getmsg');
+    $exit (CODE = .status);
+    END;
+
+msg_desc[0] = .msg_len;
+lib$put_output (msg_desc);
+RETURN .code;
+END;
+
+END
+ELUDOM

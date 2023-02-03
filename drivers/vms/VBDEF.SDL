@@ -1,0 +1,966 @@
+module $VBDEF;
+/*
+/*	$VBDEF - VS100 Device Definitions
+/*	Version 01-00
+/*
+/*
+/*+++
+/* Facility:
+/*
+/*	VAX/VMS VS100 display driver
+/*
+/* Abstract:
+/*
+/*	This file contains the internal data structure and constant definitions
+/*	used by the VAXstation 100 display device driver.
+/*
+/* Environment:
+/*
+/*	The definitions in this file pertain to the VS100 graphics workstation
+/*	device.
+/*
+/*---
+/*
+/*
+/* Random internal constants
+/*
+{    #UCB$K_LENGTH = 144;
+    #UCB$K_LENGTH = 160;	{ This length includes error log extension
+  				{ of the UCB. UCB$K_ERL_LENGTH is defined
+  				{ as 160 in $UCBDEF. 
+    #ACB$K_LENGTH = 24;
+/*
+/*
+/* ===== VAXSTATION INSTRUCTION OPCODES =====
+/*
+/* VS100 instruction opcodes: OpcodeWord<07:00>
+/*
+/* VS100 opcode word:
+/*
+/*     30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*  |             command modifier bits             |    opcode     |
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*   31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+/*
+/*
+/* ===== VAXSTATION INSTRUCTION OPCODES DEFINITIONS =====
+/*
+    constant OPC_NOP equals 0 prefix VB$;		/* NoOperation
+    constant OPC_COPY equals 1 prefix VB$;		/* CopyArea
+    constant OPC_DRAW equals 2 prefix VB$;		/* DrawCurve
+    constant OPC_PRINT equals 3 prefix VB$;		/* PrintText
+    constant OPC_FLOOD equals 4 prefix VB$;		/* FloodArea
+    constant OPC_LOAD_CUR equals 5 prefix VB$;		/* LoadCursor
+    constant OPC_SET_CUR equals 6 prefix VB$;		/* SetCursorPosition
+    constant OPC_ATT_CUR equals 7 prefix VB$;		/* AttachCursor
+    constant OPC_GET_CUR equals 8 prefix VB$;		/* GetCursorPosition
+    constant OPC_MOVE equals 9 prefix VB$;		/* MoveObject
+    constant OPC_MOVEROM equals 128 prefix VB$;		/* RomMoveObject
+    constant OPC_REPORT equals 10 prefix VB$;		/* ReportStatus
+    constant OPC_REPORTROM equals 129 prefix VB$;	/* RomReportStatus
+    constant OPC_FILL equals 11 prefix VB$;		/* FillArea
+    constant OPC_GET_MOU equals 12 prefix VB$;		/* GetMousePosition
+    constant OPC_SET_MOU equals 13 prefix VB$;		/* SetMouseCharacteristics
+    constant OPC_GET_TAB equals 14 prefix VB$;		/* GetTabletPosition
+    constant OPC_SET_RPT equals 15 prefix VB$;		/* SetEventReporting
+/*
+/*
+/* ===== VAXSTATION INSTRUCTION MODIFIERS =====
+/*
+/* VS100 instruction opcodes modifiers: OpcodeWord<31:08>
+/*
+/* VS100 opcode word for copy area:
+/*
+/*     30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*  |                 | dmk | map | off | smk | src |    opcode     |
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*   31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+/*
+/*	src -
+/*	    SourceConstant
+/*	    SourceBitmap
+/*	    SourceHalftone
+/*	smk -
+/*	    SourceMaskRectangle
+/*	    SourceMaskBitmap
+/*	off -
+/*	    (not used)
+/*	map -
+/*	    IdentityMap
+/*	    SourceMapAddress
+/*	    SourceMapLiteral
+/*	    Source/DestinationMapAddress
+/*	    Source/DestinationMapLiteral
+/*	dmk -
+/*	    DestinationMaskNone
+/*	    DestinationMaskLiteralRectangle
+/*	    DestinationMaskRectangleList
+/*
+/* VS100 opcode word for draw curve:
+/*
+/*     30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*  |     | sec | ptn | dmk | map | off | smk | src |    opcode     |
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*   31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+/*
+/*	src -
+/*	    (see copy area)
+/*	smk -
+/*	    (see copy area)
+/*	off -
+/*	    (see copy area)
+/*	map -
+/*	    (see copy area)
+/*	dmk -
+/*	    (see copy area)
+/*	ptn -
+/*	    NoPatternString
+/*	    LiteralPatternState
+/*	    IndirectPatternState
+/*	    UpdateLiteralPatternState
+/*	    UpdateIndirectPatternState
+/*	sec -
+/*	    NoSecondSource
+/*	    ConstantSecondSource
+/*	    HalftoneSecondSource
+/*	    BitmapSecondSource
+/*
+/* VS100 opcode word for print text:
+/*
+/*     30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*  |             |c|t| dmk | map | ini | fnt | src |    opcode     |
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*   31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+/*
+/*	src -
+/*	    SourceConstant
+/*	    SourceFont
+/*	    SourceHalftone
+/*	fnt -
+/*	    FontNoMast
+/*	    FontMask
+/*	ini -
+/*	    DestinationOffsetLiteral
+/*	    DestinationOffsetAddress
+/*	    DestinationOffsetLiteralUpdate
+/*	    DestinationOffsetAddressUpdate
+/*	map -
+/*	    (see copy area)
+/*	dmk -
+/*	    (see copy area)
+/*	t -
+/*	     8BitCharacters
+/*	     16BitCharacters
+/*	c -
+/*	     NoControlString
+/*	     ControlString
+/*
+/* VS100 opcode word for flood area:
+/*
+/*     30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*  |                 | dmk |     |seed | smk | src |    opcode     |
+/*  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/*   31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+/*
+/*	src -
+/*	    (see copy area)
+/*	smk -
+/*	    (see copy area)
+/*	off -
+/*	    (see copy area)
+/*	dmk -
+/*	    (see copy area)
+/*	bnd - 
+/*	    BoundryMapLiteral
+/*	    BoundryMapPointer
+/*
+/*
+/* ===== VAXSTATION INSTRUCTION MODIFIERS DEFINITIONS =====
+/*
+    constant MOD_SRC_CONSTANT equals 0@8 prefix VB$;	/* SourceConstant
+    constant MOD_SRC_BITMAP equals 1@8 prefix VB$;	/* SourceBitmap
+    constant MOD_SRC_FONT equals 1@8 prefix VB$;	/* SourceFont
+    constant MOD_SRC_HALFTONE equals 2@8 prefix VB$;	/* SourceHalftone
+
+    constant MOD_SMK_RECTANGLE equals 0@11 prefix VB$;	/* SourceMaskRectangle
+    constant MOD_SMK_NONE equals 0@11 prefix VB$;	/* SourceMaskNoFont
+    constant MOD_SMK_BITMAP equals 1@11 prefix VB$;	/* SourceMaskBitmap
+    constant MOD_SMK_FONT equals 1@11 prefix VB$;	/* SourceMaskFont
+
+    constant MOD_INI_LITERAL equals 0@14 prefix VB$;	/* DestinationOffsetLiteral
+    constant MOD_INI_POINTER equals 1@14 prefix VB$;	/* DestinationOffsetAddress
+    constant MOD_INI_UPDLIT equals 2@14 prefix VB$;	/* DestinationOffsetLiteralUpdate
+    constant MOD_INI_UPDPTR equals 3@14 prefix VB$;	/* DestinationOffsetAddressUpdate
+
+    constant MOD_MAP_IDEN equals 0@17 prefix VB$;	/* IdentityMap
+    constant MOD_MAP_SRC equals 1@17 prefix VB$;	/* SourceMapAddress
+    constant MOD_MAP_SLIT equals 2@17 prefix VB$;	/* SourceMapLiteral
+    constant MOD_MAP_SRCDST equals 3@17 prefix VB$;	/* Source/DestinationMapAddress
+    constant MOD_MAP_SDLIT equals 4@17 prefix VB$;	/* Source/DestinationMapLiteral
+
+    constant MOD_DMK_NONE equals 0@20 prefix VB$;	/* DestinationMaskNone
+    constant MOD_DMK_RECTANGLE equals 1@20 prefix VB$;	/* DestinationMaskLiteralRectangle
+    constant MOD_DMK_RECLIST equals 2@20 prefix VB$;	/* DestinationMaskRectangleList
+
+    constant MOD_PTN_NONE equals 0@23 prefix VB$;	/* NoPatternString
+    constant MOD_PTN_LITERAL equals 1@23 prefix VB$;	/* PatternStringLiteral
+    constant MOD_PTN_POINTER equals 3@23 prefix VB$;	/* PatternStringPointer
+    constant MOD_PTN_UPDLIT equals 5@23 prefix VB$;	/* PatternStringUpdateLiteral
+    constant MOD_PTN_UPDPTR equals 7@23 prefix VB$;	/* PatternStringUpdatePointer
+
+    constant MOD_SEC_NONE equals 0@26 prefix VB$;	/* SecondSourceNone
+    constant MOD_SEC_CONSTANT equals 1@26 prefix VB$;	/* SecondSourceConstant
+    constant MOD_SEC_BITMAP equals 2@26 prefix VB$;	/* SecondSourceBitmap
+    constant MOD_SEC_HALFTONE equals 3@26 prefix VB$;	/* SecondSourceHalftone
+
+    constant MOD_TXT_8BIT equals 0@23 prefix VB$;	/* 8BitCharacters
+    constant MOD_TXT_16BIT equals 1@23 prefix VB$;	/* 16BitCharacters
+
+    constant MOD_CTL_NONE equals 0@24 prefix VB$;	/* NoControlString
+    constant MOD_CTL_STRING equals 1@24 prefix VB$;	/* ControlString
+
+    constant MOD_BND_LITERAL equals 0 prefix VB$;	/* BoundryMapLiteral
+    constant MOD_BND_POINTER equals 0 prefix VB$;	/* BoundryMapPointer
+/*
+/*
+/* ===== VAXSTATION FUNCTION CODES =====
+/*
+/* VS100 function codes: CSR0Word<05:01>
+/*
+    constant FUN_INIT equals 1@1 prefix VB$;	/* InitializeDisplay
+    constant FUN_SEND equals 2@1 prefix VB$;	/* SendPacket
+    constant FUN_START equals 3@1 prefix VB$;	/* StartMicrocode
+    constant FUN_PWRUP equals 5@1 prefix VB$;	/* PowerupReset
+
+    constant FUN_ABORT  equals  9@1 prefix VB$;	/* Abort
+    constant FUN_STATUS equals 10@1 prefix VB$;	/* Status
+    constant FUN_SAVE_SCREEN equals 11@1 prefix VB$;	/* Save screen
+
+    constant FUN_ENABBA equals 16@1 prefix VB$;	/* EnableBBA
+    constant FUN_DISBBA equals 17@1 prefix VB$;	/* DisableBBA
+    constant FUN_INFINITE equals 18@1 prefix VB$;/* InfiniteRetry
+    constant FUN_FINITE equals 19@1 prefix VB$;	/* FiniteRetry
+/*
+/*
+/* ===== VAXSTATION DEVICE DEFINITIONS =====
+/*
+    constant(
+	NONE		/* NoDevice
+	,MOUSE		/* Mouse
+	,KEY		/* Keyboard
+	,TABLET		/* Tablet
+	,AUX		/* Auxilliry
+	,CONSOLE	/* Console
+	) equals 0 increment 1 prefix VB$K_DEV tag "";
+
+    aggregate DEV_BLOCK structure prefix VB;
+	NONE	bitfield length 1 mask;	/* NoDevice
+	MOUSE	bitfield length 1 mask;	/* Mouse
+	KEY	bitfield length 1 mask;	/* Keyboard
+	TABLET	bitfield length 1 mask;	/* Tablet
+	AUX	bitfield length 1 mask;	/* Auxilliry
+	CONSOLE	bitfield length 1 mask;	/* Console
+	end DEV_BLOCK;
+/*
+/*
+/* ===== VAXSTATION CSR DEFINITIONS =====
+/*
+/* VS100 CSR definitions
+/*
+    aggregate CSR_BLOCK structure prefix VB;
+/*
+/*    CSR0 (+^o00) - Control and Status Register
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|Link|Link|Link|Xmit|Main|CRC |Main|    |    |Intr|        Function        | Go |
+/*	|Tran|Aval|Err | On |Mode|Disa|Done|    |    |Enab|          Code          | Bit|
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	CSR_WORD union;
+	    CSR		word unsigned tag "";		/* ControlStatusCSR
+	    CSR_BITS structure prefix VB$;
+		CSR_GO		bitfield length 1 mask;	/* Go
+		CSR_FUNCTION	bitfield length 5 mask;	/* Function
+		CSR_IE		bitfield length 1 mask;	/* InterruptEnable
+		CSR_SPARE_1	bitfield length 1 mask;	/* Spare
+		CSR_SPARE_2	bitfield length 1 mask;	/* Spare
+		CSR_MAINT_DONE	bitfield length 1 mask;	/* MaintenanceDone
+		CSR_CRC_DISABLE	bitfield length 1 mask;	/* CRCDisable
+		CSR_MAINT_MODE	bitfield length 1 mask;	/* MaintenanceMode
+		CSR_XMIT_ON	bitfield length 1 mask;	/* TransmitterOn
+		CSR_LINK_ERR	bitfield length 1 mask;	/* LinkError
+		CSR_LINK_AVAIL	bitfield length 1 mask;	/* LinkAvailable
+		CSR_LINK_TRANS	bitfield length 1 mask;	/* LinkTransition
+		end CSR_BITS;
+	    end CSR_WORD;
+/*
+/*    CSR1 (+^o02) - Interrupt Reason Register
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|Err |    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+/*	|Flag|    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	INT_WORD union;
+	    IRR		word unsigned tag "";		/* InterruptReasonCSR
+	    INT_BITS structure prefix VB$;
+		IRR_REASON	bitfield length 15 mask;/* ErrorReason
+		IRR_ERROR	bitfield length 1 mask;	/* ErrorFlag
+		end INT_BITS;
+	    end INT_WORD;
+/*
+/*    CSR2 (+^o04) - Keyboard Receive Register
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|    |    |    |      Device       | Up/|                  Key                  |
+/*	|    |    |    |       Code        |Down|                  Code                 |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	KEY_WORD union;
+	    KRR		word unsigned tag "";		/* KeyboardReceiveCSR
+	    KEY_BITS structure prefix VB$;
+		KRR_CODE	bitfield length 8 mask;	/* KeyCode
+		KRR_TRAN	bitfield length 1 mask;	/* TranslationFlag
+		KRR_DEV		bitfield length 4 mask;	/* DeviceCode
+		end KEY_BITS;
+	    end KEY_WORD;
+/*
+/*    CSR3 (+^o06) - Function Parameter Register (low address)
+/*    CSR4 (+^o10) - Function Parameter Register (high address)
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|                                    Packet                                     |
+/*	|                                  Low Address                                  |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*	|                                    Packet                                     |
+/*	|                                 High Address                                  |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	PR1	word unsigned tag "";		/* FunctionParameterLowCSR
+	PR2	word unsigned tag "";		/* FunctionParameterHighCSR
+/*
+/*    CSR5 (+^o12) - Cursor Position Register X
+/*    CSR6 (+^o14) - Cursor Position Register Y
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|                                    Cursor                                     |
+/*	|                                  X Position                                   |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*	|                                    Cursor                                     |
+/*	|                                  Y Position                                   |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	CXR	word unsigned tag "";		/* CursorPositionXCSR
+	CYR	word unsigned tag "";		/* CursorPositionYCSR
+/*
+/*    CSR7 (+^o36) - Interrupt Vector Register
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|                                Interrupt Vector                               |
+/*	|                                    Address                                    |    
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+	IVR	word unsigned tag "";		/* InterruptVectorRegister
+
+	end CSR_BLOCK;
+/*
+/*
+/* ==== Interrupt Reason Codes ====
+/*
+
+    constant	CC_INIT		equals %x01	prefix VB$;
+    constant	CC_CMD		equals %x02	prefix VB$;
+    constant	CC_START	equals %x04	prefix VB$;
+    constant	CC_BUTTON	equals %x08	prefix VB$;
+    constant	CC_CURSOR	equals %x010	prefix VB$;
+    constant	CC_TABLET	equals %x020	prefix VB$;
+    constant	CC_MOUSE	equals %x040	prefix VB$;
+    constant	CC_PWRUP	equals %x080	prefix VB$;
+    constant	CC_ABORT	equals %x0100	prefix VB$;
+    constant	CC_STATUS	equals %x0200	prefix VB$;
+
+
+
+/*
+/* ==== Sub-Status Reason Codes ====
+/*
+
+    constant	CCS_SUCCESS	equals 1	prefix VB$;
+    constant	CCS_FAILURE	equals 2	prefix VB$;
+    constant	CCS_WHAT	equals 3	prefix VB$;
+
+
+
+/*
+/*
+/* ===== ERROR LOGGING CODES =====
+/*
+
+/* Error logging reasons
+
+    constant(
+	CMD_TIME	/* CommandTimeout
+  	,FUN_TIME	/* Function timeout
+	,LINK_TIME	/* LightTransitionTimeout
+	,LINK_ERR	/* LinkError
+	,LINK_ON	/* Link Transition To On During Session
+	,LINK_OFF	/* Link Transition To Off During Session
+	,VAX_SPUR	/* VAXUBWSpuriousInterrupt
+  	,WGA_HW		/* WGA hardware error
+  	,WGA_POWERUP	/* WGA powerup error
+  	,POWERFAIL	/* Host system power failed
+  	,BREAK_LINK	/* Turn link off from host when ABORT timed out or 
+  			/* report status timed out
+	) equals 101 increment 1 prefix VB$K_ELG tag "";
+
+    #ERR_BASE = %x8000;
+
+/*
+/* WGA Hardware Error Codes
+/*
+    constant(
+        NYI,	/* Not Yet Implemented
+	IFC,	/* Invalid Function Code
+	ICC,	/* Invalid Command Code
+	RNXM,	/* Bus Error: Non-Existent Memory
+	RO,	/* Bus Error: Retry Overflow
+	LD,	/* Bus Error: Link Down
+	SBE,	/* Bus Error: Unexplained
+	AE,	/* Address Error
+	ZD,	/* Spurious Interrupt
+	II,	/* Illegal Instruction
+	BNXM,	/* BBA NXM (Non-Existent Memory)
+	BNI,	/* BBA Not Installed
+	KCQO,	/* Keyboard Command Queue Overflow
+	TCQO,	/* Tablet Command Queue Overflow (no longer used)
+  	MEQO,	/* Mouse Event Queue Overflow
+  	TEQO,	/* Tablet Event Queue Overflow
+  	ABORT,	/* Unable to Abort BBA
+	KEQO,	/* Keyboard Event Queue Overflow
+	KOR,	/* Keyboard Overrun
+	TOR,	/* Tablet Overrun
+	KFE,	/* Keyboard Framming Error
+	TFE	/* Tablet Framming Error
+    	) equals #ERR_BASE+0 increment 1 prefix VB$K_ELG_WGA_ERR tag "";
+
+/*
+/* WGA Powerup Error
+/* 
+    constant(
+	ERR_PASS,	/* Base for Test Numbers
+	ERR_REG,	/* 68000 Processor Register
+	ERR_RHB,	/* ROM Checksum High Byte
+	ERR_PR,		/* Program RAM
+	ERR_CRTC,	/* CRTC Registers
+	ERR_TU,		/* Tablet USART
+	ERR_KU,		/* Keyboard USART
+	ERR_FOE,	/* FOTR Electrical Loop Back
+	ERR_VTO,	/* Vsync Time Out (no longer used)
+	ERR_0FRAME,	/* Frame 0 of the Frame Buffer
+	ERR_BS,		/* BBA Scratchpad RAM
+	ERR_BC,		/* BBA Copyarea Command
+	ERR_TTO,	/* Tablet Time Out
+	ERR_FOO,	/* FOTR Optical Loop Back
+	ERR_KTO,	/* Keyboard Time Out
+	ERR_KST,	/* Keyboard Self-Test
+	ERR_VR,		/* Vector RAM
+	ERR_1FRAME,	/* Frame 1 of the Frame Buffer
+	ERR_2FRAME,	/* Frame 2 of the Frame Buffer
+	ERR_3FRAME,	/* Frame 3 of the Frame Buffer
+	ERR_TP,		/* Tablet Port Loop Back
+	ERR_KP,		/* Keyboard Port Loop Back
+	ERR_FOED,	/* FOTR Electrical CRC Disabled
+	ERR_FOOD,	/* FOTR Optical CRC Disabled
+	ERR_BT,		/* BBA Time Out
+	ERR_RLB		/* ROM Checksum Low Byte
+	) equals #ERR_BASE+128 increment 1 prefix VB$K_ELG_WGA tag "";
+
+/*
+/*
+/* ===== KEYBOARD DEFINITIONS =====
+/*
+/* Keyboard character buffer:
+/*
+/*	+-----------+
+/*	| W_KB_HEAD |
+/*	+-----------+
+/*	| W_KB_TAIL |
+/*	+-----------+
+/*      | W_KB_BUFF |
+/*	+--       --+
+/*      |           |
+/*	+-----------+
+/*
+    aggregate CHAR_BLOCK structure prefix VB$;
+	KB_HEAD	word unsigned;		/* Ring buffer head pointer
+	KB_TAIL	word unsigned;		/* Ring buffer tail pointer
+	KB_BUFF	word unsigned;		/* Ring buffer
+	end CHAR_BLOCK;
+/*
+/* Character bit definitions
+/*
+/*	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+/*	|         | Del| Sym|Cntl|Shft|Caps| Up/|               Character               |
+/*	|         |Flag|Down|Down|Down|Lock|Down|                  Code                 |
+/*	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+/*
+    aggregate CHAR_BIT structure prefix VB$;
+	CHAR_CODE	bitfield length 8 mask;	/* CharacterCode
+	CHAR_TRAN	bitfield length 1 mask;	/* UpDownTransition
+	CHAR_CAPS	bitfield length 1 mask;	/* CapitalLock
+	constant CHAR_CAPS equals %xb0 prefix VB$;
+	CHAR_SHFT	bitfield length 1 mask;	/* Shift
+	constant CHAR_SHFT equals %xae prefix VB$;
+	CHAR_CNTL	bitfield length 1 mask;	/* Control
+	constant CHAR_CNTL equals %xaf prefix VB$;
+	CHAR_SYM	bitfield length 1 mask;	/* Symbol
+	constant CHAR_SYM equals %xb1 prefix VB$;
+	CHAR_DEL	bitfield length 1 mask;	/* Delete
+	end CHAR_BIT;
+/*
+/*
+/* Random constants
+/*
+    constant TIMEOUT equals 10
+	prefix VB$;			/* Command timeout in seconds
+
+
+
+    constant  SCMAX  equals 10  prefix  VB$;	/* Max number of Status
+						/* Requests before aborting
+						/* a command.
+
+/*
+/*
+/* ===== AST CONTROL BLOCK DEFINITIONS =====
+/*
+/* ACB definitions
+/*
+    aggregate ACB_BLOCK structure prefix ACB$;
+	SYS_DEFINED	byte unsigned dimension #ACB$K_LENGTH;
+	TPC		address;		/* AST routine address
+	TASTPRM		longword unsigned;	/* AST parameter
+	TMODE		word unsigned;		/* AST access mode
+	TCHAN		word unsigned;		/* AST channel number
+	TPID		longword unsigned;	/* AST requestor PID
+	MASK		longword unsigned;	/* Button mask
+	FLAG		longword unsigned;	/* Action flags
+	constant VB_LENGTH equals .;		/* ACBSize
+	end ACB_BLOCK;
+
+/*  ACB Flag definitions
+
+    aggregate ACB_FLAG structure prefix  ACB_FLAG$;
+	RETPOS		bitfield length 1 mask;	/* Return Position
+	RETBUT		bitfield length 1 mask;	/* Return Button Info
+	end ACB_FLAG;
+
+/*
+/*
+/* ===== UNIT CONTROL BLOCK DEFINTIONS =====
+/*
+/* UCB definitions following standard system definitions
+/*
+
+    aggregate UCB_BLOCK structure prefix UCB$;
+	SYS_DEFINED	byte unsigned dimension #UCB$K_LENGTH;
+
+	VB_CSR_REG	word unsigned;		/* SavedCSR
+	VB_KEY_REG	word unsigned;		/* SavedKeyboardRegister
+  	VB_CSR3		word unsigned;		/* Saved CSR3
+  	VB_CSR4		word unsigned;		/* Saved CSR4
+	VB_XPOS_REG	word unsigned;		/* SavedXPositionRegister
+	VB_YPOS_REG	word unsigned;		/* SavedYPositionRegister
+
+	VB_ROM		word unsigned;		/* ROMVersion
+	VB_DEV_TYPE	longword unsigned;	/* DeviceType
+	VB_DEV_VERSION	word unsigned;		/* DeviceVersion
+	VB_MCODE	word unsigned;		/* MicrocodeVersion
+	VB_SCREEN	address;		/* VisibleFrameBuffer
+	VB_SCREEN_X	word unsigned;		/* VisibleFrameBufferX
+	VB_SCREEN_Y	word unsigned;		/* VisibleFrameBufferY
+	VB_SCREEN_Z	word unsigned;		/* VisibleFrameBufferZ
+	VB_FRAME	address;		/* FreeFrameBuffer
+	VB_FRAME_SIZE	longword unsigned;	/* FreeFrameBufferSize
+	VB_PROGRAM	address;		/* FreeProgramSpace
+	VB_PROGRAM_SIZE	longword unsigned;	/* FreeProgramSpaceSize
+	VB_UNIBUS	address;		/* UnibusOffset
+	VB_UNIBUS_SIZE	longword unsigned;	/* UnibusSize
+
+	VB_DRIVER	word unsigned;		/* DriverVersion
+	VB_COMMAND	word unsigned;		/* CurrentCommandCode
+	VB_SAVER3	longword unsigned;	/* TemporarySaveR3
+	VB_INT_REASON	word unsigned;		/* Interrupt Reason
+	VB_CC_REASON	word unsigned;		/* Command Completion Reason
+	VB_TEMP_DEVSTS	word unsigned;		/* Temporary Device Status
+	VB_SUB_STATUS	word unsigned;		/* SubStatus (ABORT and STATUS)
+
+	VB_SCNT		word unsigned;		/* Count of Status Requests
+	VB_SPRG		word unsigned;		/* Value of Status Progress
+	VB_SPRGU	word unsigned;		/* Value of Status Update
+	VB_STEMP	word unsigned;		/* alignment only !!!
+
+	#ELG_BASE=.;
+	VB_FELG_FLINK	longword unsigned;	/* ErrorLogForkForwardLink
+	VB_FELG_BLINK	longword unsigned;	/* ErrorLogForkBackwardLink
+	VB_FELG_SIZE	word unsigned;		/* ErrorLogForkSize
+	VB_FELG_TYPE	byte unsigned;		/* ErrorLogForkType
+	VB_FELG_FIPL	byte unsigned;		/* ErrorLogForkIPL
+	VB_FELG_FPC	longword unsigned;	/* ErrorLogForkPC
+	VB_FELG_FR3	longword unsigned;	/* ErrorLogForkR3
+	VB_FELG_FR4	longword unsigned;	/* ErrorLogForkR4
+	VB_FELG_FR5	longword unsigned;	/* ErrorLogForkR5
+	constant FR5 equals .-#ELG_BASE-4 prefix FKB$;	/* SavedR5Offset
+
+	VB_ELG_DEVDEPEND	word	unsigned;	/* devdepend for error logging
+	VB_ELG_REASON		word	unsigned;	/* error log reason
+	VB_ELG_STS		word	unsigned;	/* sts for error logging
+	VB_ELG_DROPPED_ERROR	word	unsigned;	/* dropped error count
+	VB_ELG_UNSOL		word	unsigned;	/* unsolicit interrupt count
+	VB_ELG_UNKNOWN		word	unsigned;	/* unknown interrupt count
+	VB_ELG_LINK_ERROR	word	unsigned;	/* link error count
+	VB_ELG_FLASH		word	unsigned;	/* flash count
+	VB_ELG_LIGHT_ON		word	unsigned;	/* light on count
+	VB_ELG_LIGHT_OFF	word	unsigned;	/* light off count
+  	VB_ELG_COMMAND		word	unsigned;	/* command code at error
+	VB_ELG_CSR0		word	unsigned;	/* csr 0 for error logging
+	VB_ELG_CSR1		word	unsigned;	/* csr 1 for error logging
+	VB_ELG_CSR2		word	unsigned;	/* csr 2 for error logging
+	VB_ELG_CSR3		word	unsigned;	/* csr 3 for error logging
+	VB_ELG_CSR4		word	unsigned;	/* csr 4 for error logging
+	VB_ELG_CSR5		word	unsigned;	/* csr 5 for error logging
+	VB_ELG_CSR6		word	unsigned;	/* csr 6 for error logging
+  
+	VB_ERROR	word unsigned;		/* ErrorLogReason
+	VB_UNKNOWN	longword unsigned;	/* UnknownInterruptCounter
+	VB_UNSOL	longword unsigned;	/* UnsolicitedInterruptCounter
+	VB_LINK_ERROR	longword unsigned;	/* LinkError
+	VB_FLASH	longword unsigned;	/* LightFlash
+	VB_LIGHT_ON	longword unsigned;	/* LightOnTransition
+	VB_LIGHT_OFF	longword unsigned;	/* LightOffTransition
+	VB_ERROR_LOST	longword unsigned;	/* Count of Errors Lost
+
+	VB_KB_OWNER	longword unsigned;	/* Keyboard Owner's PID
+	VB_KB_STATE	word unsigned;		/* KeyboardCharacterState
+	VB_KB_BUFFER	address;		/* VirtualKeyboardBuffer
+	VB_KB_SIZE	word unsigned;		/* VirtualKeyboardBufferSize
+
+	VB_KB_FULL_AST	address;		/* KeyboardFullASTBlock
+	VB_KB_FULL_THRESH	word unsigned;	/* KeyboardFullThreshold
+
+	VB_KB_WAKE_AST	address;		/* KeyboardWakeupASTBlock
+	VB_KB_WAKE_THRESH	word unsigned;	/* KeyboardWakeupThreshold
+
+	VB_MOUSE_MOVE	address;		/* CursorMovementASTBlock
+	VB_MOUSE_STATE	word;			/* MouseButtonState
+	VB_MOUSE_BUTTON	address;		/* MouseButtonASTBlock
+	VB_MOUSE_LIST	address;		/* MouseButtonASTList
+	VB_MOUSE_X	word;			/* MouseXPosition
+	VB_MOUSE_Y	word;			/* MouseYPosition
+
+	VB_TABLET_MOVE	address;		/* TabletMovementASTBlock
+	VB_TABLET_STATE	word;			/* TabletButtonState
+	VB_TABLET_BUTTON	address;	/* TabletButtonASTBlock
+	VB_TABLET_LIST	address;		/* TabletButtonASTList
+	VB_TABLET_X	word;			/* TabletXPosition
+	VB_TABLET_Y	word;			/* TabletYPosition
+
+	VB_EXIT_IDLE	address;		/* ExitIdleLoopASTBlock
+	VB_LINK_AST	address;		/* LinkTransitionASTBlock
+	VB_LINK_ONEXIT_PID  longword unsigned;	/* OnExit Cleanup PID
+
+	VB_PIO_OWNER	longword unsigned;	/* PIO Owner's PID
+	VB_PIO_STATE	word unsigned;		/* PIO State
+	VB_PIO_TIMEOUT	word unsigned;		/* PIO timeout counter
+
+	VB_PIO_WCP_FL	address;		/* WCP queue forward link
+	VB_PIO_WCP_BL	address;		/* WCP queue backward link
+	VB_PIO_WCP_CT	word unsigned;		/* WCP Count - total
+	VB_PIO_WCP_CMR	word unsigned;		/* WCP Count - # of UMRs used
+	VB_PIO_WCP_CIU	word unsigned;		/* WCP Count - in use
+	VB_PIO_WCP_CMIU word unsigned;		/* WCP Count - Max in use
+	VB_PIO_WCP_CNA	longword unsigned;	/* WCP Count - not available
+	VB_PIO_WCP_CTR	longword unsigned;	/* WCP Count - total request
+
+	VB_PIO_DBD_FL	address;		/* DB queue forward link
+	VB_PIO_DBD_BL	address;		/* DB queue backward link
+	VB_PIO_DB_CT	word unsigned;		/* DB Count - # of buffers
+	VB_PIO_DB_CMR	word unsigned;		/* DB Count - # of UMRs used
+
+	VB_CMD_SS_CNT	word unsigned;		/* Status Send count
+	VB_ABORT_CMD_CNT    word unsigned;	/* Abort Command count
+	VB_FO_SHUTDOWN_CNT  word unsigned;	/* Fiber Optics Shutdown count
+	VB_ABORT_WHAT_CNT   word unsigned;	/* Abort What count
+
+	VB_UMR_RETRY	word unsigned;		/* UMR allocation retry counter
+	VB_UMR_ALLOC_FAIL   word unsigned;	/* UMR allocation Fail count
+
+	VB_PIO_POST_FL	longword unsigned;	/* PIO post processing queue forward link
+	VB_PIO_POST_BL	longword unsigned;	/* PIO post processing queue backward link
+	VB_PIO_CNT	longword unsigned;	/* Count of PIOs performed
+
+  	VB_KB_SYSRTN		address;	/* slot to put in system routine address
+	VB_SAVE_SCREEN_AST	address;	/* list head for save screen ASt block
+
+	constant VB_LENGTH equals .;		/* UCBSize
+	end UCB_BLOCK;
+
+    aggregate DEVDEPEND structure prefix VB$;
+	MCVALID		bitfield length 1 mask;
+	LINK_AVAIL	bitfield length 1 mask;
+	TRANS_EXP	bitfield length 1 mask;
+	DEBUG_MCODE	bitfield length 1 mask;
+	ERRLOG_IP	bitfield length 1 mask;
+	CMD_IP		bitfield length 1 mask;
+	ABORT_IP	bitfield length 1 mask;
+	STATUS_IP	bitfield length 1 mask;
+	end DEVDEPEND;
+/*
+/*
+/* ===== COMMAND DESCRIPTOR BLOCK =====
+/*
+/* Command descriptor Block:
+/*    size = 
+/*
+/*  +-------------+-------------+
+/*  |          A_FLINK          |
+/*  +-------------+-------------+
+/*  |         L_OPERAND         |
+/*  +-------------+-------------+
+/*  |      (VMS reserved)       |
+/*  +-------------+-------------+
+/*  | W_CMD_DESC  | W_FUNCTION  |
+/*  +-------------+-------------+
+/*  | W_SBM_DEST  | W_SBM_SRC   |
+/*  +-------------+-------------+
+/*  |             |  W_OFFSET   | 
+/*  +-------------+-------------+
+/*  |             |             |
+/*  +-------------+-------------+
+/*  |             |             |
+/*  +-------------+-------------+
+/*  |             |             |
+/*  +-------------+-------------+
+/*  |           A_CMD           |
+/*  +---------------------------+
+/*  |         A_ADDRESS         |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*
+    aggregate COMMAND_BLOCK structure prefix CMD$;
+	FLINK		address;		/* ForwardLink
+	OPERAND		longword;		/* CommandHostOperandCount
+	RESERVED	longword;		/* VMSReserved
+	FUNCTION	word unsigned;		/* CommandFunctionCode
+	CMD_DESC	word unsigned;		/* CommandDescriptor
+	SBM_SRC		word unsigned;		/* Same Bitmap Source Offset
+	SBM_DEST	word unsigned;		/* Same Bitmap Dest.  Offset
+	OFFSET		word unsigned dimension 8;	/* OperandOffset
+	CMD		address;		/* Command
+	ADDRESS		address dimension 8;	/* OperandSVAddress
+	end COMMAND_BLOCK;
+/*
+/*
+/* ===== WGA COMMAND PACKET (WCP) BLOCK =====
+/*
+/* WCP Block:
+/*    header size = WCP$K_HEADER_LENGTH
+/*
+/*  +-------------+-------------+
+/*  |          A_IOQFL          |
+/*  +-------------+-------------+
+/*  |          A_IOQBL		|
+/*  +-------------+-------------+
+/*  |      (VMS reserved)       |
+/*  +-------------+-------------+
+/*  |   W_FLAGS   |   W_TYPE	|
+/*  +-------------+-------------+
+/*  |   W_NUMREG  |  W_MAPREG	|
+/*  +-------------+-------------+
+/*  |         A_DAADDR		| 
+/*  +-------------+-------------+
+/*  |    W_DAU    |    W_DAS	|
+/*  +-------------+-------------+
+/*  |         L_SPARE_1		|
+/*  +===========================+
+/*  | <start of command packet> |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*  |                           |
+/*  +---------------------------+
+/*
+    aggregate WGA_COMMAND_PACKET structure prefix WCP$;
+	IOQFL		address;		/* ForwardLink
+	IOQBL		address;		/* BackwardLink
+	RESERVED	longword;		/* VMSReserved
+						/*
+	TYPE		word unsigned;		/* Type
+	FLAGS		word unsigned;		/* Flags
+	MAPREG		word unsigned;		/* Starting UBA Map Register
+	NUMREG		word unsigned;		/* Number of UBA Map Registers
+	DAADDR		address;		/* Address of Data Area
+	DAS		word unsigned;		/* Data Area Size
+	DAU		word unsigned;		/* Data Area Used
+	SPARE_1		longword;		/* Spare
+
+	constant  HEADER_LENGTH equals .;	/* Header Size
+	end WGA_COMMAND_PACKET;
+
+
+/*
+/*  WCP Types
+/*
+	constant(
+			OR,	/* On Request
+			PIO,	/* Pre-Alloc-Locked-Mapped
+			US	/* User Supplied
+		) equals 1 increment 1   prefix  WCP$K_TYPE tag "";
+
+/*
+/*  WCP Flags
+/*
+
+	aggregate  WCP_FLAGS structure  prefix  WCP$;
+		FLAG_LCK	bitfield mask;
+		FLAG_MAP	bitfield mask;
+		FLAG_ULCK	bitfield mask;
+		FLAG_UMAP	bitfield mask;
+		FLAG_DALLOC	bitfield mask;
+	end  WCP_FLAGS;
+/*
+/*
+/*
+/* ===== Data Buffer Descriptor (DBD) BLOCK =====
+/*
+/* DBD Block:
+/*
+/*
+/*  +-------------+-------------+
+/*  |          A_IOQFL          |
+/*  +-------------+-------------+
+/*  |          A_IOQBL		|
+/*  +-------------+-------------+
+/*  |      (VMS reserved)       |
+/*  +-------------+-------------+
+/*  |   W_FLAGS   |   W_TYPE	|
+/*  +-------------+-------------+
+/*  |   W_NUMREG  |  W_MAPREG	|
+/*  +-------------+-------------+
+/*  |         A_VAX_ADDR	| 
+/*  +-------------+-------------+
+/*  |          L_SVAPTE		| 
+/*  +-------------+-------------+
+/*  |           L_BCNT		| 
+/*  +-------------+-------------+
+/*  |   W_SPARE_1 |   W_BOFF    |
+/*  +---------------------------+
+/*  |         A_GP_ADDR		| 
+/*  +-------------+-------------+
+/*  |         L_CREATOR         |
+/*  `---------------------------'
+/*
+    aggregate DB_DESC_BLOCK structure prefix DBD$;
+	IOQFL		address;		/* ForwardLink
+	IOQBL		address;		/* BackwardLink
+	RESERVED	longword;		/* VMSReserved
+  						/*
+	TYPE		word unsigned;		/* Type
+	FLAGS		word unsigned;		/* Flags
+	MAPREG		word unsigned;		/* Starting UBA Map Register
+	NUMREG		word unsigned;		/* Number of UBA Map Registers
+	VAX_ADDR	address;		/* VAX Address
+	SVAPTE		longword unsigned;	/* SVAPTE of Buffer
+	BCNT		longword unsigned;	/* Byte Count
+	BOFF		word unsigned;		/* Byte Offset
+	SPARE_1		word unsigned;		/* Spare
+	GP_ADDR		address;		/* Graphics Processor Address
+  	CREATOR		longword;		/* creator's pid 
+	end DB_DESC_BLOCK;
+
+
+/*
+/*  DBD Types
+/*
+/*	constant(
+/*		) equals 1 increment 1   prefix  DBD$K_TYPE tag "";
+/*
+/*
+/*  DBD Flags
+/*
+/*	aggregate  DBD_FLAGS structure  prefix  DBD$;
+/*	end  DBD_FLAGS;
+/*
+/*
+/*
+/* Argument block definitions
+/*
+    aggregate ARG_BLOCK structure prefix ARG$;
+	ARG1_BLOCK union;
+	    P1	byte unsigned;
+	    P1	word unsigned;
+	    P1	longword unsigned;
+	    end ARG1_BLOCK;
+	ARG2_BLOCK union;
+	    P2	byte unsigned;
+	    P2	word unsigned;
+	    P2	longword unsigned;
+	    end ARG2_BLOCK;
+	ARG3_BLOCK union;
+	    P3	byte unsigned;
+	    P3	word unsigned;
+	    P3	longword unsigned;
+	    end ARG3_BLOCK;
+	ARG4_BLOCK union;
+	    P4	byte unsigned;
+	    P4	word unsigned;
+	    P4	longword unsigned;
+	    end ARG4_BLOCK;
+	ARG5_BLOCK union;
+	    P5	byte unsigned;
+	    P5	word unsigned;
+	    P5	longword unsigned;
+	    end ARG5_BLOCK;
+	ARG6_BLOCK union;
+	    P6	byte unsigned;
+	    P6	word unsigned;
+	    P6	longword unsigned;
+	    end ARG6_BLOCK;
+	end ARG_BLOCK;
+/*
+/*
+/*  WGA Device Types
+/*
+
+constant	UNKNOWN	  equals  %x0000  prefix VB$K_DT tag"";
+constant	VS100	  equals  %x0100  prefix VB$K_DT tag"";
+
+/*  constant	VS125	  equals  %x0125  prefix VB$K_DT tag"";
+/*  constant	VS300	  equals  %x0300  prefix VB$K_DT tag"";
+
+
+
+/*
+/*
+/*
+/* End of module $VBDEF
+/*
+end_module;

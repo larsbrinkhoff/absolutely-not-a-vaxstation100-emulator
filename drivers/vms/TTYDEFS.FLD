@@ -1,0 +1,164 @@
+! ++
+! 
+! 	This module represents the definitions of $TTYRBDEF, $TTYTADEF, and
+!   $TTYVECDEF from SYS$LIBRARY:LIB.MLB which (for some strange reason) have
+!   not been defined for BLISS in SYS$LIBRARY:LIB.L32. Note that when VMS
+!   finally updates the BLISS libraries, these symbols will be multiply defined.
+!
+! --
+! ++
+!  Read buffer definitions
+! 
+! 	This buffer is allocated everytime a read is issued.  The
+!  buffer contains all the information necessary to perform this read.
+! 
+! --
+literal TTY$M_RS_WRAP = 1;
+literal TTY$S_RB_ECHOAREA = 8;
+FIELD TTY$TTYRB_FIELDSET =
+  SET
+  TTY$L_RB_TXT = [0,0,32,0],            !  Address of the first character of
+!  the read data.
+  TTY$L_RB_UVA = [4,0,32,0],            !  READ BUFFER - USER VIRTUAL ADDR
+  TTY$W_RB_SIZE = [8,0,16,0],           !  READ BUFFER - BLOCK SIZE
+  TTY$B_RB_SPARE1 = [10,0,8,0],
+  TTY$B_RB_ECHLEN = [11,0,8,0],         !  NUMBER OF CHARACTERS TO ECHO
+!  WHEN OUTPUTTING FROM ECHSTR
+  TTY$Q_RB_ECHOAREA = [12,0,0,0],       !  WORDS TO ECHO CHARACTERS FROM
+  TTY$L_RB_ECHSTR = [20,0,32,0],        !  ADDRESS OF THE FIRST CHARACTER
+!  TO OUTPUT DURING EDITECHOING.
+  TTY$L_RB_PIC = [24,0,32,0],           !  ADDRESS OF THE PICTURE STRING
+!  FOR READ VERIFY
+  TTY$L_RB_TERM = [28,0,32,0],          !  THE ADDRESS OF THE TERMINATOR BITMASK
+  TTY$L_RB_MOD = [32,0,32,0],           !  MODIFIER LONGWORD
+  TTY$L_RB_AES = [36,0,32,0],           !  ADDRESS OF THE AES STRING
+  TTY$W_RB_AESLEN = [40,0,16,0],        !  THE LENGTH OF THE AESSTRING
+    TTY$W_RB_RDSTATE = [42,0,16,0],     !  Read state information word
+      TTY$V_RS_WRAP = [42,0,1,0],       !  THE READ HAS WRAPPED EITHER IN THE PROMPT OR INITIAL STRING
+    TTY$R_RB_RDSTATE_BITS = [42,0,8,0],
+  TTY$R_RB_RDSTATE_OVERLAY = [42,0,16,0],
+  TTY$L_RB_LIN = [44,0,32,0],           !  ADDRESS OF THE FIRST CHARACTER ON
+!  THIS LINE.
+  TTY$W_RB_LINOFF = [48,0,16,0],        !  OFFSET FROM THE BEGINNING OF THE
+!  LINE TO THE CURSOR POSITION.
+  TTY$W_RB_LINREST = [50,0,16,0],       !  NUMBER OF CHARACTERS TO THE RIGHT
+!  OF THE CURSOR POSITION, USED BY
+!  INPUT EDITING
+  TTY$W_RB_PRMLEN = [52,0,16,0],        !  LENGTH IN BYTES OF THE PROMPT STRING
+  TTY$W_RB_TIMOS = [54,0,16,0],         !  READ BUFFER - TIMEOUT SECONDS
+  TTY$W_RB_CPZCUR = [56,0,16,0],        !  CURRENT CURSOR POSITION
+  TTY$W_RB_CPZORG = [58,0,16,0],        !  READ BUFFER - ORIGONAL HORIZON
+  TTY$W_RB_TXTOFF = [60,0,16,0],        !  OFFSET FROM THE BEGINNING OF THE
+!  DATA TO THE LOCATION OF THE NEXT CHARACTER
+  TTY$W_RB_PICLEN = [62,0,16,0],        !  the length of the picture string
+  TTY$W_RB_TXTSIZ = [64,0,16,0],        !  THE LENGTH OF THE READ.
+  TTY$W_RB_TXTECH = [66,0,16,0],        !  AMOUNT OF INITIAL STRING TO ECHO
+  TTY$W_RB_MODE = [68,0,16,0],          !  VALUE INDICATING READ EDIT MODE
+  TTY$B_RB_RVFCLR = [70,0,8,0],         !  CLEAR CHARACTER FOR READ VERIFY
+  TTY$B_RB_RVFFIL = [71,0,8,0],         !  READ VERIFY FILL CHARACTER
+  TTY$W_RB_ESCTKN = [72,0,16,0],        !  ESCAPE TOKEN CHARACTER
+    TTY$A_RB_PRM = [74,0,32,0],         !  ADDRESS OF BEGINNING OF THE PROMPT
+    TTY$L_RB_DATA = [74,0,32,0],        !  READ BUFFER  - DATA
+  TTY$R_RB_PRM_OVERLAY = [74,0,32,0],
+  TES;
+literal TTY$S_TTYRB = 79;
+MACRO TTYRB = BLOCK [TTY$S_TTYRB,byte] FIELD (TTY$TTYRB_FIELDSET) %;
+! ++
+! 
+!  Terminal driver write packet (TWP)
+! 
+! --
+literal TTY$K_WB_LENGTH = 48;           !  LENGTH
+literal TTY$C_WB_LENGTH = 48;           !  LENGTH
+FIELD TTY$TTYWB_FIELDSET =
+  SET
+  TTY$L_WB_FLINK = [0,0,32,0],          ! 
+  TTY$L_WB_BLINK = [4,0,32,0],          ! 
+  TTY$W_WB_SIZE = [8,0,16,0],           !  
+  TTY$B_WB_TYPE = [10,0,8,0],           !  
+  TTY$B_WB_FIPL = [11,0,8,0],           !  
+  TTY$L_WB_FPC = [12,0,32,0],           ! 
+  TTY$L_WB_FR3 = [16,0,32,0],           ! 
+  TTY$L_WB_FR4 = [20,0,32,0],           ! 
+  TTY$L_WB_MAP = [24,0,32,0],           ! 
+  TTY$L_WB_NEXT = [28,0,32,0],          ! 
+  TTY$L_WB_END = [32,0,32,0],           ! 
+  TTY$L_WB_IRP = [36,0,32,0],           ! 
+  TTY$W_WB_STATUS = [40,0,16,0],        !  
+  TTY$W_WB_BCNT = [42,0,16,0],          !  
+  TTY$L_WB_RETADDR = [44,0,32,0],       !  
+  TTY$L_WB_DATA = [48,0,32,0]           ! 
+  TES;
+literal TTY$S_TTYWB = 52;
+MACRO TTYWB = BLOCK [TTY$S_TTYWB,byte] FIELD (TTY$TTYWB_FIELDSET) %;
+! ++
+!  TYPEAHEAD BUFFER
+! 
+!  DESCRIPTION:
+! 	THIS BUFFER IS USED TO STORE CHARACTERS BEFORE PROCESSING AND
+!  MOVING THEM INTO THE USERS READ BUFFER.
+! 	ALLOCATED ON UNSOLICITED DATA OR THE FIRST READ POSTED ON A TERMINAL
+!  LINE.  
+! --
+literal TTY$K_TA_RCLLEN = 256;          !  LENGTH OF RECALL
+literal TTY$S_TA_RCL = 256;
+FIELD TTY$TTYTADEF_FIELDSET =
+  SET
+!  THE LENGTH OF THE RECALL BUFFER
+  TTY$L_TA_PUT = [0,0,32,0],            !  PUT POINTER
+  TTY$L_TA_GET = [4,0,32,0],            !  GET POINTER
+  TTY$W_TA_SIZE = [8,0,16,0],           !  BLOCK SIZE
+  TTY$B_TA_TYPE = [10,0,8,0],           !  
+  TTY$B_TA_SPARE1 = [11,0,8,0],
+  TTY$W_TA_INAHD = [12,0,16,0],         !  COUNT OF CHARS IN BUFFER
+  TTY$W_TA_RCLOFF = [14,0,16,0],        !  NUMBER OF CHARACTERS IN THE RECALL
+!  BUFFER USED.
+  TTY$L_TA_END = [16,0,32,0],           !  END ADDRESS
+  TTY$W_TA_RCLSIZ = [20,0,16,0],        !  THE SIZE OF THE RECALL STRING
+  TTY$W_TA_SPARE2 = [22,0,16,0],
+  TTY$A_TA_RCL = [24,0,0,0],            !  TYPEAHEAD BUFFER - RECALL BUFFER
+  TTY$L_TA_DATA = [280,0,32,0]          !  TYPEAHEAD BUFFER - DATA START
+  TES;
+literal TTY$S_TTYTADEF = 284;
+MACRO TTYTADEF = BLOCK [TTY$S_TTYTADEF,byte] FIELD (TTY$TTYTADEF_FIELDSET) %;
+! 
+!  Define class driver vector offsets for service routines, etc.
+! 
+FIELD CLASSCLASS_DEF_FIELDSET =
+  SET
+  CLASS_GETNXT = [0,0,32,0],            ! 
+  CLASS_PUTNXT = [4,0,32,0],            !  
+  CLASS_SETUP_UCB = [8,0,32,0],         !  
+  CLASS_DS_TRAN = [12,0,32,0],          !  
+  CLASS_DDT = [16,0,32,0],              !  
+  CLASS_READERROR = [20,0,32,0],        !  
+  CLASS_DISCONNECT = [24,0,32,0],       !  
+  CLASS_FORK = [28,0,32,0],             !  
+  CLASS_POWERFAIL = [32,0,32,0],        !  
+  CLASS_TABLES = [36,0,32,0]            !  
+  TES;
+literal CLASSS_CLASS_DEF = 40;
+MACRO CLASS_DEF = BLOCK [CLASSS_CLASS_DEF,byte] FIELD (CLASSCLASS_DEF_FIELDSET) %;
+! 
+!  Define port driver vector offsets for service routines, etc.
+! 
+literal PORT_LENGTH = 56;               !   must be at end.
+FIELD PORTPORT_DEF_FIELDSET =
+  SET
+  PORT_STARTIO = [0,0,32,0],            !  
+  PORT_DISCONNECT = [4,0,32,0],         !  
+  PORT_SET_LINE = [8,0,32,0],           !  
+  PORT_DS_SET = [12,0,32,0],            !  
+  PORT_XON = [16,0,32,0],               !  
+  PORT_XOFF = [20,0,32,0],              !  
+  PORT_STOP = [24,0,32,0],              !  
+  PORT_STOP2 = [28,0,32,0],             !  
+  PORT_ABORT = [32,0,32,0],             !  
+  PORT_RESUME = [36,0,32,0],            !  
+  PORT_SET_MODEM = [40,0,32,0],         !  
+  PORT__DMA = [44,0,32,0],              !  
+  PORT_MAINT = [48,0,32,0],             !  
+  PORT_FORKRET = [52,0,32,0]            !  
+  TES;
+literal PORTS_PORT_DEF = 56;
+MACRO PORT_DEF = BLOCK [PORTS_PORT_DEF,byte] FIELD (PORTPORT_DEF_FIELDSET) %;

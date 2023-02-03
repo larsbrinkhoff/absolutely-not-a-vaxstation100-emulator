@@ -1,0 +1,257 @@
+MODULE VS$VDS_PB;
+
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*   This module contains all the routines and data structures relevent to
+/*   dealing with the workstation PASTE_BOARD as an entity in the context of
+/*   a VAX workstation running the associated workstation display software;
+/*   an implementation of the System Display Architecture.
+/*
+/*   Operations have been provided to allow the manipulation of paste_boards,
+/*   which in turn provide the basic application mechanism for specifying
+/*   spatial relationships between virtual displays and provide a mechanism
+/*   for the application to specify what parts of those virtual displays can be
+/*   made visible. The number of allowable paste_boards is limited only by
+/*   memory capacity and data tables are maintained on a per-paste_board basis.
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/* Constant declarations for data structures which follow
+/*
+    constant VS$VDS_K_MAX_BITPLANES equals 8;	   /*Number of bitplanes
+    constant VS$VDS_K_COLOR_TABLE_SIZE equals 256; /*Color lookup table size
+/*
+/* Origin data structure definition
+/*
+    aggregate ORIGIN_BLOCK structure prefix VS$VDS_;
+	O_X_COOR	longword unsigned;	/*Origin's X-coordinate
+	O_Y_COOR	longword unsigned;	/*Origin's Y-coordinate
+	constant "ORG_LENGTH" equals .;		/*Length of origin block
+	end ORIGIN_BLOCK;
+/*
+/* Rectangle data structure definition
+/*
+    aggregate RECTANGLE_BLOCK structure prefix VS$VDS_;
+	R_X_COOR	longword unsigned;	/*Rectangle's X-coordinate
+	R_Y_COOR	longword unsigned;	/*Rectangle's Y-coordinate
+	R_LENGTH	longword unsigned;	/*Rectangle's length
+	R_HEIGHT	longword unsigned;	/*Rectangle's height
+	constant "REC_LENGTH" equals .;		/*Length of rectangle block
+	end RECTANGLE_BLOCK;
+/*
+/* Pasteboard color lookup table data structure definition
+/*
+    aggregate PB_COLORS structure prefix VS$VDS_;
+	PB_BI	bitfield length 8;		/*Blue intensity
+	PB_GI	bitfield length 8;		/*Green intensity
+	PB_RI	bitfield length 8;		/*Red intensity
+	PB_BK	bitfield;			/*Blink bit for this entry
+	EXTRA	bitfield;			/*Reserved
+	constant "PB_COLORS_LENGTH" equals .;	/*Length of PB color block
+	end PB_COLORS;
+/*
+/* Pasteboard "pasted-on-me" block data structure definition
+/*
+    aggregate PME_BLOCK structure prefix VS$VDS_;
+	PME_NEXT_PTR	address;		/*Ptr to next PME in list
+	PME_BACK_PTR	address;		/*Ptr to last PME in list
+	PME_SIZE	word unsigned;		/*Size of pasted-on block
+	PME_TYPE	word unsigned;		/*Data block type (for VMS)
+	PME_PB_ID	longword unsigned;	/*Unique ID of pasteboard
+	PME_X_COOR	longword unsigned;	/*X-coordinate on me
+	PME_Y_COOR	longword unsigned;	/*Y-coordinate on me
+	constant "PME_LENGTH" equals .;		/*Length of pasted-on block
+	end PME_BLOCK;
+/*
+/* Pasteboard "pasted-on" block data structure definition
+/*
+    aggregate PON_BLOCK structure prefix VS$VDS_;
+	PON_NEXT_PTR	address;		/*Ptr to next PON in list
+	PON_BACK_PTR	address;		/*Ptr to last PON in list
+	PON_SIZE	word unsigned;		/*Size of pasted-on block
+	PON_TYPE	word unsigned;		/*Data block type (for VMS)
+	PON_PB_ID	longword unsigned;	/*Unique ID of pasteboard
+	PON_VD_ID	longword unsigned;	/*Unique ID of VD for occlusion
+	PON_X_COOR	longword unsigned;	/*X-coordinate on pasteboard
+	PON_Y_COOR	longword unsigned;	/*Y-coordinate on pasteboard
+	constant "PON_LENGTH" equals .;		/*Length of pasted-on block
+	end PON_BLOCK;
+/*
+/* Pasteboard data structure definition
+/*
+    aggregate PB_BLOCK structure prefix VS$VDS_;
+	PB_NEXT_PTR	address;		/*Ptr to next PB in list
+	PB_BACK_PTR	address;		/*Ptr to last PB in list
+	PB_SIZE		word unsigned;		/*Size of pasteboard block
+	PB_TYPE		word unsigned;		/*Data block type (for VMS)
+	PB_ID		longword unsigned;	/*Unique ID of pasteboard
+	PB_COLOR	longword unsigned;	/*Pasteboard color number
+	PB_LENGTH	longword unsigned;	/*Pasteboard length
+	PB_HEIGHT	longword unsigned;	/*Pasteboard height
+	PB_COLOR_TABLE	address;		/*Ptr to PB color lookup table
+	PB_PON_PTR	address;		/*Ptr to pasted-on list head
+	PB_PON_TAIL	address;		/*Ptr to pasted-on list tail
+	PB_PME_PTR	address;		/*Ptr to pasted-on-me list head
+	PB_PME_TAIL	address;		/*Ptr to pasted-on-me list tail
+	PB_VDL_PTR	address;		/*Ptr to virtual display head
+	PB_VDL_TAIL	address;		/*Ptr to virtual display tail
+	PB_WL_PTR	address;		/*Ptr to window list head
+	PB_WL_TAIL	address;		/*Ptr to window list tail
+
+	/* The following blocks must be kept contiguous and in order, since
+	/* the code deals with them as addressed blocks.
+	/*
+	PB_MOUSE_X_COOR	longword;		/*Mouse coordinates on this pb
+	PB_MOUSE_Y_COOR	longword;
+	PB_MOUSE_BUTTON_VAL	longword;	/*Mouse button settings
+	PB_MOUSE_ENTERED_FLAG longword;		/*1 if mouse just entered.
+	/*
+	PB_BTN_PTR	address;		/* Ptr to mouse btn list head
+	PB_BTN_TAIL	address;		/* Ptr to mouse btn list tail
+	/*
+	PB_MOV_PTR	address;		/* Ptr to mouse move list head
+	PB_MOV_TAIL	address;		/* Ptr to mouse move list tail
+	/*
+	PB_BOU_PTR	address;		/* Ptr to mouse bndry list head
+	PB_BOU_TAIL	address;		/* Ptr to mouse bndry list tail
+
+	PB_INTERNAL_FLAG	byte;		/* = 1 if user programs may
+						/*  not access this pasteboard
+
+	CHARACS		union;
+/*
+/* The PBFLAGS in vsacpdef are used interchangably with the PB_CHARS ones in
+/* vsvdspb.  It would be nice if one set were eliminated, but until then,
+/* make sure that you keep symbols the same value that have the same meaning.
+/* For instance, PERM_PB must be the same value as PB_PERM etc.
+/*
+	    PB_CHARS		byte unsigned tag "B";
+	    CHARBITS	structure prefix VS$VDS_;/* PB characteristics
+		PB_PERM		bitfield mask;	/* 1=Permanent, 0=temporary
+		PB_VKB		bitfield mask;	/* 1 => With virtual keyboard
+		PB_VTB		bitfield mask;	/* 1 => With virtual tablet
+		PB_TERM		bitfield mask;	/* 1 => PB part of a terminal
+		charbitspare	bitfield length 4;
+	    end CHARBITS;
+	end CHARACS;
+
+	PB_PROT			word;		/* UIC protection code
+	PB_UIC			longword;	/* UIC of owner
+	PB_PID			longword;	/* PID of owner process
+
+	PB_POPUP_WIN_ID	longword;	/* if non-0, popped up window
+	PB_POPUP_VP_ID	longword;	/* if non-0, popped up vd
+	PB_HELP_ROUTINE	address;	/* help ROUTINE
+	PB_HELP_DATA	longword;	/* data to pass to help routine
+	constant "PB_LENGTH" equals .;		/*Length of pasteboard block
+	end PB_BLOCK;
+/*
+/* Virtual Display data structure definition
+/*
+    aggregate VD_BLOCK structure prefix VS$VDS_;
+	VD_NEXT_PTR	address;		/*Ptr to next VD in list
+	VD_BACK_PTR	address;		/*Ptr to last VD in list
+	VD_SIZE		word unsigned;		/*Size of VD block
+	VD_TYPE		word unsigned;		/*Data block type (for VMS)
+	VD_ID		longword unsigned;	/*Unique virtual display ID
+	VD_X_COOR	longword unsigned;	/*X-coordinate of VD in PB
+	VD_Y_COOR	longword unsigned;	/*Y-coordinate of VD in PB
+	VD_LENGTH	longword unsigned;	/*Length of VD in PB
+	VD_HEIGHT	longword unsigned;	/*Height of VD in PB
+	VD_VVR_PTR	address;		/*Ptr to its visible rectangles
+	VD_VVR_TAIL	address;		/*Ptr to its vis. rect. tail
+	VD_VOR_PTR	address;		/*Ptr to its occluded rectangles
+	VD_VOR_TAIL	address;		/*Ptr to its occ. rect. tail
+	constant "VD_LENGTH" equals .;		/*Length of VD block
+	end VD_BLOCK;
+/*
+/* Virtual Display visible rectangle data structure definition
+/*
+    aggregate VVR_BLOCK structure prefix VS$VDS_;
+	VVR_NEXT_PTR	address;		/*Ptr to next VVR in list
+	VVR_BACK_PTR	address;		/*Ptr to last VVR in list
+	VVR_SIZE	word unsigned;		/*Size of VVR block
+	VVR_TYPE	word unsigned;		/*Data block type (for VMS)
+	VVR_R_X_COOR	longword unsigned;	/*X-coordinate of rectangle
+	VVR_R_Y_COOR	longword unsigned;	/*Y-coordinate of rectangle
+	VVR_R_LENGTH	longword unsigned;	/*Length of visible rectangle
+	VVR_R_HEIGHT	longword unsigned;	/*Height of visible rectangle
+	constant "VVR_LENGTH" equals .;		/*Length of VVR block
+	end VVR_BLOCK;
+/*
+/* Virtual Display occluded rectangle data structure definition
+/*
+    aggregate VOR_BLOCK structure prefix VS$VDS_;
+	VOR_NEXT_PTR	address;		/*Ptr to next VOR in list
+	VOR_BACK_PTR	address;		/*Ptr to last VOR in list
+	VOR_SIZE	word unsigned;		/*Size of VOR block
+	VOR_TYPE	word unsigned;		/*Data block type (for VMS)
+	VOR_R_X_COOR	longword unsigned;	/*X-coordinate of rectangle
+	VOR_R_Y_COOR	longword unsigned;	/*Y-coordiante of rectangle
+	VOR_R_LENGTH	longword unsigned;	/*Length of occluded rectangle
+	VOR_R_HEIGHT	longword unsigned;	/*Height of occluded rectangle
+	VOR_OCC_PTR	address;		/*Rectangle occlusion list ptr
+	VOR_OCC_TAIL	address;		/*Rectangle occlusion list tail
+	constant "VOR_LENGTH" equals .;		/*Length of VOR block
+	end VOR_BLOCK;
+/*
+/* Occluded rectangle occlusion data structure definition
+/*
+    aggregate OCC_BLOCK structure prefix VS$VDS_;
+	OCC_NEXT_PTR	address;		/*Ptr to next OCC in list
+	OCC_BACK_PTR	address;		/*Ptr to last OCC in list
+	OCC_SIZE	word unsigned;		/*Size of OCC block
+	OCC_TYPE	word unsigned;		/*Data block type (for VMS)
+	OCC_VD_ID	longword unsigned;	/*VD ID occluding rectangle
+	constant "OCC_LENGTH" equals .;		/*Length of OCC block
+	end OCC_BLOCK;
+/*
+/* Window data structure definition
+/*
+    aggregate W_BLOCK structure prefix VS$VDS_;
+	W_NEXT_PTR	address;		/*Ptr to next window in list
+	W_BACK_PTR	address;		/*Ptr to last window in list
+	W_SIZE		word unsigned;		/*Size of window block
+	W_TYPE		word unsigned;		/*Data block type (for VMS)
+	W_ID		longword unsigned;	/*Unique ID of window
+	W_NAME_LEN	longword unsigned;	/*Window name length
+	W_NAME_ADR	address;		/*Window name address
+	W_PB_ID		longword unsigned;	/*ID of its pasteboard
+	W_VP_ID		longword unsigned;	/*ID of its mapped viewport
+	W_PID		longword unsigned;	/*PID of its owner process
+	W_X_COOR	longword unsigned;	/*X-coordinate within PB
+	W_Y_COOR	longword unsigned;	/*Y-coordinate within PB
+	W_LENGTH	longword unsigned;	/*Length of window
+	W_HEIGHT	longword unsigned;	/*Height of window
+	W_WVR_PTR	address;		/*Ptr to its visible rectangles
+	W_WVR_TAIL	address;		/*Ptr to its vis. rect. tail
+	constant "W_LENGTH" equals .;		/*Length of window block
+	end W_BLOCK;
+/*
+/* Window visible rectangle data structure definition
+/*
+    aggregate WVR_BLOCK structure prefix VS$VDS_;
+	WVR_NEXT_PTR	address;		/*Ptr to next WVR in list
+	WVR_BACK_PTR	address;		/*Ptr to last WVR in list
+	WVR_SIZE	word unsigned;		/*Size of WVR block
+	WVR_TYPE	word unsigned;		/*Data block type (for VMS)
+	WVR_VD_ID	longword unsigned;	/*Visible rectangle's VD ID
+	WVR_R_X_COOR	longword unsigned;	/*X-coordinate of rectangle
+	WVR_R_Y_COOR	longword unsigned;	/*Y-coordinate of rectangle
+	WVR_R_LENGTH	longword unsigned;	/*Length of rectangle
+	WVR_R_HEIGHT	longword unsigned;	/*Height of rectangle
+	constant "WVR_LENGTH" equals .;		/*Length of WVR block
+	end WVR_BLOCK;
+/*
+/* End of module VS$VDS_PB
+/*
+    end_module;

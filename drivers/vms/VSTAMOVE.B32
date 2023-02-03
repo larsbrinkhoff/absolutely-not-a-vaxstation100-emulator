@@ -1,0 +1,559 @@
+%title 'vsta$move -- Move VP services'
+MODULE vsta$move (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!++
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This module contains the code for fast viewport movement
+!
+!---
+
+
+!
+! TABLE OF CONTENTS:
+!
+forward routine!s
+	 VSTA$$MOVE_MODE
+	,VSTA$$MOVE_MOUSE_EVENT_AST
+	,VSTA$$MOVE_CANCEL
+	;
+
+external routine!s
+	 VSTA$$GET_EF
+	,LIB$FREE_EF
+	,VSTA$$ERROR
+	,VSTA$$VDS_PURGE_ALL_VD_RC_LISTS
+	,VSTA$$MOUSE_SET_MOVE_REQUEST
+	,VSTA$$MOUSE_SET_BUTTON_REQUEST
+	,VSTA$$MOUSE_GET_VB_INFO
+	,VSTA$$SRV_CURSOR_MOVE
+	;
+
+library 'VSTA$LIBRARY:VSTAMACS';	! $DRIVExxx macro's
+library 'VSTA$LIBRARY:VSTADEF';		! VSTA$K_VAXMEM OR VSTA$K_DISPMEM
+library 'VSTA$LIBRARY:VSTAGBL';		! VSTA$K_ symbols
+library 'VSTA$LIBRARY:VSTANATIV';	! Bitmap descriptor symbols
+library 'SYS$LIBRARY:STARLET';		! System symbols
+library 'VSTA$LIBRARY:LIBMACROS';	! Common VSTA symbols
+
+!
+! PSECT Definitions
+!
+$vsta_psect;
+
+
+external
+
+	 MOUSE_PASSALL_ROUTINE		! Defined in mouseloc.b32
+	,MOUSE_PASSALL_ARGUMENT		! Defined in mouseloc.b32
+	,SRV_PS_ID			! Defined for current session
+	,VS$GW_VBCHAN			! Defined for current session
+	,VSTA$A_FRAME_BUFFER		! Defined in vbcontrol.b32
+		: REF MODIFIED_BMDS	! Pointer to frame buffer descr
+	,VSTA$GL_SCREEN			! Defined in vbcontrol.b32
+	;
+
+
+OWN
+	 MOVE$L_ATTACHED_MS_X		! X point of mouse attachment point
+	,MOVE$L_ATTACHED_MS_Y		! Y point of mouse attachment point
+	,MOVE$L_TIME_OUT		! Time out for move mode
+	,MOVE$B_SCREEN_COPY		! Screen copy bitmap descriptor
+		: MODIFIED_BMDS		! Modified bm structure
+	,MOVE$B_RECTANGLE_COPY		! VP copy bitmap descritpor
+		: MODIFIED_BMDS		! Modified bm structure
+	,MOVE$L_EFN			! Event flag to use for ACP process
+					! level operations
+	,MOVE$L_STATUS			! Store the resulting movement status
+	,MOVE$L_IN_MOVE_MODE		! True if we are in move mode
+		: INITIAL (0)		! false if we are not
+	;
+
+
+%sbttl 'VSTA$$MOVE_MODE -- Control for moving vp'
+GLOBAL ROUTINE VSTA$$MOVE_MODE(
+				 RECTANGLE	: ref vector [,word,signed]
+				,MS_OFF_X	: signed
+				,MS_OFF_Y	: signed
+				,VP_MOVER_ERASE_ROUTINE
+				,VP_MOVER_COPY_ROUTINE
+				,HVPID		! hi vp id
+				,UVPID		! user vp id
+				) =
+!
+! Functional Description
+!
+!   This routine uses offscreen memory and freezes the ACP for the time
+!   necessary to move the specified viewport until the user has decided to
+!   drop it by pushing the select button.
+!
+!
+!   Assumes that the viewport has been poped to the top prior to calling
+!   this routine.
+!
+! Formal parameters
+!
+!   RECTANGLE		! address of a 4 word block that describes the
+!			! the rectangle that the vp takes up on the screen
+!			! the xoffset and yoffset (1st word and 2nd word)
+!			! of the rectangle is updated with the new position
+!			! of the vp durring the vp movement.
+!
+!   MS_OFF_X		! X offset to where the mouse is attached to the rectangle
+!
+!   MS_OFF_Y		! Y offset to where the mouse is attached to the rectangle
+!
+!   ROUTIN		! address of routine ot remove vp from copied version
+!			! of the screen
+!--
+begin
+
+local
+	 S
+	,MS_X
+	,MS_Y
+	,BUTTONS
+	;
+
+!
+!  Map the viewport rectangle to the specified symbols
+!
+bind
+	 OLDX		= RECTANGLE [0] : signed word 		! to be updated
+	,OLDY		= RECTANGLE [1] : signed word		! to be updated
+	,XEXT		= RECTANGLE [2] : signed word
+	,YEXT		= RECTANGLE [3] : signed word
+	;
+
+
+!
+!  Purge all caches
+!
+VSTA$$VDS_PURGE_ALL_VD_RC_LISTS();
+
+!
+!  Save the mouse attachment point in the global variables
+!
+MOVE$L_ATTACHED_MS_X = .MS_OFF_X;
+MOVE$L_ATTACHED_MS_Y = .MS_OFF_Y;
+
+!
+!  Set up the descriptor for the offscreen version of the display
+!
+MOVE$B_SCREEN_COPY [MBMD$A_ADDR] = .VSTA$GL_SCREEN + %X'1CB00';
+MOVE$B_SCREEN_COPY [MBMD$W_SIZE_X] = 1088;
+MOVE$B_SCREEN_COPY [MBMD$W_SIZE_Y] = 864;
+MOVE$B_SCREEN_COPY [MBMD$W_SIZE_Z] = 1;
+MOVE$B_SCREEN_COPY [MBMD$W_LOCATE] = VSTA$K_DISPMEM;
+
+!
+!  Set up the descriptor for the off screen version of the rectangle
+!
+MOVE$B_RECTANGLE_COPY [MBMD$A_ADDR] = .VSTA$GL_SCREEN + 2*%X'1CB00';
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_X] = 1088;
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_Y] = 864;
+MOVE$B_RECTANGLE_COPY [MBMD$W_SIZE_Z] = 1;
+MOVE$B_RECTANGLE_COPY [MBMD$W_LOCATE] = VSTA$K_DISPMEM;
+
+!
+!  Copy the screen to off screen memory
+!
+$DRIVECOPY(
+		 CHAN	= .VS$GW_VBCHAN
+		,SRCTYP	= VSTA$K_SRC_BM
+		,SOURCE	= VSTA$A_FRAME_BUFFER [0,0,0,0]
+		,MSKTYP	= VSTA$K_MSK_NONE
+		,DST	= MOVE$B_SCREEN_COPY
+	 );
+
+!
+!  Point the frame buffer descriptor to the copied version of the screen
+!
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .MOVE$B_SCREEN_COPY [MBMD$A_ADDR];
+
+!
+!  Call the vp mover routine to erase the copy of the vp in the offscreen
+!  version of the frame buffer
+!
+if not (S = (.VP_MOVER_ERASE_ROUTINE)(.HVPID, .UVPID))
+then begin
+	!
+	!  Point the frame buffer descriptor back to the origional screen 
+	!
+	VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+
+	return .S;
+     end;
+
+
+!
+!  Point the frame buffer descriptor to the vp copy frame buffer
+!
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .MOVE$B_RECTANGLE_COPY [MBMD$A_ADDR];
+
+!
+!  Call the vp mover routine to copy the vp in the offscreen
+!  version of the vp.  the 1 in the argument list means to redisplay the vp.
+!
+if not (S = (.VP_MOVER_COPY_ROUTINE)(.HVPID, .UVPID))
+then begin
+	!
+	!  Point the frame buffer descriptor back to the origional screen 
+	!
+	VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+
+	return .S;
+     end;
+
+!
+!  Point the frame buffer descriptor back to the origional screen 
+!
+VSTA$A_FRAME_BUFFER [MBMD$A_ADDR] = .VSTA$GL_SCREEN;
+
+!
+!  Get a unique efn to use for processing
+!
+	if not (s = VSTA$$GET_EF( MOVE$L_EFN))
+	then return .s;
+	$CLREF( efn = .MOVE$L_EFN);
+
+!
+!  Clear the timeout flag
+!
+MOVE$L_TIME_OUT = 0;
+
+!
+!  Get the current mouse position
+!
+if not (S = VSTA$$MOUSE_GET_VB_INFO( MS_X, MS_Y, BUTTONS))
+then return .S;
+
+!
+!  Indicate that we are in move mode.  This MUST be done here so that
+!	VSTA$$MOVE_MOUSE_EVENT_AST can be used below for the jump
+!	that brings the point of attachment into the VP rectangle.
+!
+MOVE$L_IN_MOVE_MODE = 1;
+
+!
+!  We are to have the viewport jump to current spot then
+!  call the ast routine directly to put the viewport where the mouse
+!  currently is.
+!
+!  
+if not (S = VSTA$$MOVE_MOUSE_EVENT_AST( RECTANGLE [0], .MS_X, .MS_Y, 0))
+then return .S;
+
+!
+!  Submit request for button ast  That routine will set a flag for us
+!  and free us from the wait for movement state.
+!
+MOUSE_PASSALL_ARGUMENT = RECTANGLE [0];
+MOUSE_PASSALL_ROUTINE = VSTA$$MOVE_MOUSE_EVENT_AST;
+
+!
+!  Make sure the mouse is enabled for asts !!! Do this after
+!  we set the passall option for the mouse because of timing problem.
+!
+VSTA$$MOUSE_SET_MOVE_REQUEST( .SRV_PS_ID);
+
+!
+!  For each mouse button state make sure there is an outstanding request
+!
+incr i from 0 to (external literal N_BUTTON_STATES ; N_BUTTON_STATES - 1)
+do VSTA$$MOUSE_SET_BUTTON_REQUEST (.SRV_PS_ID, .I);
+
+!
+!  Clear the movement status flag
+!
+MOVE$L_STATUS = SS$_NORMAL;
+
+!
+! Only now that we're really ready to start really moving the object do
+! we show the movement cursor.
+!
+VSTA$$SRV_CURSOR_MOVE ();
+
+!
+!
+!  Wait for mouse movement or button press operations to cease.  These
+!  operations are performed by the ast routine
+!
+$WAITFR( efn = .MOVE$L_EFN);
+
+!
+!  Get rid of the allocated event flag
+!
+LIB$FREE_EF( MOVE$L_EFN);
+
+return .MOVE$L_STATUS;
+
+end;
+
+
+
+
+%sbttl 'VSTA$$MOVE_MOUSE_EVENT_AST -- Handle mouse request for moving vp'
+routine VSTA$$MOVE_MOUSE_EVENT_AST( RECTANGLE: ref vector [,word,signed] 
+					, MS_X, MS_Y, DOWN_MASK) =
+!++
+!  This routine will be called by the mouse modules when a mouse event
+!  occurs.  This routine is meant to process at ast level an must be called
+!  at ast level for anything to happen
+!
+!--
+begin
+
+local
+	 RC1		: ref vector [,word]
+	,RC2		: ref vector [,word]
+	,DY
+	,DX
+	,TWO_REC	: vector [8,word]
+	,RC_COUNT
+	,MOUSE_X
+	,MOUSE_Y
+	,S
+	;
+
+
+!
+!  Map the viewport rectangle to the specified symbols
+!
+bind
+	 OLDX		= RECTANGLE [0] : signed word 		! to be updated
+	,OLDY		= RECTANGLE [1] : signed word		! to be updated
+	,XEXT		= RECTANGLE [2] : signed word
+	,YEXT		= RECTANGLE [3] : signed word
+	;
+
+
+!
+!  If we are not in move mode then just return
+!
+if not .MOVE$L_IN_MOVE_MODE
+then return SS$_NORMAL;
+
+!
+!  Point the clipping rectangles at the stack
+!
+RC1 = TWO_REC [0];
+RC2 = TWO_REC [4];
+
+!
+!  Translate the mouse position so that mouse_x and mouse_y refer to the
+!  upper left corner of the rectangle.  Translate the coordinates by the
+!  mouse attach point
+!
+MOUSE_X = .MS_X - .MOVE$L_ATTACHED_MS_X;
+MOUSE_Y = .MS_Y - .MOVE$L_ATTACHED_MS_Y;
+
+!
+!  If SELECT button pressed then we're done.
+!
+if (.DOWN_MASK AND VSTA$K_SELECT_BUTTON) neq 0 or .MOVE$L_TIME_OUT
+then begin
+		MOVE$L_IN_MOVE_MODE = 0;
+		$SETEF( efn = .MOVE$L_EFN);
+		MOUSE_PASSALL_ROUTINE = 0;
+		MOUSE_PASSALL_ARGUMENT = 0;
+     end;
+!
+!  Now copy the rectangle from its saved location in disp mem
+!  to its new position on the screen
+!
+if not (S=$DRIVECOPY(
+	 CHAN	= .VS$GW_VBCHAN
+	,SRCTYP	= VSTA$K_SRC_BM
+	,SOURCE	= MOVE$B_RECTANGLE_COPY
+	,MSKTYP	= VSTA$K_MSK_RECTANGLE
+	,MASK	= RECTANGLE [2]
+	,DST	= VSTA$A_FRAME_BUFFER [0,0,0,0]
+	,DSTOFX = .MOUSE_X
+	,DSTOFY = .MOUSE_Y
+	 ))
+then begin
+		MOVE$L_IN_MOVE_MODE = 0;
+		MOVE$L_STATUS = .S;
+		$SETEF( efn = .MOVE$L_EFN);
+		MOUSE_PASSALL_ROUTINE = 0;
+		MOUSE_PASSALL_ARGUMENT = 0;
+     end;
+
+
+
+!
+!  Get the difference in the current position and the old position of
+!  the rectangle
+!	
+DX = .MOUSE_X - .OLDX;
+DY = .MOUSE_Y - .OLDY;
+
+RC_COUNT = 1;
+
+if .DX eql 0	! Movement in the y direction
+then begin
+	!
+	!  Get the y offset of the recovery rectangle
+	!
+	if .DY lss 0
+	then begin
+		RC1 [1] = .MOUSE_Y + .YEXT;
+		RC1 [3] = -.DY;
+	     end
+	else begin
+		RC1 [1] = .OLDY;
+		RC1 [3] = .DY;
+	     end;
+	
+	!
+	!  Fill in the rest of the rectangle information
+	!
+	RC1 [0] = .OLDX;
+	RC1 [2] = .XEXT;
+
+     end	!  End of movement in the y direction
+else if .DY eql 0	! MOvement in the x direction
+then begin
+	!
+	!  Get the x offset of the recovery rectangle
+	!
+	if .DX lss 0
+	then begin
+		RC1 [0] = .MOUSE_X + .XEXT;
+		RC1 [2] = -.DX;
+	     end
+	else begin
+		RC1 [0] = .OLDX;
+		RC1 [2] = .DX;
+	     end;
+	
+	!
+	!  Fill in the rest of the rectangle information
+	!
+	RC1 [1] = .OLDY;
+	RC1 [3] = .YEXT;
+
+     end	!  End of movement in the x direction
+else begin	!  Movement in both directions
+	!
+	!  There will be two rectangle here
+	!
+	RC_COUNT = 2;
+	!
+	!  Determine the horizontal recovery rectangle first
+	!
+	!
+	!  Get the y offset of the recovery rectangle
+	!
+	if .DY lss 0
+	then begin
+		RC1 [1] = .MOUSE_Y + .YEXT;
+		RC1 [3] = -.DY;
+		RC2 [1] = .OLDY;
+		RC2 [3] = .YEXT + .DY;
+	     end
+	else begin
+		RC1 [1] = .OLDY;
+		RC1 [3] = .DY;
+		RC2 [1] = .MOUSE_Y;
+		RC2 [3] = .YEXT - .DY;
+	     end;
+
+	!
+	!  Get the x offset of the recovery rectangle
+	!
+	if .DX lss 0
+	then begin
+		RC2 [0] = .MOUSE_X + .XEXT;
+		RC2 [2] = -.DX;
+	     end
+	else begin
+		RC2 [0] = .OLDX;
+		RC2 [2] = .DX;
+	     end;
+
+	!
+	!  Fill in the rest of the rectangle information
+	!
+	RC1 [0] = .OLDX;
+	RC1 [2] = .XEXT;
+	
+     end;	!  End of movement in both directions
+
+!	
+!  Now fill in the places the rectangle was but is no more
+!
+if not (S=$DRIVECOPY(
+	 CHAN	= .VS$GW_VBCHAN
+	,SRCTYP	= VSTA$K_SRC_BM
+	,SOURCE	= MOVE$B_SCREEN_COPY
+	,SRCOFX	= .OLDX
+	,SRCOFY = .OLDY
+	,MSKTYP	= VSTA$K_MSK_RECTANGLE
+	,MASK	= RECTANGLE [2]
+	,DST	= VSTA$A_FRAME_BUFFER [0,0,0,0]
+	,DSTOFX = .OLDX
+	,DSTOFY = .OLDY
+	,RECNUM	= .RC_COUNT
+	,RECADR	= .RC1
+	,EFN	= 1
+	 ))
+then begin
+		MOVE$L_IN_MOVE_MODE = 0;
+		MOVE$L_STATUS = .S;
+		$SETEF( efn = .MOVE$L_EFN);
+		MOUSE_PASSALL_ROUTINE = 0;
+		MOUSE_PASSALL_ARGUMENT = 0;
+     end;
+
+
+!
+!  Update the offsets of the rectangle
+!
+RECTANGLE [1] = .MOUSE_Y;
+RECTANGLE [0] = .MOUSE_X;
+
+
+return ss$_normal;
+
+end;		! End of mover ast handler
+
+
+
+%sbttl 'VSTA$$MOVE_CANCEL -- Cancel move mode'
+global routine VSTA$$MOVE_CANCEL =
+!++
+!
+!  This routine will check to see if we are in move mode and then exit the
+!  mode if we are not.
+!
+!--
+begin
+
+!
+!  If we are not in move mode then just return good status
+!
+if not .MOVE$L_IN_MOVE_MODE
+then return SS$_NORMAL;
+
+!
+!  Clean up the mouse stuff and set the long awaited event flag
+!
+MOVE$L_IN_MOVE_MODE = 0;
+MOUSE_PASSALL_ROUTINE = 0;
+MOUSE_PASSALL_ARGUMENT = 0;
+$SETEF( efn = .MOVE$L_EFN);
+
+return SS$_NORMAL;
+
+end;			! End of VSTA$$MOVE_CANCEL
+
+
+end
+eludom
+

@@ -1,0 +1,225 @@
+%title 'VSTA$COM VaxStation ACP communications firewall'
+MODULE VSTA$COM ( 			! VaxStation ACP communications
+		IDENT = '1-001',	! Version
+		ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL=GENERAL)
+		 ) =
+BEGIN
+!++
+! FACILITY:
+!	VaxStation (VSTA)
+!
+! ABSTRACT:
+!
+!	Provides an interface between the ACP and human interface.
+!
+! ENVIRONMENT:
+!			VaxStation ACP
+!
+!--
+
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$com_init,			! Top level startup routine
+    vsta$$com_create_terminal,		! Create a terminal for the HI
+    vsta$$com_delete_terminal;		! Delete a terminal for the HI
+
+! INCLUDE FILES:
+LIBRARY 'SYS$LIBRARY:STARLET';
+library 'vsta$library:vsacpdef';	!Symbols like vs$m_perm_vd
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Emulated terminal type defs.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+REQUIRE 'VSTA$LIBRARY:VXSLIB';		!Emulated terminal create parameters.
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Common VSTA symbols/macros
+
+$vsta_psect;				!Define PSECTs
+
+COMPILETIME
+    debug=0;
+
+EXTERNAL ROUTINE
+    vsta$$error,			! Error reporting.
+    vsta$$srv_init_srv,			! Init the HI
+    vsta$$srv_term_created,		! Notify the HI.
+    vs$$vtem_vt100_create,		! Create a VT100 emulator.
+    vs$$vtem_vt100_delete,		! Delete the above.
+    vs$$vtem_tek4014_create,		! Create a TEK.
+    vs$$vtem_tek4014_delete,		! Delete the above.
+    vs$$vss_create_vs,			! Virtual Screen
+    vs$$vss_create_ps;			! Physical Screen
+
+EXTERNAL
+    srv$gl_vt_lines,	! lines from profile
+    srv$gl_vt_columns,	! columns from profile
+    vs$gl_acp_uic,		!uic of the ACP
+    vs$gl_pid;			!Process id doing the QIO
+
+LITERAL
+    true=1,
+    false=0;
+
+
+%sbttl 'vsta$$com_init -- Start up communcations paths for HI and SUBACP.'
+GLOBAL ROUTINE vsta$$com_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initializes human interface, waits for mouse button, then
+!	calls human interface to start the session and returns.
+!
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Do it all...
+!
+IF NOT (status=vsta$$srv_init_srv ())
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL	!return success
+END;
+
+%sbttl	'vsta$$com_create_terminal --	Create a terminal for the HI'
+GLOBAL ROUTINE vsta$$com_create_terminal
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+	(type		!Type of terminal
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    uic,
+    status;			! Holder for routine status.
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!! Do the create.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+! set the rows and columns for the desired size of DEC terminal		
+(SELECTONE .type OF							
+	SET								
+	[vsta$k_termtype_vt100]:					
+		BEGIN							
+		srv$gl_vt_lines = 24;					
+		srv$gl_vt_columns = 80;					
+		END;							
+	[vsta$k_termtype_vt100_small]:					
+		BEGIN							
+		srv$gl_vt_lines = 12;					
+		srv$gl_vt_columns = 80;					
+		END;							
+	[vsta$k_termtype_vt100_tall]:					
+		BEGIN							
+		srv$gl_vt_lines = 48;					
+		srv$gl_vt_columns = 80;					
+		END;							
+	[vsta$k_termtype_vt100_wide]:					
+		BEGIN							
+		srv$gl_vt_lines = 24;					
+		srv$gl_vt_columns = 132;				
+		END;							
+	TES);								
+
+(CASE .type
+	FROM vsta$k_termtype_lowest TO vsta$k_termtype_highest OF
+	SET
+
+	[vsta$k_termtype_vt100 TO vsta$k_termtype_vt100_wide]:		
+		BEGIN
+		IF NOT (status =
+			vs$$vtem_vt100_create
+				(vd_id
+				,.srv$gl_vt_lines	! lines
+				,.srv$gl_vt_columns	! columns
+				,vsta$k_vt100_cols_wide	! columns in wide mode
+				,.vs$gl_acp_uic		!My uic
+				,0			!Temporary so it will
+							!go away when job logs
+							!out
+				,0			!Protection
+				,%ASCID 'DEC terminal'	!Name description
+				)
+			)
+		  THEN RETURN .status;
+		END;
+
+	[vsta$k_termtype_tek4014]:
+		BEGIN
+		IF NOT (status =
+			vs$$vtem_tek4014_create
+				(vd_id
+				,vsta$k_tek4014_length
+				,vsta$k_tek4014_height
+				,1		! Depth (Z) in planes...
+				,vsta$k_tek4014_char_bits
+				,vsta$k_tek4014_char_mask
+				,.vs$gl_acp_uic
+				,0		!Temporary so it will go away
+						! when job logs out
+				,0		!Protection
+				,%ASCID 'TEK4014' !Name description
+				)
+			)
+		  THEN RETURN .status;
+		END;
+
+	[OUTRANGE] : RETURN $error (vsta$_ttrange
+				,integer_type, .type
+				);
+	TES
+);		!End of CASE
+
+RETURN SS$_NORMAL
+END;
+
+%sbttl	'vsta$$com_delete_terminal --'
+GLOBAL ROUTINE vsta$$com_delete_terminal
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! FORMAL PARAMETERS:
+	(type			!Terminal type
+	,vd_id			!VD-id of terminal body
+	) =
+!--
+BEGIN
+LOCAL
+    status;			! Holder for routine status.
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!! Do the delete.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+(CASE .type
+	FROM vsta$k_termtype_lowest TO vsta$k_termtype_highest OF
+	SET
+
+	[vsta$k_termtype_vt100 TO vsta$k_termtype_vt100_wide]:
+		BEGIN
+		IF NOT (status = vs$$vtem_vt100_delete (.vd_id)
+			)
+		  THEN RETURN .status;
+		END;
+
+	[vsta$k_termtype_tek4014]:
+		BEGIN
+		IF NOT (status = vs$$vtem_tek4014_delete (.vd_id)
+			)
+		  THEN RETURN .status;
+		END;
+
+	[OUTRANGE] : RETURN $error (vsta$_ttrange
+				,integer_type, .type
+				);
+	TES
+);		!End of CASE
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

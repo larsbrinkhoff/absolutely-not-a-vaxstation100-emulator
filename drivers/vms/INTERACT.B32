@@ -1,0 +1,1438 @@
+MODULE interact (IDENT = 'V04-000',
+	ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:  Login
+!
+! ABSTRACT:
+!
+!	This module handles all processing of interactive jobs.
+!
+! ENVIRONMENT:
+!
+!	VAX/VMS operating system.
+!
+!--
+
+!
+! Include files
+!
+
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+REQUIRE 'SHRLIB$:UTILDEF';		! Common BLISS definitions
+REQUIRE 'LIB$:PPDDEF';			! Process permanent data region
+REQUIRE 'LIB$:LGIDEF';			! LOGINOUT private permanent storage
+
+!
+! Table of contents
+!
+
+FORWARD ROUTINE
+    init_interactive:	NOVALUE,	! Initialize interactive job
+    auto_login,				! Check if automatic login enabled
+    interactive_validation,		! Perform interactive validation
+    get_password,			! Acquire password from terminal
+    write_announcement,			! Write user-supplied announcement msg
+    announce:		NOVALUE,	! Announce successful login
+    zero_password:	NOVALUE,	! Zero password in RMS buffer
+    get_syspwd:		NOVALUE,	! Get system password
+    check_connection:	NOVALUE,	! Check for (re-)connection(s)
+    ascic_day_of_week;			! Return ASCIC day of week
+
+!
+! External routines
+!
+
+EXTERNAL ROUTINE
+    open_input:		NOVALUE,	! Open primary input file
+    open_output:	NOVALUE,	! Open primary output file
+    get_uafrec,				! Read UAF record without validation
+    update_uaf_record:	NOVALUE,	! Update the login failure count
+    write_file:		NOVALUE,	! Write file to primary output
+    write_output,			! Write to primary output stream
+    write_timeout:	NOVALUE,	! Cancel read and exit
+    write_fao:		NOVALUE,	! Write formatted message to output
+    get_input:		NOVALUE,	! Get record from primary input stream
+    set_uic,				! Set process UIC
+    set_username:	NOVALUE,	! Set username in JIB and P1 space
+    set_term_name:	NOVALUE,	! Set terminal name in PCB
+    set_sysprv:		NOVALUE,	! Set SYSPRV privilege
+    clear_sysprv:	NOVALUE,	! Clear SYSPRV privilege
+    exit_process:	NOVALUE,	! Exit process
+    lib$day_of_week,			! Find day of week from 64-bit time
+    mail$get_new_count,			! Get user's mail count
+    lgi$hpwd,				! Password masher
+    lgi$check_pass,			! Validate password against UAF record
+    lgi$searchuser,			! Retrieve a user record
+    security_audit:	NOVALUE,	! Perform a security audit
+    cia_scan,				! Check for suspect/intruder
+    cli$dcl_parse,			! Parse DCL command
+    cli$present,			! Check if entity present
+    cli$get_value,			! Get value from command line
+    cli$end_parse;			! Clean up after parsing
+
+!
+! External storage
+!
+
+EXTERNAL
+    phy_term_name:	VECTOR,		! descriptor of physical terminal name
+    terminal_device:	BYTE,		! True if SYS$INPUT is a terminal
+    input_chan,				! Channel assigned to SYS$INPUT
+    dev_dep_2:		$BBLOCK,	! Particular characteristics
+    dev_char_2:		$BBLOCK,	!  of SYS$INPUT
+    job_type,				! Job type for JIB
+    uaf_record:		REF BBLOCK,	! Address of UAF record
+    uaf_rab:		BBLOCK,		! RAB for UAF
+    uaf_fab:		BBLOCK,		! FAB for UAF
+    sys$input:		VECTOR,		! Translation of SYS$INPUT
+    sys$output:		VECTOR,		! Translation of SYS$OUTPUT
+    fail_password:	VECTOR,		! Descriptor of failing password
+    term_name:		VECTOR,		! Descriptor of terminal name
+    clu_term_name:	VECTOR,		! Descriptor of cluster terminal name
+    input_fab:		BBLOCK,		! Input FAB
+    input_rab:		BBLOCK,		! Input RAB
+    output_fab:		BBLOCK,		! Output FAB
+    ctl$ag_clidata,			! Process permanent data region
+    sys$gb_pwd_tmo:	BYTE,		! System password timeout limit
+    sys$gb_retry_lim:	BYTE,		! Number of retries allowed
+    sys$gb_retry_tmo:	BYTE;		! Number of seconds to wait for retries
+
+BIND
+    ppd = ctl$ag_clidata: BBLOCK;	! Address of PPD structure
+
+!
+! Literals
+!
+LITERAL
+    bell = 7,				! Ring bell
+    bs = 8,				! Backspace
+    cr = 13,				! Carriage return
+    lf = 10;				! Line feed
+
+EXTERNAL LITERAL
+    cli$_defaulted,			! Qualifier was defaulted
+    lgi$_connerr,			! Connection failed
+    lgi$_disreconnect,			! /CONNECT not legal
+    lgi$_evade,				! evasion in progress
+    lgi$_syspwdtmo,			! invalid user at terminal
+    lgi$_captive,			! illegal options on captive account
+    lgi$_defcli,			! /CLI and /TABLES not legal
+    lgi$_notvalid,			! invalid user authorization
+    lgi$_inputerr,			! Input device error
+    lgi$_userauth;			! invalid user authorization record
+
+!
+! OWN storage
+!
+OWN
+    user_buff : VECTOR[uaf$s_username,BYTE],
+    username : VECTOR[2] INITIAL(0, user_buff),
+    connect_name_buffer : VECTOR[40,BYTE],
+    connect_name : VECTOR[2]		! Descriptor of connection device
+		INITIAL(0, connect_name_buffer),
+    connect_check : INITIAL(0);		! True if /CONNECT
+
+GLOBAL
+    cli_name_buffer: VECTOR [80,BYTE],
+    table_name_buffer: VECTOR[80,BYTE],
+    disk_name_buffer: VECTOR [40,BYTE],
+    com_name_buffer: VECTOR [132,BYTE],
+    cli_name:	VECTOR [2]		! Descriptor of user CLI name
+		INITIAL(0,cli_name_buffer),
+    table_name:	VECTOR[2]		! Descriptor of CLI command table
+    		INITIAL(0,table_name_buffer),
+    disk_name:	VECTOR [2]		! Descriptor of user disk name
+		INITIAL(0,disk_name_buffer),
+    com_name:	VECTOR [2]		! Descriptor of user login proc
+		INITIAL(0,com_name_buffer),
+    com_negated: BYTE INITIAL(false);	! True if /NOCOMMAND
+
+GLOBAL ROUTINE init_interactive: NOVALUE =
+
+!---
+!
+!	Initialize an interactive job by requesting the usename
+!	and password from the terminal associated with the process.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	uaf_record = Address of UAF record for user
+!			(may be zero if no UAF record read, but login ok)
+!---
+
+BEGIN
+
+LOCAL
+    status,
+    arglist : VECTOR[2]
+    	      INITIAL(1, 0),
+    retry_count : BYTE INITIAL(0),	! Number of retries
+    buffer;				! Buffer for dummy read
+
+!
+! Set initial username of <login>
+!
+$CMKRNL(ROUTIN = set_username,		! Set initial username of process
+	ARGLST = $DESCRIPTOR('<login>'));
+
+!
+! Open the output and input files.
+!
+$CMEXEC(ROUTIN = open_output);		! Open output file
+$CMEXEC(ROUTIN = open_input);		! Open input file
+
+!
+! Now check the input device to see if it is a terminal.  If not,
+! then tell the user to buzz off.  This is so that no matter what
+! a user does, it is not possible to ask for a password from a file.
+! This helps to discourage people from putting their passwords on a
+! disk somewhere.
+!
+IF .$BBLOCK [input_fab[fab$l_dev], dev$v_fod]
+THEN SIGNAL_STOP(lgi$_userauth);
+
+!
+! Set the job type according to the characteristics of SYS$INPUT.
+! Set no initial typeahead purge for remote terminals.
+! Set terminal name in PCB.
+!
+IF .terminal_device
+THEN
+    BEGIN
+    IF .dev_char_2[dev$v_rtt]		! If remote terminal,
+    THEN
+	BEGIN
+	job_type = jib$c_remote;	! Set job type to remote
+	input_rab[rab$v_pta] = 0;	! Set no initial typeahead purge
+	END
+    ELSE
+	BEGIN
+	IF .dev_dep_2[tt2$v_dialup]	! Else if dialup terminal,
+	THEN job_type = jib$c_dialup	! Set job type to dialup
+	ELSE job_type = jib$c_local;	! Else set job type to local
+	END;
+    set_term_name();			! Set terminal name in PCB
+    END;
+
+!
+! Process the system password if there is one.
+!
+get_syspwd ();
+
+!
+! Write the system announcement if it exists; else write a blank line.
+!
+IF NOT write_announcement (%ASCID 'SYS$ANNOUNCE')
+THEN write_output (UPLIT (0, 0));
+
+WHILE true DO
+    BEGIN
+
+!
+! Reset all status information regarding login qualifiers each loop...
+!
+    cli_name[0] = 0;
+    cli_name[1] = cli_name_buffer;
+    table_name[0] = 0;
+    table_name[1] = table_name_buffer;
+    disk_name[0] = 0;
+    disk_name[1] = disk_name_buffer;
+    com_negated = false;
+    com_name[0] = 0;
+    com_name[1] = com_name_buffer;
+    connect_check = 0;
+    connect_name[0] = 0;
+    connect_name[1] = connect_name_buffer;
+
+!
+! If interactive process, and no automatic login is requested for this
+! terminal, then prompt for username & password and read UAF record.
+!
+    status = auto_login ();			! See if autologin
+    IF NOT .status
+    AND .status NEQ lgi$_userauth
+    AND .status NEQ lgi$_notvalid		! If not autologin,
+    THEN status = interactive_validation ();	! try regular interactive.
+
+!
+! Check the DISUSER flag here so that we stay in the retry loop if it's
+! set. This preserves the consistency of "invalid user" behavior for
+! the DISUSER flag. Also, this way attempts on disabled accounts are
+! detected by breakin detection.
+!
+
+    IF .status
+    AND .uaf_record NEQ 0
+    THEN
+	BEGIN
+	IF .uaf_record[uaf$v_disacnt]
+	AND (CH$NEQ (6, UPLIT BYTE ('_OPA0:'), .phy_term_name[0], .phy_term_name[1])
+	  OR CH$NEQ (6, UPLIT BYTE ('SYSTEM'), uaf$s_username, uaf_record[uaf$t_username], ' '))
+	THEN status = lgi$_notvalid;
+	END;
+
+!
+! Now run the login attempt against breakin detection. We inform
+! the CIA scan whether the login is successful so far; it informs
+! us if the subject is an intruder or not.
+!
+
+    IF NOT .status
+    THEN 
+	BEGIN
+	arglist[1] = 0;				! Want a suspect scan
+	IF NOT $CMKRNL (ROUTIN = cia_scan,	! If evasion is in effect
+			ARGLST = arglist)
+	THEN
+	    BEGIN
+	    $CMKRNL (ROUTIN = set_username,	! Set up username unconditionally
+		     ARGLST = username);
+	    security_audit(nsa$k_rectyp_logb);	!  then audit the breakin
+	    $CMKRNL (ROUTIN = set_username,	! Reset process name
+		     ARGLST = $DESCRIPTOR('<login>'));
+	    END;
+	IF .status EQL lgi$_notvalid		! If this was a password failure
+	AND .uaf_record NEQ 0
+	THEN update_uaf_record();		! Update the login failure count
+	END
+    ELSE
+	BEGIN
+	arglist[1] = 1;				! Look for an intruder
+	IF NOT $CMKRNL (ROUTIN = cia_scan,
+			ARGLST = arglist)
+	THEN
+    	    BEGIN
+	    status = lgi$_notvalid;
+	    ppd[ppd$l_lststatus] = lgi$_evade;
+	    END;
+	END;
+
+    IF .status	 				! If all done,
+    THEN RETURN;				! then go away.
+
+!
+! If the login attempt did not succeed, check to see if the retry count
+! has been exceeded.  If not, then change the severity to informational,
+! so that we continue after signalling.  Otherwise, when the signal of
+! the severe error occurs, the process will be terminated.
+!
+    retry_count = .retry_count + 1;		! Update retry count
+    IF .retry_count LSSU .sys$gb_retry_lim	! If we can retry again,
+    THEN status = (.status AND NOT sts$m_severity) ! then make the error
+    		    OR sts$k_error;		! an informational
+    SIGNAL (.status);				! and signal it.
+    $CMKRNL (ROUTIN = set_username,		! Reset process name
+	     ARGLST = $DESCRIPTOR('<login>'));
+
+!
+! If control returns to here after signalling, then hang a read out on
+! the terminal, with a timeout.
+!
+    input_rab [rab$v_pmt] = 0;			! No prompt
+    input_rab[rab$v_rne] = 1;			! and don't echo anything
+    input_rab[rab$w_usz] = 4;
+    input_rab[rab$l_ubf] = buffer;
+    get_input (input_rab, 1);			! Wait for next input
+
+    END;					! End of WHILE TRUE loop
+
+END;
+
+ROUTINE auto_login =
+
+!---
+!
+!	Check if any automatic login has been specified for the current
+!	terminal in SYSALF.DAT.  If so, obtain the UAF record without
+!	prompting for username. Password is still checked if present.
+!
+! Inputs:
+!
+!	sysalf_fab/rab = FAB/RAB for SYSALF file
+!	input_rab = RAB for terminal stream
+!
+! Outputs:
+!
+!	routine = True if automatic login enabled, else false
+!
+!	If automatic login enabled,
+!
+!	uaf_record = Address of user's UAF record, if automatic login enabled.
+!	The typeahead buffer is cleared.
+!---
+
+BEGIN
+
+LOCAL
+    status,
+    status1,
+    sysalf_fab:	BBLOCK [fab$c_bln],	! FAB for auto-login file
+    sysalf_rab:	BBLOCK [rab$c_bln],	! RAB for auto-login file
+    buffer:	BBLOCK [alf$c_length],	! SYSALF record buffer
+    input_buffer: VECTOR [128,BYTE];	! Input buffer
+
+$FAB_INIT(FAB = sysalf_fab,
+	FNM = 'SYSALF',			! Primary filespec
+	DNM = 'SYS$SYSTEM:.DAT',	! Default filespec
+	SHR = (GET,PUT,DEL,UPD),	! Set sharing options
+	ORG = IDX);			! ISAM file
+!
+! Disable group and process logical name translation for the open.  This
+! must be done manually, since $FAB_INIT doesn't know about this.
+!
+sysalf_fab[fab$v_lnm_mode] = psl$c_exec;
+
+$RAB_INIT(RAB = sysalf_rab,
+	FAB = sysalf_fab,		! Address of associated FAB
+	RAC = KEY,			! Keyed record access
+	KRF = 0,			! Reference by key #0
+	USZ = alf$c_length,		! Size of entire record
+	UBF = buffer,			! Address of record buffer
+	KSZ = alf$s_devname,		! Size of key field
+	KBF = buffer [alf$t_devname]);	! Address of key field
+
+set_sysprv();				! Enable SYSPRV so we can access file
+
+IF NOT $OPEN(FAB = sysalf_fab)		! Open SYSALF file, if possible
+THEN
+    BEGIN
+    clear_sysprv();			! Drop SYSPRV on exit
+    RETURN false;
+    END;
+
+IF NOT (status = $CONNECT(RAB = sysalf_rab)) ! Connect to stream
+THEN
+    BEGIN
+    IF .status EQL rms$_crmp		! If global buffers error,
+    THEN
+	BEGIN
+	sysalf_fab [fab$w_gbc] = 0;	! Turn off global buffers
+	status = $CONNECT(RAB = sysalf_rab); ! Retry connect to stream
+	END;
+    IF NOT .status
+    THEN
+	BEGIN
+	$CLOSE(FAB = sysalf_fab);	! If error, close file
+	clear_sysprv();			! Drop SYSPRV on exit
+	RETURN false;			! and return unsuccessful
+	END;
+    END;
+
+					! Copy terminal name to key field
+CH$COPY(.clu_term_name[0], .clu_term_name[1],
+	' ', .sysalf_rab [rab$b_ksz], .sysalf_rab [rab$l_kbf]);
+
+status = $GET(RAB = sysalf_rab);	! Read record keyed by terminal name
+
+$CLOSE(FAB = sysalf_fab);		! Close file (error or not)
+
+clear_sysprv();				! Drop SYSPRV on exit
+
+IF NOT .status				! If no record found in file,
+THEN
+    RETURN .status;			! then return unsuccessful
+
+IF .input_rab [rab$v_pta]		! If typeahead purge still do be done,
+THEN
+    BEGIN
+    input_rab [rab$w_usz] = 128;
+    input_rab [rab$l_ubf] = input_buffer;
+    input_rab [rab$b_tmo] = 0;		! Purge the input typeahead buffer
+    input_rab [rab$v_pmt] = 0;		!  to get rid of unsolicited
+    get_input(input_rab, 0);		!   character that started the job
+    input_rab [rab$v_pta] = 0;		! Turn off typeahead purge
+    input_rab [rab$b_tmo] = .sys$gb_retry_tmo; !  and reset timeout period
+    END;
+
+CH$MOVE(uaf$s_username,
+    	buffer[alf$t_username],
+    	user_buff);
+username [0] = uaf$s_username;		! Setup descriptor of username
+
+status = get_uafrec(username);		! Get UAF record for user
+
+IF .uaf_record EQL 0			! If no uaf record
+THEN
+    BEGIN
+    IF .status				! If this is OPA0: and the UAF is gronked
+    THEN RETURN false			! punt the auto-login
+    ELSE RETURN lgi$_userauth;		! otherwise return invalid user
+    END;
+
+$CMKRNL(ROUTIN = set_username,		! Set username of process
+	ARGLST = username);
+
+status = get_password (0);		! Acquire and validate primary password
+status1 = get_password (1);		! Acquire and validate secondary password
+
+IF NOT .status				! If invalid password
+OR NOT .status1				!
+THEN 
+    BEGIN
+    RETURN lgi$_notvalid;		! Return an error
+    END;
+
+IF NOT .uaf_record [uaf$v_disreconnect]	! If reconnections are not inhibited
+THEN connect_check = 1;			!  then do connection checking
+
+RETURN true;				! Return successful
+
+END;
+
+ROUTINE interactive_validation =
+
+!---
+!
+!	Perform interactive user validation.  Prompt for the
+!	username and password, validate them, and read UAF record.
+!
+! NOTE: This routine has been changed for use by the VAXstation software. It
+!	is only to be used for creating "already-logged-in" jobs on a
+!	VAXstation emulated terminal when the user has already been
+!	authorized on the VAXstation (i.e. has already "logged-in" once).
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	uaf_record = Address of UAF record
+!---
+
+BEGIN
+
+MACRO
+    string_count = 0,0,16,0 %;		! String count field of buffer
+
+EXTERNAL
+    login_command;			! Tables describing LOGIN command
+
+OWN
+    phy_devnam:	 VECTOR[64,BYTE],	! Physical device name
+    phy_devnam_len,			! Physical device name length
+    item_list:	 VECTOR[4] INITIAL(	! $GETDVI item list
+	(dvi$_tt_phydevnam^16)+64,	! to get the physical device name
+	phy_devnam, phy_devnam_len,0),	! string and length
+    user_lognam: VECTOR[11,BYTE]	! Logical name => username string
+	INITIAL(BYTE('VSTA$x_USER'));
+LOCAL
+    status,
+    status1,
+    desc:	VECTOR [2],		! descriptor
+    iosb:	VECTOR [4,WORD],	! I/O status block
+    devnam_adr,				! Input device name address
+    string:	BBLOCK [8],		! Varying string descriptor
+    buffer:	BBLOCK [2+128]		! Varying string buffer
+		VOLATILE,
+    input_buffer: VECTOR [128,BYTE],	! Input buffer
+    user_lognam_desc: VECTOR[2]		! Username logical name descriptor
+	INITIAL(11,user_lognam),	!
+    username:	VECTOR[2];		! Username string descriptor
+
+!
+! Determine logical name string which will point to username string based on
+! controller of SYS$INPUT and then translate it to get username
+!
+devnam_adr = CH$FIND_SUB(.sys$input [0], .sys$input [1], 2, UPLIT BYTE('VD'));
+IF .devnam_adr NEQ 0
+THEN devnam_adr = .devnam_adr + 2
+ELSE BEGIN
+	IF (devnam_adr = CH$FIND_SUB(.sys$input [0], .sys$input [1], 2,
+				UPLIT BYTE('VT'))) EQL 0
+	THEN RETURN lgi$_inputerr;
+	desc[0] = 1 + CH$FIND_CH(
+			.sys$input [0] - (.devnam_adr - .sys$input [1]),
+			.devnam_adr,
+			%C':') - .devnam_adr;
+	desc[1] = .devnam_adr;
+	IF NOT $GETDVIW(
+			DEVNAM = desc,
+			ITMLST = item_list,
+			IOSB   = iosb)
+	THEN RETURN lgi$_inputerr;
+	IF NOT .iosb[0]
+	THEN RETURN lgi$_inputerr;
+	IF .phy_devnam_len EQL 0
+	THEN RETURN lgi$_inputerr;
+	devnam_adr = CH$FIND_SUB(.phy_devnam_len, phy_devnam, 2,
+					UPLIT BYTE('VD'));
+	IF .devnam_adr EQL 0
+	THEN RETURN lgi$_inputerr;
+	devnam_adr = .devnam_adr + 2;
+     END;
+
+CH$MOVE(
+	1,
+	.devnam_adr,
+	user_lognam[5]);
+username[0] = uaf$s_username;
+username[1] = input_buffer;
+$TRNLOG(
+	LOGNAM = user_lognam_desc,
+	RSLBUF = username,
+	RSLLEN = username);
+!
+! Check validity of username by attempting retrieval of the UAF record
+!
+status = get_uafrec(username);		! Lookup the uaf record
+status1 = ss$_normal;			! Assume valid primary password
+IF NOT .status				! If invalid username
+THEN RETURN lgi$_notvalid;		! Return an error
+
+$CMKRNL(ROUTIN = set_username,		! Set username of process
+	ARGLST = username);
+
+IF .uaf_record EQL 0			! Check for true status but no UAF
+THEN RETURN 1;				! which is an OPA0: emergency login
+
+IF NOT .status				! If invalid password
+OR NOT .status1				!
+THEN 
+    BEGIN
+    RETURN lgi$_notvalid;		! Return an error
+    END;
+
+IF .uaf_record [uaf$v_captive]		! If user not allowed to change things,
+AND (.cli_name [0] NEQ 0		! and he changed either CLI name,
+    OR .table_name [0] NEQ 0		!   or CLI table name,
+    OR .disk_name [0] NEQ 0		!   or DISK name,
+    OR .com_name [0] NEQ 0		!   or procedure name,
+    OR .com_negated)			!   or procedure negated,
+THEN RETURN lgi$_captive;		! return an error
+
+IF NOT .uaf_record [uaf$v_disreconnect]	! If reconnections are not inhibited
+THEN connect_check = 1			!  then do connection checking
+ELSE
+    BEGIN
+    IF .connect_check EQL cli$_defaulted ! If connection checking defaulted,
+    THEN connect_check = 0;		!  turn it off
+    IF .connect_check			! If connection checking,
+    THEN
+	BEGIN
+	IF .uaf_record [uaf$v_captive]
+	THEN RETURN lgi$_captive	!  return correct
+	ELSE RETURN lgi$_disreconnect;	!   error message
+	END;
+    END;
+
+IF .uaf_record [uaf$v_defcli]		! If user not allowed to change things,
+AND (.cli_name [0] NEQ 0		! and he changed either CLI name,
+    OR .table_name [0] NEQ 0)		!   or CLI table name,
+THEN RETURN lgi$_defcli;		! return an error
+
+RETURN true;
+END;
+
+ROUTINE get_password (pwd_number) =
+
+!---
+!
+!	Acquire a password if one needed and validate it.
+!	Return status is true if password check is successful.
+!
+! Inputs:
+!
+!	pwd_number - 0 if validating primary password
+!		     1 if validating secondary password
+!	uaf_record - Address of UAF record for user, if any
+!
+! Outputs:
+!
+!	routine = True if password validated or none needed, else false.
+!---
+
+BEGIN
+
+LOCAL
+    status,
+    password_isi,
+    fab: BBLOCK[fab$c_bln],
+    rab: BBLOCK[rab$c_bln],
+    string: VECTOR[24,BYTE],
+    password:	VECTOR [2];		! Password descriptor
+
+$ASSUME ($BYTEOFFSET (uaf$q_pwd2), EQL, $BYTEOFFSET (uaf$q_pwd)+8);
+$ASSUME ($BYTEOFFSET (uaf$b_encrypt2), EQL, $BYTEOFFSET (uaf$b_encrypt)+1);
+
+IF .uaf_record NEQ 0			! If there is a uaf record and no
+THEN					! password is needed
+IF  .bblock [uaf_record [uaf$q_pwd],(.pwd_number*8),0,32,0] EQL 0 
+AND .bblock [uaf_record [uaf$q_pwd],(.pwd_number*8)+4,0,32,0] EQL 0
+THEN
+    RETURN true;			! Then return success without prompting
+
+!
+! If SYS$INPUT is a terminal, and is set to be local_echo,
+! then ask for the password with an overstriking mask.
+!
+IF .terminal_device				! If a terminal
+AND .dev_dep_2[tt2$v_localecho]			! with local_echo set
+THEN
+    BEGIN
+
+    $FAB_INIT(FAB = fab,
+	      FNM = 'SYS$OUTPUT',
+	      FAC = (GET,PUT)
+	      );
+    fab[fab$v_cr] = 0;
+
+    $RAB_INIT(RAB = rab,			! Initialize local RAB
+	      FAB = fab,
+	      ROP = (pmt,cvt,tmo,rne),		! Read with prompt and timeout,
+	    					! convert to uppercase,
+        					! read no echo
+	      PBF = UPLIT BYTE(cr,lf,'Password: ',
+			       rep 15 of ('#'), rep 15 of (bs),
+			       rep 15 of ('H'), rep 15 of (bs),
+			       rep 15 of ('X'), rep 15 of (bs)),
+	      PSZ = 102,
+	      UBF = string,
+	      USZ = %ALLOCATION(string),
+	      TMO = .sys$gb_retry_tmo);
+
+    password_isi = (rab[rab$w_isi] = .ppd[ppd$w_inpisi]);
+    get_input (rab, 0);			! Get the password
+
+    password [0] = .rab[rab$w_rsz];	! Store password size
+    password [1] = .rab[rab$l_rbf];	! and location
+
+    rab[rab$w_isi] = 0;
+    $OPEN (FAB = fab);
+    $CONNECT (RAB = rab);
+
+    write_output (uplit (26, UPLIT BYTE (cr, 'Password: ', rep 15 of ('@'))),
+		  0, rab);
+    $CLOSE (FAB = fab);
+    END
+ELSE
+    BEGIN				! Normal processing
+
+    input_rab [rab$l_pbf] = UPLIT BYTE(cr,lf,'Password: ');
+    input_rab [rab$b_psz] = 12;
+    input_rab [rab$v_pmt] = true;		! Read woth prompt
+    input_rab [rab$v_rne] = true;		! Read no-echo
+    input_rab [rab$v_pta] = false;		! Clear purge-typeahead
+
+    password_isi = .input_rab [rab$w_isi];
+    get_input(input_rab, 0);			! Prompt for password
+
+    password [0] = .input_rab [rab$w_rsz];	! Setup descriptor of password
+    password [1] = .input_rab [rab$l_rbf];
+
+    END;
+
+$CMEXEC(ROUTIN = zero_password,		! Zero the password in the RMS area
+	ARGLST = .password_isi);
+
+CH$COPY((fail_password [0] = MINU(.password [0], ! Save password
+				  nsa$s_pkt_password)),
+	.password [1],				!  for auditing
+	0,
+	nsa$s_pkt_password,
+	.fail_password [1]);
+
+IF .uaf_record EQL 0			! If no uaf record
+THEN					! return unconditional failure now that
+    RETURN false;			! the prompt has been done
+
+status = lgi$check_pass (password, .uaf_record, .pwd_number); ! Validate user password
+
+RETURN .status;				! Return success/failure
+
+END;
+
+ROUTINE write_announcement (logname) =
+
+!---
+!
+!	Write an announcement message to the primary output stream.
+!	If the logical name given has a translation, it may be of the
+!	following two forms:
+!
+!		'@filespec'		Write contents of file
+!		'string'		Write string literally
+!
+! Inputs:
+!
+!	logname = Address of descriptor of logical name
+!
+! Outputs:
+!
+!	routine = True if user-supplied message output, else false
+!---
+
+BEGIN
+
+LOCAL
+    trnlnm_item_list: BLOCK[1*3+1,LONG], ! TRNLNM item list for 1 item
+    desc:	VECTOR [2],
+    buffer:	VECTOR [128,BYTE];
+
+trnlnm_item_list[0, 0,16,0] = (desc[0] = 128);
+trnlnm_item_list[0,16,16,0] = lnm$_string; ! Fetch name's value string
+trnlnm_item_list[1, 0,32,0] = (desc[1] = buffer);
+trnlnm_item_list[2, 0,32,0] = desc[0];
+trnlnm_item_list[3, 0,32,0] = 0;
+
+IF $TRNLNM(TABNAM = %ASCID 'LNM$FILE_DEV', ! If translation exists
+	   LOGNAM = .logname,
+	   ITMLST = trnlnm_item_list)
+EQL ss$_normal
+THEN
+    BEGIN
+    IF .buffer [0] EQL '@'		! If logname points to file,
+    THEN
+	BEGIN
+	desc [0] = .desc [0] - 1;	! then remove '@'
+	desc [1] = .desc [1] + 1;
+	write_file(desc);		! and write file to output stream
+	END
+    ELSE IF .desc [0] NEQ 0		! Else if non-null string,
+    THEN
+	BEGIN
+	write_output(UPLIT (0,0));	! output blank line
+	write_output(desc);		! output translation of logname
+	write_output(UPLIT (0,0));	! output blank line
+	END;
+    RETURN true;			! return successful
+    END;
+
+RETURN false;				! return failure
+
+END;
+
+GLOBAL ROUTINE announce: NOVALUE =
+
+!---
+!
+!	Issue messages to interactive users announcing successful login,
+!	dates of last logins, number of login failures, and number of
+!	mail messages.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+	
+EXTERNAL
+    sys$gq_version;			! System version string
+
+LOCAL
+    trnlnm_item_list: BLOCK[1*3+1,LONG], ! TRNLNM item list for 1 item
+    length,				! String variables
+    msgcount,
+    ptr:	REF VECTOR [,BYTE],
+    msg_buffer:	VECTOR [128,BYTE],	! Buffer for announcement message
+    bufdesc:	VECTOR [2];		! Buffer descriptor for above message
+
+IF .uaf_record EQL 0
+THEN RETURN;
+
+IF NOT .uaf_record [uaf$v_diswelcom]	! If a welcome message allowed
+THEN
+    BEGIN
+    IF NOT write_announcement(%ASCID 'SYS$WELCOME') ! If no user welcome
+    THEN
+	BEGIN
+	ptr = CH$MOVE(28, UPLIT BYTE('	Welcome to VAX/VMS version '),
+		      msg_buffer);
+	ptr = CH$MOVE(4, sys$gq_version, .ptr);
+	length = .ptr - msg_buffer;	! Set default length of message
+
+	ptr = CH$MOVE(9, UPLIT BYTE(' on node '), .ptr);
+
+	trnlnm_item_list[0, 0,16,0] = (bufdesc[0] = 16);
+	trnlnm_item_list[0,16,16,0] = lnm$_string; ! Fetch name's value string
+	trnlnm_item_list[1, 0,32,0] = (bufdesc[1] = .ptr);
+	trnlnm_item_list[2, 0,32,0] = bufdesc[0];
+	trnlnm_item_list[3, 0,32,0] = 0;
+
+	IF $TRNLNM(TABNAM = %ASCID 'LNM$SYSTEM_TABLE', ! Translate SYS$NODE
+		   LOGNAM = %ASCID 'SYS$NODE',
+		   ACMODE = UPLIT(psl$c_exec),
+		   ITMLST = trnlnm_item_list)
+	EQL ss$_normal			! If successful,
+	THEN
+	    BEGIN
+					! Append node name minus ::
+	    length = .ptr + .bufdesc [0] - 2 - msg_buffer;
+	    END;
+
+	bufdesc [0] = .length;		! Setup descriptor of message
+	bufdesc [1] = msg_buffer;
+
+	write_output(bufdesc);		! Write message
+	END;
+    END;
+
+!
+! Write messages giving times of last logins and login failure counts.
+!
+IF NOT .uaf_record [uaf$v_disreport]	! If login reports allowed
+THEN
+    BEGIN
+
+    BIND
+	lastlogin_i = uaf_record [uaf$q_lastlogin_i] : VECTOR,
+	lastlogin_n = uaf_record [uaf$q_lastlogin_n] : VECTOR;
+
+    IF (.lastlogin_i [0] NEQ 0) OR (.lastlogin_i [1] NEQ 0)
+    THEN
+	write_fao(UPLIT BYTE(%ASCIC
+	    '    Last interactive login on !AC, !17%D'),
+	    ascic_day_of_week(lastlogin_i), lastlogin_i);
+
+    IF (.lastlogin_n [0] NEQ 0) OR (.lastlogin_n [1] NEQ 0)
+    THEN
+	write_fao(UPLIT BYTE(%ASCIC
+	    '    Last non-interactive login on !AC, !17%D'),
+	    ascic_day_of_week(lastlogin_n), lastlogin_n);
+
+    IF .uaf_record [uaf$w_logfails] GTRU 0
+    THEN write_fao(UPLIT BYTE(%ASCIC %STRING (
+	%CHAR(bell),%CHAR(bell),%CHAR(bell),
+	'	!UW failure!%S since last successful login')),
+	.uaf_record [uaf$w_logfails]);
+
+    END;
+
+!
+! If any new mail since last logged on, issue a message.
+!
+IF NOT .uaf_record [uaf$v_dismail]	! If new mail message allowed
+AND mail$get_new_count(msgcount, .uaf_record)
+THEN
+    IF .msgcount GTR 0
+    THEN write_fao(UPLIT BYTE(%ASCIC %STRING(
+	%CHAR(cr),%CHAR(lf),%CHAR(bell),
+	'	    You have !UW new Mail message!%S.',
+	%CHAR(cr),%CHAR(lf))), .msgcount)
+    ELSE IF .msgcount LSS 0
+    THEN write_output(%ASCID %STRING(
+	%CHAR(cr),%CHAR(lf),%CHAR(bell),
+	'	    You have new Mail messages.',
+	%CHAR(cr),%CHAR(lf)));
+
+END;
+
+ROUTINE zero_password : NOVALUE =
+
+!---
+!
+!	Zero out the password in the RMS buffer.  This must be done in
+!	executive mode, since the RMS buffer is not user-writeable.
+!
+! Inputs:
+!
+!	Access mode is EXEC.
+!
+!	AP = ISI of RAB which read the password
+!
+! Outputs:
+!
+!	None.  Password is zeroed.
+!
+!---
+
+BEGIN
+
+BUILTIN
+    AP;
+
+LOCAL
+    isi;
+
+isi = .AP;				! Fetch ISI of RAB reading password
+
+! ************************************************
+! ***** This routine currently does nothing! *****
+! ***** It should find the RMS internal      *****
+! ***** structures to zero out the password  *****
+! ***** which was read using this ISI.       *****
+! ************************************************
+
+END;
+
+ROUTINE get_syspwd : NOVALUE =
+BEGIN
+
+!+++
+!
+! Get and validate the system password, if necessary.
+!
+! Inputs:
+!	None.
+!
+! Outputs:
+!	None.
+!
+!---
+
+BUILTIN
+    cmpm;
+
+LABEL
+    read_password,
+    got_channel;
+
+LOCAL
+    status,
+    term_char : VECTOR[2],
+    save_char : VECTOR[2],
+    channel : WORD,
+    iosb : VECTOR[2],
+    buffer : VECTOR[80],
+    timeout : VECTOR[2],
+    desc : VECTOR[2],
+    enc_desc : VECTOR[2],
+    enc_pwd : VECTOR[2],
+    uaf_record : BLOCK[UAF$K_LENGTH, byte],
+    uaf_desc : BLOCK[2] INITIAL(UAF$K_LENGTH, uaf_record);
+
+!
+! If the system password timeout period is zero, then forget it.
+!
+IF .sys$gb_pwd_tmo EQL 0
+THEN RETURN;
+
+!
+! If SYS$INPUT is not a syspassword terminal, or is remote, then return.
+!
+IF NOT .terminal_device				! If not a real terminal
+OR NOT .dev_dep_2[tt2$v_syspwd]			! or not password_required,
+THEN RETURN;					! then just forget it.
+
+!
+! Set the terminal /NOBROADCAST to prevent broadcast messages while
+! receiving the system password. This is essential to preserving the
+! illusion of a dead line.
+!
+got_channel: BEGIN
+IF NOT $ASSIGN (chan = channel,
+		devnam = term_name)
+THEN RETURN;
+
+read_password: BEGIN
+IF NOT $QIOW (func=io$_sensemode,
+	      chan=.channel,
+	      iosb=iosb,
+	      p1  =term_char
+	      )
+THEN LEAVE got_channel;
+IF NOT .iosb THEN LEAVE got_channel;
+save_char[0] = .term_char[0];
+save_char[1] = .term_char[1];
+BBLOCK [term_char[1], TT$V_NOBRDCST] = 1;
+IF NOT $QIOW (func=io$_setmode,
+	      chan=.channel,
+	      iosb=iosb,
+	      p1  =term_char
+	      )
+THEN LEAVE read_password;
+IF NOT .iosb THEN LEAVE read_password;
+
+!
+! Open the SYSUAF.DAT
+!
+status = lgi$searchuser(%ASCID'<System+Password>', 0,
+                         uaf_desc, uaf_fab, uaf_rab, 0);
+IF (NOT .status) AND (.status NEQ -2) THEN
+    LEAVE read_password;
+
+!
+! If no system password, then simply return.
+!
+IF CMPM(2, uaf_record[uaf$q_pwd], UPLIT(0,0)) EQL 0
+THEN LEAVE read_password;
+
+!
+! If here, then SYS$INPUT is a syspwd terminal, and there is a non-null
+! system password.  Set up the input rab to do read-no-echo, and set up a
+! timer, so that we know when to stop trying.
+!
+input_rab[rab$v_pmt] = 0;		! Read with no prompt
+input_rab[rab$v_rne] = 1;		! Read no echo
+input_rab[rab$v_pta] = 0;		! Don't purge type-ahead
+input_rab[rab$l_ubf] = buffer;		! Put password here
+input_rab[rab$w_usz] = %ALLOCATION(buffer);
+
+enc_desc[0] = %ALLOCATION(enc_pwd);
+enc_desc[1] = enc_pwd;
+
+timeout[0] = -10*1000*1000 * .sys$gb_pwd_tmo;
+timeout[1] = -1;
+
+ppd[ppd$l_lststatus] = lgi$_syspwdtmo;	! Set final status = bad sys pwd
+
+$SETIMR(DAYTIM = timeout,
+	ASTADR = write_timeout,
+	REQIDT = 98);
+
+WHILE true DO
+    BEGIN
+    get_input (input_rab, 1);
+    desc[0] = .input_rab[rab$w_rsz];
+    desc[1] = .input_rab[rab$l_rbf];
+    lgi$hpwd(enc_desc, 			! Put smashed pwd here,
+	     desc,			! get password from here
+	     uaf$c_purdy_v,		! using the Purdy algorithm
+	     .uaf_record[uaf$w_salt],
+	     %ASCID'<System+Password>' );
+    IF CMPM(2,
+    	    uaf_record[uaf$q_pwd],
+    	    enc_pwd) EQL 0
+    THEN
+	BEGIN
+	$CANTIM(REQIDT = 98);
+    	ppd[ppd$l_lststatus] = 1;
+	LEAVE read_password;
+	END;
+    END;
+END;					! End of block read_password
+
+$QIOW (func=io$_setmode,
+       chan=.channel,
+       iosb=iosb,
+       p1  =save_char
+       );
+END;					! End of block got_channel
+
+$DASSGN (chan = .channel);
+
+END;
+
+GLOBAL ROUTINE check_connection: NOVALUE =
+
+!---
+!
+!	Check for disconnected processes under this username and
+!	attempt a (re-)connection to one of them if possible.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	This process exits if a (re-)connection is made.
+!
+!---
+
+BEGIN
+
+IF NOT .connect_check				! If no checking
+OR NOT .terminal_device				!  or not a real terminal
+OR .dev_char_2[dev$v_rtt]			!  or terminal is remote
+THEN RETURN;					!   then don't check...
+
+IF .connect_name[0] EQL 0			! If not specific
+AND .uaf_record NEQ 0				!  and UAF record exists
+THEN
+BEGIN						! Find 'connect to' process...
+
+LITERAL
+    num_pids = 16;				! Save up to this many PIDs
+
+LOCAL
+    num_disconnected,				! Number of disconnecteds
+    index,					! Saved PID index
+    pid_list : VECTOR[num_pids],		! Saved PID list
+    pid_context,				! GETJPI PID context
+    iosb : VECTOR[4,WORD],			! GETJPI I/O status block
+    found_username : VECTOR[uaf$s_username,BYTE], ! Found username
+    found_terminal : VECTOR[1+15,BYTE],		! Found terminal
+    first_terminal : VECTOR[1+15,BYTE],		! First found terminal
+    found_uic,					! Found UIC
+    found_pid,					! Found PID
+    found_procname : VECTOR[16,BYTE],		! Found process name
+    found_imagname : VECTOR[64,BYTE],		! Found image name
+    found_username_len,				! Found username length
+    found_terminal_desc : VECTOR[2],		! Found terminal descriptor
+    first_terminal_length,			! First found terminal length
+    found_procname_len,				! Found process name length
+    found_imagname_len,				! Found image name length
+    found_devchar2 : $BBLOCK[4],		! Found terminal's DEVCHAR2
+    prompt_buffer : VECTOR [64, BYTE],		! Buffer for prompt string
+    getjpi_item_list : $ITMLST_DECL(ITEMS = 4),	! GETJPI item list
+    getdvi_item_list : $ITMLST_DECL(ITEMS = 1);	! GETDVI item list
+
+$ITMLST_INIT(ITMLST = getjpi_item_list,		! Set up GETJPI item list
+	    (ITMCOD = jpi$_username,
+	     BUFSIZ = uaf$s_username,
+	     BUFADR = found_username,
+	     RETLEN = found_username_len),
+	    (ITMCOD = jpi$_terminal,
+	     BUFSIZ = 15,
+	     BUFADR = found_terminal[1],
+	     RETLEN = found_terminal_desc[0]),
+	    (ITMCOD = jpi$_uic,
+	     BUFSIZ = 4,
+	     BUFADR = found_uic),
+	    (ITMCOD = jpi$_pid,
+	     BUFSIZ = 4,
+	     BUFADR = found_pid));
+found_username_len = 0;
+found_terminal_desc[0] = 0;
+found_terminal_desc[1] = found_terminal;
+found_terminal[0] = '_';
+found_uic = 0;
+found_pid = 0;
+
+$ITMLST_INIT(ITMLST = getdvi_item_list,		! Set up GETDVI item list
+	    (ITMCOD = dvi$_devchar2,
+	     BUFSIZ = 4,
+	     BUFADR = found_devchar2));
+
+index = 0;					! Start index at zero
+pid_context = -1;				! Start the wild card PID
+
+WHILE true DO					! For all processes...
+    BEGIN
+    (
+     LOCAL
+	status;					! Get job information
+     IF NOT (status = $GETJPIW(PIDADR = pid_context,
+			       ITMLST = getjpi_item_list,
+			       IOSB   = iosb))
+     THEN iosb[0] = .status;
+    );
+    IF .iosb[0] EQL SS$_NOMOREPROC		! Quit if no more processes
+    THEN EXITLOOP;
+    IF .iosb[0]					! If found a process
+    AND .found_terminal_desc[0] NEQ 0		!  and it's interactive
+    THEN
+	IF CH$EQL(.found_username_len,found_username, ! If username matches
+		  uaf$s_username,uaf_record[uaf$t_username],
+		  ' ')
+	AND .found_uic EQL .uaf_record[uaf$l_uic] !  and UIC matches
+	THEN
+	    BEGIN				! Get terminal's info
+	    found_terminal_desc[0] = .found_terminal_desc[0] + 1;
+	    IF $GETDVIW(DEVNAM = found_terminal_desc,
+			ITMLST = getdvi_item_list)
+	    AND .found_devchar2[dev$v_det]	! If disconnected
+	    THEN
+		BEGIN
+		pid_list[.index] = .found_pid;	! Save the found PID
+		index = .index + 1;		!  and count it as saved
+		IF .index GEQU num_pids		! Quit if up to our limit
+		THEN EXITLOOP;
+		END;
+	    END;
+    END;
+
+IF .index EQL 0					! Found nothing disconnected...
+THEN RETURN;
+
+$ITMLST_INIT(ITMLST = getjpi_item_list,		! Set up GETJPI item list again
+	    (ITMCOD = jpi$_terminal,
+	     BUFSIZ = 15,
+	     BUFADR = found_terminal[1],
+	     RETLEN = found_terminal_desc[0]),
+	    (ITMCOD = jpi$_prcnam,
+	     BUFSIZ = 16,
+	     BUFADR = found_procname,
+	     RETLEN = found_procname_len),
+	    (ITMCOD = jpi$_imagname,
+	     BUFSIZ = 64,
+	     BUFADR = found_imagname,
+	     RETLEN = found_imagname_len));
+found_procname_len = 0;
+found_imagname_len = 0;
+
+num_disconnected = 0;				! Zero disconnected(s) counter
+INCR i FROM 0 TO .index-1 DO			! List disconnected(s)
+    IF $GETJPIW(PIDADR = pid_list[.i],
+		ITMLST = getjpi_item_list,
+		IOSB   = iosb)
+    AND .iosb[0]
+    THEN
+	BEGIN
+	IF .num_disconnected EQL 0
+	THEN
+	    BEGIN
+	    first_terminal_length = .found_terminal_desc[0];
+	    ch$move (16, found_terminal, first_terminal);
+	    write_output((IF .index EQL 1
+		THEN
+		 %ASCID '    You have the following disconnected process:'
+		ELSE
+		 %ASCID '    You have the following disconnected processes:'));
+	    write_output(%ASCID 'Terminal   Process name    Image name');
+	    END;
+	write_fao(UPLIT BYTE (%ASCIC '!10AF !15AF !AF'),
+		.found_terminal_desc[0],
+		found_terminal[1],
+		.found_procname_len,
+		found_procname,
+		(IF .found_imagname_len EQL 0
+		 THEN 1+4+1
+		 ELSE .found_imagname_len),
+		(IF .found_imagname_len EQL 0
+		 THEN UPLIT BYTE ('(none)')
+		 ELSE found_imagname));
+	num_disconnected = .num_disconnected+1;
+	END;
+
+IF .num_disconnected GTR 0			! If we listed anything
+THEN
+    BEGIN
+
+    input_rab[rab$w_usz] = %ALLOCATION(connect_name_buffer);
+    input_rab[rab$l_ubf] = connect_name_buffer;
+    input_rab[rab$v_pta] = 0;			! Don't purge typeahead
+    input_rab[rab$v_rne] = 0;			! Echo input
+    input_rab[rab$b_tmo] = .sys$gb_retry_tmo;	! Standard timeout period
+    input_rab[rab$v_pmt] = 1;			! Set up for prompt
+
+    IF .num_disconnected EQL 1			! If only 1 process listed
+    THEN
+	BEGIN
+	input_rab[rab$b_psz] = 41;
+	input_rab[rab$l_pbf] =
+	    UPLIT BYTE (cr,lf,'Connect to above listed process [YES]: ');
+	END
+    ELSE
+	BEGIN
+	CH$COPY (32, UPLIT BYTE (cr,lf,'Enter terminal to connect to ['),
+		 .first_terminal_length, first_terminal[1],
+		 3, UPLIT BYTE (']: '),
+		 ' ', %ALLOCATION (prompt_buffer), prompt_buffer);
+	input_rab[rab$b_psz] = 32 + 3 + .first_terminal_length;
+	input_rab[rab$l_pbf] = prompt_buffer;
+	END;
+
+
+    get_input(input_rab, 2);			! Get user's response
+
+    IF NOT .input_rab[rab$l_sts]		! If any read error (e.g., timeout)
+    THEN RETURN;				!  treat as "NONE"
+
+    connect_name[0] = .input_rab[rab$w_rsz];	! Set user's response
+    connect_name[1] = .input_rab[rab$l_rbf];	!  as connection terminal
+
+    IF .connect_name[0] NEQ 0			! If user did respond
+    AND CH$EQL (.connect_name[0], .connect_name[1], ! with "NONE"
+		.connect_name[0], uplit byte ('NONE'))
+    THEN RETURN;				!   then no connection
+
+    IF (.connect_name[0] NEQ 0			! If user did respond
+	 AND CH$EQL (.connect_name[0], .connect_name[1], ! with "YES"
+		     .connect_name[0], uplit byte ('YES'))
+	)
+    OR .connect_name[0] EQL 0			! If null response
+    THEN					!  then connect to first term
+	BEGIN
+	connect_name[0] = .first_terminal_length+1;
+	connect_name[1] = first_terminal;
+	END;
+
+    END;
+
+END;						! ...find 'connect to' process
+
+IF .connect_name[0] EQL 0			! If no name
+THEN RETURN;					!  then just exit...
+
+BEGIN						! Connect to terminal...
+
+LOCAL
+    prev_uic,					! Previous UIC
+    chan : WORD,				! Connection channel
+    iosb : VECTOR[4,WORD];			! Connection I/O status block
+
+write_fao(UPLIT BYTE (%ASCIC 'Connecting to terminal !AS'),connect_name);
+
+prev_uic = 0;					! No UIC to restore initially
+IF .uaf_record NEQ 0				! If UAF record exists,
+THEN
+    prev_uic = $CMKRNL(ROUTIN = set_uic,	!  set UAF's UIC, save old
+		       ARGLST = .uaf_record[uaf$l_uic]);
+
+IF (iosb[0] = $ASSIGN(DEVNAM = term_name,	! Get a terminal channel
+		      CHAN   = chan))
+THEN
+    BEGIN
+    (
+     LOCAL
+	status;					! Connect to terminal
+     IF NOT (status = $QIOW(CHAN = .chan,
+			    FUNC = io$_setmode OR io$m_tt_connect,
+			    IOSB = iosb,
+			    P1   = connect_name))
+     THEN iosb[0] = .status;
+    );
+    $DASSGN(CHAN = .chan);			! Free up terminal channel
+    END;
+
+IF .prev_uic NEQ 0				! If UIC to restore,
+THEN
+    $CMKRNL(ROUTIN = set_uic,			!  reset old UIC
+	    ARGLST = .prev_uic);
+
+IF NOT .iosb[0]					! Check for failure
+THEN
+    BEGIN
+    SIGNAL(lgi$_connerr, 1, connect_name, .iosb[0]); ! Announce the error
+    RETURN;					! But, continue...
+    END;
+
+END;						! ...connect to process
+
+security_audit(nsa$k_rectyp_logi);		! Security audit reconnection
+
+$CMEXEC(ROUTIN = exit_process);			! Terminate ourselves...
+
+END;
+
+GLOBAL ROUTINE ascic_day_of_week (time) =
+
+!---
+!
+!	Return ASCIC day of week given absolute time.
+!
+! Inputs:
+!
+!	time = Address of absolute time quadword.
+!
+! Outputs:
+!
+!	Address of ASCIC day of week.
+!
+!---
+
+BEGIN
+
+BIND
+    week_days = UPLIT (UPLIT BYTE(%ASCIC 'Monday'),
+		       UPLIT BYTE(%ASCIC 'Tuesday'),
+		       UPLIT BYTE(%ASCIC 'Wednesday'),
+		       UPLIT BYTE(%ASCIC 'Thursday'),
+		       UPLIT BYTE(%ASCIC 'Friday'),
+		       UPLIT BYTE(%ASCIC 'Saturday'),
+		       UPLIT BYTE(%ASCIC 'Sunday'))
+	: VECTOR [7];
+
+LOCAL
+    day;
+
+lib$day_of_week(.time, day);		! Fetch day of week from time
+RETURN .week_days [.day - 1];		! Return address of ASCIC week day
+
+END;
+
+END
+ELUDOM

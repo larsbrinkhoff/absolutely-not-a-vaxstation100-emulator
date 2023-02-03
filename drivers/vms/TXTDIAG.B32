@@ -1,0 +1,405 @@
+module txtdiag (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! diagnostic routines for text module.
+! Many of these are directly callable from the debugger.
+
+library 'vsta$library:txtsym';		! get text database structures
+library 'vsta$library:termio';		! get terminal diagnostics macros
+library 'vsta$library:libmacros';	! common vsta symbols/macros
+
+$vsta_psect;				! define psects
+
+forward routine!s
+	doPlst,			! print out a list
+	showDatum:novalue,
+	pb:novalue, ptb, plb, pfb, psb, pfont:novalue, pfim:novalue,
+	pfib:novalue,
+	showIt:novalue,
+	showFirsts;
+
+external
+	tb_head : vector [2];	! head of queue of text blocks
+
+macro!s
+
+	! Macro used for displaying item from block.
+	!
+	p(blk, fld) =
+	    showDatum (blk[fld],
+		%ascid %string('/	', blk, '[', fld, '] = '))
+	    % ,
+
+	! Print out list.
+	!
+	plst(len, base, description) =
+	    doPlst (len, base, %ascid description)
+	% ;
+
+routine doPlst
+!++
+! Functional description:
+!
+!	Print out list, given number of elements, base, and description.
+!
+! Formal parameters:
+ (
+	len,		! number of elements
+	base,		! address of base of list
+	description	! descriptor pointing at description of list
+ ) =
+!
+! Outputs:
+!
+!	The first element of the list or 0 if none.
+!--
+
+	    begin
+	    bind objLst = .base:vector;
+	    typePart (hex(.len), ' ', shwdes(.description));
+
+	    if .len neq 1
+	    then typePart ('s');
+
+	    if .len gtr 0
+	    then typePart (': ')
+	    else type ('.');
+
+	    incr i from 1 to .len do
+		begin
+		typePart(hex(.objLst[.i]));
+		if .i neq .len
+		then typePart (', ')
+		else typeCarriagereturn()
+		end;
+
+	    if .len neq 0
+	    then .objLst[1]
+	    else 0
+
+	    end;
+
+routine showDatum
+!++
+! Functional description:
+!
+!	Used by "p" macro to display line like
+!
+!		123/ tb[tb_foo] = 765
+!
+! Formal parameters:
+ (
+	adr,		! address to be printed
+	desc: ref string_descriptor
+			! "/   name ="
+	):novalue =
+
+	type (hex(.adr), shwdes(.desc), hex(..adr));
+
+global routine showIt
+!++
+! Functional description:
+!
+!	Show first block of each type, except for strings of first field of
+!	which all are shown.
+:novalue =
+!--
+
+		begin
+
+		local lnk, firstField:ref field_block;
+
+		lnk = .tb_head[0];
+		if .lnk neq tb_head[0]
+		then lnk = ptb(.lnk)
+		else return;
+
+		if .lnk neq 0
+		then firstField = plb(.lnk)
+		else return;
+
+		if .firstField neq 0
+		then
+		    begin
+		    bind
+			strLst = .firstField[fld_strings]:vector,
+			nStrings = .firstField[fld_nStrings];
+		    pfb(.firstField);
+		    incr i from 1 to nStrings do psb(.strLst[.i])
+		    end
+
+		end;
+
+global routine showFirsts
+!++
+! Functional description:
+!
+!	Show first string of first field of each line of first text block,
+!	useful when only one field per line, and you want to show the text in
+!	the virtual display.
+ =
+!--
+
+	begin
+	bind
+	    txtBlk = .tb_head[0]:text_block,
+	    nLines = .txtBlk[txt_nLines],
+	    linLst = .txtBlk[txt_lines]:vector;
+
+	incr i from 1 to nLines do
+	    begin
+	    bind
+		linBlk = .linLst[.i]:line_block,
+		fldLst = .linBlk[lin_fields]:vector,
+		fldBlk = .fldLst[1]:field_block,
+		strLst = .fldBlk[fld_strings]:vector,
+		nStrings = .fldBlk[fld_nStrings];
+	    typePart ('Line ',decimal(.i),': ');
+	    if nStrings neq 0
+	    then
+		begin
+		bind
+		    strBlk = .strlst[1]:string_block,
+		    strPtr = .strBlk[str_ptr],
+		    strLen = .strBlk[str_len];
+		typePart(shwdes(strBlk[str_len]))
+		end;
+	    typeCarriageReturn()
+	    end
+	end;
+
+global routine pb
+!++
+! Functional description:
+!
+!	Display contents of block, using its id to determine how to display it
+!
+! Formal parameters:
+ (
+    blk:ref text_block	! address of block, any structure will do
+ ):novalue =
+!--
+
+	begin
+
+	! Choose display routine according to block type
+	!
+	selectOne .blk[block_id] of
+	set
+	[font_block_id]:pfont(.blk);
+	[line_block_id]:plb(.blk);
+	[field_block_id]:pfb(.blk);
+	[string_block_id]:psb(.blk);
+	[otherwise]:type ('Block at address ', hex(.blk),
+	    ' has an unrecognized block_id = ', hex(.blk[block_id]));
+	tes
+	end;
+
+global routine pfib
+!++
+! Functinal description:
+!
+!	Display contents of a font image block, given its address
+!
+! Formal parameters:
+ (
+	fiBlk:ref fib	! address of fib to be displayed
+ ):novalue =
+!--
+
+	begin
+
+	! Avoid debugger output line
+	typeCarriageReturn();
+
+	p (fiBlk, fib_flink);	! forward link
+	p (fiBlk, fib_blink);	! backward link
+	p (fiBlk, fib_ref);	! reference count
+	p (fiBlk, fib_fid);	! font id
+	p (fiBlk, fib_imageLen);	! length of font image
+	p (fiBlk, fib_imageAdr);	! address of font image
+
+	pfim(.fiBlk[fib_imageAdr])	! show font image itself
+	end;
+
+global routine pfont
+!++
+! Functional description:
+!
+!	Print contents of font block
+!
+! Formal parameters:
+ ( fntBlk:ref font_block	! address of font block being printed
+ ):novalue =
+!--
+
+	begin
+
+	typeCarriageReturn();
+	p(fntBlk, fnt_typefaceLen);
+				! descriptor pointing at typeface
+	p(fntBlk, fnt_typefaceAdr);
+	p(fntBlk, fnt_size);	! size of type for this font
+	p(fntBlk, fnt_rend);	! rendition bits for this font
+	p(fntBlk, fnt_namLen);	! length of filespec
+	p(fntBlk, fnt_namPtr);	! pointer to filespec holding font
+	p(fntBlk, fnt_bufLen);	! length of buffer
+	p(fntBlk, fnt_id)	! address of buffer into which font file read
+
+	end;
+
+global routine pfim
+!++
+! Functional description:
+!
+!	Display parameters of a font image, given its address
+!
+! Formal parameters:
+ (
+    fim:ref fim_block
+      ):novalue =
+!--
+
+	begin
+
+	! Avoid debugger output line
+	typeCarriageReturn();
+
+	p (fim, fim_bits);		! offset to find actual bits
+	p (fim, fim_width);		! pixels wide entire font is
+	p (fim, fim_height);		! pixels high each character is
+	p (fim, fim_z);			! bits per pixel (width is x, height is y)
+	p (fim, fim_first);		! first legal character index
+	p (fim, fim_last);		! last legal character index
+	p (fim, fim_xtable);		! offset to find horizontal offsets
+	p (fim, fim_base);		! pixels from top down to bottom of capitals
+	p (fim, fim_space);		! index for space character
+  	p (fim, fim_char_width)		! char width if fix pitch font
+	end;
+
+global routine ptb
+!++
+! Functional discription:
+!
+!	Display a text block, given its address.
+!	These routines have short names so that debugging can be done with little
+!	typing on the part of the person.
+!
+! Formal parameters:
+ (
+    tb:ref text_block
+    ) =
+!
+! Value:
+!
+!	Each of these routines returns the address of a subblock if possible,
+!	so that a sampling can be gotten easily.
+!--
+
+	begin
+	local sub;
+	typeCarriageReturn();		! Don't mash with debugger output
+	p(tb, txt_flink);		! address of next
+	p(tb, txt_blink);		! address of previous
+	p(tb, txt_vd_id);		! vd id
+	p(tb, txt_tot_lin_hit);		! total line height
+	sub = plst(.tb[txt_nLines], .tb[txt_lines], 'line');
+	plst(.tb[txt_nfonts], .tb[txt_fonts], 'font');
+	p(tb, txt_height);		! height of display
+	p(tb, txt_stdHgt);		! standard height for lines in this vd
+	p(tb, txt_width);		! how wide virtual display is
+	p(tb, txt_curTypefaceLen);	! show current typeface
+	p(tb, txt_curTypefaceAdr);
+	p(tb, txt_curBase);		! how high base of characters should be on line
+	p(tb, txt_curSize);		! size type for printing
+	p(tb, txt_curOffset);		! horizontal offset for next write
+	p(tb, txt_curRend);		! current rendition
+	p(tb, txt_curInk);		! color for writing
+	p(tb, txt_curBack);		! color for background
+	p(tb, txt_stab_att);		! "attributes are stable", set until
+					! something changes that affects
+					! choice of font
+	p(tb, txt_n_sys);		! number of system font transactions
+					! at last updating of cache
+	p(tb, txt_fid);			! cached font id
+	p(tb, txt_font_rend);		! cached font rendition bits
+	.sub
+	end;
+
+global routine plb
+!++
+! Functional description:
+!
+!	Print a line block
+!
+! Formal parameters:
+ (
+    lb:ref line_block
+    ) =
+!--
+
+	begin
+	local sub;
+	typeCarriageReturn();		! Don't mash with debugger output
+	sub = plst(.lb[lin_nFields], .lb[lin_fields], 'field');
+	p(lb, lin_height);		! height of line in points
+	.sub
+	end;
+
+global routine pfb
+!++
+! Functional description:
+!
+!	Print a field block
+!
+! Formal parameters:
+ (
+    fb:ref field_block
+    ) =
+!--
+
+	begin
+	local sub;
+	typeCarriageReturn();		! Don't mash with debugger output
+	sub = plst(.fb[fld_nStrings], .fb[fld_strings], 'string');
+	p(fb, fld_nChars);	! number of characters in field
+	p(fb, fld_pos);		! distance from left margin that field starts
+	p(fb, fld_size);	! width of field
+	.sub
+	end;
+
+global routine psb
+!++
+! Functional description:
+!
+!	Print a string block
+!
+! Formal parameters:
+ (
+    sb:ref string_block
+    ) =
+!--
+
+	begin
+	local sub;
+	typeCarriageReturn();	! Don't mash with debugger output
+	type (hex(.sb[str_len]), ' chars: ''', shwdes(sb[str_len]), '''');
+	p(sb, str_beg);	! where in field this string starts
+	p(sb, str_end);	! position just beyond end of string
+	p(sb, str_size);	! size type of characters in this string
+	p(sb, str_base);	! how high on line string should be positioned
+	p(sb, str_offset);	! horizontal offset from previous string
+	p(sb, str_fid);		! font id
+	p(sb, str_rendition);	! bits describing appearance of characters
+	p(sb, str_backgroundColor);
+				! background color
+	p(sb, str_inkColor);	! ink color
+	.sub
+	end;
+
+end
+eludom

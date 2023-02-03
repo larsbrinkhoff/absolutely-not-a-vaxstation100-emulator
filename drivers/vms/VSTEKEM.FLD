@@ -1,0 +1,333 @@
+ 
+!*** MODULE VS$VTEM_4014_SDL IDENT TEK4014 EMULATOR ***
+! 
+! ++
+!  FACILITY: VAXstation software (VS)
+! 
+!  Virtual Terminal Emulator (VTEM) for TEK4014
+! 
+!  ABSTRACT:
+! 
+!  This module defines the database and global constants to be used for
+!  emulating a group of TEKtronix 4014 terminals in the context of the
+!  VAX workstation software; specifically, the System Display Architecture.
+!  Access to the SDA is gained thru the GIDIS emulator.
+! 
+!  An instance of the database exists for each TEK4014 terminal being emulated
+!  at a given time, it is allocated dynamically and linked with other such
+!  instances to construct the overall database.  All data associated with
+!  an emulated TEK4014 is defined in this file along with any global constants
+!  that are used to define stationary qualities common to all TEK4014's.
+! 
+! 
+!  ENVIRONMENT:
+! 
+!  VAX workstation: 11/750 or 11/730 running VMS with at least one ONYX
+!  graphics subsystem.
+! 
+! --
+!  GLOBAL CONSTANT DEFINITION:
+! 
+literal tk$k_uic = 0;
+literal tk$k_x_boarder = 48;
+literal tk$k_y_boarder = 0;
+literal tk$k_tek_rows = 35;
+literal tk$k_tek_columns = 74;
+literal tk$k_tek_display_x = 926;
+literal tk$k_tek_display_y = 746;
+literal tk$k_tek_x_addressing = 16384;
+literal tk$k_tek_y_addressing = 13170;
+literal tk$k_tek_x_screen = 16480;
+literal tk$k_tek_y_screen = 13170;
+literal tk$k_screen_log_left = 48;
+literal tk$k_screen_log_right = 16432;
+literal tk$k_screen_log_top = 0;
+literal tk$k_screen_log_bottom = 13170;
+literal tk$k_footer_vd_y = 34;
+literal tk$k_footer_back = 1;
+literal tk$k_gin_start_x = 100;
+literal tk$k_gin_start_y = 100;
+literal tk$k_margin_1 = 48;
+literal tk$k_margin_2 = 8240;
+! 
+!  DEFINE CELL DISPLAY SIZES, CELL UNIT SIZES AND CELL STORAGE SIZES
+! 
+literal tk$k_cdsx1 = 145;
+literal tk$k_cdsx2 = 135;
+literal tk$k_cdsx3 = 90;
+literal tk$k_cdsx4 = 70;
+literal tk$k_cdsy1 = 250;
+literal tk$k_cdsy2 = 240;
+literal tk$k_cdsy3 = 210;
+literal tk$k_cdsy4 = 200;
+literal tk$k_ccmx1 = 221;
+literal tk$k_ccmx2 = 202;
+literal tk$k_ccmx3 = 135;
+literal tk$k_ccmx4 = 123;
+literal tk$k_ccmy1 = 356;
+literal tk$k_ccmy2 = 327;
+literal tk$k_ccmy3 = 212;
+literal tk$k_ccmy4 = 192;
+! 
+!  DEFINE THE TOP OF THE DISPLAY FOR THE DIFFERENT TEXT SIZES
+! 
+literal tk$k_top1 = 640;
+literal tk$k_top2 = 669;
+literal tk$k_top3 = 784;
+literal tk$k_top4 = 804;
+! 
+!  DEFINE KEYWORD VALUES
+! 
+literal tk$k_alpha = 0;
+literal tk$k_graph = 1;
+literal tk$k_point = 2;
+literal tk$k_spec_point = 3;
+literal tk$k_gin = 4;
+literal tk$k_incr = 5;
+literal tk$k_normal = 0;
+literal tk$k_defocused = 1;
+literal tk$k_write_thru = 2;
+literal tk$k_dotted = 1;
+literal tk$k_dot_dashed = 2;
+literal tk$k_short_dash = 3;
+literal tk$k_long_dash = 4;
+literal tk$k_background = 0;
+literal tk$k_footer_background = 5;
+literal tk$k_foreground = 1;
+literal tk$k_tek4014 = 2;
+literal tk$k_graphics = 1;
+literal tk$k_pasteboard_color = 0;
+! 
+!  ADDRESS KEY WORDS
+! 
+literal start = -1;
+literal hiy = 0;
+literal loy = 1;
+literal hix = 2;
+literal lox = 3;
+! 
+!  TEXT SIZE KEY WORDS
+! 
+literal largest = 0;
+literal large = 1;
+literal small = 2;
+literal smallest = 3;
+! 
+!  CONTROL WORDS
+! 
+! 
+literal cc$k_nul = 0;
+literal cc$k_soh = 1;
+literal cc$k_stx = 2;
+literal cc$k_etx = 3;
+literal cc$k_eot = 4;
+literal cc$k_enq = 5;
+literal cc$k_ack = 6;
+literal cc$k_bel = 7;
+literal cc$k_bs = 8;
+literal cc$k_ht = 9;
+literal cc$k_lf = 10;
+literal cc$k_vt = 11;
+literal cc$k_ff = 12;
+literal cc$k_cr = 13;
+literal cc$k_so = 14;
+literal cc$k_si = 15;
+literal cc$k_dle = 16;
+literal cc$k_dc1 = 17;
+literal cc$k_dc2 = 18;
+literal cc$k_dc3 = 19;
+literal cc$k_dc4 = 20;
+literal cc$k_nak = 21;
+literal cc$k_syn = 22;
+literal cc$k_etb = 23;
+literal cc$k_can = 24;
+literal cc$k_em = 25;
+literal cc$k_sub = 26;
+literal cc$k_esc = 27;
+literal cc$k_fs = 28;
+literal cc$k_gs = 29;
+literal cc$k_rs = 30;
+literal cc$k_us = 31;
+literal cc$k_del = 127;
+! 
+!  Define constants for items being set.
+! 
+literal s4014$k_cr_send_cr = 0;         !  when cr typed, send cr only
+literal s4014$k_cr_send_crlf = 1;       !  when cr typed, send cr and lf
+literal s4014$k_lf_send_lf = 2;         !  when lf typed, send lf only
+literal s4014$k_lf_send_lf_cr = 3;      !  when lf typed, send lf and cr
+literal s4014$k_del_loy = 4;            !  delete on low order y coordinate
+literal s4014$k_esc_q_loy = 5;          !  escape ? on low order y coordinate
+literal s4014$k_gin_term_none = 6;      !  no chars sent at end of grphcs input
+literal s4014$k_gin_term_cr = 7;        !  cr sent at end of graphics input
+literal s4014$k_gin_term_cr_eot = 8;    !  cr and eot sent at end of gin mode
+literal s4014$k_col1_full = 9;          !  column 1 full
+literal s4014$k_stop_full = 10;         !  stop on page full
+literal s4014$k_go_full = 11;           !  keep going on page full
+literal s4014$k_level_1 = 12;
+literal s4014$k_level_2 = 13;           !  whether umlauts work or not
+literal s4014$k_first_non_setting = 14; !  skin
+! 
+!  DATABASE DESCRIPTION:
+! 
+literal tk$k_table_top = 0;
+literal tk$k_initial_status = 0;
+literal tk$k_table_size = 204;
+! 
+literal tk$s_tekblk = 204;
+FIELD tk$tek_blk_FIELDSET =
+  SET
+    tk$a_forward_link = [0,0,32,0],     !  pointer to next entry in terminal list
+    tk$a_backward_link = [4,0,32,0],    !  pointer to previous entry
+    tk$l_vms_stan_hdr = [8,0,32,1],     !  VMS standard headr field
+      tk$l_vsta_blk_info = [12,0,32,1],
+        tk$v_cntr_o_flag = [12,0,1,0],
+        tk$v_send_lf = [12,1,1,0],
+        tk$v_vsta_reserved = [12,2,30,0],
+      tk$r_vsta_blk_bits = [12,0,32,0],
+    tk$r_vsta_field = [12,0,32,0],
+    tk$l_fullview_vd_id = [16,0,32,0],
+!  id from VDS given to the screen's vd
+    tk$l_fullview_pb_id = [20,0,32,0],
+!  id from create pasteboard routine
+    tk$l_fullview_w_id = [24,0,32,0],
+    tk$l_footer_vd_id = [28,0,32,0],
+!  id from create window id
+    tk$l_footer_pb_id = [32,0,32,1],    !  id of pasteboard for footer
+    tk$l_tek_pb_id = [36,0,32,1],       !  id of pasteboard for entire terminal
+    tk$l_pb_width = [40,0,32,1],        !  width of main paste board
+    tk$l_pb_height = [44,0,32,1],       !  height of main pb
+    tk$l_bezel_vd_id = [48,0,32,1],     !  id of bezel vd
+    tk$l_bezel_width = [52,0,32,1],     !  width of bezel
+    tk$l_bezel_height = [56,0,32,1],    !  height of bezel
+    tk$l_black_line_height = [60,0,32,1], !  height of black line
+    tk$l_mode = [64,0,32,1],            !  indicates (alpha|graph|gin: 1|2|3)
+    tk$l_operation_status = [68,0,32,1], !  indicates errors gererated during 
+!  the processing of a byte of output
+      tk$b_status_byte = [72,0,8,0],
+!  field to be reported upon request
+        tk$v_aux_unit = [72,0,1,0],     !  true if there is no auxiliary unit
+        tk$v_margin_bit = [72,1,1,0],   !  true if margin 2 exists
+        tk$v_graph_mode = [72,2,1,0],   !  false if graph mode exists
+        tk$v_vector_bit = [72,3,1,0],   !  true if graph mode exists
+        tk$v_hard_copy = [72,4,1,0],    !  true if hard_copy unit attached
+        tk$v_all1 = [72,5,1,0],         !  always 1
+        tk$v_all0 = [72,6,1,0],         !  always 0
+        tk$v_arb = [72,7,1,0],          !  arbitrary
+      tk$r_sta = [72,0,8,0],
+    tk$r_status_field = [72,0,8,0],
+    tk$b_filler_one = [73,0,8,1],       !  FOR DEBUGGING ALLIGNMENT ONLY ***
+! 
+!  strap options and variable conditions
+! 
+      tk$w_char_status_word = [74,0,16,0],
+        tk$v_reserved = [74,0,1,0],
+        tk$v_margin_2 = [74,1,1,0],     !  true if margin 2 in use
+        tk$v_margin_on = [74,2,1,0],    !  true if margin_2 bit is enabled
+        tk$v_ascii_alt = [74,3,1,0],    !  true if alternate character set in use
+        tk$v_prog_control = [74,4,1,0], !  true if program controls char. set
+        tk$v_auto_creot = [74,5,1,0],   !  true if creot is auto with gin data
+        tk$v_creot_enabled = [74,6,1,0], !  true means no auto_cr_eot
+        tk$v_auto_cr_lf = [74,7,1,0],   !  true if auto cr with lf
+        tk$v_auto_lf_cr = [74,8,1,0],   !  true if auto lf with cr
+        tk$v_del_loy = [74,9,1,0],      !  true if del used as low y address
+        tk$v_filler = [74,10,6,0],
+      tk$r_char = [74,0,16,0],
+    tk$r_char_status_field = [74,0,16,0],
+! 
+!  control code effected
+! 
+    tk$w_bytesize = [76,0,16,0],
+!  prof$k_tek_7bit or prof$k_tek_8bit
+! 
+    tk$w_write_mode = [78,0,16,0],
+!  (normal | defocused | write-thru:
+!  0,1,2) 
+    tk$w_vector_mode = [80,0,16,0],
+!  0: normal
+!  1: dotted
+!  2: dot-dashed
+!  3: short-dash
+!  4: long-dash
+    tk$w_text_size = [82,0,16,0],
+!  0: normal
+!  1: 81 col/line
+!  2: 121 col/line
+!  3: 133 col/line
+    tk$v_char_set = [84,0,1,0],         !  true if alt char set exists
+    tk$v_lce_flag = [84,1,1,0],         !  true if escape sequence is initiated
+    tk$v_cr_ignore = [84,2,1,0],        !  true if cr's are to be ignored
+    tk$v_bypass_cond = [84,3,1,0],      !  true if bypass condition in effect
+    tk$v_page_full = [84,4,1,0],        !  true if page full status exists
+    tk$v_dark_vector = [84,5,1,0],      !  true if next vector is to be a dark vector
+    tk$v_mouse_select_down = [84,6,1,0], !  true if mouse select button is down
+    tk$v_settings_exist = [84,7,1,0],   !  true if settings form exists for trmnl
+    tk$v_ftr_select_flag = [84,8,1,0],
+    tk$v_filler_two = [84,9,8,0],       !  TEST ALLIGNMENT ONLY ***
+! 
+!  functional data
+! 
+    tk$w_field_y_max = [87,0,16,1],     !  max y field position
+    tk$w_field_y_min = [89,0,16,1],     !  min y field position
+    tk$w_footer_vd_x = [91,0,16,1],     !  store the dimmensions of the footer
+    tk$w_footer_vd_y = [93,0,16,1],     !  virtual display
+    tk$w_screen_vd_x = [95,0,16,1],     !  store the dimmensions of the screen
+    tk$w_screen_vd_y = [97,0,16,1],     !  virtual display
+    tk$w_increme_command = [99,0,16,1], !  move or draw command for the incremental
+!  plot mode
+    tk$w_beam_x_address = [101,0,16,1], !  address of writing beam 
+    tk$w_beam_y_address = [103,0,16,1],
+    tk$l_xhairs_x = [105,0,32,1],       !  crosshair trackers
+    tk$l_xhairs_y = [109,0,32,1],
+    tk$l_mouse_ast_buffer = [113,0,0,1],
+    tk$l_mouse_ast_iosb = [125,0,0,1],
+    tk$l_ftr_mouse_buffer = [133,0,0,1],
+    tk$l_ftr_mouse_iosb = [145,0,0,1],
+    tk$w_address_state = [153,0,16,1],  !  0: start
+!  1: hiy
+!  2: loy
+!  3: hix
+!  4: lox
+    tk$w_graph_x = [155,0,16,1],        ! graph mode x location
+    tk$w_graph_y = [157,0,16,1],        ! graph mode y location
+    tk$w_graph_xt = [159,0,16,1],       !  temporary graph addresses
+    tk$w_graph_yt = [161,0,16,1],       !  
+! 
+!  Define the cursor variables here
+! 
+    tk$v_alpha_cursor_on = [160,24,1,0], !  true: cursor is visible
+    tk$v_alpha_cursor_off = [160,25,1,0], !  true: blinking cursor is turned off
+! 
+!  define the graphics input buffer to be used when returning status and 
+!  information from emulator to host, by request from host
+! 
+    tk$b_vkbtran_buffer = [164,0,0,1],
+    tk$l_vkbtran_buffer_index = [174,0,32,1],
+    tk$l_vkbtran_buffer_ptr = [178,0,32,1],
+! 
+!   DEfine the page full backlog buffer
+! 
+    tk$a_page_full_backlog = [182,0,32,0],
+    tk$l_page_full_backlog_bcnt = [186,0,32,1],
+! 
+! 
+!  define a gidis output buffer
+! 
+!        CONSTANT gidis_buffer_max EQUALS 450;
+!        gidis_buffer         	WORD DIMENSION 450;
+!        gidis_buffer_index 	LONGWORD;
+! 
+!  Define the line width, pattern and pattern state here
+! 
+    tk$w_line_width = [190,0,32,1],
+    tk$w_ptn_count = [194,0,16,1],
+    tk$w_pattern = [196,0,16,1],
+    tk$w_ptn_mult = [198,0,16,1],
+    tk$w_ptn_state = [200,0,32,1],
+! 
+!  store the size, in bytes, of the dsect
+! 
+  tk$r_tekblk = [0,0,0,0]
+  TES;
+literal tk$s_tek_blk = 204;
+MACRO tek_blk = BLOCK [tk$s_tek_blk,byte] FIELD (tk$tek_blk_FIELDSET) %;

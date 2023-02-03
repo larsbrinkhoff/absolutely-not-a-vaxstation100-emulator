@@ -1,0 +1,80 @@
+MODULE VS$VTB;
+
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*   This module contains all the data structures relevent to dealing with
+/*   the VAXstation Virtual Tablet as an entity in the context of
+/*   a VAX workstation running the associated workstation display software;
+/*   an implementation of the System Display Architecture.
+/*
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/*
+/* Virtual Tablet Module Constant Definitions
+/*
+/*
+/* Virtual Tablet I/O Request Block
+/*
+    AGGREGATE rb_block STRUCTURE PREFIX vs$rb_;
+	flink		 ADDRESS;		/*Ptr to next request block
+	blink		 ADDRESS;		/*Ptr to previous request block
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	irp		 ADDRESS;		/*I/O request IRP address
+	pid		 LONGWORD UNSIGNED;	/*I/O request PID
+	user_last_x	 LONGWORD UNSIGNED;	/*User last known X-coordinate
+	user_last_y	 LONGWORD UNSIGNED;	/*User last known Y-coordinate
+	distance	 LONGWORD UNSIGNED;	/*Distance to satisfy I/O
+	user_up_mask	 LONGWORD UNSIGNED;	/*User desired button up mask
+	user_down_mask	 LONGWORD UNSIGNED;	/*User desired button down mask
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END rb_block;
+/*
+/* Virtual Tablet Button Event Flags
+/*
+    AGGREGATE vtb_efn_block STRUCTURE PREFIX vs$vtb_;
+	down_efn	 BYTE UNSIGNED;		/*Button down transition efn
+	up_efn		 BYTE UNSIGNED;		/*Button up transition efn
+	CONSTANT "efn_block_size" EQUALS .;	/*Length of data block
+	END vtb_efn_block;
+/*
+/* Virtual Tablet Data Block Definition
+/*
+    AGGREGATE vtb_block STRUCTURE PREFIX vs$vtb_;
+	flink		 ADDRESS;		/*Ptr to next virtual tablet
+	blink		 ADDRESS;		/*Ptr to previous vtb block
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	id		 LONGWORD UNSIGNED;	/*Virtual Tablet ID
+	owner		 LONGWORD UNSIGNED;	/*Owner of virtual tablet
+	ptb_chan	 WORD UNSIGNED;		/*Physical Tablet channel no.
+	state_field	 UNION;
+	  state		 LONGWORD UNSIGNED;	/*State of virtual tablet
+	  state_bits	 STRUCTURE;		/*Individual VTB state bits
+	    active	 BITFIELD MASK;		/*Activated virtual tablet
+	    extra	 BITFIELD LENGTH 7;	/*For future DEC use
+	  END state_bits;
+	END state_field;
+	pm_head		 ADDRESS;		/*Ptr move request head
+	pm_tail		 ADDRESS;		/*Ptr move request tail
+	tb_head		 ADDRESS;		/*Button request head
+	tb_tail		 ADDRESS;		/*Button request tail
+	x		 LONGWORD UNSIGNED;	/*Current X-coordinate
+	y		 LONGWORD UNSIGNED;	/*Current Y-coordinate
+	button_mask	 LONGWORD UNSIGNED;	/*Current button mask
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END vtb_block;
+/*
+/* End of module VS$VTB
+/*
+    end_module;

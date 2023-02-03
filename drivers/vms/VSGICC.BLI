@@ -1,0 +1,831 @@
+! VSGICC.BLI - VaxStation GIdis Character Cell processes, Bliss source
+!
+MODULE VSTA$GID_cc(
+    IDENT = 'GIDIS character cell processes',
+    ADDRESSING_MODE( NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	The gidis functions that display characters are here.
+!
+! Environment:
+!
+!	To use this module, require VSGICC.REQ to declare the routines
+!	and symbols.
+!
+!
+GLOBAL LITERAL GID$$CC_Edit_level = 5;
+!
+!--
+LIBRARY 'vsta$library:vstasyms';
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgicx';			! Gidis coordinate transformer
+LIBRARY 'VSTA$LIBRARY:vsgirm';			! Gidis report manager
+LIBRARY 'VSTA$LIBRARY:vsging';			! Native Graphics interface
+LIBRARY 'VSTA$LIBRARY:vsgial';			! Alphabet memory manager
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+
+library_file_crock;
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vs$$acp_get_vm,
+    vs$$acp_free_vm,
+    vsta$$error;
+
+
+	       !------------------------------------------!
+	       !     State block for print text stuff     !
+	       !------------------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+!	This block contains any data whose address is passed into print text.
+!	This must be kept seperately for each call because print_text is
+!	asynchronous.  A new buffer is allocated for each time print_text is
+!	called, and a completion routine deallocates this buffer after the
+!	operation is complete.
+
+    FIELD print_text_fields =
+	SET
+	pt_block_length		= longword_scalar,! Length for free_vm of this
+word_align	pt_dst_offset		= what_follows,
+		    pt_dest_offset_x	= word_scalar,
+		    pt_dest_offset_y	= word_scalar,
+word_align	pt_map			= longword_scalar,
+word_align	pt_font_desc	= what_follows,		    ! ACP font desc
+		    pt_font_address	= longword_scalar,  ! for native grphs
+		    pt_font_location	= longword_scalar,  ! not WGA!
+		    pt_font_reserved	= longword_vector( 3),
+word_align	pt_text_desc	= what_follows,
+		    pt_text_length	= longword_scalar,
+		    pt_text_address	= longword_scalar,
+		pt_font_instance	= longword_scalar,  ! Gidis font
+						! instance address for deref
+word_align	pt_clipping_rectangle	= what_follows,	  ! The clipping region
+		    pt_clip_x		= word_scalar,
+		    pt_clip_y		= word_scalar,
+		    pt_clip_width	= word_scalar,
+		    pt_clip_height	= word_scalar,
+word_align	pt_string	= what_follows_word_vector
+!	After the string is the clipping rectangle list, and after that
+!	is the control string.  Their positions in the block are determined
+!	at run-time.
+	TES;
+
+    LITERAL pt_table_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+		   !----------------------------------!
+		   ! State Block for Font Information !
+		   !----------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+!	This block contains the description of a font.  The base address is
+!	the location of the font in WGA format.  This is what
+!	sf[ alph_addresses] points to when sf[ alph_type] is "named".
+
+    FIELD font_fields =
+	SET
+	ff_bitmap = what_follows,
+	    ff_bitmap_pointer = longword_scalar,
+	    ff_bitmap_xdim = word_scalar,
+	    ff_bitmap_ydim = word_scalar,
+	    ff_bitmap_zdim = word_scalar,
+	ff_firstchar = word_scalar,
+	ff_lastchar = word_scalar,
+	ff_leftarray = longword_scalar,
+	ff_baseline = word_scalar,
+	ff_space = word_scalar,
+	ff_width = word_scalar,
+	ff_font_data = what_follows
+	TES;
+
+    LITERAL font_block_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+	     !----------------------------------------------!
+	     ! Routines for manipulating the control string !
+	     !----------------------------------------------!
+
+!+
+ROUTINE move_to: NOVALUE  =
+! Routine value:
+! Implicit inputs:
+!	From sf:
+!	    x_hard_pos, y_hard_pos - The desired new position
+!	    pt_x_last_pos, pt_y_last_pos - The location the print text call
+!		would use without further adjustment.
+!	    pt_last_control_opcode - The opcode value of the last opcode in
+!		the control string
+!	And the control string itself out of pt_stuff.
+!
+! Implicit outputs:
+!	From sf:
+!	    pt_x_last_pos, pt_y_last_pos - Updated to reflect and changes
+!		in the control string.
+!	    pt_last_control_opcode - If a new opcode is added to the control
+!		string, this is updated.
+!	The control string is modified and/or lengthened.
+!
+! Function:
+!	Add (or modify the last) an entry to the control string that will get
+!	the current position moved to the place requested in [X_hard_pos,
+!	Y_hard_pos] from the current value of [pt_last_pos, pt_last_pos].
+! Algorithm:
+!	Check to see if we are already in the right place.  If so, do nothing,
+!	If not, an adjust opcode must be added to the control string.  If the
+!	last control string opcode was already an adjust opcode, then modify
+!	it by the needed amount, otherwise append the needed adjust opcode.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	control_string: REF VECTOR[ ,WORD,1];
+
+!	Check if any adjustment is needed
+
+    IF .sf[ x_hard_pos] NEQ .sf[ pt_x_last_pos]
+    OR .sf[ y_hard_pos] NEQ .sf[ pt_y_last_pos]
+    THEN ! A position adjustment is needed, perform one
+	BEGIN
+	control_string = .sf[ pt_control_string];
+	IF .sf[ pt_last_control_opcode] NEQ pt_adjust_opcode
+	THEN ! Last opcode was not adjust, put a blank adjust opcode there
+	    BEGIN
+	    control_string[ .sf[ pt_control_count]] = pt_adjust_opcode;
+	    sf[ pt_control_count] = .sf[ pt_control_count] + 1;
+	    control_string[ .sf[ pt_control_count]] = 0;
+	    sf[ pt_control_count] = .sf[ pt_control_count] + 1;
+	    control_string[ .sf[ pt_control_count]] = 0;
+	    sf[ pt_control_count] = .sf[ pt_control_count] + 1;
+	    sf[ pt_last_control_opcode] = pt_adjust_opcode;
+	    END;
+
+!	Modify the adjust opcode to include this cursor motion
+
+	control_string[ .sf[ pt_control_count] - 2] =
+	    .control_string[ .sf[ pt_control_count] - 2]
+	    + (.sf[ x_hard_pos] - .sf[ pt_x_last_pos]);
+	control_string[ .sf[ pt_control_count] - 1] =
+	    .control_string[ .sf[ pt_control_count] - 1]
+	    + (.sf[ y_hard_pos] - .sf[ pt_y_last_pos]);
+	sf[ pt_x_last_pos] = .sf[ x_hard_pos];
+	sf[ pt_y_last_pos] = .sf[ y_hard_pos];
+	END;
+    END;
+
+!+
+ROUTINE add_character(
+    width)	! Width of the character that was added
+    : NOVALUE =
+! Routine value:
+! Implicit inputs:
+!	   pt_last_control_opcode - This is checked to see if there is an
+!		"out" opcode already there that can be re-used.
+! Implicit outputs:
+!	From sf:
+!	   pt_x_last_pos - Updated to reflect movement caused by the character
+!		width provided.
+!	   pt_last_control_opcode - If an opcode is added to the control
+!		string,	this is updated.
+! Function:
+!	Adjusts the control string so that the next action is to print one
+!	more character by adding a new opcode, or modifying the last opcode,
+!	as needed.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	control_string: REF VECTOR[ ,WORD,1];
+
+    sf[ pt_x_last_pos] = .sf[ pt_x_last_pos]
+	+ .width
+	+ .sf[ pt_inter_character_pad];
+    control_string = .sf[ pt_control_string];
+    IF .sf[ pt_last_control_opcode] NEQ pt_out_opcode
+    THEN ! Last opcode was not an out, put a blank out opcode there
+	BEGIN
+	control_string[ .sf[ pt_control_count]] = pt_out_opcode;
+	sf[ pt_control_count] = .sf[ pt_control_count] + 1;
+	control_string[ .sf[ pt_control_count]] = 0;
+	sf[ pt_control_count] = .sf[ pt_control_count] + 1;
+	sf[ pt_last_control_opcode] = pt_out_opcode;
+	END;
+    control_string[ .sf[ pt_control_count] - 1] =
+	.control_string[ .sf[ pt_control_count] - 1] + 1;
+    END;
+
+
+       !----------------------------------------------------------!
+       ! Routines for pathing of characters into Print_text calls !
+       !----------------------------------------------------------!
+
+!+
+ROUTINE string_length_heuristic =
+! Routine value:
+!	A guess for how many characters should be in the next print_text
+!	buffer.
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Determine the optimum length, in characters, for the next print_text
+!	buffer.
+! Algorithm:
+!	Return the constant 128.
+! Side effects:
+!-
+    BEGIN
+    128
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$CC_new_characters = 
+! Routine value:
+!	Error status code
+! Implicit inputs:
+!	Current print_text buffer, if any
+! Implicit outputs:
+!	New print_text state, initialized
+! Function:
+!	Create a new print_text buffer for chracter paths
+! Algorithm:
+!	If one already exists, free it.
+!	create a new one, and initialize it.  Initialize any related state in
+!	the sf structure.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+        pt_block : REF state_instance FIELD (print_text_fields),
+	currentfont: REF state_instance FIELD ( font_fields),
+	status;
+
+    IF .sf[ pt_len] NEQ 0
+    THEN	! Buffer exists, cause it to go away
+        VS$$ACP_free_vm( sf[ pt_len], sf[ pt_stuff]);
+
+!	For each character, there is:
+!	    1 word for the character in the string buffer (2 bytes)
+!	    4 words of rectangle information for display size list (8 bytes)
+!	    Up to 5 words per character of control string (10 bytes)
+!	    Total is 20 bytes per character.  Allocate the much,
+!	    plus the size of all the labeled data in the state block.
+
+    sf[ path_buffer_size] = string_length_heuristic();
+    sf[ pt_len] = (.sf[ path_buffer_size] * 20) + pt_table_size;
+    status = VS$$ACP_get_vm( sf[ pt_len], sf[ pt_stuff]);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    pt_block = .sf[ pt_stuff];
+    pt_block[ pt_block_length] = .sf[ pt_len];
+    sf[ path_count] = 0;		! 0 characters
+    pt_block[ pt_text_address] = pt_block[ pt_string, 0];
+
+!	Offset the control string starting address to be just past the end of
+!	the space allocated for the string.
+
+    sf[ pt_control_string] = pt_block[ pt_string, .sf[ path_buffer_size]];
+    sf[ pt_control_count] = 0;
+    sf[ pt_max_width] = 0;
+
+!	Offset the clip list by the length of both
+!	the control string and the string buffer.
+
+    sf[ pt_clip_list] = pt_block[ pt_string, .sf[ path_buffer_size]*5];
+    sf[ pt_last_control_opcode] = -1;
+    sf[ pt_x_last_pos] = .sf[ x_hard_pos];
+    sf[ pt_y_last_pos] = .sf[ y_hard_pos];
+
+!	Place the first character in the right place
+
+    pt_block[ pt_dest_offset_x] = .sf[ x_hard_pos];
+    pt_block[ pt_dest_offset_y] = .sf[ y_hard_pos];
+    pt_block[ pt_map] = .sf[ map_for_ca];
+
+!	Put in the font descriptor for the current font
+
+    status = GID$$AL_check_current_alphabet();
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+    pt_block[ pt_font_address] = .sf[ tx_font_address];
+    pt_block[ pt_font_location] = .sf[ tx_font_location];
+    pt_block[ pt_font_instance] = .sf[ tx_font_instance];
+
+!	Matching dereference is in completion routine for print_text
+
+    GID$$AL_reference_font( .pt_block[ pt_font_instance]);
+
+!	Guess at optimum inter-character pad
+
+    currentfont = .sf[ tx_font_header_address];
+    sf[ pt_inter_character_pad] =
+	GID$$CX_Map_coordinate( .sf[ tx_X_cursor_movement])
+	- GID$$AL_char_width( .currentfont, .currentfont[ ff_space]);
+
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_end_characters = 
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+!	Depending on the writing mode and display size, first clear all the
+!	display sizes with the rectangle list, and then print all the
+!	characters, but do so only if needed.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+        pt_block : REF state_instance FIELD (print_text_fields),
+	clipping_rectangle_count,
+	clipping_rectangle_list,
+	map_type,
+	status;
+
+    ROUTINE pt_completion_routine(
+	state: REF state_instance FIELD (print_text_fields)
+	) =
+	BEGIN
+!	Corresponding reference is in new_characters
+	GID$$AL_dereference_font( .state[ pt_font_instance]);
+	VS$$ACP_Free_vm( state[ pt_block_length], state)
+	END;
+
+    status = 1;
+    pt_block = .sf[ pt_stuff];
+    IF .sf[ tx_h_hard_unit] GTR .sf[ tx_h_hard_disp]
+    OR .sf[ pt_max_width] GTR .sf[ tx_w_hard_disp]
+    THEN ! Display size clipping rectangles need to clip the text, use them
+	BEGIN
+	clipping_rectangle_count = .sf[ path_count];
+	clipping_rectangle_list = .sf[ pt_clip_list];
+	END
+    ELSE ! Only clipping rectangle is the Gidis clipping rectangle
+	BEGIN
+	clipping_rectangle_count = 1;
+	pt_block[ pt_clip_x] = .sf[ clipping_x];
+	pt_block[ pt_clip_y] = .sf[ clipping_y];
+	pt_block[ pt_clip_width] = .sf[ clipping_width];
+	pt_block[ pt_clip_height] = .sf[ clipping_height];
+	clipping_rectangle_list = pt_block[ pt_clipping_rectangle];
+	END;
+
+    IF .sf[ writing_mode] LEQ 3
+    THEN ! Use complement modes
+	BEGIN
+	map_type = nat$k_map_sourcedest;
+	pt_block[ pt_map] = 6;
+	END
+    ELSE ! use identity maps
+	BEGIN
+	map_type = nat$k_map_identity;
+	END;
+
+
+    IF .sf[ char_background] NEQ -1
+    THEN	!	The clipping rectangle list needs to be used for
+	BEGIN	!	clearing the backgrounds,  call copy-area to do so.
+	status = $VSTAcopy(
+	    SOURCE = .sf[ char_background],
+	    DSTTYP = nat$k_dst_vd,
+	    DST = .sf[ display_id],
+	    MAPTYP = .map_type,
+	    MAPADR = pt_block[ pt_map],
+	    RECNUM = .sf[ path_count],
+	    RECADR = .sf[ pt_clip_list]
+	    );
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+
+    IF .sf[ char_foreground] NEQ -1
+    THEN	! The characters actually do want to be printed.  call
+		! print_text to have it done.
+    	BEGIN
+	pt_block[ pt_text_length] = .sf[ path_count];
+
+!	Overlay negate writing mode (5) is a special case.
+
+	IF .sf[ writing_mode] NEQ 5
+	THEN	! Do the ordinary case
+	 status = $VSTAprint(
+	    SOURCE = .sf[ char_foreground],
+	    MSKTYP = nat$k_msk_font_bitmap,
+	    MASK = pt_block[ pt_font_desc],
+	    DSTTYP = nat$k_dst_vd,
+	    DST = .sf[ display_id],
+	    DSTOFA = nat$k_dst_no_update,
+	    DSTOFF = pt_block[ pt_dst_offset],
+	    MAPTYP = .map_type,
+	    MAPADR = pt_block[ pt_map],
+	    TXTTYP = nat$k_txt_16bits,
+	    TXTDSC = pt_block[ pt_text_desc],
+	    CTRNUM = .sf[ pt_control_count],
+	    CTRADR = .sf[ pt_control_string],
+	    CHRPAD = .sf[ pt_inter_character_pad],
+	    SPCPAD = 0,
+	    RECNUM = .clipping_rectangle_count,
+	    RECADR = .clipping_rectangle_list,
+	    ASTADR = pt_completion_routine,
+	    ASTPRM = .sf[ pt_stuff])
+	ELSE	! Do the overlay negate case
+	 status = $VSTAprint(
+	    SRCTYP = nat$k_src_font_bitmap,
+	    SOURCE = pt_block[ pt_font_desc],
+	    DSTTYP = nat$k_dst_vd,
+	    DST = .sf[ display_id],
+	    DSTOFA = nat$k_dst_no_update,
+	    DSTOFF = pt_block[ pt_dst_offset],
+	    MAPTYP = nat$k_map_sourcedest,
+	    MAPADR = %ref( 13),
+	    TXTTYP = nat$k_txt_16bits,
+	    TXTDSC = pt_block[ pt_text_desc],
+	    CTRNUM = .sf[ pt_control_count],
+	    CTRADR = .sf[ pt_control_string],
+	    CHRPAD = .sf[ pt_inter_character_pad],
+	    SPCPAD = 0,
+	    RECNUM = .clipping_rectangle_count,
+	    RECADR = .clipping_rectangle_list,
+	    ASTADR = pt_completion_routine,
+	    ASTPRM = .sf[ pt_stuff]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END
+    ELSE	! Since we did not call print_text, we have to call a NO-OP to
+		! deallocate the buffer
+	BEGIN
+	status = $VSTAnoop(
+	    ASTADR = pt_completion_routine,
+	    ASTPRM = .sf[ pt_stuff]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    sf[ pt_len] = 0;
+    sf[ pt_stuff] = 0;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_flush_characters =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Cause pending operations to be completed, but remain in character
+!	pathing mode.
+! Algorithm:
+!	Since print_text need not keep state across buffer boundaries,
+!	simple ending the old path and begining a new one is okay here.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    status = GID$$CC_end_characters();
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+!	Rather than create a new text path, I simply leave text mode. Text
+!	mode will be resored automaticaly when the next character opcode comes
+!	in.  This prevents allocating the text path buffer when the buffer
+!	boundary is also the end of the text path, and the resulting calls
+!	to print-text with 0 characters in the string are avoided.
+!    status = GID$$CC_new_characters();
+!    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    sf[ pathing_mode] = GID$$PA_no_path_in_progress;
+    .status
+    END;
+
+!+
+ROUTINE adjust_clipping_rectangle(
+    rect: REF VECTOR[ ,WORD,1]		! 4-word clipping rectangle vector
+    ) : NOVALUE =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Clipping a clipping rectangle to the Gidis clipping region
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .rect[ 0] LSS .sf[ clipping_x]
+    THEN ! Origin X is outside clipping region, adjust it
+	BEGIN
+	rect[ 2] = .rect[ 2] - (.sf[ clipping_x] - .rect[ 0]);
+	rect[ 0] = .sf[ clipping_x];
+	END;
+    IF .rect[ 0] + .rect[ 2] GTR .sf[ clipping_x] + .sf[ clipping_width]
+    THEN ! Extent width is outside clipping region, adjust it
+	BEGIN
+	rect[ 2] = .sf[ clipping_x] + .sf[ clipping_width] - .rect[ 0];
+	END;
+    IF .rect[ 2] LSS 0 THEN rect[ 2] = 0;
+
+    IF .rect[ 1] LSS .sf[ clipping_y]
+    THEN ! Origin y is outside clipping region, adjust it
+	BEGIN
+	rect[ 3] = .rect[ 3] - (.sf[ clipping_y] - .rect[ 1]);
+	rect[ 1] = .sf[ clipping_y];
+	END;
+    IF .rect[ 1] + .rect[ 3] GTR .sf[ clipping_y] + .sf[ clipping_height]
+    THEN ! Extent height is outside clipping region, adjust it
+	BEGIN
+	rect[ 3] = .sf[ clipping_y] + .sf[ clipping_height] - .rect[ 1];
+	END;
+    IF .rect[ 3] LSS 0 THEN rect[ 3] = 0;
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_character(	! Character opcode
+    char_code				! Character code to display
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+!	2. Add the character to the character buffer
+!	3. Add a display-size rectangle to the clipping rectangle list
+!	4. Add the correct cursor movements to the control string list.
+!	1. If the buffer is full, flush it.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	pt_block: REF state_instance FIELD (print_text_fields),
+	clip_list: REF VECTOR[ ,WORD,1],
+	font: REF state_instance FIELD (font_fields),
+	this_width,
+	status;
+
+    status = 1;
+
+    pt_block = .sf[ pt_stuff];
+    clip_list = .sf[ pt_clip_list];
+
+!	Range check character code for the current character, and if not
+!	in range take the error action appropriate for this kind of
+!	alphabet.
+
+    font = .sf[ tx_font_header_address];
+    IF (.char_code GTR .font[ ff_lastchar])
+    OR (.char_code LSS .font[ ff_firstchar])
+    THEN char_code = .font[ ff_firstchar];
+
+!	Add the character to the character buffer
+
+    pt_block[ pt_string, .sf[ path_count]] = .char_code;
+    this_width = GID$$AL_char_width( .font, .char_code);
+    add_character( .this_width);
+    IF .sf[ pt_max_width] LSS .this_width THEN sf[ pt_max_width] = .this_width;
+
+!	Add the display size rectangle to the clipping rectangle list
+
+    clip_list[ .sf[ path_count]*4+0] = .sf[ x_hard_pos];  ! Corner  
+    clip_list[ .sf[ path_count]*4+1] = .sf[ y_hard_pos];    
+    clip_list[ .sf[ path_count]*4+2] = .sf[ tx_w_hard_disp]; ! Width
+    clip_list[ .sf[ path_count]*4+3] = .sf[ tx_h_hard_disp]; ! Height
+
+    adjust_clipping_rectangle( clip_list[ .sf[ path_count]*4+0]);
+
+!	Move the cursor in a way that allows for the accumulaton of positional
+!	error.  This allows strings of characters to appear with every
+!	cell having the same size, with never any overlap or underlap.
+
+    sf[ x_soft_pos] = .sf[ x_soft_pos] + .sf[ tx_X_cursor_movement];
+    sf[ y_soft_pos] = .sf[ y_soft_pos] + .sf[ tx_Y_cursor_movement];
+    sf[ x_hard_pos] = .sf[ x_hard_pos]
+	+ GID$$CX_Map_coordinate( .sf[ tx_X_cursor_movement]); 
+    sf[ y_hard_pos] = .sf[ y_hard_pos]
+	+ GID$$CX_Map_coordinate( .sf[ tx_Y_cursor_movement]);
+
+!	Add the correct cursor movements to the control string list
+
+    move_to();
+
+!	Increment the character count
+
+    sf[ path_count] = .sf[ path_count] + 1;
+
+!	If the path is full, flush it
+
+    IF .sf[ path_count] GEQ .sf[ path_buffer_size]
+    THEN ! Buffer is full, flush this one.
+	BEGIN
+	status = GID$$CC_flush_characters();
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+
+   .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$CC_reposition(
+    X,		! Relative hard coordinate to position to
+    Y
+    )  =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    move_to();
+    1
+    END;
+
+
+	 !-------------------------------------------------------!
+	 ! Routines for executing opcodes for setting text state !
+	 !-------------------------------------------------------!
+
+!+
+GLOBAL ROUTINE GID$$CC_cell_cursor_movement(
+    X,					! Distance in logical address space
+    Y					! to move the drawing point
+    ) =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ tx_X_cursor_movement] = .X;
+    sf[ tx_Y_cursor_movement] = .Y;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_select_alphabet(
+    alphabet		! Alphabet number to select
+    ) =
+! Routine value:
+!	Always successful
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Change currently selected alphabet
+! Algorithm:
+!	If in range, select it
+! Side effects:
+!-
+    BEGIN
+    IF .alphabet LEQU 15
+    THEN ! New alphabet number is in range
+	BEGIN
+	sf[ tx_alphabet] = .alphabet;
+	sf[ tx_need_new_font] = 1;
+	END;
+    1
+    END;
+
+GLOBAL ROUTINE GID$$CC_cell_unit_size(
+    width,		! Width in Gidis coordinate space
+    height		! Height in Gidis coordinate space
+    ) =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Select the character unit size
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .width LSS 0 THEN width = -.width;
+    IF .height LSS 0 THEN height = -.height;
+    sf[ tx_need_new_font] = 1;
+    sf[ tx_w_hard_unit] = GID$$CX_map_coordinate( .width);
+    sf[ tx_h_hard_unit] = GID$$CX_map_coordinate( .height);
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_cell_display_size(
+    width,		! Display size width in Gidis space
+    height		! Display size height in Gidis spacen
+    )  =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	 Set the character display size
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .width LSS 0 THEN width = -.width;
+    IF .height LSS 0 THEN height = -.height;
+    sf[ tx_w_soft_disp] =  .width;
+    sf[ tx_h_soft_disp] =  .height;
+    sf[ tx_w_hard_disp] = GID$$CX_map_coordinate( .width);
+    sf[ tx_h_hard_disp] = GID$$CX_map_coordinate( .height);
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_cell_rotation(
+    degrees
+    )  =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	 Set the character rotation
+! Algorithm:
+!	Character rotation attributes don't exist on VS100
+! Side effects:
+!-
+    BEGIN
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$CC_cell_italic(
+    degrees
+    )  =
+! Routine value:
+!	Always success
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	 Set the character italic
+! Algorithm:
+!	Set the right rendition bit for non-0 italics
+! Side effects:
+!-
+    BEGIN
+    sf[ tx_need_new_font] = 1;
+    (sf[ tx_rendition])< 0, 1, 0> = ( .degrees NEQ 0);
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$CC_save_state =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Text portion of save state
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ txs_X_cursor_movement] = .sf[ tx_X_cursor_movement];
+    sf[ txs_Y_cursor_movement] = .sf[ tx_Y_cursor_movement];
+    sf[ txs_alphabet] = .sf[ tx_alphabet];
+    sf[ txs_w_hard_unit] = .sf[ tx_w_hard_unit];
+    sf[ txs_h_hard_unit] = .sf[ tx_h_hard_unit];
+    sf[ txs_w_soft_disp] = .sf[ tx_w_soft_disp];
+    sf[ txs_h_soft_disp] = .sf[ tx_h_soft_disp];
+    sf[ txs_rendition] = .sf[ tx_rendition];
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$CC_restore_state =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Text portion of restore state
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ tx_need_new_font] = 1;
+    sf[ tx_X_cursor_movement] = .sf[ txs_X_cursor_movement];
+    sf[ tx_Y_cursor_movement] = .sf[ txs_Y_cursor_movement];
+    sf[ tx_alphabet] = .sf[ txs_alphabet];
+    sf[ tx_w_hard_unit] = .sf[ txs_w_hard_unit];
+    sf[ tx_h_hard_unit] = .sf[ txs_h_hard_unit];
+    sf[ tx_rendition] = .sf[ txs_rendition];
+    GID$$CC_cell_display_size( .sf[ txs_w_soft_disp], .sf[ txs_h_soft_disp])
+    END;
+
+END
+ELUDOM

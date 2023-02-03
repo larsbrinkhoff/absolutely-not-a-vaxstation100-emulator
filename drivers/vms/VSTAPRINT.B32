@@ -1,0 +1,402 @@
+%title 'VS$ACP  --  VAX Station ACP Control routines'
+module VSTA$PRINT	( 			! 
+			ident = 'VSTA V1.2-01',
+			main = PLOT,
+			addressing_mode (external=general,nonexternal=general)
+			 ) =
+begin
+
+!++
+! FACILITY:
+!	VaxStation Printer format conversion program image.
+!
+! ABSTRACT:
+!	This image is run a batch job, to convert the bitmap file
+!	dumped by the VAXstation ACP into a sixel (serial graphics
+!	protocol) format file for printing.
+!
+! ENVIRONMENT:
+!
+!
+!--
+
+library 'sys$library:starlet';
+external routine sys$exit : ADDRESSING_MODE ( GENERAL);
+
+structure
+    bitMatrix[i, j; m, n] =
+	[ ( ( n + 7 ) / 8 ) * m ]
+	( bitMatrix + ( ( n + 7 ) / 8 ) * i + ( j / 8 ) ) < j mod 8, 1, 0>;
+
+literal
+    bitBlockWidth = 1088,		! Screen can't be wider than this
+    RowWidth = (bitBlockWidth+7)/8,	! Number of bytes in raster
+    sixelStringlength = 2*1088+1,	! We do x doubling
+    bitMapDescLength = 10;		! but 1736 is max LA100 width.
+
+forward routine
+    plot : novalue,
+    makeSixelAndPrint : novalue;
+
+own
+    xDim: word,
+    xDimBytes, xDimLwBytes,
+    yDim: word,
+    zDim: word,
+    offset : long, 		! Bitmap starting address, relative to file.
+    bitBlock: bitMatrix[ 8, bitBlockWidth ] align (2),	! Bit addressed pixels
+    OutString:  vector[sixelStringLength, byte],	! Sixels
+    Outlength,			! length of sixel string
+    Super: vector[5 * 512 + 511, byte],		! for outbuf alignment (9)
+    Oldn,			! Not yet output characters in buffer
+    OutBufferIdx: initial(0),	! And where they start
+    Npages;			! how many pages of bytes to output
+
+bind
+    byteBlock = bitblock: vector [,byte],		! above byte addressed
+
+    OutBuffer = ((super [0] + 511) and not %o'777')	! page align
+	: vector [5*512,byte] ;				! Output buffer pages
+
+own
+    inDataPtr :long,		! Ptr into mapped file of data being processed
+    inFilePages : vector [2],	! Starting and ending addresses of mapped file
+    inFile_fab: $FAB(
+		FNM = 'SYS$INPUT:',
+		fop = ufo			! allow mapping
+		),
+    inFile_rab: $RAB(
+		FAB = inFile_fab,
+		USZ = 512),
+
+    outFile_fab: $FAB
+		(FNM = 'SYS$OUTPUT:'	! Name
+		,FAC = <PUT,TRN>	! Mode
+		,MRS = 512		! Max record size
+		,ALQ = 100		! Allocate on create
+		,DEQ = 25		!  and extension
+		,FOP = <CBT,TEF>	! Truncate, sequential, Contiguous
+		,RFM = FIX		! Fixed lenth records
+		),
+    outFile_rab: $RAB
+		(FAB = outFile_fab
+		,RBF = OutBuffer
+		,RSZ = 512
+		,ROP = <ASY>
+		,BKT = 0
+		);
+
+routine plot: novalue =
+  begin
+
+    local status;
+
+    ! Open LA100 for output
+
+     if not ( status = $CREATE (FAB = outFile_fab)) then $EXIT(code=.status);
+     if not ( status = $CONNECT (RAB = outFile_rab)) then $EXIT(code=.status);
+     
+
+    ! Open and map data file for input
+
+    if not ( status = $OPEN (FAB=inFile_fab) ) then return ( .status );
+    infilePages[0] = infilePages[1] = infilePages[0];	! Dummy P0 address
+    if not (status = $crmpsc (
+			inadr = inFilePages[0],
+			retadr = inFilePages[0],	! Where VMS put file
+			acmode = 0,
+			flags = SEC$M_EXPREG,		! Make memory for me
+			gsdnam = 0,
+			ident = 0,
+			relpag = 0,
+			chan = .inFile_fab[fab$l_stv],
+			pagcnt = 0,
+			vbn = 0,
+			prot = 0,
+			pfc = 32	! Page fault this many at a time
+			))
+	then return (.status);
+
+    ! get bit map dimensions
+
+    offset = ..inFilePages[0];			! get starting address of data
+    if .offset eql 0 then offset = 12;		! Backward compatable SNAP.FOR
+
+    xDim = .(.inFilePages[0] + 4);		! get horizontal dimension
+    xDimBytes = ((.xDim + 15 ) / 16)*2 ;	!   in bytes word aligned
+    xDimLwBytes = ((.xDim + 31 ) / 32)*4 ;	!   and bytes Longword aligned.
+
+    yDim = .(.inFilePages[0] + 6);	! get vertical dimension
+
+    zDim = .(.inFilePages[0] + 8);	! get depth ( better = 1 )
+
+
+    ! make pointer to bit-map data
+
+    inDataPtr = .inFilePages + .offset;
+
+    ! Set RAB to point at sixel output buffer
+    outfile_rab[RAB$L_RBF] = OutString;
+
+
+    ! Set up LA100 for graphics output.
+    ! set left margin = 1, right margin = 132 ( <ESC> [ 1 ; 132 s )
+    ! return carriage to the left margin ( <ESC> [ 1 ` )
+    ! Put LA100 in graphics mode ( <ESC> P 1 q )
+    CH$MOVE (14, uplit (%char(27,91,1,59,132,115, 27,91,1,96, 27,80,49,113)),
+   	Outbuffer);
+    oldn = 14;				! count of characters
+
+    ! Divide input file into 6-line sections and process by sections.
+
+    ! read 6 lines from input file into a 6 line buffer padding with nulls
+    ! out to longword boundries (for rotate algorithm).  The rotate algorithm
+    ! also wants the 7th and 8th line to be nulls, so they are filled.
+
+    incr i from 1 to ( .yDim / 6 ) do
+      begin
+
+      CH$COPY( .xDimBytes , .inDataPtr ,
+	    0 , .xDimLwBytes , byteBlock[0]  );
+      CH$COPY( .xDimBytes , .inDataPtr + .xDimBytes,
+	    0 , .xDimLwBytes , byteBlock[RowWidth]  );
+      CH$COPY( .xDimBytes , .inDataPtr + .xDimBytes^1,
+	    0 , .xDimLwBytes , byteBlock[2 * RowWidth]  );
+      CH$COPY( .xDimBytes , .inDataPtr + 3*.xDimBytes,
+	    0 , .xDimLwBytes , byteBlock[3 * RowWidth]  );
+      CH$COPY( .xDimBytes , .inDataPtr + .xDimBytes^2,
+	    0 , .xDimLwBytes , byteBlock[4 * RowWidth]  );
+      CH$COPY( .xDimBytes , .inDataPtr + 5*.xDimBytes,
+	    0 , .xDimLwBytes , byteBlock[5 * RowWidth]  );
+
+      CH$FILL(0, RowWidth * 2, byteBlock[ 6 * RowWidth] );
+
+      inDataPtr = .inDataPtr + 6 * .xDimBytes;	! Update data pointer
+
+      makeSixelAndPrint();	! Chew on it
+      end;
+
+    ! process the last section if it contain less than 6 lines.  Clear lines
+    !  that don't exist in addition to the 7'th and 8'th lines.
+
+    if (.yDim mod 6) neq 0 then
+      begin
+
+      incr j from 0 to (.yDim mod 6) -1  do
+	CH$COPY( .xDimBytes , .inDataPtr + .j * .xDimBytes ,
+		0 , .xDimLwBytes , byteBlock[.j * RowWidth]  );
+
+      CH$FILL(0, RowWidth * (8 - (.yDim mod 6)),
+		byteBlock[ (.yDim mod 6) * RowWidth ] );
+
+      makeSixelAndPrint();
+      end;
+
+
+    ! Take LA100 out of graphics mode ( <ESC> \ ), dump buffer and exit
+
+    $WAIT (RAB= outFile_rab);		! Wait for async I/O to finish
+
+    ! copy incomplete block at end of page to beginning and add new data
+    
+    CH$COPY ( .oldn, Outbuffer[.outBufferIdx], 2, uplit(%char(27,92)), 0,
+		((.oldn + 2 + 511) and not %o'777'), Outbuffer[0]);
+
+    ! And output it
+    outfile_rab[RAB$L_RBF] = Outbuffer;
+    if ( outfile_rab[RAB$W_RSZ] = ((.oldn + 2 + 511) and not %o'777') )
+	  leq 512	! should be either 512 or 1024
+	  then
+	  	begin if not ( status = $PUT (RAB = outFile_rab) )
+			then $EXIT(code=.status);
+	  	end
+	  else	! break up output into two i/o's
+	  	begin
+		outfile_rab[RAB$W_RSZ] = 512;
+		if not ( status = $PUT (RAB = outFile_rab) )
+			then $EXIT(code=.status);
+		$WAIT (RAB= outFile_rab);	! Wait for async I/O to finish
+		outfile_rab[RAB$L_RBF] = Outbuffer + 512;
+		if not ( status = $PUT (RAB = outFile_rab) )
+			then $EXIT(code=.status);
+		end;
+    $CLOSE (FAB = outFile_fab);
+  end;
+
+routine makeSixelAndPrint : novalue =
+  begin
+
+    ! A sixel is made from the same vertical position in the 6 line buffer.
+    ! Sixels are inserted twice in the sixel string to double the x coordinate.
+    !
+    ! First the 6 bit high by xdim wide bitmap is rotated 90 degrees by bytes
+    ! to create 8-bit sixels for printing.  This is done 32 bits at a time to
+    ! use our full accumulator width.  These bytes are output to a string which
+    ! is then compressed for output. 
+    !
+    ! Run-length encoding is used to transmit sixels to the printer.  The
+    ! format is: "!<nnn><sixel>" where <nnn> is the ASCII decimal repeat count.
+    ! Encoding is pessimal and obviously not used for two identical sixels.
+
+    literal
+	Single =	%b '01010101010101010101010101010101',	! bit masks
+	Dual =		%b '00110011001100110011001100110011',
+	Quad =		%b '00001111000011110000111100001111';
+
+    local
+  	sixelString: vector[sixelStringLength, byte];	! Sixels
+
+    macro
+	minirotate ( i , j , rank , mask ) =
+	   begin
+		register t1,t2;
+		t1 = ..i AND mask;
+		t2 = ..j AND ( NOT mask);
+		.i = ( ( ..i ^ -rank) AND mask ) OR .t2;
+		.j = ( ( ..j ^ rank) AND ( NOT mask ) ) OR .t1
+		end;%;
+
+
+! Rotate BitBlock bytes 90 degrees clockwise 4 bytes at a time
+
+
+begin
+  local Row0 ,Row1 ,Row2 ,Row3 ,Row4 ,Row5 ,Row6 ,Row7;
+
+  Row0 = ByteBlock[0] + 0 * RowWidth;   Row1 = ByteBlock[0] + 1 * RowWidth;
+  Row2 = ByteBlock[0] + 2 * RowWidth;   Row3 = ByteBlock[0] + 3 * RowWidth;
+  Row4 = ByteBlock[0] + 4 * RowWidth;   Row5 = ByteBlock[0] + 5 * RowWidth;
+  Row6 = ByteBlock[0] + 6 * RowWidth;   Row7 = ByteBlock[0] + 7 * RowWidth;
+
+  incr i from 1 to (.xDimLwBytes ^ -2 ) do begin
+	minirotate ( Row0, Row1, 1, single );
+	minirotate ( Row2, Row3, 1, single );
+	minirotate ( Row4, Row5, 1, single );
+	minirotate ( Row6, Row7, 1, single );
+
+	minirotate ( Row0, Row2, 2, dual );
+	minirotate ( Row1, Row3, 2, dual );
+	minirotate ( Row4, Row6, 2, dual );
+	minirotate ( Row5, Row7, 2, dual );
+
+	minirotate ( Row0, Row4, 4, quad );
+	minirotate ( Row1, Row5, 4, quad );
+	minirotate ( Row2, Row6, 4, quad );
+	minirotate ( Row3, Row7, 4, quad );
+
+	Row0 = .Row0 + 4;  Row1 = .Row1 + 4;  Row2 = .Row2 + 4;
+	Row3 = .Row3 + 4;  Row4 = .Row4 + 4;  Row5 = .Row5 + 4;
+	Row6 = .Row6 + 4;  Row7 = .Row7 + 4;
+
+	end
+ end;
+
+ begin
+  macro
+	Row (num) = Byteblock[0] + ( num * Rowwidth ) + .I %;
+
+  register i, length;				! sixelString position counter
+
+  Length = 0;
+  incr i from 0 to .xDimLwBytes -1  do begin
+	Sixelstring[.length+0]= .(row(7)) + 63;
+	Sixelstring[.length+1]= .(row(6)) + 63;
+	Sixelstring[.length+2]= .(row(5)) + 63;
+	Sixelstring[.length+3]= .(row(4)) + 63;
+	Sixelstring[.length+4]= .(row(3)) + 63;
+	Sixelstring[.length+5]= .(row(2)) + 63;
+	Sixelstring[.length+6]= .(row(1)) + 63;
+	Sixelstring[.length+7]= .(row(0)) + 63;
+	Length = .Length + 8
+	end
+ end;
+
+! Compact SixelString into OutString using run length encoding
+
+  begin
+    Literal True = 1, False = 0;
+    register sixel:byte , repsixel:byte, length, repcount, j;
+    local
+	Started,
+	Status;
+
+    macro decprint =
+	begin	! output "!<nnnn>"sixel
+	  OutString[.OutLength] = 33;   OutLength = .OutLength + 1;
+	  Started = False;
+	  if .repcount geq 1000 then begin
+		OutString[.OutLength] = 48 + .RepCount/1000;
+		OutLength = .OutLength + 1;  Started = True;
+		RepCount = .Repcount mod 1000;
+		end;
+
+	  if (.repcount geq 100) OR .Started then begin
+		OutString[.OutLength] = 48 + .RepCount/100;  Started = True;
+		RepCount = .Repcount mod 100;   OutLength = .OutLength + 1;
+		end;
+
+	  if ( .repcount geq 10 ) OR .Started then begin
+		OutString[.OutLength] = 48 + .RepCount/10;
+		OutLength = .OutLength + 1;  RepCount = .Repcount mod 10;
+		end;
+
+	  OutString[.OutLength] = 48 + .RepCount;  OutLength = .OutLength + 2;
+	  end;%;
+
+
+    OutLength = repcount = 0; repsixel = .SixelString[0];
+
+    incr j from 1 to  min( (1736/2) - 1, .xDim - 1) do      ! not beyond width.
+	begin
+	Sixel = .SixelString[.j];
+	if .sixel  eql .repsixel then repcount = .repcount + 2
+	   else if .repcount lss 4 then begin
+		     OutString[.OutLength]=.repsixel;
+		     OutString[.OutLength+1]=.repsixel;
+		     OutLength=.OutLength+2;  repsixel = .sixel; repcount = 2;
+		     end
+		else begin
+		     decprint;    OutString[.OutLength -1] = .repsixel;
+		     repsixel = .sixel; repcount = 2;
+		     end;
+	end;
+
+!  Finish out repeats before dumping OutString - repsixel should eql sixel
+
+	if .repcount lss 4 then begin
+	   OutString[.OutLength] = .repsixel ;
+	   OutString[.OutLength+1] = .repsixel;
+	   OutLength = .OutLength + 2;
+	   end
+	else begin
+	   decprint;   OutString[.OutLength -1] = .repsixel;
+	   end;
+
+	OutString[.OutLength]='-'; OutLength=.OutLength+1; !send graphic CRLF
+
+    ! write OutString to LA100
+
+    $WAIT (RAB= outFile_rab);		! Wait for async I/O to finish
+
+    ! copy incomplete block at end of page to beginning and add new data
+    
+    CH$COPY ( .oldn, Outbuffer[.outBufferIdx], .Outlength, Outstring, 0,
+		.oldn + .Outlength, Outbuffer[0]);
+    npages = (.oldn + .Outlength) / 512;
+    oldn = (.oldn + .outlength) mod 512;
+    outBufferIdx = .npages * 512;
+
+    ! And output it
+    outfile_rab[RAB$W_RSZ] = 512;
+    outfile_rab[RAB$L_RBF] = outbuffer - 512;
+    incr counter from 1 to .npages do
+	begin
+	outfile_rab[RAB$L_RBF] = .outfile_rab[RAB$L_RBF] + 512;
+	$WAIT (RAB= outFile_rab);		! Wait for async I/O to finish
+	if not ( status = $PUT (RAB = outFile_rab) ) then $EXIT(code=.status);
+	end;
+
+    end;
+  end;
+end
+eludom

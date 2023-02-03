@@ -1,0 +1,592 @@
+module hlpbutton (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! This module contains routines pertaining to what should happen when the
+! VAXstation help button is pressed.  The general purpose of the help button
+! is to provide contextual help for what the mouse happens to be pointing
+! at when the button is pressed.
+
+forward routine!s . . .
+
+	vsta$$help_button_pressed,	! call at non-ast level when btn prssd
+	default_help,			! handles help for helpless objects
+	vsta$$set_ps_help,		! set physical screen help
+	vsta$$set_vp_help,		! set viewport help
+	vsta$$set_pb_help,		! set pasteboard help
+	vsta$$set_vd_help,		! set virtual display help
+	vsta$$set_rgn_help,		! set region help
+	vsta$$set_vd_help_string,	! set virtual display help string
+	vsta$$set_rgn_help_string;	! set region help
+
+library 'vsta$library:vsvssvs';		! Symbols like ps_block
+library 'vsta$library:vsvdspb';		! things like pb_block
+library 'vsta$library:vsvdsvd';		! things like "rgn_block"
+library 'vsta$library:vserrors';	! things like "integer_type"
+library 'vsta$library:libmacros';	! things like "$base"
+library 'vsta$library:vstamacs';	! things like "$extsym"
+library 'sys$library:starlet';		! things like "ss$_normal"
+
+$vsta_psect;			! Define PSECTs
+
+external
+
+	srv_ps_id;		! physical screen for which help requested.
+
+external routine
+
+	find_region,		! Find region.
+	find_region_in_vdb,	! Find region, given vdb address.
+	ps_pointer,		! Translate ps id to data address.
+	vp_pointer,		! Translate vp id to data address.
+	vs$$vds_pb_found,	! map pb_id to pb database
+	vs$$vds_vd_pointer,	! Get vd database, given an id.
+	vsta$$error_logger;
+
+global routine vsta$$help_button_pressed =
+!++
+! Functional description:
+!
+!	This routine should be called at non-ast level almost immediately
+!	after the help button is pressed.  It looks at the objects the mouse
+!	is on top of, from smallest to largest, calling the help routine
+!	for the first object for which such has been specified.
+!
+!	The order is region, virtual display, pasteboard, physical screen.
+!
+! Side effects:
+!
+!	Some help routine will get called, which in turn will probably
+!	display some viewport through which the user will get some help.
+!
+!--
+
+	begin
+
+	local
+
+	    ps : ref ps_block,		! physical screen mouse is on.
+	    vp : ref vp_block,		! viewport mouse is on.
+	    pb : ref pb_block,		! pasteboard mouse is on.
+	    vd : ref vdblock,		! vd mouse is on.
+	    rgn : ref rgn_block;	! region mouse is on.
+!
+! Establish database for physical screen mouse is on.  If it's not on any,
+! use 0 as ps database.
+!
+	if not ps_pointer (.srv_ps_id, ps)
+	then ps = 0;
+!
+! If there's a physical screen and a non-0 viewport id, find the viewport
+! database.  If not, leave vp database as 0.
+!
+	if ps[$base] neq 0
+	then
+	    if .ps[vss$l_ps_mouse_vp_id] neq 0
+	    then
+		begin
+		if not vp_pointer (.ps[vss$l_ps_mouse_vp_id], vp)
+		then vp = 0
+		end
+	     else vp = 0
+	else vp = 0;
+!
+!
+! If there's a viewport and a non-0 pasteboard advertised,
+! find its database.  If no advertised pasteboard, or we can't find database,
+! leave pb base set to 0.
+!
+	if vp[$base] neq 0
+	then
+	    if .ps[vss$l_ps_mouse_pb_id] neq 0
+	    then
+		begin
+		if not vs$$vds_pb_found (.ps[vss$l_ps_mouse_pb_id], pb)
+		then pb = 0
+		end
+	    else pb = 0
+	else pb = 0;
+!
+! If mouse is on some paste board, establish which  virtual
+! display the mouse is on, or 0 if mouse isn't on on.
+!
+	if pb[$base] neq 0
+	then
+	    if .ps[vss$l_ps_mouse_vd_id] neq 0
+	    then
+		begin
+		if not vs$$vds_vd_pointer (.ps[vss$l_ps_mouse_vd_id], vd)
+		then vd = 0
+		end
+	    else vd = 0
+	else vd = 0;
+!
+! If some virtual display, find region, or leave region base as 0.
+!
+	if vd[$base] neq 0
+	then
+	    if .ps[vss$l_ps_sel_vd_id] neq 0
+	    then
+		begin
+		if not find_region_in_vdb (
+		    vd[$base],
+		    .ps[vss$l_ps_sel_x],
+		    .ps[vss$l_ps_sel_y],
+		    rgn
+		    )
+		then rgn = 0
+		end
+	    else rgn = 0
+	else rgn = 0;
+!
+! Give help on most detailed available item for which help exists.
+! First check the region . . .
+!
+	if rgn[$base] neq 0
+	then
+	    if .rgn[rgn$a_help_routine] neq 0
+	    then
+		begin
+		bind routine help_routine = .rgn[rgn$a_help_routine];
+		return help_routine (.rgn[rgn$l_help_data])
+		end;
+!
+! No region help available.  Check the vd.
+!
+	if vd[$base] neq 0
+	then
+	    if .vd[vdb$a_help_routine] neq 0
+	    then
+		begin
+		bind routine help_routine = .vd[vdb$a_help_routine];
+		return help_routine (.vd[vdb$l_help_data])
+		end;
+!
+! No help for vd.  Check the pasteboard.
+!
+	if pb[$base] neq 0
+	then
+	    if .pb[vs$vds_a_pb_help_routine] neq 0
+	    then
+		begin
+		bind routine help_routine = .pb[vs$vds_a_pb_help_routine];
+		return help_routine (.pb[vs$vds_l_pb_help_data])
+		end;
+!
+! No help for pasteboard.  Check the viewport.
+!
+	if vp[$base] neq 0
+	then
+	    if .vp[vss$a_vp_help_routine] neq 0
+	    then
+		begin
+		bind routine help_routine = .vp[vss$a_vp_help_routine];
+		return help_routine (.vp[vss$l_vp_help_data])
+		end;
+!
+! No help for viewport.  Check physical screen.
+!
+!
+	if ps[$base] neq 0
+	then
+	    if .ps[vss$a_ps_help_routine] neq 0
+	    then
+		begin
+		bind routine help_routine = .ps[vss$a_ps_help_routine];
+		return help_routine (.ps[vss$l_ps_help_data])
+		end;
+!
+! No help available for any object that mouse is on, so perform default help
+! action.
+!
+	default_help (
+	    ps[$base],	! physical screen
+	    vp[$base],	! viewport
+	    pb[$base],	! pasteboard
+	    vd[$base],	! virtual display
+	    rgn[$base]	! region
+	    )
+
+	end;
+
+routine default_help
+!++
+! Functional description:
+!
+!	This routine is called when the help key is pressed, and no
+!	object that the mouse is on contains any help routine associated
+!	with it.
+!
+! Formal parameters:
+ (
+	ps : ref ps_block ,	! physical screen mouse is on
+	vp : ref vp_block,	! viewport mouse is on
+	pb : ref pb_block,	! pasteboard it's on
+	vd : ref vdblock,	! virtual display
+	rgn : ref rgn_block	! region
+ ) =
+!
+!--
+
+	begin
+!
+! For now, signal an error, since we believe SOME help should always be
+! set up.
+!
+	vsta$$error_logger (
+	    (external vsta$_no_help;vsta$_no_help),
+	    integer_type, ps[$base],
+	    integer_type, vp[$base],
+	    integer_type, pb[$base],
+	    integer_type, vd[$base],
+	    integer_type, rgn[$base]
+	    );
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_ps_help
+!++
+! Functional description:
+!
+!	Specify a physical screen and what help routine should be called, and
+!	with what parameter, when mouse is on that physical screen when help
+!	button is pressed, and no viewport, pasteboard, vd, or region
+!	coincident with the mouse also have a help routine associated with it.
+!
+! Formal parameters:
+ (
+	ps_id,			! which physical screen
+	help_routine,		! help routine to call
+	help_data		! data to be passed to help routine
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    ps : ref ps_block,	! physical screen
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = ps_pointer (.ps_id, ps))
+	then $log_error_and_return (.s);
+!
+! Found object.  Fill in info.
+!
+	ps[vss$a_ps_help_routine] = .help_routine;
+	ps[vss$l_ps_help_data] = .help_data;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_vp_help
+!++
+! Functional description:
+!
+!	Specify a viewport and what help routine should be called, and
+!	with what parameter, when mouse is on that viewport when help
+!	button is pressed, and no pasteboard, vd, or region conincident with
+!	the mouse also have a help routine associated with it.
+!
+! Formal parameters:
+ (
+	vp_id,			! which viewport
+	help_routine,		! help routine to call
+	help_data		! data to be passed to help routine
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vp : ref vp_block,	! viewport
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = vp_pointer (.vp_id, vp))
+	then $log_error_and_return (.s);
+!
+! Found object.  Fill in info.
+!
+	vp[vss$a_vp_help_routine] = .help_routine;
+	vp[vss$l_vp_help_data] = .help_data;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_pb_help
+!++
+! Functional description:
+!
+!	Specify a pasteboard and what help routine should be called, and
+!	with what parameter, when mouse is on that pasteboard when help
+!	button is pressed, and no vd, or region conincident with
+!	the mouse also have a help routine associated with it.
+!
+! Formal parameters:
+ (
+	pb_id,			! which pasteboard
+	help_routine,		! help routine to call
+	help_data		! data to be passed to help routine
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    pb : ref pb_block,	! pasteboard
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then $log_error_and_return (.s);
+!
+! Found object.  Fill in info.
+!
+	pb[vs$vds_a_pb_help_routine] = .help_routine;
+	pb[vs$vds_l_pb_help_data] = .help_data;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_vd_help
+!++
+! Functional description:
+!
+!	Specify a virtual display and what help routine should be called, and
+!	with what parameter, when mouse is on that virtual display when help
+!	button is pressed, and no region conincident with
+!	the mouse also has a help routine associated with it.
+!
+! Formal parameters:
+ (
+	vd_id,			! which virtual display
+	help_routine,		! help routine to call
+	help_data		! data to be passed to help routine
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vd : ref vdblock,	! virtual display
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = vs$$vds_vd_pointer (.vd_id, vd))
+	then $log_error_and_return (.s);
+!
+! Found object.  Fill in info.
+!
+	vd[vdb$a_help_routine] = .help_routine;
+	vd[vdb$l_help_data] = .help_data;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_rgn_help
+!++
+! Functional description:
+!
+!	Specify a region and what help routine should be called, and
+!	with what parameter, when mouse is on that region when help
+!	button is pressed.
+!
+! Formal parameters:
+ (
+	vd_id,			! which virtual display
+	rgn_x,			! x coordinate of region (upper left corner)
+	rgn_y,			! y coordintae of region
+	help_routine,		! help routine to call
+	help_data		! data to be passed to help routine
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vd : ref vdblock,	! virtual display
+	    rgn : ref rgn_block,! region
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = find_region (
+	    .vd_id,
+	    .rgn_x,
+	    .rgn_y,
+	    vd,
+	    rgn
+	    ))
+	then $log_error_and_return (.s);
+!
+! Found object.  Fill in info.
+!
+	rgn[rgn$a_help_routine] = .help_routine;
+	rgn[rgn$l_help_data] = .help_data;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_vd_help_string
+!++
+! Functional description:
+!
+!	Specify a virtual display and what help routine should be called, and
+!	length and address of string to be used to form a descriptor
+!	whose address becomes the help data.  The descriptor and string
+!	are kept in the object whose help is being set up, and hence
+!	no allocated storage need be worried about.
+!
+! Formal parameters:
+ (
+	vd_id,			! which virtual display
+	help_routine,		! help routine to call
+	help_str_len,		! length of string (bytes)
+	help_str_adr		! address of string
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vd : ref vdblock,	! virtual display
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = vs$$vds_vd_pointer (.vd_id, vd))
+	then $log_error_and_return (.s);
+!
+! Make sure we have room for length of string specified.
+!
+	if .help_str_len gtr vdb$s_help_str_buf
+	then return vsta$$error_logger ($extsym (vsta$_help2long),
+	    string_type, help_str_len, integer_type, vdb$s_help_str_buf);
+!
+! Fill in routine to call.
+!
+	vd[vdb$a_help_routine] = .help_routine;
+!
+! Specify help data as address of string descriptor within object.
+!
+	vd[vdb$l_help_data] = vd[vdb$w_help_str_len];
+!
+! Fill in descriptor length.
+!
+	vd[vdb$w_help_str_len] = .help_str_len;
+!
+! Fill in address portion of descriptor to point to buffer in object.
+!
+	vd[vdb$a_help_str_adr] = vd[vdb$b_help_str_buf];
+!
+! Copy the string into object.
+!
+	ch$move (.help_str_len, .help_str_adr, vd[vdb$b_help_str_buf]);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$set_rgn_help_string
+!++
+! Functional description:
+!
+!	Specify a region and what help routine should be called, and
+!	length and address of string to be used to form a descriptor
+!	whose address becomes the help data.  The descriptor and string
+!	are kept in the object whose help is being set up, and hence
+!	no allocated storage need be worried about.
+!	When mouse is on that region when help button is pressed, address
+!	of descriptor is fed to help routine.
+!
+! Formal parameters:
+ (
+	vd_id,			! which virtual display
+	rgn_x,			! x coordinate of region (upper left corner)
+	rgn_y,			! y coordintae of region
+	help_routine,		! help routine to call
+	help_str_len,		! length of string (bytes)
+	help_str_adr		! address of string
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vd : ref vdblock,	! virtual display
+	    rgn : ref rgn_block,! region
+	    s;
+!
+! Find object help being set up for.
+!
+	if not (s = find_region (
+	    .vd_id,
+	    .rgn_x,
+	    .rgn_y,
+	    vd,
+	    rgn
+	    ))
+	then $log_error_and_return (.s);
+!
+! Make sure we have room for length of string specified.
+!
+	if .help_str_len gtr rgn$s_help_str_buf
+	then return vsta$$error_logger ($extsym (vsta$_help2long),
+	    string_type, help_str_len, integer_type, rgn$s_help_str_buf);
+!
+! Fill in routine to call.
+!
+	rgn[rgn$a_help_routine] = .help_routine;
+!
+! Specify help data as address of string descriptor within object.
+!
+	rgn[rgn$l_help_data] = rgn[rgn$w_help_str_len];
+!
+! Fill in descriptor length.
+!
+	rgn[rgn$w_help_str_len] = .help_str_len;
+!
+! Fill in address portion of descriptor to point to buffer in object.
+!
+	rgn[rgn$a_help_str_adr] = rgn[rgn$b_help_str_buf];
+!
+! Copy the string into object.
+!
+	ch$move (.help_str_len, .help_str_adr, rgn[rgn$b_help_str_buf]);
+
+	ss$_normal
+
+	end;
+
+end
+eludom
+

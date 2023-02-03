@@ -1,0 +1,905 @@
+module mouseloc (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+library 'sys$library:starlet';		! Symbols like ss$_normal
+library 'vsta$library:libmacros';	! symbols like $log_error_and_return
+library 'vsta$library:vstadef';		! Symbols like io$_vb_move
+library 'vsta$library:vsvtb';		! rb_block
+library 'vsta$library:vsvdspb';		! Symbols like vs$vds_l_w_x_coor
+library 'vsta$library:vsvssvs';		! Symbols like vss$l_vp_length
+
+$vsta_psect;				! Define PSECTs
+
+! VAXstation mouse routines for calculating mouse locations in terms of
+! coordinates, pb's and regions.
+
+forward routine!s . . .
+
+	vsta$$mouse_get_visible_vp,
+				! Get visible vp.
+	vsta$$mouse_get_vb_info,! Ask hardware for current mouse info.
+	vsta$$mouse_set_move_request,
+	vsta$$mouse_movement,	! movement ast routine
+	mouse_movement,		! When mouse has moved, decide what to do
+				! about it.
+	vsta$$update_mouse_info,! Call this when screen has changed.
+	screen_changed_under_mouse,	! Screen changed OR mouse moved.
+	vsta$$mouse_crossed_boundary,
+				! Delivers ast's when mouse crosses pb bounds.
+	vsta$$mouse_get_visible_pb;
+				! Given root pb and mouse coordinates, get
+				! visible pasteboard, considering pastings.
+
+global
+	!
+	! Added in order to not loose tracking we now keep track of
+	! the number of outstanding ast's.  There should always be exactly
+	! one and no more.  Starts at one to allow for the first ast request
+	! performed at initialization.
+	!
+	move_ast_request_count: initial (1),
+
+	mouse_location_event_flag,
+				! event flag for location reporting
+	mouse_movement_event_flag,
+				! event flag for movement interrupts
+
+	!
+	!  The following were put here to give untouched
+	!  ast level service to the fast vp mover routines
+	!
+	mouse_passall_routine	: initial (0),
+	mouse_passall_argument;
+
+external routine!s . . .
+
+	ps_pointer,		! Translate ps id to data address.
+	maybe_vanish_pb_on_region,	! Make a pb disappear if it was popped up.
+	vp_pointer,		! Translate vp id to data address.
+	vs_pointer,		! Translate vs id to data address.
+	vs$$vds_pb_found,	! Translate pb id to data address.
+	vs$$vds_window_found,	! Translate window id to data address.
+	vs_vp_pointer,		! Translate vs with its vp to data address.
+	vsta$$error,		! Report error during processing.
+	vsta$$error_logger,	! Report unexpected errors.
+	vsta$$mouse_post_vb_ast,! Tell hardware when to interrupt us.
+	vsta$$ptr_done_io,	! Finish pointer transaction.
+	vsta$$rgn_mouse_squeaked;	! Worry about regions when mouse "does"
+					! something.
+
+external
+
+	vsta$gl_end_session_flag,
+				!Session is ending if = 1.
+	srv_ps_id,		! Current physical screen id.
+	vs$a_irp;		! Current irp being processed.
+
+global literal
+
+	mouse_info_len = 3,	! Number of pieces of information returned.
+	mouse_info_x = 0,	! offset into which mouse x written
+	mouse_info_y = 1,	! offset into which mouse y written
+	mouse_info_buttons = 2;	! offset into which mouse buttons written
+
+global
+
+	mouse_info : vector [mouse_info_len]
+	    preset ([mouse_info_buttons] = 0);	! buttons initially "released"
+
+global routine vsta$$mouse_get_visible_vp
+!++
+! Functional description:
+!
+!	Given a physical screen and mouse coordinates, determine which
+!	viewport is visible at the mouse.
+!
+! Formal parameters:
+ (
+	ps_id,			! Physical screen id.
+	ps_ms_x,		! physical screen mouse coordinates.
+	ps_ms_y,
+	ps_adr,			! Where to write address of ps data
+	vs_ms_x_adr, vs_ms_y_adr,
+				! Where to write vs mouse coordinates
+	vp_adr,			! Where to write address of vp data
+	vp_ms_x_adr, vp_ms_y_adr
+				! Where to write viewport mouse coordinates.
+ ) =
+!
+! Completion code:
+!
+!	This routine returns ss$_normal as long as all calculations proceed
+!	normally, EVEN IF THE MOUSE IS DISCOVERED NOT TO BE IN A VIEWPORT.
+!
+! Value:
+!
+!	Look at the resultant viewport database address.  0 means the mouse
+!	is not currently on a viewport.
+!
+!--
+
+	begin
+
+	local
+
+	    vp_id,		! id of best vp found so far
+	    altitude : initial (-1),
+				! stacking order of highest vp matching so far
+	    vsvp : ref vs_vp_block,
+				! Data about a vp on a vs
+	    s,			! Status code from internal routines.
+	    vs : ref vs_block;	! vs associated with given ps.
+
+	bind
+
+	    ! Establish addresses in which results will be written.
+	    !
+	    vs_ms_x = .vs_ms_x_adr, vs_ms_y = .vs_ms_y_adr,
+	    vp = .vp_adr : ref vp_block,
+	    ps = .ps_adr : ref ps_block,
+	    vp_ms_x = .vp_ms_x_adr,
+	    vp_ms_y = .vp_ms_y_adr;
+
+	! Get database for specified physical screen.
+	!
+	if not (s = ps_pointer (.ps_id, ps))
+	then return vsta$$error (.s);
+
+	! Get vs associated with target ps.
+	!
+	if not (s = vs_pointer (.ps[vss$l_ps_vs_id], vs))
+	then return .s;
+
+	! Initialize coordinates of mouse with respect to the vs, which
+	! is origin of ps added to position of mouse within ps.
+	!
+	vs_ms_x = .ps[vss$l_ps_x_origin] + .ps_ms_x;
+	vs_ms_y = .ps[vss$l_ps_y_origin] + .ps_ms_y;
+!
+! Get first pasting to consider.
+!
+	vsvp = .vs[vss$a_vs_vp_queue_fl];
+!
+! Look at all viewports on this virtual screen.
+!
+	while vsvp[$base] neq vs[vss$a_vs_vp_queue_fl] do
+
+	    begin
+
+	    bind
+
+		! Get origin of this vp on the vs.
+		!
+		vs_vp_x_origin = .vsvp[vss$l_vs_vp_x_origin],
+		vs_vp_y_origin = .vsvp[vss$l_vs_vp_y_origin];
+!
+! If mouse is in range of this viewport, AND this viewport is higher than
+! any other pasted on the virtual screen, then remember it, because it
+! might be the one we're looking for.
+!
+	    if vs_vp_x_origin leq .vs_ms_x and vs_vp_y_origin leq .vs_ms_y
+		and .vs_ms_x lss vs_vp_x_origin + .vsvp[vss$l_vs_vp_width]
+		and .vs_ms_y lss vs_vp_y_origin + .vsvp[vss$l_vs_vp_height]
+	    then
+		if .vsvp[vss$l_vs_vp_paste_order] gtr .altitude
+		then
+		begin
+!
+! Mouse is on this vp and vp is higher than any other seen so far, so
+! remember it.
+!
+		altitude = .vsvp[vss$l_vs_vp_paste_order];
+		vp_id = .vsvp[vss$l_vs_vp_id];
+		vp_ms_x = .vs_ms_x - vs_vp_x_origin;
+		vp_ms_y = .vs_ms_y - vs_vp_y_origin
+		end;
+!
+! Proceed to next pasting on this virtual screen.
+!
+	    vsvp = .vsvp[vss$a_vs_vp_block_fl]
+
+	    end;
+!
+! If mouse isn't on any viewport, then return a 0 as the base.  But if so,
+! then calculate viewport data address for caller.
+!
+	if .altitude lss 0
+	then vp = 0
+	else
+	    if not (s = vp_pointer (.vp_id, vp))
+	    then return vsta$$error (.s);
+
+	ss$_normal
+
+end;
+
+global routine vsta$$mouse_get_vb_info
+!++
+! Functional description:
+!
+!	Ask vb driver for current mouse info.
+!
+! Formal parameters:
+ (
+	x_adr,			! Where to write x coordinate.
+	y_adr,			! Where to write y coordinate.
+	button_adr		! Where to write button settings.
+ ) =
+!
+!--
+
+	begin
+
+	external
+
+	    ! Database containing hardware channel numbers.
+	    vs$gw_vbchan : word;
+
+	local
+
+	    s,
+	    iosb : vector[4, word];
+
+	! Talk to the hardware.
+	!
+	if not (s = $qiow (
+	    efn = .mouse_location_event_flag,
+	    chan = .vs$gw_vbchan,
+	    func = (io$_vb_getpos or io$m_vb_mouse),
+	    iosb = iosb,
+	    p1 = mouse_info[0],
+	    p2 = mouse_info_len * 4
+	    ))
+	then $log_error_and_return (.s)
+	else
+	    if not .iosb[0]
+	    then $log_error_and_return (.iosb[0]);
+!
+! Note that we read the info into the SAME buffer that mouse ast's normally
+! read the x, y values into.  This allows a long-queued mouse movement request
+! to see a more up-to-date coordinate when it finally executes than it would
+! if we didn't bother to update the buffer.  A symptom of NOT doing this was
+! that if you unstore a job, then quickly move mouse into the HELP icon and
+! take your hand off the mouse, then when job gets totally unstored (make
+! one with two or three windows), you'd see hair-line box around HELP icon
+! flash on then off instead of staying on.
+!
+! Copy info into addresses specified by caller.
+!
+	if .x_adr neq 0 then .x_adr = .mouse_info[mouse_info_x];
+	if .y_adr neq 0 then .y_adr = .mouse_info[mouse_info_y];
+	if .button_adr neq 0
+	then .button_adr = .mouse_info[mouse_info_buttons];
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_set_move_request( ps_id) =
+!
+!  This routine determines if there is a request outstanding to the device
+!  by looking at the reference count and if it is zero then it gets another
+!  request.
+!
+!--
+begin
+
+local
+	s
+	;
+
+if .move_ast_request_count GTR 0
+then return ss$_normal;
+
+move_ast_request_count = 1;
+
+	if not (s = vsta$$mouse_post_vb_ast (
+	    .mouse_movement_event_flag,
+	    .ps_id,
+	    io$_vb_move + io$m_vb_mouse + io$m_vb_ret_pos,
+	    vsta$$mouse_movement
+	    ))
+then $log_error_and_return (.s);
+
+return ss$_normal
+
+end;
+
+
+
+
+global routine vsta$$mouse_movement
+!++
+! Functional description:
+!
+!	Ast routine executed when mouse moves.  It arranges
+!	for the rest of the work to be done at non ast level, after storing
+!	the latest position away in global cells.
+!
+! Formal parameters:
+ (
+	new_xy : vector [2, word]		! 2 bytes of x and 2 bytes of y
+ ) =
+!
+!--
+
+	begin
+
+	local
+		s;
+
+	external routine vs$$post_ast_request;
+!
+! If the workstation session has just ended, then ignore this
+! request. The VB channel has been deassigned.
+!
+	if .vsta$gl_end_session_flag
+	then return ss$_normal;
+!
+! Store latest location in global buffer.
+!
+	mouse_info[mouse_info_x] = .new_xy[mouse_info_x];
+	mouse_info[mouse_info_y] = .new_xy[mouse_info_y];
+!
+!
+!  Decrement the move ast count since the ast is no longer outstanding
+!
+	move_ast_request_count = 0;
+!
+!  If there is a passall request then process request now not later
+!
+	if .mouse_passall_routine gtr 0
+	then begin
+
+		!
+		! Call the passall routine with the passall argument and the
+		! mouse information
+		!
+		if not (s = (.mouse_passall_routine)(
+		    .mouse_passall_argument,
+		    .mouse_info[mouse_info_x],
+		    .mouse_info[mouse_info_y],
+		    0				! no buttons just pressed
+		    ))
+		then $log_error_and_return (.s);
+
+
+		! After calling routine, arrange for another interrupt to
+		! be delivered the next time the mouse moves.  We do this FIRST,
+		! in order to minimize the chance of losing a movement notification.
+		!
+		if not (s = vsta$$mouse_post_vb_ast (
+		    .mouse_movement_event_flag,
+		    0,
+		    io$_vb_move or io$m_vb_mouse + io$m_vb_ret_pos,
+		    vsta$$mouse_movement
+		    ))
+		then $log_error_and_return (.s);
+
+		move_ast_request_count = 1;
+
+		return ss$_normal;
+	     end;
+	
+	vs$$post_ast_request (
+	    mouse_movement,	! routine to call soon at non-ast level
+	    0			! ast param, unused right now
+	    )
+
+	end;
+
+routine mouse_movement
+!++
+! Functional description:
+!
+!	When mouse has moved to a new location, decide what to do about
+!	it.  For instance, if the mouse is within a pasteboard that wants
+!	an ast when the mouse moves, deliver the ast now.
+!
+!	BUT if tell_hi_flag is on, tell human interface where the mouse is
+!	and call human interface, but nothing else.
+!
+! Formal parameters:
+ (
+	ps_id			! Physical screen to think about.
+ ) =
+!
+! Implicit outputs:
+!
+!	The cell for the ps that remembers which pasteboard the mouse was
+!	last in is updated.
+!
+! Side effects:
+!
+!	Asts are delivered if appropriate.
+!
+!	The driver is told to deliver an interrupt the next time
+!	the mouse moves.
+!--
+
+	begin
+
+	local
+
+	    s;			! Status from routines.
+!
+! If the workstation session has just ended, then ignore this
+! request. The VB channel has been deassigned.
+!
+	if .vsta$gl_end_session_flag
+	then return ss$_normal;
+
+	! Before doing anything else, arrange for another interrupt to
+	! be delivered the next time the mouse moves.  We do this FIRST,
+	! in order to minimize the chance of losing a movement notification.
+	!
+	!
+	! If the request count is gtr 0 then don't post for another one
+	!
+	if not (s = vsta$$mouse_set_move_request ( .ps_id))
+	then $log_error_and_return (.s);
+
+	!
+	! Finish the work in common routine that is employed when screen has changed
+	! under mouse.
+	!
+	! Note:  For now, we IGNORE our passed physical screen id, and merely
+	! use SRV_PS_ID.  Without this patch, then after an end session
+	! operation, subsequent mouse ast's could be delivered with the
+	! now-defunct ps-id as the parameter.
+	!
+	screen_changed_under_mouse (
+	    .srv_ps_id,
+	    .mouse_info[mouse_info_x],
+	    .mouse_info[mouse_info_y]
+	    )
+
+	end;
+
+global routine vsta$$update_mouse_info =
+!++
+! Functional description:
+!
+!	If the USER touches the mouse, our code is interrupt-driven and hence
+!	knows to update the screen accordingly (like light up boxes, make
+!	exited menus vanish etc.).  However, if the screen changes but the
+!	mouse hasn't PHYSICALLY been moved, this routine should be called to
+!	perform the same updates.
+!                                  .
+!	Please call at NON-ast level.  Thanks !
+!
+!--
+	begin
+
+	local s, ps_ms_x, ps_ms_y, ps_ms_btns;
+!
+! If the workstation session has just ended, then ignore this
+! request. The VB channel has been deassigned.
+!
+	if .vsta$gl_end_session_flag
+	then return ss$_normal;
+!
+! Calculate where mouse is on physical screen for mouse routines, since user
+! may have moved mouse.
+!
+	if not (s = vsta$$mouse_get_vb_info (ps_ms_x, ps_ms_y, ps_ms_btns))
+	then $log_error_and_return (.s);
+!
+! Tell mouse server that screen changed, so selectable region on popup pb
+! will appear.
+!
+	screen_changed_under_mouse (.srv_ps_id, .ps_ms_x, .ps_ms_y)
+
+	end;
+
+global routine screen_changed_under_mouse
+!++
+! Functional description:
+!
+!	This is the common routine called when the mouse has moved or
+!	the screen has changed under the mouse in such a way that notification
+!	of regions may be necessary etc.
+!
+! Formal parameters:
+ (
+	ps_id,			! which physical screen changed.
+	ps_ms_x,		! mouse x on physical screen
+	ps_ms_y			! mouse y on physical screen
+ ) =
+!
+! Side effects:
+!
+!	Some global cells are updated to show what object the mouse is now
+!	on.
+!
+!--
+
+	begin
+
+	local
+
+	    s,			! Status from routines.
+	    pb_id,		! Id of visible pasteboard at mouse.
+	    bot_pb_id,		! Id of bottom pb, for finding visible vd.
+	    bot_pb_ms_x,
+	    bot_pb_ms_y,	! mouse coordinates on bottom pb
+	    pb : ref pb_block,	! Data for visible pasteboard at mouse.
+	    ps : ref ps_block,	! Filled in with address of ps database.
+	    vp : ref vp_block,	! Target viewport database.
+	    rb : ref rb_block,	! Request block for ast's.
+	    vs_ms_x, vs_ms_y,	! vs mouse coordinates.
+	    pb_ms_x, pb_ms_y,	! Pasteboard mouse coordinates.
+	    vp_ms_x, vp_ms_y;	! Viewport mouse coordinates.
+!
+! See if the mouse is within a viewport, and if not,
+! return immediately, after telling the region server.
+!
+	if not
+	    (s = vsta$$mouse_get_visible_vp (
+		.ps_id,
+		.ps_ms_x,
+		.ps_ms_y,
+		ps,
+		vs_ms_x,
+		vs_ms_y,
+		vp,
+		vp_ms_x,
+		vp_ms_y
+		))
+	then $log_error_and_return (.s);
+	if vp[$base] eql 0
+	then
+	    begin
+	    ps[vss$l_ps_mouse_vp_id] = 0;
+!
+! We're not in a pasteboard at all.  If we were before, announce that
+! we've crossed out of the boundary, and mark that mouse is no longer in a
+! pasteboard.
+!
+	    if .ps[vss$l_ps_mouse_pb_id] neq 0
+	    then
+		if not (s = vsta$$mouse_crossed_boundary (
+		    .ps[vss$l_ps_mouse_pb_id], 0))
+		then $log_error_and_return (.s);
+!		else ps[vss$l_ps_mouse_pb_id] = 0;  (let mouse_squeaked rtn
+!						     clear this, lest it fail
+!						     to remove menu when mouse
+!						     moves off of it)
+
+	    return vsta$$rgn_mouse_squeaked (
+		ps[$base],
+		.vs_ms_x,
+		.vs_ms_y,
+		0,
+		0,		! no bottom pb id
+		0,
+		0,
+		0,		! no pb.
+		0)		! button not pressed.
+	    end;
+!
+! Remember what viewport mouse is in.
+!
+	ps[vss$l_ps_mouse_vp_id] = .vp[vss$l_vp_id];
+!
+! Mouse is within a viewport.  Find out which pasteboard, and
+! where on the pasteboard the mouse is.
+!
+	if not (s = vsta$$mouse_get_visible_pb (vp[$base], .vp_ms_x, .vp_ms_y,
+	    pb_id, pb, pb_ms_x, pb_ms_y, bot_pb_id, bot_pb_ms_x, bot_pb_ms_y))
+	then $log_error_and_return (.s);
+!
+! Remember the latest mouse info for this pasteboard.
+! This must be done BEFORE talking to region server, since region server needs
+! the correct info.
+!
+	pb[vs$vds_l_pb_mouse_x_coor] = .pb_ms_x;
+	pb[vs$vds_l_pb_mouse_y_coor] = .pb_ms_y;
+	pb[vs$vds_l_pb_mouse_button_val] = .mouse_info[mouse_info_buttons];
+!
+! Tell region server what pb the mouse is in, so that region
+! can be notified, and region mouse WAS on can be unhighlighted.
+!
+	if not (s = vsta$$rgn_mouse_squeaked (
+	    ps[$base],
+	    .vs_ms_x,
+	    .vs_ms_y,
+	    .vp[vss$l_vp_id],
+	    .bot_pb_id,
+	    .bot_pb_ms_x,
+	    .bot_pb_ms_y,
+	    pb[$base],
+	    0))
+	then $log_error_and_return (.s);
+!
+! If the mouse is in a different
+! pasteboard than last time, call appropriate routines to report
+! the boundary crossing.
+!
+	if .ps[vss$l_ps_mouse_pb_id] neq .pb_id then
+!
+! Mouse is in a different pb than last time, so send asts if
+! requested, and remember new pb mouse is in.
+!
+	    begin
+
+	    if .ps[vss$l_ps_mouse_pb_id] neq 0		! 0 means no old pb
+	    then
+		begin
+
+		if not (s = vsta$$mouse_crossed_boundary (
+		    .ps[vss$l_ps_mouse_pb_id], 0))
+		then $log_error_and_return (.s);
+!
+! Perhaps the pasteboard we just left was a popup pb, in
+! which case it's time to vanish it.
+!
+		if not (s = maybe_vanish_pb_on_region (
+		    .ps[vss$l_ps_mouse_pb_id]))
+		then $log_error_and_return (.s)
+
+		end;
+
+	    if not (s = vsta$$mouse_crossed_boundary (
+		.pb_id,
+		 1
+		))
+	    then $log_error_and_return (.s);
+
+	    ps[vss$l_ps_mouse_pb_id] = .pb_id
+
+	    end;
+!
+! Scan outstanding movement qio's for this pasteboard, and complete
+! them.
+!
+	rb = .pb[vs$vds_a_pb_mov_ptr];
+	until rb[$base] eql pb[vs$vds_a_pb_mov_ptr] do
+	begin
+	bind next_rb = .rb[vs$rb_a_flink] : rb_block;
+	vsta$$ptr_done_io (pb[vs$vds_l_pb_mouse_x_coor], rb[$base], ss$_normal);
+	rb = next_rb[$base]
+	end;
+
+	ss$_normal
+
+	end;
+
+routine vsta$$mouse_crossed_boundary
+!++
+! Functional description:
+!
+!	This routine is called when the mouse is known to have crossed
+!	the bounds of some pasteboard.  This routine is responsible for
+!	delivering an ast to anyone that previously called
+!	set-mouse-boundary-ast for the pasteboard.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard the mouse just left or entered.
+	entered_flag		! 1 for entered pb, 0 for left pb.
+ ) =
+!
+! Side effects:
+!
+!	Ast's may be delivered.
+!
+!--
+
+	begin
+
+	local
+
+	    rb : ref rb_block,		! Request block for ast's.
+	    s,				! Inner routine status codes.
+	    pb : ref pb_block;		! Points to data for exited pasteboard
+
+	! Get database for pasteboard mouse just left.
+	!
+	if not (vs$$vds_pb_found (.pb_id, pb))
+	then return .s;
+
+	! Remember whether mouse entered or left pasteboard.
+	!
+	pb[vs$vds_l_pb_mouse_entered_flag] = .entered_flag;
+
+	! Scan outstanding boundary qio's for this pasteboard, and complete
+	! them.
+	!
+	rb = .pb[vs$vds_a_pb_bou_ptr];
+	until rb[$base] eql pb[vs$vds_a_pb_bou_ptr] do
+	begin
+	bind next_rb = .rb[vs$rb_a_flink] : rb_block;
+	vsta$$ptr_done_io (pb[vs$vds_l_pb_mouse_x_coor], rb[$base], ss$_normal);
+	rb = next_rb[$base]
+	end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_get_visible_pb
+!++
+! Functional description:
+!
+!	Given target viewport, determine which pasteboard is visible under the
+!	mouse.
+!
+! Formal parameters:
+ (
+	vp : ref vp_block,	! Target vp data.
+	vp_ms_x,		! Mouse coordinates within target vp.
+	vp_ms_y,
+	visible_pb_id_adr,	! Where to write visible pb id.
+	curr_pb_adr,		! Where to write visible pb database address.
+	pb_ms_x_adr, pb_ms_y_adr,
+				! Where to write pasteboard mouse coordinates.
+	bot_pb_id,		! Where to write id of bottom pb.
+	bot_pb_ms_x,		! Where to write bottom pb mouse coordinates
+	bot_pb_ms_y
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get address into which to write visible pb id.
+	    curr_pb_id = .visible_pb_id_adr,
+
+	    ! Get address into which to write database address of visible pb.
+	    curr_pb = .curr_pb_adr : ref pb_block,
+
+	    ! Get addresses into which to write pasteboard mouse coordinates.
+	    !
+	    pb_ms_x = .pb_ms_x_adr,
+	    pb_ms_y = .pb_ms_y_adr;
+
+	local
+
+	    s,			! Status code from internal routines.
+	    win : ref w_block,	! Window associated with target vp.
+	    curr_pb_ms_x, curr_pb_ms_y,
+				! mouse coordinates within current pb.
+	    pon_ptr : ref pme_block,
+				! "pasted-on-me" data for next pb pasted on
+				! current.
+	    pon_x, pon_y,	! attachment position of pon pasted on curr.
+	    pon_ms_x, pon_ms_y,	! mouse location on pb pasted on pb
+	    pon_pb_id,		! id of pb pasted on current.
+	    pon_pb : ref pb_block,
+				! data for pasteboard pasted on current.
+	    pon_height, pon_length;
+				! size of pon pb.
+
+	! Get window associated with target viewport.
+	!
+	if not (s = vs$$vds_window_found (.vp[vss$l_vp_window_id], curr_pb, win))
+	then return .s;
+!
+! Get pasteboard window was created on.
+!
+	curr_pb_id = .win[vs$vds_l_w_pb_id];
+	.bot_pb_id = .win[vs$vds_l_w_pb_id];
+!
+! Initialize coordinates of mouse with respect to the pasteboard, which
+! is origin of window added to position of mouse within window.
+!
+	pb_ms_x = .win[vs$vds_l_w_x_coor] + .vp_ms_x;
+	pb_ms_y = .win[vs$vds_l_w_y_coor] + .vp_ms_y;
+	.bot_pb_ms_x = .win[vs$vds_l_w_x_coor] + .vp_ms_x;
+	.bot_pb_ms_y = .win[vs$vds_l_w_y_coor] + .vp_ms_y;
+!
+! Start a loop which will examine all pasteboards pasted on the
+! current pasteboard, starting with the topmost, and find the topmost
+! one that the mouse is touching.
+!
+! If no pastboards are pasted on the current one and that the mouse
+! is within the bounds of, then the current
+! one is the sought visible one.
+!
+! When a pasteboard is found that is pasted on the current one that
+! the mouse is in bounds of, that one becomes the current one, and
+! we loop.
+!
+	while 1 do
+
+	    begin
+	    label curr_loop;
+	    curr_loop:
+	    begin
+
+	    ! Get pointer to chain of pasteboards pasted on the current
+	    ! pasteboard.
+	    !
+	    pon_ptr = .curr_pb[vs$vds_a_pb_pme_ptr];
+
+	    ! Loop, scanning the pasteboards pasted on the current pasteboard,
+	    ! looking for the topmost one that the mouse is touching.  If no
+	    ! such one is found, the current pasteboard is the visible one.
+	    !
+	    until .pon_ptr eql curr_pb[vs$vds_a_pb_pme_ptr] do
+
+		! We've found another pasteboard pasted on the current one.
+		!
+		begin
+
+		! Get the pasted one's position of attachment.
+		!
+		pon_x = .pon_ptr[vs$vds_l_pme_x_coor];
+		pon_y = .pon_ptr[vs$vds_l_pme_y_coor];
+
+		! Get database for this pasted pasteboard.
+		!
+		pon_pb_id = .pon_ptr[vs$vds_l_pme_pb_id];
+		if not (s = vs$$vds_pb_found (.pon_pb_id, pon_pb))
+		then return .s;
+
+		! Get size of this pasted pasteboard.
+		!
+		pon_height = .pon_pb[vs$vds_l_pb_height];
+		pon_length = .pon_pb[vs$vds_l_pb_length];
+
+		! Get mouse coordinates on this pasted pasteboard by
+		! subtracting this pasteboard's attachment position from
+		! the mouse's coordinates on the current pasteboard.
+		!
+		pon_ms_x = .pb_ms_x - .pon_x;
+		pon_ms_y = .pb_ms_y - .pon_y;
+
+		! See if mouse is in bounds of this pasteboard.  If so,
+		! make this pasteboard the current one, and if not, see
+		! if there are more pasteboards pasted on the current one.
+		!
+		if .pon_ms_x geq 0 and .pon_ms_x lss .pon_length and
+		    .pon_ms_y geq 0 and .pon_ms_y lss .pon_height
+		then
+
+		    ! This is most visible pb so far, so make it current.
+		    !
+		    begin
+		    curr_pb_id = .pon_pb_id;
+		    curr_pb = pon_pb[$base];
+		    pb_ms_x = .pon_ms_x;
+		    pb_ms_y = .pon_ms_y;
+
+		    ! Leave inner loop to cause this new current pasteboard
+		    ! to have its pastees considered.
+		    !
+		    leave curr_loop	! Actually, "restart" curr_loop with
+					! new curr_pb_id !!
+
+		    end
+
+		else
+
+		    ! The mouse is not on this pasteboard that is pasted on the
+		    ! current one.  Advance to the next (if any) pasteboard
+		    ! pasted on the current one, and go back to the beginning
+		    ! of the inner loop to see if there are indeed any more
+		    ! pasteboards pasted on the current one, and if so, if the
+		    ! mouse is on any of them.
+		    !
+		    pon_ptr = .pon_ptr[vs$vds_a_pme_next_ptr]
+
+		end;
+
+	    ! At this point, curr_pb is the visible pasteboard, since the
+	    ! only way to get here is that the "until" met its end condition,
+	    ! which means there are no pasteboards pasted to the current
+	    ! pasteboard that the mouse is within bounds of, and hence the
+	    ! current pasteboard is the sought visible one.
+	    !
+	    return ss$_normal
+
+	    end
+	    end
+
+	end;
+
+end
+eludom

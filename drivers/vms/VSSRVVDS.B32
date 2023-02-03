@@ -1,0 +1,1663 @@
+MODULE VS$SRV_VDS (
+			IDENT = 'HI SERVER Virt Display Services'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module does the manipulation of virtual display objects
+! by VSSERVE and talks to VSACP about them.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_vds_get_hdr_info,	!Prepare to write a header VD
+    vsta$$srv_vds_header_write,	!Write header VD
+    initial_header_stuff,	! Initial header VD stuff
+    sel_name_field,		!Name field selected (start editing it)
+    vsta$$srv_vds_jobname_vd,	!Write the jobname VD
+    sel_jobname_field,		!Jobname field selected (start editing it)
+    name_field_ended,		!Finished editing the field
+    sel_hold,			!Select the HOLD indicator
+    vsta$$srv_vds_keyboard_off,	!Turn keyboard indicator off
+    vsta$$srv_vds_keyboard_on,	!Turn keyboard indicator on
+    vsta$$srv_vds_tablet_off,	!Turn tablet indicator off
+    vsta$$srv_vds_tablet_on,	!Turn tablet indicator on
+    vsta$$srv_vds_hold_on,	!Turn on "hold" indicator
+    vsta$$srv_vds_hold_off,	!Turn off "hold" indicator
+    change_indicator,		!Actually do the "writetext" call.
+    vsta$$srv_vds_write_docfoot,! Write the VD of the document footer
+    sel_attach_kbd,		!Routine called when KBD indicator is selected
+    sel_attach_tablet;		!Routine called when TABLET indicator is selected
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!Data structures
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Defines terminal types
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!ACP definitions
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application pgm symbols
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white, etc.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols and macros
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vsta$$error,			!Return error code to applications
+    vsta$$error_logger,			!Log an unexpected error
+    vs$$txt_addLines,			! TXT routines
+    vs$$txt_setTypeface,		! . .
+    vs$$txt_setTypesize,		! . .
+    vs$$txt_setWritingColor,		! . .
+    vs$$txt_setBackgroundColor,		! . .
+    vs$$txt_deleteField,		! Delete the default field
+    vs$$txt_defineField,		! Define a field
+    vs$$txt_set_field_format,		! Set the "format" of a field
+    vs$$txt_measure_Text,		! Measure text string
+    vs$$txt_writetext,			! . .
+    vs$$txt_insertText,			! Insert text into a field
+    vs$$txt_setbaseline,		! set baseline	
+    vsta$$srv_remember_kbd_attach,	!Remember where the kbd was attached
+    vsta$$srv_restore_kbd_attach,	!Restore old keyboard attachment
+    vs$$txt_deleteCharacters,		!Delete a text string
+    vsta$$nat_write_vertical_lines,	!Native graphics draw lines.
+    vsta$$nat_write_horizontl_lines,	!Native graphics draw lines.
+    vsta$$set_rgn_help,			!Specify help for region
+    vsta$$srv_attach_kbd,
+    vsta$$srv_attach_tablet,
+    vsta$$rgn_define_region,
+    vsta$$srv_disp_help_kwd,		!Put up page of help document
+    vsta$$rgn_set_region_selectable,
+    vsta$$edit_one,			!Start editing a field
+    vsta$$srv_doc_prev_page,		!Go to previous page in document
+    vsta$$srv_doc_next_page,		!Go to next page in document
+    vsta$$srv_doc_firstpage,		!Go to first page in document
+    vsta$$srv_doc_lastpage,		!Go to last page in document
+    vsta$$srv_write_truncated,		!Write truncated string
+    vs$$vds_vd_set_xon_xoff,		!"hold" the VT100, or not.
+    vs$$vds_set_vd_char;
+
+
+EXTERNAL
+    srv$gl_curr_kbd_id,		!Current keyboard that is attached.
+    srv$gl_curr_kbd_wdb,	!WDB (if any) where kbd is attached.
+    vs$gl_e_vkb_id,		!Current kbd id that is being edited (or 0)
+    vsta$_vdnotpasted;		!Error meaning VD is not pasted on PB
+
+BUILTIN
+    INSQUE, REMQUE;
+
+LITERAL
+    vline_width = 2,		!Width of vertical lines
+    ff_center = 2;		!Field format is "Center". This symbol
+				! is actually defined in TXTSYM.REQ but
+				! I don't want all the rest of the symbols.
+OWN
+    name_delim_type;		!Place to store type of delimeter when
+				! we are finished editing the name field
+!
+! +++ Data saved by vsta$$srv_vds_get_hdr_info for vsta$$srv_vds_header_write
+!
+OWN
+    tname_desc_addr: REF $string_descriptor,
+				!Address of the terminal name desc to write
+    name_typeface_desc: REF $string_descriptor,
+				!Address of typeface description for name
+    sel_name_width,		!SELECTable width
+    indic_field_width,		!Width of indicator field
+    tab_field_start,
+    tab_field_width,
+    kbd_field_start,
+    kbd_field_width,
+    hold_field_start,
+    hold_field_width;
+
+
+GLOBAL ROUTINE vsta$$srv_vds_get_hdr_info
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Measure header fields, etc. and put information in WDB
+!	Returns SS$_NORMAL with:
+!		# pixels needed (if doesn't fit), or 0 if does fit.
+!	If errors, return $error (...)
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Address of window block
+	,vd_width			!Width of header
+	,name_desc			!Name
+	,term_desc			!Terminal type, or 0
+	,mtflag				!Main terminal flag
+	,kbd_flag			!KBD flag
+	,tab_flag			!Tablet flag
+	,hold_flag			!Hold indicator flag
+	,editable_flag			!=1 if name is editable.
+	,needed				!(output) # pixels needed
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    name_field_width,		!Width of name field
+    indic_field_start,		!Start of indicator field
+    jobname_field_start,
+    last_field_start,		!Last field defined starts here.
+    tab_idx,			!CPOS of TAB indicator
+    kbd_idx,			!CPOS of KBD indicator
+    hold_idx,			!CPOS of HOLD indicator
+    name_size_needed,		!Space needed for name field
+    junk,			!A junk longword
+    status;
+
+IF (.name_desc NEQ 0)			!If user didn't supply a name,
+  THEN tname_desc_addr = .name_Desc
+  ELSE tname_desc_addr = .term_desc;	!Use "TEK4014" as terminal name
+
+IF .editable_flag			!If the name is editable,
+  THEN name_typeface_desc = %ASCID 'ed_hdr_font'
+  ELSE name_typeface_desc = %ASCID 'not_ed_hdr_font';
+
+!
+! A header VD looks like this:
+!
+!  !=============================================================!
+!  !    term name (editable ) ! jobname (ed) !  tab ! kbd ! hold !
+!  !=============================================================!
+!  !  -   remainder     --    ! vsta$K_size_x_jobname! x ! x ! x !
+!  !-------------------------------------------------------------!
+!
+! All fields except term name are optional.
+
+jrb = .wdb [wdb$a_jrb];			!Get ptr to JRB
+
+!
+! Figure out where the fields are, right to left.
+!
+last_field_start = .vd_width;		!Make all field alloc. code the same.
+
+! Space needed by <HOLD> indicator
+IF (.hold_flag NEQ 0)
+  THEN
+    BEGIN
+    hold_idx = 1;
+    hold_field_width = ch_width$hold_off;
+    hold_field_start = .last_field_start - .hold_field_width;
+    last_field_start = .hold_field_start;
+    END
+  ELSE
+    BEGIN
+    hold_Idx = 0;
+    hold_field_width = 0;
+    hold_field_start = 0;
+    END;
+!
+! Space needed by keyboard indicator
+!
+IF (.kbd_flag NEQ 0)
+  THEN
+    BEGIN
+    kbd_idx = 1;
+    hold_idx = .hold_Idx + 2;
+    kbd_field_width = ch_width$kbd_off;
+    kbd_field_start = .last_field_start - .kbd_field_width;
+  !
+  ! Possible separation from other indicators
+  !
+    IF (.hold_idx)
+      THEN kbd_field_start = .kbd_field_start - vline_width;
+
+    last_field_start = .kbd_field_start;
+    END
+  ELSE
+    BEGIN
+    kbd_idx = 0;
+    kbd_field_width = 0;
+    kbd_field_start = 0;
+    END;
+!
+! Space needed by tablet indicator
+!
+IF (.tab_flag NEQ 0)
+  THEN
+    BEGIN
+    tab_idx = 1;
+    kbd_idx = .kbd_idx + 2;
+    hold_idx = .hold_idx + 2;
+    tab_field_width = ch_width$tab_off;
+    tab_field_start = .last_field_start - .tab_field_width - vline_width;
+  !
+  ! Possible separation from other indicators
+  !
+    IF (.hold_idx OR .kbd_idx)
+      THEN tab_field_start = .tab_field_start - vline_width;
+
+    last_field_start = .tab_field_start;
+    END
+  ELSE
+    BEGIN
+    tab_idx = 0;
+    tab_field_width = 0;
+    tab_field_start = 0;
+    END;	
+!
+! Indicator field start
+!
+IF (.vd_width NEQ .last_field_start)
+  THEN
+    BEGIN
+    indic_field_start = .last_field_start;
+    indic_field_width = .vd_width - .last_field_start;
+    END
+  ELSE indic_field_start = 0;			!No indicators!
+
+!
+! Make indexes 0 if they are even.
+!
+IF (NOT (.kbd_idx)) THEN kbd_idx = 0;
+IF (NOT (.hold_idx)) THEN hold_Idx = 0;
+
+!
+! Space used by jobname field
+!
+IF (.jrb [jrb$l_job_name_vd] NEQ 0)
+  THEN
+    BEGIN
+    jobname_field_start = .last_field_start - vsta$K_size_x_jobname;
+    IF (.indic_field_start NEQ 0)
+      THEN jobname_field_start = .jobname_field_start - vline_width;
+    last_field_start = .jobname_field_start;
+    END
+  ELSE
+    jobname_field_start = 0;
+!
+! Space used by name field (all the rest).
+! (Leave space for a tablet indicator if it is not defined and we
+! have an emulated terminal, which can later get a tablet).
+! See if there are no separating lines between the name and the end.
+! If there are, account for the vertical line width (2).
+!
+IF (.last_field_start EQL .vd_width)
+  THEN name_field_width = .vd_width - 1
+  ELSE name_field_width = .last_field_start - 3;
+
+sel_name_width = .name_field_width;
+IF ((.tab_flag EQL 0) AND (.term_desc NEQ 0))
+  THEN name_field_width = .name_field_width -  ch_width$tab_off - vline_width;
+!
+! Figure out the size needed by the name field, and compare.
+!
+IF NOT (status =
+    vs$$txt_measure_text
+		(0		!VD-id (not important)
+		,.tname_desc_addr [sd$w_len]	!Text to measure
+		,.tname_desc_addr [sd$a_adr]
+		,.name_typeface_desc [sd$w_len]
+		,.name_typeface_desc [sd$a_adr]
+		,0, 0		!Typesize
+		,0, 0		!Rendition
+		,name_size_needed !Required X space
+		,junk		!Required Y space (not needed)
+		)
+	)
+  THEN RETURN $error (vsta$_meastxt_for
+			,string_type, %ASCID 'name descriptor in header'
+			);
+
+IF (.name_field_width LSS .name_size_needed)
+  THEN
+    BEGIN
+    .needed = .name_size_needed - .name_field_width;
+    RETURN SS$_NORMAL
+    END
+  ELSE .needed = 0;
+
+!
+! Remember where the fields are
+!
+wdb [wdb$w_name_field_start] = 1;
+wdb [wdb$w_name_field_width] = .name_field_width;
+wdb [wdb$w_indic_field_start] = .indic_field_start;
+wdb [wdb$w_jobname_field_start] = .jobname_field_start;
+wdb [wdb$b_tab_char_idx] = .tab_idx;
+wdb [wdb$b_kbd_char_idx] = .kbd_idx;
+wdb [wdb$b_hold_char_idx] = .hold_idx;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_header_write
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do text, graphics calls to write into the terminal or window header
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Address of window block
+	,vd_width			!Width of header
+	,editable_flag			!=1 if name is editable
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    vd_id,			!Virtual display id of header
+    num_vlines,			!Number of vertical lines
+    indic_str: REF VECTOR [6,BYTE],	!Addr of indicator string
+    name_help,			!Help for name field of header
+    tablet_help,		!Tablet help keyword descriptor
+    kbd_help,			!Keyboard help keyword descriptor
+    hold_help,			!Hold help keyword descriptor
+    tab_char_idx,
+    kbd_char_idx,
+    hold_char_idx,
+    x_coor_block: VECTOR [3,WORD],	!X-coor of vertical lines
+    max_len,
+    status;
+
+!
+! A header VD looks like this:
+!
+!  !=============================================================!
+!  !    term name (editable ) ! jobname (ed) !  tab ! kbd ! hold !
+!  !=============================================================!
+!  !  -   remainder     --    ! vsta$K_size_x_jobname! x ! x ! x !
+!  !-------------------------------------------------------------!
+!
+! All fields except term name are optional.
+
+vd_id = .wdb [wdb$l_header_vd_id];	!Get virtual display id
+jrb = .wdb [wdb$a_jrb];			!Get ptr to JRB
+
+!
+! OK, everything should fit ok. Start writing the VD.
+!
+IF NOT (status =
+    initial_header_stuff
+		(.vd_width
+		,.vd_id
+		)
+	)
+  THEN RETURN .status;
+
+!
+! Create text fields and write into them
+!
+IF NOT vs$$txt_defineField
+		(.vd_id
+		,1		!Line
+		,1		!Name field start
+		,.wdb [wdb$w_name_field_width]
+		)
+  THEN RETURN $bug (vsta$_deffld);
+
+IF NOT vs$$txt_set_field_format
+		(.vd_id
+		,1
+		,1
+		,ff_center
+		)
+  THEN RETURN $bug (vsta$_setfldfmt);
+
+!
+! Write the name field
+!
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,.name_typeface_desc
+		)
+  THEN RETURN $error (vsta$_settf
+			,string_type, .name_typeface_desc
+			);
+!
+! Set the baseline to vertically center the text within the field
+IF NOT vs$$txt_setbaseline(
+			.vd_id,
+			2		! new position relative to text line
+			)
+  THEN RETURN $error (vsta$_setbas
+			,string_type, .name_typeface_desc);
+!
+! Attempt to write the whole name. If fails, return the status.
+!
+IF NOT (status = vs$$txt_writeText
+		(.vd_id
+		,.tname_desc_addr
+		,1		!Line
+		,1		!Field
+		,1		!Character position
+		)
+	)
+  THEN
+    RETURN $error (vsta$_writet
+		,string_type, %ASCID 'Name field in header'
+		);
+! Set the baseline to vertically center the text within the field
+IF NOT vs$$txt_setbaseline(
+			.vd_id,
+			0	!back to 0 for vertical lines, Kbd & Hold
+			)
+  THEN RETURN $error (vsta$_setbas
+			,string_type, .name_typeface_desc);
+!
+! Write vertical lines
+!
+num_vlines = 0;
+
+IF (.wdb [wdb$w_indic_field_start] NEQ 0)
+  THEN
+    BEGIN
+    x_coor_block [.num_vlines] = .wdb [wdb$w_indic_field_start] - vline_width;
+    num_vlines = .num_vlines + 1;
+    END;
+
+IF (.jrb [jrb$l_job_name_vd] NEQ 0)
+  THEN
+    BEGIN
+    x_coor_block [.num_vlines] = .wdb [wdb$w_jobname_field_start] - vline_width;
+    num_vlines = .num_vlines + 1;
+    END;
+
+IF (.num_vlines NEQ 0)
+  THEN
+    IF NOT vsta$$nat_write_vertical_lines
+		(.num_vlines	!Number of lines
+		,vline_width	!Width
+		,vsta$K_color_black
+		,x_coor_block	!Address of block of x-coods.
+		,.vd_id		!Virtual display id
+		,vsta$K_header_height
+		)
+      THEN $error (vsta$_vertln);
+
+!
+! Decide what help keywords go with the various fields according to the
+! terminal type.
+!
+CASE .wdb [wdb$b_window_type] FROM wdb$k_lowest_wtype TO wdb$k_highest_wtype OF
+    SET
+    [wdb$k_wtype_vt100] :
+	BEGIN
+	name_help = %ascid 'Terminal name';
+	tablet_help = %ascid 'Tablet';
+	kbd_help = %ascid 'KBD';
+	hold_help = %ascid 'Hold';
+	END;
+    [wdb$k_wtype_4014] :
+	BEGIN
+	name_help = %ascid '4014 terminal name';
+	tablet_help = %ascid '4014 tablet';
+	kbd_help = %ascid '4014 KBD';
+	hold_help = %ascid '4014 hold';
+	END;
+    [INRANGE, OUTRANGE] :
+	BEGIN
+	name_help = 0;
+	tablet_help = 0;
+	kbd_help = 0;
+	hold_help = 0;
+	END;
+    TES;
+!
+! If editable_flag is set, Make the field selectable (editable).
+!
+IF .editable_flag
+  THEN
+    BEGIN
+    IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,0
+		,0
+		,.sel_name_width	!dx
+		,20	       		!dy
+		,.name_help		!help keyword
+		)
+      THEN RETURN $error (vsta$_defrgn);
+
+    IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,0			!Region x
+		,0			!Region y
+		,sel_name_field		!ASTADR = Name field selected
+		,.wdb			!ASTPRM = the WDB
+		,0, 0, 0		!No popup PB
+		,vsta$K_sel_area	!selectable attribute
+		)
+      THEN RETURN $error (vsta$_setrgnsel);
+    END;		!Of name field is editable
+
+IF (.wdb [wdb$w_indic_field_start] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_defineField
+		(.vd_id
+		,1			!Line 1
+		,.wdb [wdb$w_indic_field_start]
+		,.indic_field_width	!Size of field
+		)
+      THEN RETURN $error (vsta$_deffld);
+    END;
+
+!
+! Create the 1- to 5- character string to insert in the field.
+!
+indic_str = wdb [wdb$b_indic_string];	!Get address of the indicator string
+
+max_len = 0;				!Max len so far.
+tab_char_idx = .wdb [wdb$b_tab_char_idx];
+IF (.tab_char_idx NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,.tab_field_start	!X
+		,0			!Y
+		,.tab_field_width	!dx
+		,20			!dy
+		,.tablet_help		!help keyword
+		)
+      THEN RETURN $error (vsta$_defrgn);
+    IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.tab_field_start, 0	!The region here
+		,sel_attach_tablet	!ASTADR
+		,.wdb			!ASTPRM = wdb
+		,0, 0, 0		!No popup-PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+      THEN RETURN $error (vsta$_setrgnsel);
+    max_len = MAX (.max_len, .tab_char_idx);
+    IF (.wdb [wdb$b_tab_on_flag])
+      THEN indic_str [.tab_char_idx] = ch_sym$tab_on
+      ELSE indic_str [.tab_char_idx] = ch_sym$tab_off;
+    END;    !Tablet field
+
+kbd_char_idx = .wdb [wdb$b_kbd_char_idx];
+IF (.kbd_char_idx NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,.kbd_field_start	!X
+		,0			!Y
+		,.kbd_field_width	!dx
+		,20			!dy
+		,.kbd_help		!help keyword
+		)
+      THEN RETURN $error (vsta$_defrgn);
+
+    IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.kbd_field_start, 0	!The region here
+		,sel_attach_kbd		!ASTADR
+		,.wdb			!ASTPRM = wdb
+		,0, 0, 0		!No popup-PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+      THEN RETURN $error (vsta$_setrgnsel);
+
+    max_len = MAX (.max_len, .kbd_char_idx);
+    IF (.wdb [wdb$b_kbd_on_flag])
+      THEN indic_str [.kbd_char_idx] = ch_sym$kbd_on
+      ELSE indic_str [.kbd_char_idx] = ch_sym$kbd_off;
+    END;
+    
+hold_char_idx = .wdb [wdb$b_hold_char_idx];
+IF (.hold_char_idx NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,.hold_field_start	!X
+		,0			!Y
+		,.hold_field_width	!dx
+		,20			!dy
+		,.hold_help		!help keyword
+		)
+      THEN RETURN $error (vsta$_defrgn);
+    IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.hold_field_start, 0	!The region here
+		,sel_hold		!ASTADR
+		,.wdb			!ASTPRM = wdb
+		,0, 0, 0		!No popup-PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+      THEN RETURN $error (vsta$_setrgnsel);
+    max_len = MAX (.max_len, .hold_char_idx);
+    IF (.wdb [wdb$b_hold_on_flag])
+      THEN indic_str [.hold_char_Idx] = ch_sym$hold_on
+      ELSE indic_str [.hold_char_idx] = ch_sym$hold_off;
+    END;	!Hold field
+
+!
+! Get in-between characters.
+!
+IF (.max_len EQL 5)
+  THEN
+    BEGIN
+    IF (.indic_str [3] OR .indic_str [5])	!At least one indicator WHITE?
+      THEN indic_str [4] = ch_sym$black_Line
+      ELSE indic_str [4] = ch_sym$white_line;
+    END;
+
+IF (.max_len GEQ 3)
+  THEN
+    BEGIN
+    IF (.indic_str [1] OR .indic_str [3])	!At least one indicator WHITE?
+      THEN indic_str [2] = ch_sym$black_line
+      ELSE indic_str [2] = ch_sym$white_line;
+    END;
+
+!
+! Write the text (if any)
+!
+IF (.max_len NEQ 0)
+  THEN
+    BEGIN
+    LOCAL
+	indic_str_desc: VECTOR [2];
+    indic_str_desc [0] = .max_len;
+    indic_str_desc [1] = .indic_str + 1;
+    IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'HISYMBOL1'
+		)
+      THEN RETURN $error	(vsta$_settf
+				,string_type, %ASCID 'HISYMBOL1'
+				);
+
+    IF NOT vs$$txt_WriteText
+		(.vd_id
+		,indic_str_desc		!String descriptor
+		,1			!Line
+		,.wdb [wdb$w_indic_field_start]	!Field
+		,1			!CPOS
+		)
+       THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'indicator string'
+				);
+    END;	!Of write indicator string
+
+wdb [wdb$b_indic_len] = .max_len;	!Remember length of indic string
+
+!
+! Set the baseline to vertically center the text within the field
+! in case the name filed is selected and edited
+IF NOT vs$$txt_setbaseline(
+			.vd_id,
+			2		! new position relative to text line
+			)
+  THEN RETURN $error (vsta$_setbas
+			,string_type, .name_typeface_desc);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE initial_header_stuff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates text block with 1 line.
+!	Writes horizontal black line on bottom of display.
+!	Sets text writing color and background color.
+!	Deletes the default text field.
+! FORMAL PARAMETERS:
+	(vd_width	!Width of VD	
+	,vd_id		!Virtual display id
+	) =
+!--
+BEGIN
+LOCAL
+    hline_width,
+    y_coor_block: VECTOR [1,WORD],
+    status;
+
+hline_width = 2;		!Set width of horizontal line
+
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1		!Number of text lines
+		,vsta$K_header_height - .hline_width	!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+!
+! Delete the default text field.
+!
+IF NOT vs$$txt_deleteField
+		(.vd_id
+		,1
+		,1
+		)
+  THEN RETURN $error (vsta$_deldeffld);
+!
+! Set text writing color and background color
+!
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+!
+! Write the horizontal line on the bottom
+!
+y_coor_block [0] = vsta$K_header_height - .hline_width;
+IF NOT vsta$$nat_write_horizontl_lines
+		(1			!Number of lines
+		,.hline_width		!Width
+		,vsta$K_color_black	!Color
+		,y_coor_block		!Address of block of y-coords.
+		,.vd_id			!Virtual display id
+		,.vd_width		!Width of virtual display
+		)
+  THEN RETURN $error (vsta$_horizln);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sel_name_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Handle name field being selected.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    buffer_desc: VECTOR [2],
+    name_desc: REF VECTOR [2],
+    status;
+
+name_desc = .wdb [wdb$a_name_desc];
+buffer_desc [0] = vsta$K_max_chars_wname;
+buffer_desc [1] = .name_desc [1];	!Get ptr to name string
+!
+! Remember current keyboard attachment.
+! We will attach it back (IF a keyboard indicator was lit)
+! when the user finishes editing the field.
+!
+vsta$$srv_remember_kbd_attach ();
+
+
+IF NOT vsta$$edit_one	(.wdb [wdb$l_hi_pb_id]	!HI keyboard
+			,.wdb [wdb$l_header_vd_id]	!VD-id
+			,1			!Line
+			,16			!Line height
+			,0			!Linestart-Y
+			,.wdb [wdb$w_name_field_start] !Field id
+			,.wdb [wdb$w_name_field_width]	!Field width
+			,buffer_desc		!Descriptor to buffer
+			,vsta$K_edit_center	!Flags (center field)
+			,.name_desc		!Current length address
+			,name_delim_type	!Place to store delim type
+			,name_field_ended	!Routine to call when field
+						! edit is finished
+			,%ASCID 'ed_hdr_font'	!Typeface
+			,0			!Don't worry about typesize
+			,0, 0			! or rendition mask
+			,0			!No timeout.
+			)
+  THEN RETURN $error (vsta$_editone
+			,string_type, %ASCID 'Name field in header'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_jobname_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write the jobname VD.
+! FORMAL PARAMETERS:
+	(vd_id
+	,jrb: REF job_block
+	) =
+! IMPLICIT INPUTS:
+!	jrb [jrb$l_pid]
+! IMPLICIT OUTPUTS:
+!	jrb [jrb$l_job_name_len], jrb [jrb$b_job_name]
+!
+! Error status is returned.
+!--
+BEGIN
+EXTERNAL
+    srv$gl_jobnum_count;
+LOCAL
+    nnn,
+    name_desc: VECTOR [2],
+    name_str: VECTOR [15],
+    out_len,
+    status;
+!
+! Get the default job name into the JRB
+!
+nnn = .srv$gl_jobnum_count + 1;
+name_desc [0] = 15;
+name_desc [1] = name_str;		!Set output to $fao
+IF NOT (status =
+    $fao	(%ASCID 'Job !UL'	!CTRSTR
+		,out_len
+		,name_desc
+		,.nnn			!p1
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report $fao status
+    RETURN $error (vsta$_fao);
+    END;
+name_desc [0] = .out_len;
+
+CH$MOVE	(.name_desc [0]
+	,.name_desc [1]
+	,jrb [jrb$b_job_name]
+	);
+!
+! Now do the usual text calls to get the text stuff written.
+!
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1			!# of text lines
+		,vsta$K_size_y_jobname	!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'ed_hdr_font'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'ed_hdr_font'
+			);
+
+IF NOT vs$$txt_set_field_format
+		(.vd_id
+		,1		!line
+		,1		!field
+		,ff_center	!Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+! Set baseline to move up the text in the field
+IF NOT vs$$txt_setbaseline
+			(.vd_id
+			,2
+			)
+  THEN RETURN $error (vsta$_setbas);
+!
+! Write the whole string. Truncate if necessary.
+!
+IF NOT vsta$$srv_write_truncated
+		(.vd_id
+		,name_desc		!String to write
+		,1, 1			!Line, field
+		,vsta$K_size_x_jobname - 1 !Width of field
+		,jrb [jrb$l_job_name_len] !Returned # chars written
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Job name in header'
+			);
+!
+! Make the field "editable"
+!
+IF NOT vsta$$rgn_define_region
+			(.vd_id
+			,0, 0		!Region x,y
+			,vsta$K_size_x_jobname	!dx
+			,vsta$K_size_y_jobname	!dy
+			,0
+!
+! We intentionally do NOT supply a help keyword for the jobname field.  The
+! IDENTICAL region and display are used for terminal, user viewport, and
+! settings document jobname fields.  Hence in order to allow the help button
+! to lookup DIFFERENT help document pages, we rely on having different help
+! keywords for the display, pasteboard or viewport that underlies the jobname
+! field.
+!
+			)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,0, 0			!Region x,y
+		,sel_jobname_field	!ASTADR
+		,.jrb			!ASTPRM
+		,0, 0, 0		!no popup_pb
+		,vsta$K_sel_area	!Selectable attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+srv$gl_jobnum_count = .nnn;
+jrb [jrb$l_jobnum] = .nnn;		!Remember in the JRB.
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sel_jobname_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The jobname field was selected.
+!	Start editing it.
+! FORMAL PARAMETERS:
+	(jrb: REF job_block
+	) =
+!--
+BEGIN
+LOCAL
+    buffer_desc: VECTOR [2],
+    wdb: REF window_data_block,
+    status;
+
+wdb = .jrb [jrb$a_wdb_q_hdr_fl];	!Get first wdb
+
+buffer_desc [0] = vsta$K_max_chars_jobname;
+buffer_desc [1] = jrb [jrb$b_job_name];
+
+! Remember current keyboard attachment.
+! We will attach it back (IF a keyboard indicator was lit)
+! when the user finishes editing the field.
+!
+vsta$$srv_remember_kbd_attach ();
+
+IF NOT vsta$$edit_one	(.wdb [wdb$l_hi_pb_id]	!HI keyboard
+			,.jrb [jrb$l_job_name_vd]	!Vd-id
+			,1			!line
+			,vsta$K_size_y_jobname	!lineheight
+			,0			!linestart-Y
+			,1			!Field id
+			,vsta$K_size_x_jobname - 1	!Field width
+			,buffer_desc		!Descriptor to buffer
+			,vsta$K_edit_center	!Flags (centered field)
+			,jrb [jrb$l_job_name_len]	!Address of length
+			,name_delim_type	!Type of delimiter
+			,name_field_ended	!Routine to call.
+			,0, 0, 0, 0		! Font parameters already set.
+			,0			!No timeout
+			)
+  THEN RETURN $error (vsta$_editone
+			,string_type, %ASCID 'Job name field'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE name_field_ended =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the user stops editing name field. Attach
+!	keyboard to remembered place if he ended field with CRLF.
+!	 No other end-field action is needed.
+!--
+BEGIN
+
+IF (.name_Delim_type EQL vsta$K_edit_delim_yank)
+  THEN RETURN SS$_NORMAL;		!Yanked to another editable field.
+
+vsta$$srv_restore_kbd_attach ();
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sel_hold
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The HOLD indicator was selected. Pretend user had
+!	attached the keyboard and hit CTRL/S or CTRL/Q.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    xoff_flag,
+    status;
+
+IF (.wdb [wdb$b_hold_on_flag] EQL 0)
+  THEN xoff_flag = 1		!Pretend user hit CTRL/S
+  ELSE xoff_flag = 0;		!Hold was on-- pretend user hit CTRL/Q
+
+IF NOT vs$$vds_vd_set_xon_xoff (.wdb [wdb$l_term_vd_id], .xoff_flag)
+  THEN RETURN $bug (vsta$_xon_xoff);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_keyboard_off
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "Keyboard not attached" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    kbd_idx,
+    border_vd_id,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+kbd_idx = .wdb [wdb$b_kbd_char_idx];	!What character in indic-string is KBD
+
+IF (.indic_str [.kbd_idx] EQL ch_sym$kbd_off)
+  THEN RETURN SS$_NORMAL;		!Already off.
+
+indic_str [.kbd_idx] = ch_sym$kbd_off;
+IF NOT (status = change_indicator (.wdb, .kbd_idx))
+  THEN RETURN .status;
+
+
+!
+! Get id of border vd different for terminals than user windows
+!
+border_vd_id = .wdb [wdb$l_win_border_vd_id];
+
+IF .wdb [wdb$l_win_border_vd_id] EQL 0
+then border_vd_id = .wdb [wdb$l_win_bezel_vd_id];
+
+!
+! Change color of border display
+!
+IF NOT (status = VS$$VDS_SET_VD_CHAR(
+
+			.border_vd_id,			! Vdid
+			0,				! UIC
+			vsta$k_window_border_color,	! Background
+			-1,				! Foreground
+			-1,				! Term or not
+			-1,				! Chars
+			-1				!
+	))
+  THEN RETURN .status;
+
+wdb [wdb$b_kbd_on_flag] = 0;		!KBD indicator is OFF
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_keyboard_on
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "keyboard is attached" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    kbd_idx,
+    border_vd_id,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+kbd_idx = .wdb [wdb$b_kbd_char_idx];	!What character in indic-string is KBD
+
+IF (.indic_str [.kbd_idx] EQL ch_sym$kbd_on)
+  THEN RETURN SS$_NORMAL;		!Already off.
+
+indic_str [.kbd_idx] = ch_sym$kbd_on;
+IF NOT (status = change_indicator (.wdb, .kbd_idx))
+  THEN RETURN .status;
+
+!
+! Get id of border vd different for terminals than user windows
+!
+border_vd_id = .wdb [wdb$l_win_border_vd_id];
+
+IF .wdb [wdb$l_win_border_vd_id] EQL 0
+then border_vd_id = .wdb [wdb$l_win_bezel_vd_id];
+
+!
+! Change color of border display
+!
+IF NOT (status = VS$$VDS_SET_VD_CHAR(
+
+			.border_vd_id,			! Vdid
+			0,				! UIC
+			vsta$k_window_border_color_sel,	! Background
+			-1,				! Foreground
+			-1,				! Term or not
+			-1,				! Chars
+			-1				!
+	))
+  THEN RETURN .status;
+
+wdb [wdb$b_kbd_on_flag] = 1;		!KBD is ON
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_tablet_off
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "tablet is not attached" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    tab_idx,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+tab_idx = .wdb [wdb$b_tab_char_idx];	!What character in indic-string is TAB
+
+IF (.indic_str [.tab_idx] EQL ch_sym$tab_off)
+  THEN RETURN SS$_NORMAL;		!Already off.
+
+indic_str [.tab_idx] = ch_sym$tab_off;
+
+IF NOT (status = change_indicator (.wdb, .tab_idx))
+  THEN RETURN .status;
+
+wdb [wdb$b_tab_on_flag] = 0;		!TAB is OFF
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_tablet_on
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "Tablet is attached" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    tab_idx,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+tab_idx = .wdb [wdb$b_tab_char_idx];	!What character in indic-string is TAB
+
+IF (.indic_str [.tab_idx] EQL ch_sym$tab_on)
+  THEN RETURN SS$_NORMAL;		!Already on
+
+indic_str [.tab_idx] = ch_sym$tab_on;
+
+IF NOT (status = change_indicator (.wdb, .tab_idx))
+  THEN RETURN .status;
+
+wdb [wdb$b_tab_on_flag] = 1;		!TAB is ON
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_hold_off
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "hold" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    hold_idx,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+hold_idx = .wdb [wdb$b_hold_char_idx];	!What character in indic-string is HOLD
+
+IF (.indic_str [.hold_idx] EQL ch_sym$hold_off)
+  THEN RETURN SS$_NORMAL;		!Already off.
+
+indic_str [.hold_idx] = ch_sym$hold_off;
+
+IF NOT (status = change_indicator (.wdb, .hold_idx))
+  THEN RETURN .status;
+
+wdb [wdb$b_hold_on_flag] = 0;		!HOLD is off now!
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_hold_on
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the "hold off" character
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,
+    indic_str: REF VECTOR [,BYTE],
+    hold_idx,
+    status;
+
+vd_id = .wdb [wdb$l_header_vd_id];
+indic_str = wdb [wdb$b_indic_string];
+hold_idx = .wdb [wdb$b_hold_char_idx];	!What character in indic-string is HOLD
+
+IF (.indic_str [.hold_idx] EQL ch_sym$hold_on)
+  THEN RETURN SS$_NORMAL;		!Already on.
+
+indic_str [.hold_idx] = ch_sym$hold_on;
+
+IF NOT (status = change_indicator (.wdb, .hold_idx))
+  THEN RETURN .status;
+
+wdb [wdb$b_hold_on_flag] = 1;		!HOLD is on now!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE change_indicator
+!++
+! FUNCTIONAL DESCRIPTION:
+!	An indicator changed background color. Figure out if
+! any separating lines need to change color, and WriteText the
+! minimum number of characters necessary to get the indicator looking
+! the way it should.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	,char_idx			!Char idx that changed.
+	) =
+!--
+BEGIN
+LOCAL
+    max_idx,
+    write_desc: VECTOR [2],		!Descriptor to string to write.
+    indic_str: REF VECTOR [,BYTE],
+    char_wanted: BYTE,
+    cpos,
+    status;
+
+indic_str = wdb [wdb$b_indic_string];	!Get ptr to indic string.
+write_desc [0] = 1;			!1 char so far.
+write_desc [1] = indic_str [.char_idx];	!Just that character so far.
+cpos = .char_idx;			!What CPOS gets changed.
+max_idx = .wdb [wdb$b_indic_len];	!Get length of string
+
+IF (.char_idx LSS .max_idx)
+  THEN
+    BEGIN			!an indicator AFTER this one..
+    IF (.indic_str [.char_idx] OR .indic_str [.char_idx + 2])
+      THEN char_wanted = ch_sym$black_line
+      ELSE char_wanted = ch_sym$white_line;
+    IF (.char_wanted NEQ .indic_str [.char_idx + 1])
+      THEN
+	BEGIN
+	write_desc [0] = .write_Desc [0] + 1;
+	indic_str [.char_idx + 1] = .char_wanted;	
+	END;
+    END;
+
+IF (.char_idx NEQ 1)
+  THEN
+    BEGIN			!an indicator BEFORE this one..
+    IF (.indic_str [.char_idx - 2] OR .indic_str [.char_idx])
+      THEN char_wanted = ch_sym$black_line
+      ELSE char_wanted = ch_sym$white_line;
+    IF (.char_wanted NEQ .indic_str [.char_idx - 1])
+      THEN
+	BEGIN
+	indic_str [.char_idx - 1] = .char_wanted;
+	write_desc [0] = .write_desc [0] + 1;
+	write_desc [1] = .write_desc [1] - 1;	!Include previous line
+	cpos = .cpos - 1;			! . .
+	END;	
+    END;
+
+IF NOT vs$$txt_SetTypeface
+		(.wdb [wdb$l_header_vd_id]
+		,%ASCID 'HISYMBOL1'
+		)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'HISYMBOL1'
+			);
+! **RR**
+IF NOT vs$$txt_setbaseline(
+			.WDB [WDB$L_HEADER_vd_id],
+			0		! new position relative to text line
+			)
+  THEN RETURN $error (vsta$_setbas
+			,string_type, .name_typeface_desc);
+! **RR**  end
+IF NOT vs$$txt_WriteText
+		(.wdb [wdb$l_header_vd_id]	!vd-id
+		,write_desc			!String
+		,1				!Line
+		,.wdb [wdb$w_indic_field_start]	!Field
+		,.cpos				!Cpos
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'Indicator in header'
+			);
+
+IF NOT vs$$txt_setbaseline(
+			.WDB [WDB$L_HEADER_vd_id],
+			2	! set it back for text writing
+			)
+  THEN RETURN $error (vsta$_setbas
+			,string_type, .name_typeface_desc);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vds_write_docfoot
+!++
+! FUNCTIONAL 
+!	Write the VD of the document footer
+! FORMAL PARAMETERS:
+	(docb: REF doc_block
+	,toc_flag		!=1 if document has a table of contents
+	,index_flag		!=1 if document has an index
+	) =
+!
+! The VD looks like this:
+!	!=========================================================!
+!	!---------------------------------------------------------!
+!	!  Begin  !   End    !      -1/5th-   !  Back  !  Forward !
+!       !                                                         !
+!	!=========================================================!
+!--
+BEGIN
+OWN
+    y_coor_block: VECTOR [1,WORD]
+		INITIAL (WORD (0));
+LOCAL
+    vd_id,			!Id of the side bar VD
+    size_of_fields,
+    text_width,
+    field_start: VECTOR [5],	!Where the text fields start.
+    x_coor_block: VECTOR [4,WORD],
+    begin_text,			!%ASCID 'Begin' or 'Contents'
+    end_text,			!%ASCID 'End' or 'Index'
+    space_down,			!Space between top of VD and 15-pixel line.
+    status;
+!
+! First, make sure the VD is wide enough for this.
+!
+size_of_fields = .docb [dkb$w_pb_size_x] / 5;	!(at least)
+text_width = .size_of_fields - vline_width;	!width of text fields
+field_start [0] = 0;
+field_start [1] = .field_start [0] + .size_of_fields;
+field_start [2] = .field_start [1] + .size_of_fields;
+field_start [4] = .docb [dkb$w_pb_size_x] - .size_of_fields;
+field_start [3] = .field_start [4] - .size_of_fields;
+!
+! Vertical lines will be drawn at the end of fields except for
+! the very last field.
+!
+x_coor_block [0] = .field_start [1] - vline_width;
+x_coor_block [1] = .field_start [2] - vline_width;
+x_coor_block [2] = .field_start [3] - vline_width;
+x_coor_block [3] = .field_start [4] - vline_width;
+
+vd_id = .docb [dkb$l_vd_footer];	!Get virtual display id
+
+space_down = (vsta$K_doc_footer_height - 15) / 2;
+IF NOT vs$$txt_addLines
+		(.vd_id
+		,1			!number of text lines
+		,.space_down + 15	!height of line
+		)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT vs$$txt_setWritingColor
+		(.vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'Kilter'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'Kilter'
+			);
+IF NOT vs$$txt_setTypesize
+		(.vd_id
+		,14
+		)
+  THEN RETURN $error (vsta$_setts);
+
+!
+! Define fields (have to delete the default field)
+!
+IF NOT vs$$txt_deleteField
+		(.vd_id
+		,1		!line
+		,1		!Position
+		)
+  THEN RETURN $error (vsta$_deldeffld);
+
+INCR i FROM 1 TO 5 DO
+    BEGIN
+    IF NOT vs$$txt_definefield
+		(.vd_id
+		,1		!Line
+		,.field_start [.i - 1]
+		,.text_width
+		)
+      THEN RETURN $error (vsta$_deffld);
+
+    IF NOT vs$$txt_set_field_format
+		(.vd_id
+		,1		!Line
+		,.field_start [.i - 1]
+		,ff_center	!Format
+		)
+      THEN RETURN $error (vsta$_setfldfmt);
+
+    IF NOT vsta$$rgn_define_region
+		(.vd_id
+		,.field_start [.i - 1]	!X-origin
+		,vline_width		!Y-origin
+		,.text_width		!dx
+		,vsta$K_doc_footer_height - vline_width	!dy
+		)
+      THEN RETURN $error (vsta$_defrgn);
+
+    END;		!of incr loop to define centered fields.
+
+!
+! Write a horizontal line above the fields.
+!
+IF NOT vsta$$nat_write_horizontl_lines
+		(1		!Number of lines
+		,vline_width	!Width
+		,vsta$K_color_black	!Color
+		,y_coor_block	!Address of block of Y-coordinates
+		,.vd_id		!Virtual display id
+		,.docb [dkb$w_pb_size_x]	!Width of virtual display
+		)
+  THEN RETURN $error (vsta$_horizln);
+
+IF NOT vsta$$nat_write_vertical_lines
+		(4		!Number of lines
+		,vline_width	!Width
+		,vsta$K_color_black	!Color
+		,x_coor_block
+		,.vd_id		!Virtual display id
+		,vsta$K_doc_footer_height	!Height of VD
+		)
+  THEN RETURN $error (vsta$_vertln);
+
+!
+! Write the fields.
+!
+begin_text = %ASCID 'Begin';
+IF (.toc_flag)
+  THEN begin_text = %ASCID 'Contents';
+
+end_text = %ASCID 'End';
+IF (.index_flag)
+  THEN end_text = %ASCID 'Index';
+
+IF NOT vs$$txt_insertText
+		(.vd_id
+		,.begin_text
+		,1		!Line
+		,.field_start [0]	!Field
+		,1		!Cpos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"contents" marker'
+			);
+IF NOT vs$$txt_insertText
+		(.vd_id
+		,.end_text
+		,1
+		,.field_start [1]
+		,1		!Cpos
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"INDEX" marker'
+			);
+IF NOT vs$$txt_insertText
+		(.vd_id
+		,%ASCID 'Back'
+		,1
+		,.field_start [3]
+		,1
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"BACK" marker'
+			);
+IF NOT vs$$txt_InsertText
+		(.vd_id
+		,%ASCID 'Forward'
+		,1
+		,.field_start [4]
+		,1
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID '"FORWARD" marker'
+			);
+!
+! Set the fields selectable.
+!
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.field_start [0]	!"Begin" field
+		,vline_width		!Y orig.
+		,vsta$$srv_doc_firstpage
+		,.docb			!ASTPRM
+		,0, 0, 0		!No popup PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.field_start [1]	!"End" field
+		,vline_width		!Y orig
+		,vsta$$srv_doc_lastpage
+		,.docb			!ASTPRM
+		,0, 0, 0		!No popup PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.field_start [3]	!"Back" field
+		,vline_width		!y orig.
+		,vsta$$srv_doc_prev_page
+		,.docb			!ASTPRM
+		,0, 0, 0		!No pop-up PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id
+		,.field_start [4]	!"forward" field
+		,vline_width		!Y orig.
+		,vsta$$srv_doc_next_page
+		,.docb			!ASTPRM
+		,0, 0, 0		!No pop-up PB
+		,vsta$K_sel_area	!Selectable attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sel_attach_kbd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The keyboard indicator was selected. Call the routine
+!	to select the keyboard.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+vsta$$srv_attach_kbd (.wdb [wdb$l_u_pb_id], .wdb);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sel_attach_tablet
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The tablet indicator was selected. Call the routine
+!	to select the tablet.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+vsta$$srv_attach_tablet (.wdb [wdb$l_u_pb_id], .wdb);
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

@@ -1,0 +1,357 @@
+ 
+!*** MODULE VSTA$NATIVE_DEF IDENT NATIVE GRAPHICS ***
+! 
+! ++
+!  FACILITY: VAXstation software (VSTA)
+! 
+!  ABSTRACT:
+! 
+!  This module defines the data structures and constants for the native
+!  graphics operations in the context of a VAX workstation running
+!  the associated workstation display software; specifically, an implementation of
+!  the System Display Architecture.
+! 
+!  ENVIRONMENT:
+! 
+!  VAX workstation: 11/750 or 11/730 running VMS with at least one
+!  ONYX graphics subsystem.
+! 
+! --
+!  EQUATED SYMBOLS:
+! 
+!  These are the constants used by calling routines to indicate the form
+!  of arguments such as source, mask, destination, etc.
+! 
+! 
+!  Define the color constants next
+! 
+literal vsta$k_color_black = 0;
+literal vsta$k_color_ht1 = 2;
+literal vsta$k_color_ht2 = 3;
+literal vsta$k_color_ht3 = 4;
+literal vsta$k_color_ht4 = 5;
+literal vsta$k_color_ht5 = 6;
+literal vsta$k_color_ht6 = 7;
+literal vsta$k_color_ht7 = 8;
+literal vsta$k_color_ht8 = 9;
+literal vsta$k_color_ht9 = 10;
+literal vsta$k_color_ht10 = 11;
+literal vsta$k_color_ht11 = 12;
+literal vsta$k_color_ht12 = 13;
+literal vsta$k_color_ht13 = 14;
+literal vsta$k_color_ht14 = 15;
+literal vsta$k_color_ht15 = 16;
+literal vsta$k_color_white = 1;
+! 
+! 
+!  Define the standard (WGA) bitmap structure
+! 
+FIELD sbmd$standard_bmds_FIELDSET =
+  SET
+  sbmd$a_addr = [0,0,32,0],             ! address of bitmap data
+  sbmd$w_size_x = [4,0,16,0],           ! width of bitmap
+  sbmd$w_size_y = [6,0,16,0],           ! height of bitmap
+  sbmd$w_size_z = [8,0,16,0]            ! fatness of bitmap
+  TES;
+literal sbmd$s_standard_bmds = 10;
+MACRO standard_bmds = BLOCK [sbmd$s_standard_bmds,byte] FIELD (sbmd$standard_bmds_FIELDSET) %;
+! 
+!  Define the standard (WGA) subbitmap structure
+! 
+FIELD ssbmd$standard_sbmds_FIELDSET =
+  SET
+  ssbmd$a_addr = [0,0,32,0],            ! address of modified bitmap descriptor
+  ssbmd$w_size_x = [4,0,16,0],          ! width of bitmap
+  ssbmd$w_size_y = [6,0,16,0],          ! height of bitmap
+  ssbmd$w_size_z = [8,0,16,0],          ! fatness of bitmap
+  ssbmd$w_off_x = [10,0,16,0],          ! x offset into bitmap (subrectangle)
+  ssbmd$w_off_y = [12,0,16,0],          ! y offset into bitmap (subrectangle)
+  ssbmd$w_ext_x = [14,0,16,0],          ! width of subrectangle
+  ssbmd$w_ext_y = [16,0,16,0]           ! height of subrectangle
+  TES;
+literal ssbmd$s_standard_sbmds = 18;
+MACRO standard_sbmds = BLOCK [ssbmd$s_standard_sbmds,byte] FIELD (ssbmd$standard_sbmds_FIELDSET) %;
+! 
+!   Define the standard font bitmap strucure (WGA)
+! 
+FIELD sfbmd$standard_fbmds_FIELDSET =
+  SET
+  sfbmd$l_bitmap = [0,0,32,1],
+  sfbmd$w_size_x = [4,0,16,0],
+  sfbmd$w_size_y = [6,0,16,0],
+  sfbmd$w_size_z = [8,0,16,0],
+  sfbmd$w_firstchar = [10,0,16,0],
+  sfbmd$w_lastchar = [12,0,16,0],
+  sfbmd$l_leftarray = [14,0,32,1],
+  sfbmd$w_baseline = [18,0,16,0],
+  sfbmd$w_space = [20,0,16,0],
+  sfbmd$w_width = [22,0,16,0]
+  TES;
+literal sfbmd$s_standard_fbmds = 24;
+MACRO standard_fbmds = BLOCK [sfbmd$s_standard_fbmds,byte] FIELD (sfbmd$standard_fbmds_FIELDSET) %;
+! 
+! 
+!   Define the modified bitmap structure (ACP)
+! 
+FIELD mbmd$modified_bmds_FIELDSET =
+  SET
+  mbmd$a_addr = [0,0,32,0],             ! address of bitmap data
+  mbmd$w_size_x = [4,0,16,0],           ! width of bitmap
+  mbmd$w_size_y = [6,0,16,0],           ! height of bitmap
+  mbmd$w_size_z = [8,0,16,0],           ! fatness of bitmap
+  mbmd$w_locate = [10,0,16,0],          ! Vax or Onyx memory
+  mbmd$l_refcnt = [12,0,32,1],          ! reference count
+  mbmd$l_extra1 = [16,0,32,1],
+  mbmd$l_extra2 = [20,0,32,1]
+  TES;
+literal mbmd$s_modified_bmds = 24;
+MACRO modified_bmds = BLOCK [mbmd$s_modified_bmds,byte] FIELD (mbmd$modified_bmds_FIELDSET) %;
+! 
+!   Define the modified subbitmap structure (ACP)
+! 
+FIELD msbmd$modified_sbmds_FIELDSET =
+  SET
+  msbmd$a_mbmd_addr = [0,0,32,0],       ! address of modified bitmap descriptor
+  msbmd$w_off_x = [4,0,16,0],           ! x offset into bitmap (subrectangle)
+  msbmd$w_off_y = [6,0,16,0],           ! y offset into bitmap (subrectangle)
+  msbmd$w_ext_x = [8,0,16,0],           ! width of subrectangle
+  msbmd$w_ext_y = [10,0,16,0],          ! height of subrectangle
+  msbmd$l_refcnt = [12,0,32,1],
+  msbmd$l_extra1 = [16,0,32,1],
+  msbmd$l_extra2 = [20,0,32,1]
+  TES;
+literal msbmd$s_modified_sbmds = 24;
+MACRO modified_sbmds = BLOCK [msbmd$s_modified_sbmds,byte] FIELD (msbmd$modified_sbmds_FIELDSET) %;
+! 
+!  Define the modified font structure (ACP)
+! 
+FIELD mfbmd$modified_fbmds_FIELDSET =
+  SET
+  mfbmd$a_sfbmd_addr = [0,0,32,0],      ! Address of font data base
+  mfbmd$w_locate = [4,0,16,0],
+  mfbmd$l_refcnt = [6,0,32,1],
+  mfbmd$l_extra1 = [10,0,32,1],
+  mfbmd$l_extra2 = [14,0,32,1]
+  TES;
+literal mfbmd$s_modified_fbmds = 18;
+MACRO modified_fbmds = BLOCK [mfbmd$s_modified_fbmds,byte] FIELD (mfbmd$modified_fbmds_FIELDSET) %;
+! 
+!  
+!   Define the Defined Font Bitmap block
+! 
+FIELD deffb$deffb_block_FIELDSET =
+  SET
+  deffb$l_tf_name_size = [0,0,32,1],
+  deffb$a_tf_name_addr = [4,0,32,0],
+  deffb$l_tf_size = [8,0,32,1],
+  deffb$l_tf_rend = [12,0,32,1],
+  deffb$l_tf_vd = [16,0,32,1]
+  TES;
+literal deffb$s_deffb_block = 20;
+MACRO deffb_block = BLOCK [deffb$s_deffb_block,byte] FIELD (deffb$deffb_block_FIELDSET) %;
+! 
+! 
+!   The order of the following structures should not be changed
+!   because the entries correspond to the parameters of each
+!   routine in native graphics.  Thus a person should be able
+!   to perform a CALLG to a copy area using the next area
+!   as a parameter block
+! 
+FIELD cop$cop_FIELDSET =
+  SET
+  cop$l_arg_num = [0,0,32,1],
+  cop$l_src_type = [4,0,32,1],
+  cop$a_src = [8,0,32,0],
+  cop$l_src_off_x = [12,0,32,1],
+  cop$l_src_off_y = [16,0,32,1],
+  cop$l_msk_type = [20,0,32,1],
+  cop$a_msk = [24,0,32,0],
+  cop$l_dst_type = [28,0,32,1],
+  cop$a_dst = [32,0,32,0],
+  cop$l_dst_off_x = [36,0,32,1],
+  cop$l_dst_off_y = [40,0,32,1],
+  cop$l_map_type = [44,0,32,1],
+  cop$l_map_size = [48,0,32,1],
+  cop$a_map_address = [52,0,32,0],
+  cop$l_rc_count = [56,0,32,1],
+  cop$a_rc_addr = [60,0,32,0],
+  cop$l_efn = [64,0,32,1],
+  cop$l_astadr = [68,0,32,1],
+  cop$l_astprm = [72,0,32,1]
+  TES;
+literal cop$s_cop = 76;
+MACRO cop = BLOCK [cop$s_cop,byte] FIELD (cop$cop_FIELDSET) %;
+literal vsta$k_cop_arg_num = 18;
+FIELD drw$drw_FIELDSET =
+  SET
+  drw$l_arg_num = [0,0,32,1],
+  drw$l_src_type = [4,0,32,1],
+  drw$a_src = [8,0,32,0],
+  drw$l_src_off_x = [12,0,32,1],
+  drw$l_src_off_y = [16,0,32,1],
+  drw$l_msk_type = [20,0,32,1],
+  drw$a_msk = [24,0,32,0],
+  drw$l_dst_type = [28,0,32,1],
+  drw$a_dst = [32,0,32,0],
+  drw$l_dst_off_x = [36,0,32,1],
+  drw$l_dst_off_y = [40,0,32,1],
+  drw$l_map_type = [44,0,32,1],
+  drw$l_map_size = [48,0,32,1],
+  drw$a_map_address = [52,0,32,0],
+  drw$l_path_count = [56,0,32,1],
+  drw$a_path_addr = [60,0,32,0],
+  drw$l_pattern_mode = [64,0,32,1],
+  drw$l_pattern_action = [68,0,32,1],
+  drw$a_pattern_block = [72,0,32,0],
+  drw$a_pattern_state = [76,0,32,0],
+  drw$l_second_src_type = [80,0,32,1],
+  drw$a_second_src = [84,0,32,0],
+  drw$l_sec_src_off_x = [88,0,32,1],
+  drw$l_sec_src_off_y = [92,0,32,1],
+  drw$l_rc_count = [96,0,32,1],
+  drw$a_rc_addr = [100,0,32,0],
+  drw$l_efn = [104,0,32,1],
+  drw$l_astadr = [108,0,32,1],
+  drw$l_astprm = [112,0,32,1]
+  TES;
+literal drw$s_drw = 116;
+MACRO drw = BLOCK [drw$s_drw,byte] FIELD (drw$drw_FIELDSET) %;
+literal vsta$k_drw_arg_num = 28;
+FIELD prn$prn_FIELDSET =
+  SET
+  prn$l_arg_num = [0,0,32,1],
+  prn$l_src_type = [4,0,32,1],
+  prn$a_src = [8,0,32,0],
+  prn$l_msk_type = [12,0,32,1],
+  prn$a_msk = [16,0,32,0],
+  prn$l_dst_type = [20,0,32,1],
+  prn$a_dst = [24,0,32,0],
+  prn$l_dst_off_action = [28,0,32,1],
+  prn$a_dst_offset = [32,0,32,0],
+  prn$l_map_type = [36,0,32,1],
+  prn$l_map_size = [40,0,32,1],
+  prn$a_map_address = [44,0,32,0],
+  prn$l_text_type = [48,0,32,1],
+  prn$a_text_desc = [52,0,32,0],
+  prn$l_control_count = [56,0,32,1],
+  prn$a_control_addr = [60,0,32,0],
+  prn$l_char_pad = [64,0,32,1],
+  prn$l_space_pad = [68,0,32,1],
+  prn$l_rc_count = [72,0,32,1],
+  prn$a_rc_addr = [76,0,32,0],
+  prn$l_efn = [80,0,32,1],
+  prn$l_astadr = [84,0,32,1],
+  prn$l_astprm = [88,0,32,1]
+  TES;
+literal prn$s_prn = 92;
+MACRO prn = BLOCK [prn$s_prn,byte] FIELD (prn$prn_FIELDSET) %;
+literal vsta$k_prn_arg_num = 22;
+FIELD fil$fil_FIELDSET =
+  SET
+  fil$l_arg_num = [0,0,32,1],
+  fil$l_src_type = [4,0,32,1],
+  fil$a_src = [8,0,32,0],
+  fil$l_dst_type = [12,0,32,1],
+  fil$a_dst = [16,0,32,0],
+  fil$l_dst_off_x = [20,0,32,1],
+  fil$l_dst_off_y = [24,0,32,1],
+  fil$l_map_type = [28,0,32,1],
+  fil$l_map_size = [32,0,32,1],
+  fil$a_map_address = [36,0,32,0],
+  fil$l_path_count = [40,0,32,1],
+  fil$a_path_addr = [44,0,32,0],
+  fil$l_rc_count = [48,0,32,1],
+  fil$a_rc_addr = [52,0,32,0],
+  fil$l_efn = [56,0,32,1],
+  fil$l_astadr = [60,0,32,1],
+  fil$l_astprm = [64,0,32,1]
+  TES;
+literal fil$s_fil = 68;
+MACRO fil = BLOCK [fil$s_fil,byte] FIELD (fil$fil_FIELDSET) %;
+literal vsta$k_fil_arg_num = 16;
+FIELD fld$flood_blk_FIELDSET =
+  SET
+  fld$l_arg_num = [0,0,32,1],
+  fld$l_src_type = [4,0,32,1],
+  fld$a_src = [8,0,32,0],
+  fld$l_dst_type = [12,0,32,1],
+  fld$a_dst = [16,0,32,0],
+  fld$l_dst_off_x = [20,0,32,1],
+  fld$l_dst_off_y = [24,0,32,1],
+  fld$l_boundary_map = [28,0,32,1],
+  fld$l_seed_point_x = [32,0,32,1],
+  fld$l_seed_point_y = [36,0,32,1],
+  fld$l_rc_count = [40,0,32,1],
+  fld$a_rc_addr = [44,0,32,0],
+  fld$l_efn = [48,0,32,1],
+  fld$l_astadr = [52,0,32,1],
+  fld$l_astprm = [56,0,32,1]
+  TES;
+literal fld$s_flood_blk = 60;
+MACRO flood_blk = BLOCK [fld$s_flood_blk,byte] FIELD (fld$flood_blk_FIELDSET) %;
+literal vsta$k_fld_arg_num = 14;
+! 
+! 
+!   Define the native graphics qio packet interface.
+! 
+literal ngi$s_arg_blks = 116;
+literal ngi$s_src_dsc = 42;
+literal ngi$s_msk_dsc = 48;
+literal ngi$s_dst_mbmd = 24;
+literal ngi$s_ssr_mbmd = 24;
+literal ngi$s_rc_1 = 8;
+literal ngi$s_pattern_block = 8;
+literal ngi$s_text_desc = 8;
+FIELD ngi$ngi_dsc_FIELDSET =
+  SET
+  ngi$l_opcode = [0,0,32,1],
+  ngi$l_efn = [4,0,32,1],
+  ngi$a_astadr = [8,0,32,0],
+  ngi$l_astprm = [12,0,32,1],
+! 
+!   Make a place to store the necessary parameters for the calls to
+!   each native graphics routines
+! 
+    ngi$w_cop_blk = [16,0,0,1],
+    ngi$w_drw_blk = [16,0,0,1],
+    ngi$w_prn_blk = [16,0,0,1],
+    ngi$w_fil_blk = [16,0,0,1],
+    ngi$w_fld_blk = [16,0,0,1],
+  ngi$r_arg_blks = [16,0,0,0],
+! 
+!  
+!   Now make room for the necessary descriptors of bitmaps and fonts
+!   The source and mask may be font descriptors of the modified form
+! 
+    ngi$w_src_mbmd = [132,0,0,1],
+    ngi$w_src_deffb = [132,0,0,1],
+      ngi$w_src_mfbmd = [132,0,0,1],
+      ngi$w_src_sfbmd = [150,0,0,1],
+    ngi$r_src_fbm = [132,0,0,0],
+  ngi$r_src_dsc = [132,0,0,0],
+    ngi$w_msk_deffb = [174,0,0,1],
+      ngi$l_msk_vdid = [174,0,32,1],
+      ngi$w_msk_vd_xoff = [178,0,16,1],
+      ngi$w_msk_vd_yoff = [180,0,16,1],
+      ngi$w_msk_vd_xext = [182,0,16,1],
+      ngi$w_msk_vd_yext = [184,0,16,1],
+    ngi$r_msk_vd = [174,0,0,0],
+      ngi$w_msk_msbmd = [174,0,0,1],
+      ngi$w_msk_mbmd = [198,0,0,1],
+    ngi$r_msk_sbm = [174,0,0,0],
+      ngi$w_msk_mfbmd = [174,0,0,1],
+      ngi$w_msk_sfbmd = [192,0,0,1],
+    ngi$r_msk_fbm = [174,0,0,0],
+  ngi$r_msk_dsc = [174,0,0,0],
+  ngi$w_dst_mbmd = [222,0,0,1],
+  ngi$w_ssr_mbmd = [246,0,0,1],
+! 
+!   Leave room for one rectangle here
+! 
+  ngi$w_rc_1 = [270,0,0,1],
+  ngi$w_pattern_block = [278,0,0,1],
+  ngi$l_text_desc = [286,0,0,1]
+  TES;
+literal ngi$s_ngi_dsc = 294;
+MACRO ngi_dsc = BLOCK [ngi$s_ngi_dsc,byte] FIELD (ngi$ngi_dsc_FIELDSET) %;
+! 

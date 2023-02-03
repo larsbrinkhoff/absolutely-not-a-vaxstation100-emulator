@@ -1,0 +1,251 @@
+ 
+!*** MODULE vsta$srvdata ***
+! 	Data structures for VSSERVE
+! 
+! +++
+!  Facility:
+! 
+! 	VAX Workstation Human Interface process
+! 
+!  Abstract:
+! 
+! 	This file contains data structure definitions and symbols for
+! 	the VSSERVE component of the VAX Workstation software.
+! 
+!  Environment:
+! 
+! 
+! ---
+! 
+!  Misc. Useful constants
+! 
+literal flag_off = 0;
+literal flag_set = 1;
+literal param$k_hi_vs_color = 9;        !  50% grey
+! 
+!  Width of borders for all windows
+! 
+literal vsta$k_window_border_size = 10;
+literal vsta$k_window_border_color = 3; !  Shows selectability
+!  attribute pretty well.
+literal vsta$k_window_border_color_sel = 15;
+! 
+!  Width of outer black borders of all user objects.
+! 
+literal vsta$k_outer_border_width = 2;
+! 
+!  Height of all headers
+!  Room for 16-pixel high font + 2-pixel horizontal line at bottom
+! 
+literal vsta$k_header_height = 22;
+! 
+!  Width of the "VAXstation utility area"
+! 
+literal vsta$K_util_width = 122;
+! 
+!  Height of footer VD on documents
+!  Room for 16-pixel high font + 2-pixel horizontal line at top
+!  + some space to make it wider (an easier target)
+! 
+literal vsta$K_doc_footer_height = 30;
+! 
+!  Pixels at bottom of screen that can't be pointed to.  Caution:  This number
+!  is chosen such that user can move authorization form under symbol bar
+!  and still successfully select tiny piece of authorization form border
+!  that is visible between symbol bar and bottom of screen.  
+! 
+literal vsta$K_bottom_nopoint = 3;
+! 
+!  Pixels at right side of screen that can't be pointed to
+! 
+literal vsta$K_right_nopoint = 0;
+! 
+!  Pixels at left side of screen that can't be pointed to
+! 
+literal vsta$K_left_nopoint = 0;
+! 
+!  Job reference block data structure
+!  One copy of this is kept for each user process; or H.I. document
+! 
+!  Max number of characters in a job name
+literal vsta$K_max_chars_jobname = 15;
+literal vsta$K_size_x_jobname = 151;
+!  1 + <len needed> because default field starts at 1.
+literal vsta$K_size_y_jobname = 20;
+literal jrb$k_block_length = 67;
+literal jrb$s_job_name = 15;
+FIELD jrb$job_block_FIELDSET =
+  SET
+  jrb$a_flink = [0,0,32,0],
+  jrb$a_blink = [4,0,32,0],
+  jrb$l_pid = [8,0,32,1],               !  Process id for the job
+  jrb$l_jobnum = [12,0,32,1],           !  Which "job number" it is.
+  jrb$a_mtwin = [16,0,32,0],            !  address of main window block
+  jrb$l_mttype = [20,0,32,1],           !  Main terminal type
+  jrb$l_slot = [24,0,32,1],             !  Number of slot stored in (0 if on
+!  terminal screen; else 1 to 12)
+  jrb$l_last_vkb_wdb = [28,0,32,1],     !  Last WDB where keyboard was
+!  attached. Used to put keyboard
+!  back when job is restored to screen.
+  jrb$a_last_vtb_wdb = [32,0,32,0],     !  Last WDB where tablet was attached.
+  jrb$a_wdb_q_hdr_fl = [36,0,32,0],     !  Window queue header
+  jrb$a_wdb_q_hdr_bl = [40,0,32,0],
+  jrb$l_job_name_vd = [44,0,32,1],      !  Vd-id where jobname is
+  jrb$l_job_name_len = [48,0,32,1],     !  # chars in job name
+  jrb$b_job_name = [52,0,0,1]           ! 
+  TES;
+literal jrb$s_job_block = 67;
+MACRO job_block = BLOCK [jrb$s_job_block,byte] FIELD (jrb$job_block_FIELDSET) %;
+! 
+!  Window data block structure
+! 
+!   There is one window list for each job.
+!   Each window block provides information for the display of a window or
+!   a terminal.
+! 
+!  Max number of characters in a window name
+literal vsta$K_max_chars_wname = 200;
+literal wdb$k_block_length = 128;
+! 
+literal wdb$k_wtype_user = 1;
+literal wdb$k_wtype_vt100 = 2;
+literal wdb$k_wtype_4014 = 3;
+literal wdb$k_wtype_vsserve = 4;
+literal wdb$k_wtype_help = 5;           !  The HELP document
+literal wdb$k_wtype_prof = 6;           !  PROFILE document
+literal wdb$k_wtype_notice = 7;         !  NOTICES document
+literal wdb$k_wtype_ts = 8;             !  SETTINGS document
+literal wdb$k_lowest_wtype = 1;
+literal wdb$k_highest_wtype = 8;
+literal wdb$s_indic_string = 6;
+FIELD wdb$window_data_block_FIELDSET =
+  SET
+  wdb$a_flink = [0,0,32,0],             !  Forward link
+  wdb$a_blink = [4,0,32,0],             !  Backward link
+  wdb$a_jrb = [8,0,32,0],               !  Ptr back to owner JRB
+  wdb$w_id = [12,0,16,1],               !  Id for this block
+!  NOTE:  Don't "merely" expand the id field to larger than a
+!  word without also redoing the code in VSSRVFORM that stuffs
+!  the id and other data into a single ast parameter.
+  wdb$l_u_window_id = [14,0,32,1],      !  Id of the user's window
+  wdb$l_u_pb_id = [18,0,32,1],          !  User PB id / VKB-id
+  wdb$l_term_vd_id = [22,0,32,1],       !  VD-id kept for
+!  emulated terminals
+  wdb$l_hi_window_id = [26,0,32,1],     !  Id of the HI's window
+  wdb$l_hi_pb_id = [30,0,32,1],         !  Id of the HI's PB
+  wdb$w_hi_pb_width = [34,0,16,0],      !  Width of the HI's PB
+  wdb$w_hi_pb_height = [36,0,16,0],     !  Height of the HI's PB
+  wdb$l_header_vd_id = [38,0,32,1],     !  VD-id used for the header
+  wdb$l_win_border_vd_id = [42,0,32,1], !  Vd-id used for the
+!  window border
+  wdb$w_name_field_start = [46,0,16,0], !  Where name field starts
+  wdb$w_name_field_width = [48,0,16,0], !  Width of VP name field
+  wdb$w_jobname_field_start = [50,0,16,0], !  Where jobname "field" starts
+  wdb$w_indic_field_start = [52,0,16,0], !  Where indicator field starts
+  wdb$b_hold_on_flag = [54,0,8,0],      !  =1 if HOLD is on
+  wdb$b_tab_on_flag = [55,0,8,0],       !  =1 if TAB is activated
+  wdb$b_kbd_on_flag = [56,0,8,0],       !  =1 if KBD is activated
+  wdb$b_window_type = [57,0,8,0],       !  Which type of window this is
+  wdb$b_indic_len = [58,0,8,0],         !  Length of indic string
+  wdb$b_indic_string = [59,0,0,1],      !  String of indicators
+!  and separators
+  wdb$b_tab_char_idx = [65,0,8,0],      ! 0 or 1
+  wdb$b_kbd_char_idx = [66,0,8,0],      ! 0, 1, or 3
+  wdb$b_hold_char_idx = [67,0,8,0],     ! 0, 1, 3, or 5
+  wdb$a_ter_wdb = [68,0,32,0],          !  adr of terminal's wdb iff
+!  this wdb represents a
+!  settings document
+  wdb$a_name_desc = [72,0,32,0],        !  Address of window name descriptor
+  wdb$a_ts_docblk = [76,0,32,0],        !  if non-0, address of settings
+!  document block
+  wdb$l_u_vp_id = [80,0,32,1],          !  User's viewport id
+  wdb$l_u_vp_x_coor = [84,0,32,1],      !  Coordinates of user's viewport
+  wdb$l_u_vp_y_coor = [88,0,32,1],      !   on the VS
+  wdb$l_u_vp_width = [92,0,32,1],       !  Width of user's viewport
+  wdb$l_u_vp_height = [96,0,32,1],      !  Height
+  wdb$l_hi_vp_id = [100,0,32,1],        !  HI's viewport id
+  wdb$l_hi_vp_x_coor = [104,0,32,1],    !  Coordinates of HI's viewport
+  wdb$l_hi_vp_y_coor = [108,0,32,1],    !   on the VS
+  wdb$l_hi_vp_width = [112,0,32,1],
+  wdb$l_hi_vp_height = [116,0,32,1],
+  wdb$a_vp_help_keyword = [120,0,32,0], !  Address of descriptor to help kwd.
+  wdb$l_win_bezel_vd_id = [124,0,32,1]  !  Vd-id used for the
+!  Window types
+! 
+  TES;
+literal wdb$s_window_data_block = 128;
+MACRO window_data_block = BLOCK [wdb$s_window_data_block,byte] FIELD (wdb$window_data_block_FIELDSET) %;
+FIELD dkb$doc_block_FIELDSET =
+  SET
+  dkb$a_wdb = [0,0,32,0],               !  Address of wdb that displays it
+  dkb$a_hdr_address = [4,0,32,0],       !  Ptr to file header data
+  dkb$a_fab = [8,0,32,0],               !  Address of FAB
+  dkb$w_cur_page = [12,0,16,1],         !  Current page displayed
+  dkb$w_cur_page_type = [14,0,16,1],    !  Type of current page
+!  0=BODY, 1=TOC, 2=INDEX
+  dkb$l_vd_of_body = [16,0,32,1],       !  VD-id of the body
+  dkb$w_body_size_x = [20,0,16,1],      !  X-size of body
+  dkb$w_body_size_y = [22,0,16,1],      !  Y-size of body
+  dkb$l_pb = [24,0,32,1],               !  Pasteboard
+  dkb$w_pb_size_x = [28,0,16,0],        !  X-size of pasteboard
+  dkb$w_pb_size_y = [30,0,16,0],        !  Y-size of pasteboard
+  dkb$l_window_id = [32,0,32,1],        !  Window id
+  dkb$l_vd_footer = [36,0,32,1],        !  VD-id of the footer
+  dkb$w_high_pagenum = [40,0,16,0],     !  Highest page number
+  dkb$w_page_total = [42,0,16,0],       !  Total # of pages (TOC+BODY+IDX)
+  dkb$w_num_pic_blks = [44,0,16,0],     !  Number of picture blocks for this pg
+  dkb$a_pic_blk = [46,0,32,0],          !  Address of picture blocks for this
+!  page, in core. (they're contiguous).
+  dkb$w_num_chk_blks = [50,0,16,0],     !  Number of check-off entry blocks
+  dkb$a_chk_blk = [52,0,32,0],          !  address of checkoff blocks
+  dkb$w_num_edit_blks = [56,0,16,0],    !  Number of editable entry blocks
+  dkb$a_edit_blk = [58,0,32,0]          !  Address of editable field blocks
+  TES;
+literal dkb$s_doc_block = 62;
+MACRO doc_block = BLOCK [dkb$s_doc_block,byte] FIELD (dkb$doc_block_FIELDSET) %;
+! 
+!  HI menu block
+! 
+FIELD hmb$hi_menu_block_FIELDSET =
+  SET
+  hmb$l_pb = [0,0,32,1],                !  Pasteboard id
+  hmb$l_vd = [4,0,32,1],                !  VD-id
+  hmb$w_width = [8,0,16,0],             !  X size
+  hmb$w_height = [10,0,16,0],           !  Y size
+  hmb$w_def_x = [12,0,16,0],            !  Default X
+  hmb$w_def_y = [14,0,16,0]             !  Default Y
+  TES;
+literal hmb$s_hi_menu_block = 16;
+MACRO hi_menu_block = BLOCK [hmb$s_hi_menu_block,byte] FIELD (hmb$hi_menu_block_FIELDSET) %;
+! 
+!  Characters used for symbols
+! 
+literal ch_sym$tab_off = 1;
+literal ch_width$tab_off = 34;
+literal ch_sym$tab_on = 2;
+literal ch_width$tab_on = 34;
+literal ch_sym$kbd_off = 3;
+literal ch_width$kbd_off = 35;
+literal ch_sym$kbd_on = 4;
+literal ch_width$kbd_on = 35;
+literal ch_sym$hold_off = 5;
+literal ch_width$hold_off = 40;
+literal ch_sym$hold_on = 6;
+literal ch_width$hold_on = 40;
+literal ch_sym$check_off = 7;
+literal ch_sym$check_on = 8;
+literal ch_sym$black_line = 9;
+literal ch_sym$white_line = 10;
+! 
+!  Editable field symbols
+! 
+! 
+!  Flags for vsta$$edit_one
+! 
+literal vsta$K_edit_center = 2;         !  Field format is CENTERed
+! 
+!  Delimiter types returned
+! 
+literal vsta$K_edit_delim_end = 0;      !  User typed the delimiter
+literal vsta$K_edit_delim_yank = 1;     !  User selected another fld
+literal vsta$K_edit_delim_timeout = 2;  !  Timed out.

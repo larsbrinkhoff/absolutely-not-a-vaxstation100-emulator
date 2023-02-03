@@ -1,0 +1,351 @@
+module MICRO (	! VAX/VMS Onyx display device driver microcode loader
+		main = START,
+		ident = 'V01-000'
+		) =
+begin
+
+!++
+! Facility:
+!
+! Abstract:
+!
+! Environment:
+!
+!--
+
+!
+! Psect definitions
+!
+
+!
+! Include files:
+!
+    library 'SYS$LIBRARY:LIB.L32';	! System macro library
+    require 'DEFINS:VBDEF.R32';		! Onyx specific definitions
+!
+! Table of contents:
+!
+forward routine
+
+    START: novalue,
+    GET_CHECKSUM: novalue,
+    GET_ADDRESS: novalue,
+    LOAD_CODE: novalue,
+    HEX;
+!
+! Macros:
+!
+macro
+
+    PROMPT(STR) =
+	READ_RAB[RAB$L_PBF] = uplit(byte(%x'd',%x'a',STR,': '));
+	READ_RAB[RAB$B_PSZ] = %charcount(STR)+4 %;
+!
+! Equated symbols:
+!
+
+!
+! Own storage:
+!
+own
+
+    VB_CHAN,
+    VB_IOSB:
+	vector[4,word],
+    ADDRESS,
+    MIN_ADDRESS:
+	initial(-1),
+    MAX_ADDRESS:
+	initial(0),
+    BYTE_COUNT,
+    PTR,
+    MICROCODE:
+	vector[16*1024,byte],
+    OBJECT:
+	block[6,byte]
+	initial(word(VSE$K_VAXMEM^8),long(0)),
+    DESTINATION:
+	block[6,byte]
+	initial(word(VSE$K_DISPMEM^8),long(0)),
+    TEST:
+	vector[3,word]
+	initial(word(VSE$K_DISPMEM^8),long(0)),
+    TT_BUFF:
+	vector[132,byte],
+    READ_FAB:
+	$FAB(
+	    FNM='SYS$INPUT:'),
+    READ_RAB:
+	$RAB(
+	    FAB=READ_FAB,
+	    UBF=TT_BUFF,
+	    USZ=132,
+	    ROP=PMT),
+    WRITE_FAB:
+	$FAB(
+	    FNM='SYS$OUTPUT:',
+	    RAT=CR),
+    WRITE_RAB:
+	$RAB(
+	    FAB=WRITE_FAB,
+	    RBF=TT_BUFF,
+	    RSZ=132),
+    MC_BUFF:
+	vector[132,byte],
+    MCODE_FAB:
+	$FAB(
+	    DNM='ONYX.ABS'),
+    MCODE_RAB:
+	$RAB(
+	    FAB=MCODE_FAB,
+	    UBF=MC_BUFF,
+	    USZ=132);
+!
+! External references:
+!
+
+routine START : novalue =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	STATUS;
+
+    !
+    ! Get the Onyx device channel
+    !
+    if not (STATUS = $ASSIGN(CHAN=VB_CHAN,DEVNAM=$DESCRIPTOR('VBA0:')))
+	then $EXIT(CODE=.STATUS);
+    !
+    ! Open the terminal for read and write
+    !
+    if not (STATUS = $OPEN(FAB=READ_FAB))
+	then $EXIT(CODE=.STATUS);
+    $CONNECT(RAB=READ_RAB);
+    if not (STATUS = $OPEN(FAB=WRITE_FAB))
+	then $EXIT(CODE=.STATUS);
+    $CONNECT(RAB=WRITE_RAB);
+    !
+    ! Get the microcode file name
+    !
+    PROMPT('Enter microcode file name');
+    $GET(RAB=READ_RAB);
+    if .STATUS eql RMS$_EOF
+	then $EXIT(CODE=SS$_NORMAL);
+    MCODE_FAB[FAB$L_FNA] = TT_BUFF;
+    MCODE_FAB[FAB$B_FNS] = .READ_RAB[RAB$W_RSZ];
+    !
+    ! Open the microcode file
+    !
+    if not (STATUS = $OPEN(FAB=MCODE_FAB))
+	then $EXIT(CODE=.STATUS);
+    $CONNECT(RAB=MCODE_RAB);
+    !
+    ! Read the file
+    !
+    while (STATUS = $GET(RAB=MCODE_RAB))
+	do begin
+	    if .MCODE_RAB[RAB$W_RSZ] neq 0
+		then begin
+		    GET_CHECKSUM();
+		    if .MC_BUFF[0] neq %c'S'
+			then $EXIT(CODE=SS$_BADPARAM);
+		    selectone .MC_BUFF[1] of
+			set
+			[%c'0'] : ;
+			[%c'1',%c'2'] :
+			    begin
+			    GET_ADDRESS();
+			    LOAD_CODE();
+			    end; ! [1,2]
+			[%c'9'] : exitloop;
+			[otherwise] : $EXIT(CODE=SS$_BADPARAM);
+			tes
+		    end ! if .MCODE_RAB[RAB$W_RSZ] then
+	    end; ! while $GET neq RMS$_EOF do
+    if not .STATUS then $EXIT(CODE=.STATUS);
+    OBJECT[P1$A_MOV_OBJ] = MICROCODE+.MIN_ADDRESS;
+    DESTINATION[P2$A_MOV_DST] = .MIN_ADDRESS;
+    if not (STATUS = $QIOW(
+			EFN=1,
+			CHAN=.VB_CHAN,
+			IOSB=VB_IOSB,
+			FUNC=IO$_RESET,
+			P1=0))
+	then $EXIT(CODE=.STATUS);
+!    if .VB_IOSB[0] neq 1
+!	then $EXIT(CODE=.VB_IOSB[0]);
+    if not (STATUS = $QIOW(
+			EFN=1,
+			CHAN=.VB_CHAN,
+			IOSB=VB_IOSB,
+			FUNC=IO$_MOVE,
+			P1=OBJECT,
+			P2=DESTINATION,
+			P3=(.MAX_ADDRESS-.MIN_ADDRESS+1)))
+	then $EXIT(CODE=.STATUS);
+!    if .VB_IOSB[0] neq 1
+!	then $EXIT(CODE=.VB_IOSB[0]);
+    if not (STATUS = $QIOW(
+			EFN=1,
+			CHAN=.VB_CHAN,
+			IOSB=VB_IOSB,
+			FUNC=IO$_STARTM,
+			P1=%x'1000'))
+	then $EXIT(CODE=.STATUS);
+!    if .VB_IOSB[0] neq 1
+!	then $EXIT(CODE=.VB_IOSB[0]);
+    $EXIT(CODE=SS$_NORMAL);
+
+    end; ! routine START
+
+routine GET_CHECKSUM : novalue =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	CHECKSUM:
+	    byte signed,
+	COUNT;
+
+	CHECKSUM = 0;
+	COUNT = HEX(.MC_BUFF[2])*16+HEX(.MC_BUFF[3]);
+	BYTE_COUNT = .COUNT-1;
+	incr INDX from 0 to .COUNT do
+	    CHECKSUM =
+		.CHECKSUM+HEX(.MC_BUFF[2+.INDX*2])*16+HEX(.MC_BUFF[3+.INDX*2]);
+	if .CHECKSUM neq -1 then $EXIT(CODE=SS$_BADPARAM);
+
+    end; ! routine GET_CHECKSUM
+
+routine GET_ADDRESS : novalue =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	COUNT;
+
+    ADDRESS = 0;
+    if .MC_BUFF[1] eql %c'1'
+	then begin
+	    COUNT = 4;
+	    PTR = 8;
+	    BYTE_COUNT = .BYTE_COUNT-2
+	    end ! if .MC_BUFF[1] eql %c'1' then
+	else begin
+	    COUNT = 6;
+	    PTR = 10;
+	    BYTE_COUNT = .BYTE_COUNT-3
+	    end; ! if .MC_BUFF[1] eql 1 else 
+    incr I from 4 to .COUNT+3 do
+	ADDRESS = .ADDRESS*16+HEX(.MC_BUFF[.I]);
+    MAX_ADDRESS = maxu(.MAX_ADDRESS,.ADDRESS+.BYTE_COUNT-1);
+    MIN_ADDRESS = minu(.MIN_ADDRESS,.ADDRESS);
+
+    end; ! routine GET_ADDRESS
+
+routine LOAD_CODE : novalue =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	BYTE_VALUE,
+	STATUS;
+
+    incr I from 0 to .BYTE_COUNT-1 do
+	begin
+	BYTE_VALUE = HEX(.MC_BUFF[.PTR])*16+HEX(.MC_BUFF[.PTR+1]);
+	PTR = .PTR+2;
+	MICROCODE[.ADDRESS xor 1] = .BYTE_VALUE;
+	ADDRESS = .ADDRESS+1
+	end; ! incr I from 0 to .BYTE_COUNT-1 do
+
+    end; ! routine LOAD_CODE
+
+routine HEX(CHAR) =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+	if .CHAR geq %c'A'
+	    then return .CHAR-%c'A'+10
+	    else return .CHAR-%c'0';
+
+    end; ! routine HEX
+
+end ! module MICRO
+eludom

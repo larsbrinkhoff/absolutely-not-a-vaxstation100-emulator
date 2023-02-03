@@ -1,0 +1,306 @@
+!  VSGISF.REQ - Require file for VaxStation GIdis State Fetcher
+!
+!
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!	The state fetcher contains data structure definitions that allows
+!	the various modules of VAXstation GIDIS to access state
+!	information that is local to a Virtual Display.  This is where
+!	the association of data name to memory location is defined.
+!
+! Environment:
+!	All of the state blocks defined here use the STATE BLOCK structure
+!	type defined in VSGISB.
+!
+!--
+
+REQUIRE 'vsta$source:vsgisb';
+
+!	Literals for constant values for some of the gidis state variables
+!	that are acessed by more than one module.
+
+LITERAL !	Valid values for shading_mode
+    GID$$AS_not_shading = 0,
+    GID$$AS_shade_to_boom = 1,
+    GID$$AS_shade_to_mast = 2,
+    GID$$AS_shade_to_point = 3,
+    GID$$AS_number_of_shading_modes = 4;
+
+LITERAL	!	Valid values for pathing_mode
+    GID$$PA_no_path_in_progress = 0,
+    GID$$PA_linear_path = 1,
+    GID$$PA_shaded_path = 2,
+    GID$$PA_text_path = 3,
+    GID$$PA_number_of_pathing_modes = 4;
+
+LITERAL !	Bit values for the flag word in a path segment entry
+    path_relative_flag = 1,		! Otherwise absolute
+    path_move_flag = 2,			! Otherwise draw
+    path_curved_flag = 4,		! Otherwise straight
+    path_start_closed_flag = 8,		! Start closed figure indicator
+    path_end_closed_figure_flag = 16,	! End closed figure
+    path_supress_last_pixel_flag = 32;	! Supress printing of last pixel
+
+LITERAL		! Alphabet memory manager module
+    GID$K_number_alphabets = 16;	! Number of alphabets, including 0.
+
+LITERAL		! Text control string opcodes
+    pt_out_opcode = 0,
+    pt_adjust_opcode = 3;
+
+LITERAL		! Literals for alphabet types
+    GID$K_user_defined = 0,
+    GID$K_named = 1;
+
+	       !-------------------------------------------!
+	       !     State block for Gidis interpreter     !
+	       !-------------------------------------------!
+
+!	Describe the life cycle of each of the dynamic buffers here.
+
+    COMPILETIME
+	state_file_size = 0;		!This will grow as we define fields
+
+    FIELD
+	state_instance_fields = 
+	    SET
+! Que entry and identification for this state instance
+! queue links MUST BE FIRST so that INSQUE instructions will work
+	    queue_links		= longword_vector( 2),
+	    display_id		= longword_scalar,
+! Addresses and lengths of dynamic entities:  These may need to be deallocated
+! when state is disposed. (check the length).  Sometimes there are deallocated
+! by completion routines.
+	    pt_stuff		= longword_scalar,	! print text parameters
+	    pt_len		= longword_scalar,	! print text length
+	    ca_stuff		= longword_scalar,	! copy area parameters
+	    ca_len		= longword_scalar,	! copy area length
+	    dc_stuff		= longword_scalar,	! draw curve parameters
+	    dc_len		= longword_scalar,	! draw curve length
+	    fl_stuff		= longword_scalar,	! fill area parameters
+	    fl_len		= longword_scalar,	! fill area length
+	    fd_stuff		= longword_scalar,	! flood area parameters
+	    fd_len		= longword_scalar,	! flood area length
+	    pattern_state	= longword_scalar,	! Pattern state, len=4
+! report buffer pointers and state.  See VSGIRM for details
+	    report_buffer_address = longword_scalar,
+	    used_report_offset	= word_scalar,
+! Opcode Decoder state
+	    process_me_next	= longword_scalar,
+	    param_list		= word_vector( 20),
+	    this_op_args	= byte_scalar,
+	    arg_count		= byte_scalar,
+	    this_op_code	= byte_scalar,
+	    this_flags_byte	= byte_scalar,
+! Display characteristics
+	    number_of_colors	= byte_scalar,
+! Writing mode information
+	    writing_mode	= byte_scalar,	 ! User's writing mode
+	    number_colors	= byte_scalar,	 ! User's number of colors
+	    s_writing_mode	= byte_scalar,	 ! Saved writing mode
+	    foreground_color	= byte_scalar,	 ! User's color
+	    s_foreground_color	= byte_scalar,	 ! User's color, saved
+	    background_color	= byte_scalar,	 ! User's color
+	    s_background_color	= byte_scalar,	 ! User's color, saved
+	    line_texture	= word_scalar,	 ! User's pattern
+	    s_line_texture	= word_scalar,	 ! User's pattern
+	    line_texture_length	= word_scalar,	 ! User's length
+	    s_line_texture_length	= word_scalar,	 ! User's length
+	    line_texture_mult	= word_scalar,	 ! User's multiplier
+	    s_line_texture_mult	= word_scalar,	 ! User's multiplier
+    ! These are calculated from the above
+	    map_type_for_dc	= byte_scalar,
+	    map_for_dc		= longword_scalar,! Draw curve map
+	    pattern_mode	= byte_scalar,
+	    source1		= byte_scalar,	 ! Draw curve source1
+	    source2		= byte_scalar,	 ! Draw curve source2
+	    char_background	= byte_scalar,	 ! text backgrounds
+	    char_foreground	= byte_scalar,	 ! text foregrounds
+	    map_type_for_ca	= byte_scalar,
+	    map_for_ca		= longword_scalar,! Copy area map
+	    writing_pattern	= word_scalar,	 ! Draw curve pattern
+
+	    shading_mode	= byte_scalar,
+	    shading_direction	= byte_scalar,
+	    shading_x		= word_scalar,
+	    shading_y		= word_scalar,
+!	Save shading mode state
+	    s_shading_mode	= byte_scalar,
+	    s_shading_x		= word_scalar,
+	    s_shading_y		= word_scalar,
+
+	    shading_alphabet	= word_scalar,
+	    shading_char	= word_scalar,
+	    shading_width	= word_scalar,
+	    shading_height	= word_scalar,
+	    shading_needs_updating = byte_scalar,
+	    x_pixel_size	= word_scalar,
+	    y_pixel_size	= word_scalar,
+	    s_x_pixel_size	= word_scalar,
+	    s_y_pixel_size	= word_scalar,
+! position processes state
+	    x_hard_pos		= word_scalar,
+	    y_hard_pos		= word_scalar,
+	    x_soft_pos		= longword_scalar,
+	    y_soft_pos		= longword_scalar,
+	    position_x_stack	= longword_vector( 16),
+	    position_y_stack	= longword_vector( 16),
+	    top_of_position_stack=byte_scalar,
+	    position_x_registers= longword_vector( 4),
+	    position_y_registers= longword_vector( 4),
+! coordx_state
+	    physical_extent	= longword_scalar,
+	    logical_extent	= longword_scalar,
+! Pathed processes state
+!    The pathing_mode is set to one of the pathing mode literals to
+!    determine the kind of path in progress.
+!    The pathing submode is not used by VSGIPA, but the inferior modules
+!    to VSGIPA, that is VSGILP, VSGISP, and VSGICC may store state there.
+!    The path is a vector of 3 word endpoints in the proper format for
+!    the native graphics draw curve routine. Path_count is the number
+!    of points in that path.
+!    print_last_pixel is 32 (the path flag word bit) if the pixel size
+!    set in set_pixel_size is not 1 by 1.
+!    The cell_buffer is where the text path characters are stored.
+!    The cell_cliplist is a list of clipping rectangles, one for each
+!    character in the cell buffer.  path is used for the text control
+!    string, and the number of control words is kept in cell_control_words.
+	    pathing_mode	= byte_scalar,
+	    pathing_submode	= byte_scalar,
+	    path_buffer_size	= longword_scalar,
+	    path_count		= word_scalar,
+	    print_last_pixel	= word_scalar,
+	    first_few_x		= word_vector( 3),
+	    first_few_y		= word_vector( 3),
+	    first_counter	= word_scalar,
+	!	The current user-selected clipping rectangle
+		clipping_x	= word_scalar,
+		clipping_y	= word_scalar,
+		clipping_width	= word_scalar,
+		clipping_height	= word_scalar,
+! The limits imposed on the range of user's clipping rectangle
+	    left_clipping_limit = word_scalar,
+	    top_clipping_limit = word_scalar,
+	    right_clipping_limit = word_scalar,
+	    bottom_clipping_limit = word_scalar,
+	    tx_alphabet		= word_scalar,	! Currently selected alphabet
+	    txs_alphabet	= word_scalar,	! Saved state alphabet
+	    tx_need_new_font	= word_scalar,	! Flag is true when below needs
+						! to be updated
+	    tx_font_address	= longword_scalar,! Address of current alphabet
+	    tx_font_instance	= longword_scalar,! Current alphabet's
+						! instance block
+	    tx_rendition	= word_scalar,	! Rendition selection
+	    txs_rendition	= word_scalar,	! Rendition selection
+	    tx_X_cursor_movement= word_scalar,	! Soft distance to move cursor
+	    tx_Y_cursor_movement= word_scalar,	! after each char. (X and Y)
+	    txs_X_cursor_movement= word_scalar,	! Soft distance to move cursor
+	    txs_Y_cursor_movement= word_scalar,	! after each char. (X and Y)
+	    tx_w_soft_disp	= word_scalar,	! space that is used
+	    tx_h_soft_disp	= word_scalar,	! height and width in Gidis
+	    txs_w_soft_disp	= word_scalar,	! space that is used
+	    txs_h_soft_disp	= word_scalar,	! height and width in Gidis
+	    tx_w_hard_disp	= word_scalar,	! space that is used
+	    tx_h_hard_disp	= word_scalar,	! height and width in pixels
+	    tx_w_hard_unit	= word_scalar,	! size that a character 
+	    tx_h_hard_unit	= word_scalar,	! occupies, in pixels
+	    txs_w_hard_unit	= word_scalar,	! size that a character 
+	    txs_h_hard_unit	= word_scalar,	! occupies, in pixels
+	    pt_control_count	= longword_scalar,
+	    pt_clip_list	= longword_scalar,! Address of display size lst
+	    pt_control_string	= longword_scalar,! Address of control string
+	    pt_last_control_opcode = word_scalar, ! Used in move_to & add_char
+	    pt_inter_character_pad = longword_scalar,
+	    pt_x_last_pos	= word_scalar,	! control string construction
+	    pt_y_last_pos	= word_scalar,
+	    pt_max_width	= word_scalar,	! Max char width in d-c command
+	    area_texture_type	= word_scalar,	! Constant or halftone
+	    area_texture_descriptor = what_follows,
+		at_bitmap_address = longword_scalar,!Address of at_bitmap_space
+		at_width	= word_scalar,	! Always exactly 16 (WGA limit)
+		at_height	= word_scalar,	! Always exactly 16 (WGA limit)
+		at_depth	= word_scalar,	! Always 1
+		at_locate	= word_scalar,	! vsta$k_vaxmem: VAX memory
+		at_desc_reserved= longword_vector( 3),	! Required empty space
+	    at_bitmap_space	= what_follows,
+		at_bm_sv	= word_vector( 16),	! Area texture bitmap
+	    s_area_texture_type	= word_scalar,	! Constant or halftone
+	    s_area_texture_descriptor = what_follows,
+		s_at_bitmap_address = longword_scalar,
+		s_at_width	= word_scalar,	! Always exactly 16 (WGA limit)
+		s_at_height	= word_scalar,	! Always exactly 16 (WGA limit)
+		s_at_depth	= word_scalar,	! Always 1
+		s_at_locate	= word_scalar,	! vsta$k_vaxmem: VAX memory
+		s_at_desc_reserved= longword_vector( 3),! Required empty space
+	    s_at_bitmap_space	= what_follows,
+		s_at_bm_sv	= word_vector( 16),	! Area texture bitmap
+	    alph_addresses = longword_vector( GID$K_number_alphabets),
+	    alph_namlengs = word_vector( GID$K_number_alphabets),
+	    alph_types = byte_vector( GID$K_number_alphabets),
+	    tx_font_header_address
+				= longword_scalar,
+						! header for getting widths
+						! (should be earlier but
+						! temporarily added here to
+						! avoid massive recalculation
+	    tx_font_location	= longword_scalar
+						! vsta$k_vaxmem or disp
+	    TES;
+
+LITERAL sf_table_size = state_file_size;
+
+UNDECLARE state_file_size;
+
+		 !---------------------------------------!
+		 !       State block for dc_stuff        !
+		 !---------------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+!	This block contains any data that is part of draw_curve and is passed
+!	by reference.  Because draw_curve is asynchronous, this must be kept
+!	seperate from other state data.  A new buffer of this stuff is
+!	allocated each time draw_curve is called.  The draw_curve completion
+!	routine deallocates this buffer after the operation is complete.
+!
+
+    FIELD draw_curve_fields =
+	SET
+	dc_block_length		= longword_scalar, ! Length for free_vm of this
+	dc_useful_path		= byte_scalar,	! True only if path has some
+						! drawing in it.
+word_align	dc_rect_mask		= what_follows,	  ! Mask block
+		    dc_pixel_width	= word_scalar,
+		    dc_pixel_height	= word_scalar,
+word_align	dc_map			= longword_scalar, ! Write map data
+word_align	dc_pattern_block	= word_vector( 3),
+!	address of a pattern state block to deallocate, if non-zero
+word_align	dc_clip_list		= what_follows,	  ! The clipping region
+		    dc_clip_x		= word_scalar,
+		    dc_clip_y		= word_scalar,
+		    dc_clip_width	= word_scalar,
+		    dc_clip_height	= word_scalar,
+word_align	dc_path			= what_follows_word_vector
+	TES;
+
+    LITERAL dc_table_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+!	This literal will be multiply defined if anyone tries to link modules
+!	that do not agree on the state table sizes.
+
+MACRO
+    library_file_crock =
+    EXTERNAL
+	GID$$state_file : REF state_instance FIELD( state_instance_fields);
+    GLOBAL LITERAL GID$K_table_size_checksum = 
+	(sf_table_size + dc_table_size^4);%,
+
+    sf = GID$$state_file%;
+
+!	End of VSGISF.REQ

@@ -1,0 +1,1628 @@
+%title 'VS$VSS_VS  --  VAX Station Virtual Screen services'
+module VS$VSS_VS ( 			! Virtual Screen VSS routines
+		ident = '1-001',	! Version
+		addressing_mode (external = general, nonexternal=general)
+		 ) =
+begin
+
+!++
+! FACILITY:
+!	Workstation Virtual Screen Services
+!
+! ABSTRACT:
+!		This  module creates, maintains and deletes Virtual
+!		Screens,  and  allows  the  creation, maintainance,
+!		movement  and  deletion  of  Viewports and Physical
+!		Screens on each of them.
+!
+! ENVIRONMENT:
+!	Workstation SDAACP routines
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+library	'SYS$LIBRARY:STARLET';		! SS,RMS, etc. symbols
+library 'vsta$library:libmacros';	! symbols like "$base"
+library 'vsta$library:vsvdspb';		! symbols like "rectangle_block"
+library 'vsta$library:VSVSSVS';		! VAX Station data structures.
+!
+! PSECTS
+!
+$vsta_psect;
+!
+! OWN storage for this module
+!
+own
+	VSS$_VS_QUEUE_HEADER: vector[2,long]	! Header for list of VS's.
+	initial(rep 2 of (VSS$_VS_QUEUE_HEADER[0])); !Null list for now.
+
+literal
+	TRUE = 1,	! Make Boolean comparisions easier.
+	FALSE = 0;
+
+compiletime
+	INCLUDE_FULL_SDA = 0;
+
+
+forward routine				! Routines defined in this module
+
+	consolidate_segment,		! Consolidate a vp segment.
+	consolid8_wrt_rectangle,	! consolidate with respect to rectangle
+	remove_rectangle_from_segment,	! remove rectangle during consolidation
+!
+!
+! GLOBAL ROUTINES:
+!
+VS$$VSS_CREATE_VS,
+VS$$VSS_DELETE_VS,
+	VS$$VSS_GET_VS_CHAR,
+	VS$$VSS_SET_VS_CHAR,
+		VS$$VSS_ADD_REC_TO_VS,
+		VS$$VSS_REM_REC_FROM_VS,
+		VS$$VSS_DISPLAY_VD_IN_VS,
+
+! PRIVATE ROUTINES:
+
+VS_POINTER,			! For internal use only.
+VS_VP_POINTER,			! For internal use only.
+VS_PS_POINTER,			! For internal use only.
+REM_SEG_VIS_R,	! For internal use only.
+ADD_SEG_VIS_R,	! For internal use only.  Add rectangles to vp segments.
+INSERT_SEG_VIS_R;! For internal use only. Insert vp rectangles.
+
+!
+! EXTERNAL REFERENCES:
+!
+! Error codes:	
+
+external
+	VSTA$_VSNOTCRE,				! Can't create VS
+	VSTA$_NOSUCHVS,				! Can't find VS
+	VSTA$_VSNOTDEL,				! Can't delete VS
+	VSTA$_NOSUCHVSVP,			! No such VS_VP block (severe!)
+	VSTA$_NOSUCHVSPS,			! No such VS_PS block (severe!)
+	VSTA$_VDNOTDISPVS,			! Could not display VD in VS
+
+! Other constants:
+	vs$gw_vbchan: word,	! Channel to hardware VAXstation device.
+	VSTA$A_FRAME_BUFFER: VECTOR [0,LONG];
+
+external routine
+		VSTA$$ERROR,			! Error reporting.
+		VS$$ACP_GET_VM,			! ACP memory allocation
+		VS$$ACP_FREE_VM,		! ACP memory de-allocation
+		VS$$VDS_VREC_INTERSECT,		! Find intersections
+		VS$$VDS_GET_SUB_RECT,		! Return fragments
+		VS$$VDS_GET_WINDOW_CHAR,	! Get size info for VP.
+		VS$$VDS_VP_GONE,		! VDS side window-vp unmapping.
+		VS$$VDS_GET_PB_CHAR,		! Get color info.
+		VS$$VDS_REDISPLAY_VD,		! Put it back on the screen.
+		VS$$VDS_DISPLAY_VD_ON_TUBE,	! 
+		VSTA$$DRIVE_BACKGROUND,		! Paints background for us.
+
+! VP routines now found in VSVSSVP.B32, module is VS$VSS_VP.
+
+VS$$VSS_CREATE_VP,
+VS$$VSS_DELETE_VP,
+	VS$$VSS_GET_VP_CHAR,
+	VS$$VSS_SET_VP_CHAR,
+		VS$$VSS_POP_VP_TO_TOP_OF_VS,
+		VS$$VSS_MOVE_VP_IN_VS,
+			VS$$VSS_DISPLAY_VD_IN_VP,
+VP_POINTER,			! For internal use only.
+VP_BACKGROUND,			! Cope with the VP background problem.
+PERFORM_VP_OCCLUSION,		! Updates VP segment lists. In progress.
+INSERT_VP_VIS_SEG,		! Put new segments on VP's list.
+REBUILD_VP,			! Put the Rectangles back into a VP.
+
+! PS routines now found in VSVSSPS.B32, module is VS$VSS_PS.
+
+VS$$VSS_CREATE_PS,
+VS$$VSS_DELETE_PS,			! no screen update.
+	VS$$VSS_GET_PS_CHAR,
+	VS$$VSS_SET_PS_CHAR,
+		VS$$VSS_DISPLAY_PS,
+		VS$$VSS_CLEAR_PS, 
+		VS$$VSS_MOVE_PS_IN_VS,
+			VS$$VSS_DISPLAY_VD_IN_PS,
+FIND_INTERSECT,		! Insulate VSS from VDS argument passing.
+PS_POINTER;
+
+builtin					! MACRO instructions
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+
+routine consolidate_segment
+!++
+! Functional description:
+!
+!	Consolidate a viewport visible segment.  This means compare
+!	all rectangles of displays in this segment.  Any adjacent ones
+!	belonging to the same display which when joined form a rectangle
+!	are.
+!
+! Formal parameters:
+ (
+	segment : ref vs_vp_vis_seg_block,
+					! which segment to consolidate
+	vd_id				! which vd's rectangles to consolidate
+ ) =
+!
+! Side effects:
+!
+!	Memory is released for one of two display rectangles when they are
+!	joined.
+!
+!--
+	begin
+
+	local
+
+	    rectangle : ref vis_r_block;
+!
+! Get address of first rectangle in chain.
+!
+	rectangle = .segment[vss$a_vs_vp_vis_seg_r_q_fl];
+!
+! Loop through all rectangles in the segment, attempting to consolidate
+! the rectangle with some other within the segment.
+!
+	until rectangle[vss$a_vis_r_fl] eql
+	    segment[vss$a_vs_vp_vis_seg_r_q_fl] do
+
+	begin
+!
+! Only try consolidating if this rectangle is for the specified display.
+!
+	if .rectangle[vss$l_vis_r_vd_id] neq .vd_id
+!
+! Rectangle was for different vd, so advance to next.
+!
+	then rectangle = .rectangle[VSS$a_VIS_R_FL]
+!
+! Try to consolidate with respect to this rectangle.
+!
+	else
+	    if consolid8_wrt_rectangle (
+		segment[$base],
+		rectangle[$base],
+		.vd_id)
+!
+! If consolidation occurred, the very rectangle we were looking at may
+! have been thrown away, so we are forced to restart the scan.  This is not
+! to mention the fact that if something got consolidated, something else
+! might be able to be consolidated now too.
+!
+	    then rectangle = .segment[vss$a_vs_vp_vis_seg_r_q_fl]
+!
+! If no consolidation occurred with respect to this rectangle, then the
+! rectangle still exists, so we can safely advance to the next.
+!
+	    else rectangle = .rectangle[VSS$a_VIS_R_FL]
+!
+! Go back to beginning of loop to see if we're done.
+!
+	end;
+
+	ss$_normal
+
+	end;
+
+routine consolid8_wrt_rectangle
+!++
+! Functional description:
+!
+!	Consolidate segment with respect to a given rectangle.
+!
+! Formal parameters:
+ (
+	segment : ref vs_vp_vis_seg_block,
+	rectangle : ref vis_r_block,
+	vd_id
+ ) =
+!
+! Return value:
+!
+!	1 if consolidation occurred, 0 if not.
+!
+!--
+	begin
+
+    LOCAL
+	status,
+	srec: REF vis_r_block;
+!
+! Loop through all the rectangles of this segment.
+!
+	srec = .segment[vss$a_vs_vp_vis_seg_r_q_fl];
+	WHILE srec[$base] NEQ segment[vss$a_vs_vp_vis_seg_r_q_fl] DO
+	  BEGIN
+!
+! To avoid some bounds checking, make sure these aren't the same visible
+! rectangle.
+!
+	    IF srec[$base] NEQ rectangle[$base] THEN
+!
+! A rectangle is only a candidate for consolidation if it has a matching
+! virtual display id.
+!
+	    if .srec[VSS$l_VIS_R_VD_ID] eql .vd_id then
+	      BEGIN
+!
+! Check to the left of the arbitrary visible rectangle
+!
+		IF (.rectangle[vss$l_vis_r_x_origin] +
+			.rectangle[vss$l_vis_r_length]) EQL
+		    .srec[vss$l_vis_r_x_origin] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.srec[vss$l_vis_r_y_origin] EQL
+				.rectangle[vss$l_vis_r_y_origin]) AND
+		     (.srec[vss$l_vis_r_height] EQL
+				.rectangle[vss$l_vis_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      srec[vss$l_vis_r_x_origin] =
+				.rectangle[vss$l_vis_r_x_origin];
+		      srec[vss$l_vis_r_length] =
+				.rectangle[vss$l_vis_r_length] +
+						.srec[vss$l_vis_r_length];
+		      remove_rectangle_from_segment (.rectangle);
+!
+! Return 1 to indicate that we consolidated something.
+!
+		      return 1
+
+		    END;
+!
+! Check to the right of the arbitrary visible rectangle
+!
+		IF (.srec[vss$l_vis_r_x_origin] +
+			.srec[vss$l_vis_r_length]) EQL
+		    .rectangle[vss$l_vis_r_x_origin] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.srec[vss$l_vis_r_y_origin] EQL
+				.rectangle[vss$l_vis_r_y_origin]) AND
+		     (.srec[vss$l_vis_r_height] EQL
+				.rectangle[vss$l_vis_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      srec[vss$l_vis_r_length] =
+				 .rectangle[vss$l_vis_r_length] +
+						.srec[vss$l_vis_r_length];
+		      remove_rectangle_from_segment (.rectangle);
+!
+! Return 1 to indicate that we consolidated something.
+!
+		      return 1
+
+		    END;
+!
+! Check underneath the arbitrary visible rectangle
+!
+		IF (.rectangle[vss$l_vis_r_y_origin] +
+				.rectangle[vss$l_vis_r_height]) EQL
+		    .srec[vss$l_vis_r_y_origin] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.srec[vss$l_vis_r_x_origin] EQL
+				.rectangle[vss$l_vis_r_x_origin]) AND
+		     (.srec[vss$l_vis_r_length] EQL
+				.rectangle[vss$l_vis_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      srec[vss$l_vis_r_y_origin] =
+				.rectangle[vss$l_vis_r_y_origin];
+		      srec[vss$l_vis_r_height] =
+				.rectangle[vss$l_vis_r_height] +
+						.srec[vss$l_vis_r_height];
+		      remove_rectangle_from_segment (.rectangle);
+!
+! Return 1 to indicate that we consolidated something.
+!
+		      return 1
+
+		    END;
+!
+! Check on top of the arbitrary visible rectangle
+!
+		IF (.srec[vss$l_vis_r_y_origin] +
+			.srec[vss$l_vis_r_height]) EQL
+		    .rectangle[vss$l_vis_r_y_origin] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.srec[vss$l_vis_r_x_origin] EQL
+				.rectangle[vss$l_vis_r_x_origin]) AND
+		     (.srec[vss$l_vis_r_length] EQL
+				.rectangle[vss$l_vis_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+		      srec[vss$l_vis_r_height] =
+				.rectangle[vss$l_vis_r_height] +
+						.srec[vss$l_vis_r_height];
+		      remove_rectangle_from_segment (.rectangle);
+!
+! Return 1 to indicate that we consolidated something.
+!
+		      return 1
+
+		    END;
+	      END;	!If not the same visible rectangle
+!
+! No consolidation so far, advance to next rectangle.
+!
+	    srec = .srec[VSS$a_VIS_R_FL]
+
+	  END;
+!
+! We didn't consolidate anything, so say 0 so caller can safely advance
+! along the chain of rectangles.
+!
+	0
+
+	END;
+
+ROUTINE remove_rectangle_from_segment (
+			rectangle : ref vis_r_block
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing a rectangle (a block with X,Y
+! coordinates, height, and length) from a viewport visible segment
+! list. The rectangle is the lowest form of an abstract and defines all the
+! potentially visible regions within a viewport.
+!
+! FORMAL PARAMETERS:
+!
+!	rectangle : Address of visible rectangle block (X,Y coordinates,height,
+!		   and length of rectangle, and pointer to next one in list)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is added/deleted as needed to accomodate the addition/removal
+! of rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status;					!RTL return status value
+!
+! First find this visible rectangle's postion in the linked list and remove
+! it.
+!
+	REMQUE (.rectangle, rectangle);
+!
+! This visible rectangle has been removed from the linked list.
+! Deallocate the memory occupied by it.
+!
+	vs$$acp_free_vm (%ref (VSS$K_VIS_R_BLK_LEN), rectangle, 0)
+
+	END;
+
+%sbttl	'VS$$VSS_CREATE_VS  --  Create Virtual Screen'
+global routine VS$$VSS_CREATE_VS(
+				VS_COLOR,
+				VS_ID_ADDRESS
+				) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates the Virtual Screen data structure, and links it into the
+!	master VS queue.
+!
+! FORMAL PARAMETERS:
+!			VS_ID_ADDRESS -  address to return the uniquely
+!			created ID in.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    own
+	VS_NUMBER;			! Incremented w/each creation,
+					! becomes VS_ID.
+    local
+	VS: ref VS_BLOCK,		! Address of the created VS_BLOCK
+	STATUS;		!
+
+!
+!	Get memory to hold the new VS's VS_BLOCK
+!
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$K_VS_BLOCK_LENGTH), VS, 0) ) )
+then return vsta$$error(VSTA$_VSNOTCRE);
+
+!	We got the memory, so proceed.
+
+VS_NUMBER=.VS_NUMBER+1;			! Having created a new VS, we
+					! increment to get a new ID number.
+
+.VS_ID_ADDRESS=.VS_NUMBER;		! Put the ID where it will be returned.
+
+!	Put values into the new VS_BLOCK.
+VS[VSS$A_VS_FL] = VS[VSS$A_VS_FL];! Point to ourself for the nonce.
+VS[VSS$A_VS_BL] = VS[VSS$A_VS_BL];! Point to ourself for the nonce.
+VS[VSS$w_VS_SIZE] = VSS$K_VS_BLOCK_LENGTH; ! Blocksize for VMS use.
+VS[VSS$B_VS_TYPE] = VSS$K_VS_BLOCK_TYPE; ! Block type for VMS use.
+! VS[VSS$B_VS_spare1] = 0;		! Spare, don't bother writing it.
+VS[VSS$l_VS_TOP] = 0;			! Initialize the 'top' counter.
+VS[VSS$L_VS_ID] = .VS_NUMBER;	! Put the VS_ID into the proper place.
+VS[VSS$L_VS_CHAR] = .VS_COLOR;	! Characteristics = color.
+VS[VSS$A_VS_VP_QUEUE_FL] = VS[VSS$A_VS_VP_QUEUE_FL]; ! Null VP Q for now.
+VS[VSS$A_VS_VP_QUEUE_BL] = VS[VSS$A_VS_VP_QUEUE_BL]; ! Null VP Q for now.
+VS[VSS$A_VS_PS_QUEUE_FL] = VS[VSS$A_VS_PS_QUEUE_FL]; ! Null PS Q for now.
+VS[VSS$A_VS_PS_QUEUE_BL] = VS[VSS$A_VS_PS_QUEUE_BL]; ! Null PS Q for now.
+
+!	Insert new VS into the list of VS's
+INSQUE(VS[VSS$A_VS_FL], VSS$_VS_QUEUE_HEADER[0]);
+
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_CREATE_VS,
+
+%sbttl	'VS_POINTER  --  Return VS address given VS_ID'
+global routine VS_POINTER (
+				VS_ID,		! ID of display
+				VS_ADDRESS		! Addr for return
+				) :  =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns the address of the VS having ID# VS_ID.
+!		This is a service routine for use by this module only.
+!
+! FORMAL PARAMETERS:
+!	VS_ID		Longword VS_ID assigned by VS$$VSS_CREATE_VS
+!	VS_ADDRESS	Address where VS_BLOCK address will be returned
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_NOSUCHDEV		the VS_ID could not be found in the
+!						queue of VSBs
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    begin
+
+    local
+	VS:ref VS_BLOCK,
+ 	STATUS;					! Holder for routine values.
+
+   VS = .VSS$_VS_QUEUE_HEADER[0];		! Point to first VS in queue.
+   until VS[VSS$A_VS_FL] eql VSS$_VS_QUEUE_HEADER[0] do
+	begin
+	if .VS[VSS$L_VS_ID] eql .VS_ID		! ID=Passed ID ?
+	then
+
+	  begin					! Found it 
+	  .VS_ADDRESS = VS[VSS$A_VS_FL];	! Place it to be returned.
+	  return SS$_NORMAL;			! Return Status is success.
+	  end;					! End of Found it.
+
+	VS = .VS[VSS$A_VS_FL];		! Point to next VS in queue
+	end;
+
+    return vsta$$error(VSTA$_NOSUCHVS);		! If we get here, we've 
+						! exhausted the queue
+
+    end;			!End of VS_POINTER
+
+%sbttl	'VS_VP_POINTER  --  Return VS_VP address given VS_ID, VP_ID'
+global routine VS_VP_POINTER (
+				VS_ID,		! ID of requesting VS.
+				VP_ID,		! ID of requested VP.
+				VS_VP_ADDRESS	! Return it here.
+				) :  =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns the address of the VS_VP block having ID# VP_ID.
+!		Like VS_POINTER, this is a local service routine.
+!
+! FORMAL PARAMETERS:
+!	VS_ID		Requesting VS's VS_ID.
+!	VP_ID		Longword VP_ID assigned by CREATE_VP.
+!	VS_VP_ADDRESS	Address where VP_BLOCK address will be returned.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_NOSUCHDEV		the VP_ID could not be found in the
+!						queue of VS_VP_BLOCKs
+!					or there was no such VS.
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin
+
+local
+	VS_VP: ref VS_VP_BLOCK,	! Address of VS_VP_BLOCK
+	VS: ref VS_BLOCK,		! Address of VS(VS_ID)
+	STATUS;				! Holder for routine completion value
+
+
+! *** Lookup the VS
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(VSTA$_NOSUCHVSVP);	! Return the error.
+
+
+! *** Hunt down the chain of VS_VP blocks
+
+VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+until VS_VP[VSS$A_VS_VP_BLOCK_FL] eql VS[VSS$A_VS_VP_QUEUE_FL] do
+
+
+	begin						! Main Loop.
+	if .VS_VP[VSS$L_VS_VP_ID] eql .VP_ID		! ID=Passed ID ?
+	then
+
+	  begin					! Found it 
+	  .VS_VP_ADDRESS = VS_VP[VSS$A_VS_VP_BLOCK_FL]; ! Return this.
+	  return SS$_NORMAL;			! Return Status is success.
+	  end;					! End of Found it.
+
+	VS_VP = .VS_VP[VSS$A_VS_VP_BLOCK_FL];		! Point to the next VS_VP block.
+	end;						! Main Loop.
+
+return vsta$$error(VSTA$_NOSUCHVSVP);			!  Checked entire list.
+
+    end;			!End of VS_VP_POINTER
+
+%sbttl	'VS_PS_POINTER  --  Return VS_PS address given VS_ID, PS_ID'
+global routine VS_PS_POINTER (
+				VS_ID,		! ID of requesting VS.
+				PS_ID,		! ID of requested PS.
+				VS_PS_ADDRESS	! Return it here.
+				) :  =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns the address of the VS_PS block having ID# PS_ID.
+!	Like VS_POINTER, this is a local service routine.
+!
+! FORMAL PARAMETERS:
+!	VS_ID		Requesting VS's VS_ID.
+!	PS_ID		Longword PS_ID assigned by VS$$VSS_CREATE_PS.
+!	VS_PS_ADDRESS	Address where PS_BLOCK address will be returned.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_NOSUCHDEV		the PS_ID could not be found in the
+!						queue of VS_PS_BLOCKs
+!					or there was no such VS.
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin
+
+
+local
+	VS_PS: ref VS_PS_BLOCK,	! Address of VS_PS_BLOCK
+	VS: ref VS_BLOCK,		! Address of VS(VS_ID)
+	STATUS;				! Holder for routine completion value
+
+
+! *** Lookup the VS
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(VSTA$_NOSUCHVSPS);	! Return the error.
+
+
+! *** Hunt down the chain of VS_PS blocks
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+
+
+	begin						! Main Loop.
+	if .VS_PS[VSS$L_VS_PS_ID] eql .PS_ID		! ID=Passed ID ?
+	then
+
+	  begin					! Found it 
+	  .VS_PS_ADDRESS = VS_PS[VSS$A_VS_PS_BLOCK_FL]; ! Return this.
+	  return SS$_NORMAL;			! Return Status is success.
+	  end;					! End of Found it.
+
+	VS_PS = .VS_PS[VSS$A_VS_PS_BLOCK_FL];		! Point to the next VS_PS block.
+	end;						! Main Loop.
+
+return vsta$$error(VSTA$_NOSUCHVSPS);			!  Checked entire list.
+
+    end;			!End of VS_PS_POINTER
+
+%sbttl	'VS$$VSS_DELETE_VS  --  Delete Virtual Screen'
+global routine VS$$VSS_DELETE_VS(VS_ID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Hunts down the VS's list of VP's and PS's, and removes it from
+!	their VS lists.
+!	Deletes the Virtual Screen data structure, and removes it from the
+!	master queue of VS's.
+!
+! FORMAL PARAMETERS:
+!			VS_ID
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine.
+
+local
+	JUNK: ref block[0,byte],	! Holder for REMQUED addresses
+	FORWARD_LINK: ref block[0,byte],! Holder for FLINKS during deletions.
+	VS_PS: ref VS_PS_BLOCK,	! Address of VS_PS_BLOCK
+	VS_VP: ref VS_VP_BLOCK,	! Address of VS_VP_BLOCK
+	VS: ref VS_BLOCK;		! Address of VS(VS_ID)
+
+local
+	STATUS;				! Holder for routine completion value
+
+
+! *** Lookup the VS
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(VSTA$_VSNOTDEL);	! Return the error.
+
+!-------------------------------------------------------------------------
+! *** First we must delete all of the VP's
+
+! *** Hunt down the chain of VS_VP blocks
+
+VS_VP = .VS[VSS$A_VS_VP_QUEUE_FL];		! Address of first VS_VP_BLOCK
+until VS_VP[VSS$A_VS_VP_BLOCK_FL] eql VS[VSS$A_VS_VP_QUEUE_FL] do
+	begin
+
+	FORWARD_LINK = .VS_VP[VSS$A_VS_VP_BLOCK_FL];
+
+	if (not (STATUS=VS$$VSS_DELETE_VP(.VS_VP[VSS$l_VS_VP_ID]))) 
+	then return vsta$$error(VSTA$_VSNOTDEL);
+
+	VS_VP = .FORWARD_LINK;		! Point to the next VS_VP block.
+	end;						! Main Loop.
+
+
+!----------------------------------------------------------------------------
+! *** And now for the PS's.
+
+! *** Hunt down the chain of VS_PS blocks
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+
+	begin						! Main Loop.
+
+	FORWARD_LINK = .VS_PS[VSS$A_VS_PS_BLOCK_FL];	! Save the FLINK
+
+	if (not (STATUS=VS$$VSS_DELETE_PS(.VS_PS[VSS$l_VS_PS_ID]))) 
+	then return vsta$$error(VSTA$_VSNOTDEL);
+
+	VS_PS = .FORWARD_LINK;		! Point to the next VS_PS block.
+	end;						! Main Loop.
+!------------------------------------------------------------------------------
+! *** Now it is time to dequeue and delete the VS_BLOCK itself.
+
+
+	REMQUE(VS[VSS$a_VS_FL], JUNK);
+
+	!	Free the occluded Segment block's memory
+	if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$k_VS_BLOCK_LENGTH),
+	JUNK, 0) ) )
+	then return vsta$$error(VSTA$_VSNOTDEL);
+	!	We freed the memory, so proceed.
+
+
+
+	return SS$_NORMAL;
+    end;			! End of VS$$VSS_DELETE_VS,
+
+%sbttl	'VS$$VSS_GET_VS_CHAR  --  Return Virtual Screen Characteristics'
+global routine VS$$VSS_GET_VS_CHAR (
+				VS_ID,		! Longword Virt. Screen ID
+				VS_CHAR		! Longword VS Characteristics
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 			Returns the Requested VS's characteristics in
+!			VS_CHAR
+!
+! FORMAL PARAMETERS:
+!	VS_ID		Longword ID of the requested VS (Passed)
+!	VS_CHAR		Longword of VS characteristics (Returned)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+
+local
+	VS: ref VS_BLOCK,		! Address of VS(VS_ID)
+	STATUS;				! Holder for routine completion value
+
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);	! Return the error.
+
+.VS_CHAR=.VS[VSS$L_VS_CHAR];		! Put data into location for return.
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_GET_VS_CHAR
+
+%sbttl	'VS$$VSS_SET_VS_CHAR  --  Set Virtual Screen Characteristics'
+global routine VS$$VSS_SET_VS_CHAR (
+				VS_ID,		! Longword Virt. Screen ID
+				VS_CHAR		! Longword VS Characteristics
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 			Sets Requested VS's characteristics (Longword) to
+!			those specified in VS_CHAR
+!
+! FORMAL PARAMETERS:
+!	VS_ID		Longword ID of the requested VS (Passed)
+!	VS_CHAR		Longword of VS characteristics (Passed)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin
+
+
+local
+	VS: ref VS_BLOCK,		! Address of VS(VS_ID)
+	VS_PS: ref VS_PS_BLOCK,		! Address of VS(VS_ID)
+	STATUS;				! Holder for routine completion values.
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);		! Return the error.
+
+VS[VSS$L_VS_CHAR]=.VS_CHAR;		! Put data into block.
+
+
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+	begin
+
+if (not (STATUS=VS$$VSS_DISPLAY_PS(.VS_PS[VSS$l_VS_PS_ID])))
+				then return vsta$$error(.STATUS);
+
+	VS_PS = .VS_PS[VSS$A_VS_PS_BLOCK_FL];		! Point to the next.
+	end;						! For each VS_PS block
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_SET_VS_CHAR
+
+%sbttl	'VS$$VSS_ADD_REC_TO_VS  --  Add Rectangle to Virtual Screen.'
+global routine VS$$VSS_ADD_REC_TO_VS (
+	VS_ID,		! Longword VS ID
+	VP_ID,		! 
+	VD_ID,		! Longword VD ID
+	rectangle : rectangle_block,
+			! rectangle to be added.  Note that there's no "ref"
+			! here.  Callers currently call this routine with
+			! individual args.  
+	rec2, rec3, rec4,	! rest of rectangle
+	consolidate_flag! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+	) =		!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Add rectangles to the VS's linked lists. 
+!	Visible / Occluded calculation is done here.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	FORWARD_LINK,			! Save pointer in case of REMQUE
+	R_VD_ID,			! Needed to hold a given R's VD_ID
+	intersect : rectangle_block,	! Intersecting rectangle.
+	VS: ref VS_BLOCK,		! Becomes Address of the VS_BLOCK.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	VS_PS: ref VS_PS_BLOCK,	! Becomes address of VS_PS block.
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+
+
+! *** Look up the VS_VP.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(.STATUS);	! Return the error.
+
+! ### ### ### Main ### ### ### ### ### ### 
+
+! Here we must compare the input rectangle to all of our vis and occ rsegments,
+! and place it into the proper list(s).
+
+VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql
+					VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+
+	begin	! inner LOOP: For this VP's visible segment list do
+	FORWARD_LINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];
+	if vs$$vds_vrec_intersect (
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN],
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN],
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH],
+				.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT],
+				rectangle[$base],
+				intersect[$base]
+			) then
+
+! Now we add the portion of the new rectangle that intersects the current 
+! VP_Segment.  This may fragment some existing VP_Segment visible rectangles,
+! but that is all taken care of in the ADD_SEG_VIS_R routine.
+
+	if (not(STATUS=ADD_SEG_VIS_R(  ! Add the R at intersection
+				VS_VP_VIS_SEG[$base],
+				.VD_ID,		! Of PASSED R.
+				.VP_ID, ! For clipping.
+				.VS_ID,
+				.intersect[vs$vds_l_r_X_coor],
+				.intersect[vs$vds_l_r_Y_coor],
+				.intersect[vs$vds_l_r_LENGTH],
+				.intersect[vs$vds_l_r_HEIGHT]
+					))) then return vsta$$error(.STATUS);
+!
+! Consolidate the segment.  This allows graphics on vd1 to speed up
+! dramatically after unpasting vd2 from vd1, the pasting of which had
+! slowed down graphics on vd1.
+!
+	if .consolidate_flag
+	then consolidate_segment (vs_vp_vis_seg[$base], .vd_id);
+
+	VS_VP_VIS_SEG = .FORWARD_LINK; ! Point to next segment.
+	end;	! inner LOOP: For this VP's visible segment list do.
+
+
+!### ### ### End of main ### ### ### 
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_ADD_REC_TO_VS
+
+%sbttl	'ADD_SEG_VIS_R  --  Add Rectangle to Virtual Screen.'
+global routine ADD_SEG_VIS_R (
+				SEG: ref VS_VP_VIS_SEG_BLOCK,
+				VD_ID,
+				VP_ID,
+				VS_ID,
+				new_rec : rectangle_block
+			! rectangle to be added.  Note that there's no "ref"
+			! here.  Callers currently call this routine with
+			! individual args.  
+				) =		!
+!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Add rectangles to a VS's VP's visible segment(s).
+!	Given the address of the Segment Block.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	FLAG,				! True if FIND_INTERSECT did find one.
+	intersect : rectangle_block,	! "INTERSECT_" varibles come back from
+					! the FIND_INTERSECT routine.
+	NUMBER_OF_FR,			! Number of fragments formed.
+	subrect : blockvector [4, vs$vds_k_rec_length, BYTE]
+	    field (vs$vds_rectangle_block_fieldset),
+					! Fragments.
+	FORWARD_LINK,		! Holder for FLINK in case we delete it's blk
+	R_VD_ID,		! Holder for a rectangle's VD_ID.
+	JUNK,			! Holder for REMQUEd blocks address.
+	RECTANGLE: ref VIS_R_BLOCK;
+local
+	STATUS;
+
+
+RECTANGLE = .SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+until RECTANGLE[VSS$a_VIS_R_FL] eql SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] do
+begin	! inner LOOP: For this segment's visible R list.
+FORWARD_LINK = .RECTANGLE[VSS$a_VIS_R_FL];	! Save the FLINK first thing.
+	if (not(STATUS=FIND_INTERSECT(
+					.RECTANGLE[VSS$l_VIS_R_X_ORIGIN],
+					.RECTANGLE[VSS$l_VIS_R_Y_ORIGIN],
+					.RECTANGLE[VSS$l_VIS_R_LENGTH],
+					.RECTANGLE[VSS$l_VIS_R_HEIGHT],
+					new_rec[$base],
+					intersect[$base],
+					FLAG,
+					NUMBER_OF_FR,
+					subrect[0, $base]
+		))) then
+					return vsta$$error(.STATUS);
+
+
+if .FLAG eql TRUE then			! *** There was an intersect, so do:
+begin
+	R_VD_ID = .RECTANGLE[VSS$l_VIS_R_VD_ID];
+
+
+! ############ Remove old rectangle here. #################################
+		begin
+		REMQUE(RECTANGLE[VSS$a_VIS_R_FL], JUNK);
+
+		!	Free a rectangle block's memory
+		if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VIS_R_BLK_LEN),
+		JUNK, 0) ) )
+		then return vsta$$error(.STATUS);
+		!	We freed the memory, so proceed.
+		end;		
+! ###########################################################################
+
+!*** Put back the visible fragments of the old rectangle
+	incr i from 0 to .number_of_fr - 1 do
+	if (not(STATUS=INSERT_SEG_VIS_R (
+					.SEG,
+					.R_VD_ID,
+					.VP_ID, ! For clipping.
+					.VS_ID,
+				.subrect[.i, vs$vds_l_r_X_coor],
+				.subrect[.i, vs$vds_l_r_Y_coor],
+				.subrect[.i, vs$vds_l_r_LENGTH],
+				.subrect[.i, vs$vds_l_r_HEIGHT]
+				))) then
+					return vsta$$error(.STATUS);
+
+end;	! of if FLAG is TRUE
+
+RECTANGLE = .FORWARD_LINK
+
+end;	! inner LOOP: For this segment's visible R list.
+
+! *** Now we add the clipped R to our segment.
+	if (not(STATUS=INSERT_SEG_VIS_R(  ! Add the R at intersection
+					.SEG,		! Current segment.
+					.VD_ID,
+					.VP_ID, ! For clipping.		!
+					.VS_ID,
+				.new_rec[vs$vds_l_r_X_coor],
+				.new_rec[vs$vds_l_r_Y_coor],
+				.new_rec[vs$vds_l_r_LENGTH],
+				.new_rec[vs$vds_l_r_HEIGHT]
+				))) then return vsta$$error(.STATUS);
+
+return SS$_NORMAL;
+end;			! End of ADD_SEG_VIS_R
+
+%sbttl	'INSERT_SEG_VIS_R  --  Add Rectangle to Virtual Screen.'
+global routine INSERT_SEG_VIS_R (
+				SEG: ref VS_VP_VIS_SEG_BLOCK,
+				VD_ID,
+				VP_ID,
+				VS_ID,
+				X_ORIGIN,
+				Y_ORIGIN,
+				LENGTH,
+				HEIGHT
+				) =		!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Insert rectangles onto a VS's VP's visible segment's visible list.
+!	Given the address of the Segment Block, and the rectangle's data.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+
+local
+	RECTANGLE: ref VIS_R_BLOCK,
+	STATUS;
+
+
+!	Get memory for a rectangle block.
+if (not (STATUS=VS$$ACP_GET_VM (%ref(VSS$K_VIS_R_BLK_LEN), RECTANGLE, 0) ) )
+	then return vsta$$error(.STATUS);
+
+!	We got the memory, so proceed.
+RECTANGLE[VSS$A_VIS_R_FL] = RECTANGLE[VSS$A_VIS_R_FL];
+RECTANGLE[VSS$A_VIS_R_BL] = RECTANGLE[VSS$A_VIS_R_BL];
+RECTANGLE[VSS$w_VIS_R_SIZE] = VSS$K_VIS_R_BLK_LEN;
+RECTANGLE[VSS$l_VIS_R_X_ORIGIN] = .X_ORIGIN;
+RECTANGLE[VSS$l_VIS_R_Y_ORIGIN] = .Y_ORIGIN;
+RECTANGLE[VSS$l_VIS_R_LENGTH] = .LENGTH;
+RECTANGLE[VSS$l_VIS_R_HEIGHT] = .HEIGHT;
+RECTANGLE[VSS$L_VIS_R_VD_ID] = .VD_ID;
+
+INSQUE(RECTANGLE[VSS$A_VIS_R_FL], SEG[VSS$A_VS_VP_VIS_SEG_R_Q_FL]);
+
+return SS$_NORMAL;
+end;			! End of INSERT_SEG_VIS_R
+
+%sbttl	'REM_SEG_VIS_R  --  Rem Rectangle From Virtual Screen.'
+global routine REM_SEG_VIS_R (
+				SEG: ref VS_VP_VIS_SEG_BLOCK,
+				VP_ID,
+				VS_ID,
+				rem_rec : rectangle_block,
+			! rectangle to be removed.  Note that there's no "ref"
+			! here.  Callers currently call this routine with
+			! individual args.  
+				rem_rec_2,
+				rem_rec_3,
+				rem_rec_4,
+				PB_COLOR
+				) =		!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Remove rectangles from the VS's linked lists.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+
+local
+	intersect : rectangle_block,	! "INTERSECT_" varibles come back from
+					! the FIND_INTERSECT routine.
+	FLAG,				! True if FIND_INTERSECT did find one.
+	NUMBER_OF_FR,			! Number of fragments formed.
+	subrect : blockvector [4, vs$vds_k_rec_length, BYTE]
+	    field (vs$vds_rectangle_block_fieldset),
+					! Fragments.
+	FORWARD_LINK: ref block[0,byte],
+	VD_ID,					! Holder for current R's VD_ID.
+	PS_X,					! PS converted coordinates.
+	PS_Y,					! PS converted coordinates.
+	VS_PS: ref VS_PS_BLOCK,		! VS_PS block flink.
+	VS: ref VS_BLOCK,			! VS pointer
+!	PS: ref PS_BLOCK,			! PS pointer
+	PS_ID,
+	JUNK: ref block[0,byte],
+	VD_ZERO,				! Null VD variable for passing.
+	RECTANGLE: ref VIS_R_BLOCK;		! Pointer to current rectangle
+local
+	STATUS;
+
+VD_ZERO = 0;
+
+! Lookup the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);		! Return the error.
+
+
+RECTANGLE = .SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL];
+until RECTANGLE[VSS$a_VIS_R_FL] eql SEG[VSS$a_VS_VP_VIS_SEG_R_Q_FL] do
+begin	! LOOP: For this segment's visible R list.
+	FORWARD_LINK = .RECTANGLE[VSS$a_VIS_R_FL]; ! *** Save the FLINK ***
+
+	if (not(STATUS=FIND_INTERSECT(
+					.RECTANGLE[VSS$l_VIS_R_X_ORIGIN],
+					.RECTANGLE[VSS$l_VIS_R_Y_ORIGIN],
+					.RECTANGLE[VSS$l_VIS_R_LENGTH],
+					.RECTANGLE[VSS$l_VIS_R_HEIGHT],
+					rem_rec[$base],
+					intersect[$base],
+					FLAG,
+					NUMBER_OF_FR,
+					subrect[0, $base]
+		))) then
+					return vsta$$error(.STATUS);
+
+if .FLAG eql TRUE then			! *** There was an intersect, so do:
+begin
+	VD_ID = .RECTANGLE[VSS$l_VIS_R_VD_ID];	! Save the VD_ID.
+
+! ############ Remove old rectangle from VS here. ########################
+		begin
+		REMQUE(RECTANGLE[VSS$a_VIS_R_FL], JUNK);
+
+if (not (STATUS=VSTA$$DRIVE_BACKGROUND(
+				.vs$gw_vbchan,
+				.PB_COLOR,
+				.VSTA$A_FRAME_BUFFER [0],
+				.intersect[vs$vds_l_r_X_coor],
+				.intersect[vs$vds_l_r_Y_coor],
+				.intersect[vs$vds_l_r_LENGTH],
+				.intersect[vs$vds_l_r_HEIGHT],
+				0,
+				0
+				))) then
+				return vsta$$error(.STATUS);
+
+		!	Free a rectangle block's memory
+		if (not (STATUS=VS$$ACP_FREE_VM (%ref(VSS$K_VIS_R_BLK_LEN),
+		JUNK, 0) ) )
+		then return vsta$$error(.STATUS);
+		!	We freed the memory, so proceed.
+		end;		
+! ###########################################################################
+! *** *** Put back the intersection, (the part of the old R that we deleted),
+! as a visible R of the null VD.  The null VD is the PB_COLOR background.
+
+	if (not(STATUS=INSERT_SEG_VIS_R(
+				.SEG,
+				.VD_ZERO,
+				.VP_ID,
+				.VS_ID,
+				.intersect[vs$vds_l_r_X_coor],
+				.intersect[vs$vds_l_r_Y_coor],
+				.intersect[vs$vds_l_r_LENGTH],
+				.intersect[vs$vds_l_r_HEIGHT]
+					))) then return vsta$$error(.STATUS);
+	
+
+! Now we put back any fragments of the old rectangle that were not
+!	included in the area to be removed.
+
+	incr i from 0 to .number_of_fr - 1 do
+	if (not(STATUS=INSERT_SEG_VIS_R(
+				.SEG,
+				.VD_ID,
+				.VP_ID, ! For clipping.
+				.VS_ID,
+				.subrect[.i, vs$vds_l_r_X_coor],
+				.subrect[.i, vs$vds_l_r_Y_coor],
+				.subrect[.i, vs$vds_l_r_LENGTH],
+				.subrect[.i, vs$vds_l_r_HEIGHT]
+					))) then return vsta$$error(.STATUS);
+
+end;	! of if FLAG is TRUE
+RECTANGLE = .FORWARD_LINK	 ! Point to next R.
+end;	! LOOP: For this Segment's visible list do.
+
+
+return SS$_NORMAL;
+end;			! End of REM_SEG_VIS_R
+
+%sbttl	'VS$$VSS_REM_REC_FROM_VS  --  Remove Rectangle from VS'
+global routine VS$$VSS_REM_REC_FROM_VS (
+				VS_ID,		! Longword VS ID
+				VP_ID,	
+				VD_ID,		! Longword VD ID
+				rem_rec : rectangle_block,
+			! rectangle to be removed.  Note that there's no "ref"
+			! here.  Callers currently call this routine with
+			! individual args.  
+				rem_rec_2,
+				rem_rec_3,
+				rem_rec_4,
+				PB_COLOR,
+				consolidate_flag! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+				) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Add rectangles to the VS's linked lists.
+!	Visible / Occluded calculation is done here.
+!
+! FORMAL PARAMETERS:
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+begin					! Entire routine
+
+local
+	FORWARD_LINK,			! Save pointer in case of REMQUE
+	intersect : rectangle_block,	! "INTERSECT_" varibles come back from
+					! the intersect routine.
+	VS: ref VS_BLOCK,		! Becomes Address of the VS_BLOCK.
+	VS_VP_VIS_SEG: ref VS_VP_VIS_SEG_BLOCK,	! For a current vs_vp_vis R
+	VS_VP: ref VS_VP_BLOCK;	! Becomes address of VS_VP block.
+
+local
+	STATUS;
+
+
+
+! *** Look up the VS.
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(.STATUS);		! Return the error.
+
+! *** Look up the VS_VP block.
+if (not (STATUS=VS_VP_POINTER(.VS_ID, .VP_ID, VS_VP)))
+	then return vsta$$error(.STATUS);		! Return the error.
+
+
+! Here we must compare our rectangle to all of our vis and occ rectangles,
+! and remove it from the proper list(s).
+
+	VS_VP_VIS_SEG = .VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL];
+	until VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL] eql
+				VS_VP[VSS$a_VS_VP_VIS_SEG_QUEUE_FL] do
+	begin	! inner LOOP: For this VP's visible segment list do
+	FORWARD_LINK = .VS_VP_VIS_SEG[VSS$a_VS_VP_VIS_SEG_FL];
+	if vs$$vds_vrec_intersect (
+			.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_X_ORIGIN],
+			.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_Y_ORIGIN],
+			.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_LENGTH],
+			.VS_VP_VIS_SEG[VSS$l_VS_VP_VIS_SEG_HEIGHT],
+			rem_rec[$base],
+			intersect[$base]
+			)
+	then
+!
+! Now we remove the portion of the new rectangle that intersects the current 
+! VP_Segment.  This may fragment some existing VP_Segment visible rectangles,
+! but that is all taken care of in the REM_SEG_VIS_R routine.
+!
+	if (not(STATUS=REM_SEG_VIS_R(  ! Add the R at intersection
+		VS_VP_VIS_SEG[$base],	! addr of list
+		.VP_ID, ! For clipping.
+		.VS_ID,
+		.intersect[vs$vds_l_r_X_coor],
+		.intersect[vs$vds_l_r_Y_coor],
+		.intersect[vs$vds_l_r_LENGTH],
+		.intersect[vs$vds_l_r_HEIGHT],
+		.PB_COLOR
+					))) then return vsta$$error(.STATUS);
+!
+! Consolidate the segment.  This allows graphics on vd1 to speed up
+! dramatically after unpasting vd2 from vd1, the pasting of which had
+! slowed down graphics on vd1.
+!
+	if .consolidate_flag
+	then consolidate_segment (vs_vp_vis_seg[$base], .vd_id);
+
+	VS_VP_VIS_SEG = .FORWARD_LINK; ! Point to next segment.
+	end;	! inner LOOP: For this VP's visible segment list do.
+
+
+
+return SS$_NORMAL;
+end;			! End of VS$$VSS_REM_REC_FROM_VS
+
+%sbttl	'VS$$VSS_DISPLAY_VD_IN_VS  --  Display VD in Virtual Screen'
+global routine VS$$VSS_DISPLAY_VD_IN_VS (
+				VS_ID,		! Longword  ID #
+				VD_ID,		! Longword  ID #
+				VP_ID, ! For clipping.
+				X_OFFSET,	! Signed Longword
+				Y_OFFSET	! Signed Longword
+				) =		!
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	For each PS in VS's PS list do
+!	call DISPLAY_VD_IN_PS(VD_ID, PS_ID, X_OFFSET, Y_OFFSET)		
+!	Access to the VD has already been synchronized.
+!
+! FORMAL PARAMETERS:
+!	VD_ID
+!	VS_ID
+!	X, Y offsets. These are so that the driver will know the coordinates of
+!			the VD's on the PS.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+begin					! Entire routine
+
+local
+	VS: ref VS_BLOCK,		! Becomes Address of the VS_BLOCK.
+	VS_PS: ref VS_PS_BLOCK,	! Becomes address of VS_PS block.
+	PS_X_OFFSET,			! Computed offset into PS.
+	PS_Y_OFFSET,			! Computed offset into PS.
+	STATUS;
+
+! *** Look up the VS.
+
+if (not (STATUS=VS_POINTER(.VS_ID, VS)))
+	then return vsta$$error(VSTA$_VDNOTDISPVS);
+							! Return the error.
+
+! For each PS on our VS...
+
+VS_PS = .VS[VSS$A_VS_PS_QUEUE_FL];		! Address of first VS_PS_BLOCK
+until VS_PS[VSS$A_VS_PS_BLOCK_FL] eql VS[VSS$A_VS_PS_QUEUE_FL] do
+begin						! Find each PS in VS's PS list
+	local
+		PS_ID;				! Temporary value holder.
+
+	PS_ID = .VS_PS[VSS$L_VS_PS_ID];	! Extract the PS_ID.
+
+	! *** Convert the origin from VS coordinates to PS coordinates. ***
+	PS_X_OFFSET = .X_OFFSET - .VS_PS[VSS$l_VS_PS_X_ORIGIN];
+	PS_Y_OFFSET = .Y_OFFSET - .VS_PS[VSS$l_VS_PS_Y_ORIGIN];
+
+	VS$$VSS_DISPLAY_VD_IN_PS(		! Call next level of SDA.
+				.PS_ID,		!
+				.VD_ID,		!
+				.VP_ID,		! For clipping during writes.
+				.PS_X_OFFSET,	!
+				.PS_Y_OFFSET
+				);
+
+VS_PS = .VS_PS[VSS$A_VS_PS_BLOCK_FL];	! Point to the next VS_PS block.
+
+end;				! of For each PS in VS's PS list.
+
+
+	return SS$_NORMAL;
+    end;			!End of VS$$VSS_DISPLAY_VD_IN_VS
+
+end				! End of module VS$VSS_VS
+eludom

@@ -1,0 +1,48 @@
+MODULE CGL_LIBRARY_DATA IDENT "XTIG LIBRARY";
+/*++
+/*
+/*  FACILITY: VAXstation software  (VSTA)
+/*
+/*  Core Graphics Library (CGL)
+/*
+/*  ABSTRACT:
+/*
+/*---This module contains all the data requirements for the XTIG library
+/*   routines.  Each device that the user has selected requires a data
+/*   entry to store its CGL data in.  Each entry is put into a queue and
+/*   the queue may be searched for the channel number given as a key.
+/*
+/*
+/*  DEFINE ANY INTERNAL CGL CONSTANTS
+/*
+	CONSTANT	false	EQUALS 0;
+	CONSTANT	true	EQUALS 1;
+	CONSTANT	io_buffer_max_count  EQUALS 256 PREFIX gt$;
+
+AGGREGATE cgl_data_table STRUCTURE ORIGIN forward_link PREFIX gt$;
+
+gtblock STRUCTURE;
+
+        forward_link                  ADDRESS;
+        backward_link                 ADDRESS;
+        channel                       LONGWORD;
+	current_function	      LONGWORD;
+	cluster_commands	      BYTE;
+        vstafiller		      BYTE DIMENSION 15;
+        initialized                   BYTE;
+        debug                         BYTE;
+	error_source_function	      LONGWORD;
+	error_code		      LONGWORD;
+	io_buffer_count		      LONGWORD;
+	io_buffer		      WORD DIMENSION 256;
+	screen_top		      LONGWORD;
+	screen_bottom		      LONGWORD;
+	screen_left		      LONGWORD;
+	screen_right		      LONGWORD;
+        impure_data                   BYTE DIMENSION 1010;
+
+END gtblock;
+
+END cgl_data_table;
+
+END_MODULE CGL_LIBRARY_DATA;

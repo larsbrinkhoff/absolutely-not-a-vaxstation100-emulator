@@ -1,0 +1,289 @@
+ 
+!*** MODULE VS$VDS_PB ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+!    This module contains all the routines and data structures relevent to
+!    dealing with the workstation PASTE_BOARD as an entity in the context of
+!    a VAX workstation running the associated workstation display software;
+!    an implementation of the System Display Architecture.
+! 
+!    Operations have been provided to allow the manipulation of paste_boards,
+!    which in turn provide the basic application mechanism for specifying
+!    spatial relationships between virtual displays and provide a mechanism
+!    for the application to specify what parts of those virtual displays can be
+!    made visible. The number of allowable paste_boards is limited only by
+!    memory capacity and data tables are maintained on a per-paste_board basis.
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+!  Constant declarations for data structures which follow
+! 
+literal VS$VDS_K_MAX_BITPLANES = 8;     ! Number of bitplanes
+literal VS$VDS_K_COLOR_TABLE_SIZE = 256; ! Color lookup table size
+! 
+!  Origin data structure definition
+! 
+literal VS$VDS_K_ORG_LENGTH = 8;        ! Length of origin block
+FIELD VS$VDS_ORIGIN_BLOCK_FIELDSET =
+  SET
+  VS$VDS_L_O_X_COOR = [0,0,32,0],       ! Origin's X-coordinate
+  VS$VDS_L_O_Y_COOR = [4,0,32,0]        ! Origin's Y-coordinate
+  TES;
+literal VS$VDS_S_ORIGIN_BLOCK = 8;
+MACRO ORIGIN_BLOCK = BLOCK [VS$VDS_S_ORIGIN_BLOCK,byte] FIELD (VS$VDS_ORIGIN_BLOCK_FIELDSET) %;
+! 
+!  Rectangle data structure definition
+! 
+literal VS$VDS_K_REC_LENGTH = 16;       ! Length of rectangle block
+FIELD VS$VDS_RECTANGLE_BLOCK_FIELDSET =
+  SET
+  VS$VDS_L_R_X_COOR = [0,0,32,0],       ! Rectangle's X-coordinate
+  VS$VDS_L_R_Y_COOR = [4,0,32,0],       ! Rectangle's Y-coordinate
+  VS$VDS_L_R_LENGTH = [8,0,32,0],       ! Rectangle's length
+  VS$VDS_L_R_HEIGHT = [12,0,32,0]       ! Rectangle's height
+  TES;
+literal VS$VDS_S_RECTANGLE_BLOCK = 16;
+MACRO RECTANGLE_BLOCK = BLOCK [VS$VDS_S_RECTANGLE_BLOCK,byte] FIELD (VS$VDS_RECTANGLE_BLOCK_FIELDSET) %;
+! 
+!  Pasteboard color lookup table data structure definition
+! 
+literal VS$VDS_K_PB_COLORS_LENGTH = 4;  ! Length of PB color block
+FIELD VS$VDS_PB_COLORS_FIELDSET =
+  SET
+  VS$VDS_V_PB_BI = [0,0,8,0],           ! Blue intensity
+  VS$VDS_V_PB_GI = [0,8,8,0],           ! Green intensity
+  VS$VDS_V_PB_RI = [0,16,8,0],          ! Red intensity
+  VS$VDS_V_PB_BK = [0,24,1,0],          ! Blink bit for this entry
+  VS$VDS_V_EXTRA = [0,25,1,0]           ! Reserved
+  TES;
+literal VS$VDS_S_PB_COLORS = 4;
+MACRO PB_COLORS = BLOCK [VS$VDS_S_PB_COLORS,byte] FIELD (VS$VDS_PB_COLORS_FIELDSET) %;
+! 
+!  Pasteboard "pasted-on-me" block data structure definition
+! 
+literal VS$VDS_K_PME_LENGTH = 24;       ! Length of pasted-on block
+FIELD VS$VDS_PME_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_PME_NEXT_PTR = [0,0,32,0],   ! Ptr to next PME in list
+  VS$VDS_A_PME_BACK_PTR = [4,0,32,0],   ! Ptr to last PME in list
+  VS$VDS_W_PME_SIZE = [8,0,16,0],       ! Size of pasted-on block
+  VS$VDS_W_PME_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_PME_PB_ID = [12,0,32,0],     ! Unique ID of pasteboard
+  VS$VDS_L_PME_X_COOR = [16,0,32,0],    ! X-coordinate on me
+  VS$VDS_L_PME_Y_COOR = [20,0,32,0]     ! Y-coordinate on me
+  TES;
+literal VS$VDS_S_PME_BLOCK = 24;
+MACRO PME_BLOCK = BLOCK [VS$VDS_S_PME_BLOCK,byte] FIELD (VS$VDS_PME_BLOCK_FIELDSET) %;
+! 
+!  Pasteboard "pasted-on" block data structure definition
+! 
+literal VS$VDS_K_PON_LENGTH = 28;       ! Length of pasted-on block
+FIELD VS$VDS_PON_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_PON_NEXT_PTR = [0,0,32,0],   ! Ptr to next PON in list
+  VS$VDS_A_PON_BACK_PTR = [4,0,32,0],   ! Ptr to last PON in list
+  VS$VDS_W_PON_SIZE = [8,0,16,0],       ! Size of pasted-on block
+  VS$VDS_W_PON_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_PON_PB_ID = [12,0,32,0],     ! Unique ID of pasteboard
+  VS$VDS_L_PON_VD_ID = [16,0,32,0],     ! Unique ID of VD for occlusion
+  VS$VDS_L_PON_X_COOR = [20,0,32,0],    ! X-coordinate on pasteboard
+  VS$VDS_L_PON_Y_COOR = [24,0,32,0]     ! Y-coordinate on pasteboard
+  TES;
+literal VS$VDS_S_PON_BLOCK = 28;
+MACRO PON_BLOCK = BLOCK [VS$VDS_S_PON_BLOCK,byte] FIELD (VS$VDS_PON_BLOCK_FIELDSET) %;
+! 
+!  Pasteboard data structure definition
+! 
+literal VS$VDS_M_PB_PERM = 1;
+literal VS$VDS_M_PB_VKB = 2;
+literal VS$VDS_M_PB_VTB = 4;
+literal VS$VDS_M_PB_TERM = 8;
+literal VS$VDS_K_PB_LENGTH = 132;       ! Length of pasteboard block
+FIELD VS$VDS_PB_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_PB_NEXT_PTR = [0,0,32,0],    ! Ptr to next PB in list
+  VS$VDS_A_PB_BACK_PTR = [4,0,32,0],    ! Ptr to last PB in list
+  VS$VDS_W_PB_SIZE = [8,0,16,0],        ! Size of pasteboard block
+  VS$VDS_W_PB_TYPE = [10,0,16,0],       ! Data block type (for VMS)
+  VS$VDS_L_PB_ID = [12,0,32,0],         ! Unique ID of pasteboard
+  VS$VDS_L_PB_COLOR = [16,0,32,0],      ! Pasteboard color number
+  VS$VDS_L_PB_LENGTH = [20,0,32,0],     ! Pasteboard length
+  VS$VDS_L_PB_HEIGHT = [24,0,32,0],     ! Pasteboard height
+  VS$VDS_A_PB_COLOR_TABLE = [28,0,32,0], ! Ptr to PB color lookup table
+  VS$VDS_A_PB_PON_PTR = [32,0,32,0],    ! Ptr to pasted-on list head
+  VS$VDS_A_PB_PON_TAIL = [36,0,32,0],   ! Ptr to pasted-on list tail
+  VS$VDS_A_PB_PME_PTR = [40,0,32,0],    ! Ptr to pasted-on-me list head
+  VS$VDS_A_PB_PME_TAIL = [44,0,32,0],   ! Ptr to pasted-on-me list tail
+  VS$VDS_A_PB_VDL_PTR = [48,0,32,0],    ! Ptr to virtual display head
+  VS$VDS_A_PB_VDL_TAIL = [52,0,32,0],   ! Ptr to virtual display tail
+  VS$VDS_A_PB_WL_PTR = [56,0,32,0],     ! Ptr to window list head
+  VS$VDS_A_PB_WL_TAIL = [60,0,32,0],    ! Ptr to window list tail
+!  The following blocks must be kept contiguous and in order, since
+!  the code deals with them as addressed blocks.
+! 
+  VS$VDS_L_PB_MOUSE_X_COOR = [64,0,32,1], ! Mouse coordinates on this pb
+  VS$VDS_L_PB_MOUSE_Y_COOR = [68,0,32,1],
+  VS$VDS_L_PB_MOUSE_BUTTON_VAL = [72,0,32,1], ! Mouse button settings
+  VS$VDS_L_PB_MOUSE_ENTERED_FLAG = [76,0,32,1], ! 1 if mouse just entered.
+! 
+  VS$VDS_A_PB_BTN_PTR = [80,0,32,0],    !  Ptr to mouse btn list head
+  VS$VDS_A_PB_BTN_TAIL = [84,0,32,0],   !  Ptr to mouse btn list tail
+! 
+  VS$VDS_A_PB_MOV_PTR = [88,0,32,0],    !  Ptr to mouse move list head
+  VS$VDS_A_PB_MOV_TAIL = [92,0,32,0],   !  Ptr to mouse move list tail
+! 
+  VS$VDS_A_PB_BOU_PTR = [96,0,32,0],    !  Ptr to mouse bndry list head
+  VS$VDS_A_PB_BOU_TAIL = [100,0,32,0],  !  Ptr to mouse bndry list tail
+  VS$VDS_B_PB_INTERNAL_FLAG = [104,0,8,1], !  = 1 if user programs may
+!   not access this pasteboard
+! 
+!  The PBFLAGS in vsacpdef are used interchangably with the PB_CHARS ones in
+!  vsvdspb.  It would be nice if one set were eliminated, but until then,
+!  make sure that you keep symbols the same value that have the same meaning.
+!  For instance, PERM_PB must be the same value as PB_PERM etc.
+! 
+    VS$VDS_B_PB_CHARS = [105,0,8,0],
+      VS$VDS_V_PB_PERM = [105,0,1,0],   !  1=Permanent, 0=temporary
+      VS$VDS_V_PB_VKB = [105,1,1,0],    !  1 => With virtual keyboard
+      VS$VDS_V_PB_VTB = [105,2,1,0],    !  1 => With virtual tablet
+      VS$VDS_V_PB_TERM = [105,3,1,0],   !  1 => PB part of a terminal
+      VS$VDS_v_charbitspare = [105,4,4,0],
+    VS$VDS_R_CHARBITS = [105,0,8,0],    !  PB characteristics
+  VS$VDS_R_CHARACS = [105,0,8,0],
+  VS$VDS_W_PB_PROT = [106,0,16,1],      !  UIC protection code
+  VS$VDS_L_PB_UIC = [108,0,32,1],       !  UIC of owner
+  VS$VDS_L_PB_PID = [112,0,32,1],       !  PID of owner process
+  VS$VDS_L_PB_POPUP_WIN_ID = [116,0,32,1], !  if non-0, popped up window
+  VS$VDS_L_PB_POPUP_VP_ID = [120,0,32,1], !  if non-0, popped up vd
+  VS$VDS_A_PB_HELP_ROUTINE = [124,0,32,0], !  help ROUTINE
+  VS$VDS_L_PB_HELP_DATA = [128,0,32,1]  !  data to pass to help routine
+  TES;
+literal VS$VDS_S_PB_BLOCK = 132;
+MACRO PB_BLOCK = BLOCK [VS$VDS_S_PB_BLOCK,byte] FIELD (VS$VDS_PB_BLOCK_FIELDSET) %;
+! 
+!  Virtual Display data structure definition
+! 
+literal VS$VDS_K_VD_LENGTH = 48;        ! Length of VD block
+FIELD VS$VDS_VD_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_VD_NEXT_PTR = [0,0,32,0],    ! Ptr to next VD in list
+  VS$VDS_A_VD_BACK_PTR = [4,0,32,0],    ! Ptr to last VD in list
+  VS$VDS_W_VD_SIZE = [8,0,16,0],        ! Size of VD block
+  VS$VDS_W_VD_TYPE = [10,0,16,0],       ! Data block type (for VMS)
+  VS$VDS_L_VD_ID = [12,0,32,0],         ! Unique virtual display ID
+  VS$VDS_L_VD_X_COOR = [16,0,32,0],     ! X-coordinate of VD in PB
+  VS$VDS_L_VD_Y_COOR = [20,0,32,0],     ! Y-coordinate of VD in PB
+  VS$VDS_L_VD_LENGTH = [24,0,32,0],     ! Length of VD in PB
+  VS$VDS_L_VD_HEIGHT = [28,0,32,0],     ! Height of VD in PB
+  VS$VDS_A_VD_VVR_PTR = [32,0,32,0],    ! Ptr to its visible rectangles
+  VS$VDS_A_VD_VVR_TAIL = [36,0,32,0],   ! Ptr to its vis. rect. tail
+  VS$VDS_A_VD_VOR_PTR = [40,0,32,0],    ! Ptr to its occluded rectangles
+  VS$VDS_A_VD_VOR_TAIL = [44,0,32,0]    ! Ptr to its occ. rect. tail
+  TES;
+literal VS$VDS_S_VD_BLOCK = 48;
+MACRO VD_BLOCK = BLOCK [VS$VDS_S_VD_BLOCK,byte] FIELD (VS$VDS_VD_BLOCK_FIELDSET) %;
+! 
+!  Virtual Display visible rectangle data structure definition
+! 
+literal VS$VDS_K_VVR_LENGTH = 28;       ! Length of VVR block
+FIELD VS$VDS_VVR_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_VVR_NEXT_PTR = [0,0,32,0],   ! Ptr to next VVR in list
+  VS$VDS_A_VVR_BACK_PTR = [4,0,32,0],   ! Ptr to last VVR in list
+  VS$VDS_W_VVR_SIZE = [8,0,16,0],       ! Size of VVR block
+  VS$VDS_W_VVR_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_VVR_R_X_COOR = [12,0,32,0],  ! X-coordinate of rectangle
+  VS$VDS_L_VVR_R_Y_COOR = [16,0,32,0],  ! Y-coordinate of rectangle
+  VS$VDS_L_VVR_R_LENGTH = [20,0,32,0],  ! Length of visible rectangle
+  VS$VDS_L_VVR_R_HEIGHT = [24,0,32,0]   ! Height of visible rectangle
+  TES;
+literal VS$VDS_S_VVR_BLOCK = 28;
+MACRO VVR_BLOCK = BLOCK [VS$VDS_S_VVR_BLOCK,byte] FIELD (VS$VDS_VVR_BLOCK_FIELDSET) %;
+! 
+!  Virtual Display occluded rectangle data structure definition
+! 
+literal VS$VDS_K_VOR_LENGTH = 36;       ! Length of VOR block
+FIELD VS$VDS_VOR_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_VOR_NEXT_PTR = [0,0,32,0],   ! Ptr to next VOR in list
+  VS$VDS_A_VOR_BACK_PTR = [4,0,32,0],   ! Ptr to last VOR in list
+  VS$VDS_W_VOR_SIZE = [8,0,16,0],       ! Size of VOR block
+  VS$VDS_W_VOR_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_VOR_R_X_COOR = [12,0,32,0],  ! X-coordinate of rectangle
+  VS$VDS_L_VOR_R_Y_COOR = [16,0,32,0],  ! Y-coordiante of rectangle
+  VS$VDS_L_VOR_R_LENGTH = [20,0,32,0],  ! Length of occluded rectangle
+  VS$VDS_L_VOR_R_HEIGHT = [24,0,32,0],  ! Height of occluded rectangle
+  VS$VDS_A_VOR_OCC_PTR = [28,0,32,0],   ! Rectangle occlusion list ptr
+  VS$VDS_A_VOR_OCC_TAIL = [32,0,32,0]   ! Rectangle occlusion list tail
+  TES;
+literal VS$VDS_S_VOR_BLOCK = 36;
+MACRO VOR_BLOCK = BLOCK [VS$VDS_S_VOR_BLOCK,byte] FIELD (VS$VDS_VOR_BLOCK_FIELDSET) %;
+! 
+!  Occluded rectangle occlusion data structure definition
+! 
+literal VS$VDS_K_OCC_LENGTH = 16;       ! Length of OCC block
+FIELD VS$VDS_OCC_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_OCC_NEXT_PTR = [0,0,32,0],   ! Ptr to next OCC in list
+  VS$VDS_A_OCC_BACK_PTR = [4,0,32,0],   ! Ptr to last OCC in list
+  VS$VDS_W_OCC_SIZE = [8,0,16,0],       ! Size of OCC block
+  VS$VDS_W_OCC_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_OCC_VD_ID = [12,0,32,0]      ! VD ID occluding rectangle
+  TES;
+literal VS$VDS_S_OCC_BLOCK = 16;
+MACRO OCC_BLOCK = BLOCK [VS$VDS_S_OCC_BLOCK,byte] FIELD (VS$VDS_OCC_BLOCK_FIELDSET) %;
+! 
+!  Window data structure definition
+! 
+literal VS$VDS_K_W_LENGTH = 60;         ! Length of window block
+FIELD VS$VDS_W_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_W_NEXT_PTR = [0,0,32,0],     ! Ptr to next window in list
+  VS$VDS_A_W_BACK_PTR = [4,0,32,0],     ! Ptr to last window in list
+  VS$VDS_W_W_SIZE = [8,0,16,0],         ! Size of window block
+  VS$VDS_W_W_TYPE = [10,0,16,0],        ! Data block type (for VMS)
+  VS$VDS_L_W_ID = [12,0,32,0],          ! Unique ID of window
+  VS$VDS_L_W_NAME_LEN = [16,0,32,0],    ! Window name length
+  VS$VDS_A_W_NAME_ADR = [20,0,32,0],    ! Window name address
+  VS$VDS_L_W_PB_ID = [24,0,32,0],       ! ID of its pasteboard
+  VS$VDS_L_W_VP_ID = [28,0,32,0],       ! ID of its mapped viewport
+  VS$VDS_L_W_PID = [32,0,32,0],         ! PID of its owner process
+  VS$VDS_L_W_X_COOR = [36,0,32,0],      ! X-coordinate within PB
+  VS$VDS_L_W_Y_COOR = [40,0,32,0],      ! Y-coordinate within PB
+  VS$VDS_L_W_LENGTH = [44,0,32,0],      ! Length of window
+  VS$VDS_L_W_HEIGHT = [48,0,32,0],      ! Height of window
+  VS$VDS_A_W_WVR_PTR = [52,0,32,0],     ! Ptr to its visible rectangles
+  VS$VDS_A_W_WVR_TAIL = [56,0,32,0]     ! Ptr to its vis. rect. tail
+  TES;
+literal VS$VDS_S_W_BLOCK = 60;
+MACRO W_BLOCK = BLOCK [VS$VDS_S_W_BLOCK,byte] FIELD (VS$VDS_W_BLOCK_FIELDSET) %;
+! 
+!  Window visible rectangle data structure definition
+! 
+literal VS$VDS_K_WVR_LENGTH = 32;       ! Length of WVR block
+FIELD VS$VDS_WVR_BLOCK_FIELDSET =
+  SET
+  VS$VDS_A_WVR_NEXT_PTR = [0,0,32,0],   ! Ptr to next WVR in list
+  VS$VDS_A_WVR_BACK_PTR = [4,0,32,0],   ! Ptr to last WVR in list
+  VS$VDS_W_WVR_SIZE = [8,0,16,0],       ! Size of WVR block
+  VS$VDS_W_WVR_TYPE = [10,0,16,0],      ! Data block type (for VMS)
+  VS$VDS_L_WVR_VD_ID = [12,0,32,0],     ! Visible rectangle's VD ID
+  VS$VDS_L_WVR_R_X_COOR = [16,0,32,0],  ! X-coordinate of rectangle
+  VS$VDS_L_WVR_R_Y_COOR = [20,0,32,0],  ! Y-coordinate of rectangle
+  VS$VDS_L_WVR_R_LENGTH = [24,0,32,0],  ! Length of rectangle
+  VS$VDS_L_WVR_R_HEIGHT = [28,0,32,0]   ! Height of rectangle
+  TES;
+literal VS$VDS_S_WVR_BLOCK = 32;
+MACRO WVR_BLOCK = BLOCK [VS$VDS_S_WVR_BLOCK,byte] FIELD (VS$VDS_WVR_BLOCK_FIELDSET) %;
+! 
+!  End of module VS$VDS_PB
+! 

@@ -1,0 +1,2612 @@
+%TITLE 'vxs$lib -- VAX STATION USER LIBRARY'
+MODULE vstalibi (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!	Internal VAXstation library routines.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one
+!   ONYX/AGATE/OPAL graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+!		Private routines
+!
+	vsta$obsolete,			! Called by obsolete routines.
+	vsta$$exit_handler,		!VSTA library exit handler
+	vsta$$real_exit_handler,	!VSTA library "real" exit handler
+	vsta$$condition_handler,	!VSTA library condition handler
+	vsta$$qiow,			!SYS$QIOW jacket routine
+	vsta$$translate_file_spec,	!Translate file spec to actual file spec.
+	vsta$$terminal_found,		!Search know TTY list for info block
+	vsta$$channel_found,		!Find a TTY info block by channel no.
+	vsta$$assign_existing_tty,	!Assign channel to existing terminal
+	vsta$$build_device_name,	!Build a virtual device name
+	vsta$$get_template_chan,	!Get channel to template VD device
+	get_acp_error_block,		!Get latest error block
+	vsta$$logical_assigned,		!Get channel to logical name's template
+	vsta$$parent_has_vd,		!Get channel to parent's template VD
+	vsta$$build_local_msgvec,	!Local Error message vector builder
+	vsta$$unbuild_msgvec,		!Err block relocatable => $PUTMSG format
+	vsta$$convert_color_from_user,	!Convert caller specified color number
+	vsta$$convert_color_to_user,	!Convert to caller specified color number
+	vsta$$init,			!VAXstation library initialization
+	vsta$$add_terminal,		!Add a terminal information block
+	vsta$$delete_terminal,		!Delete a terminal information block
+	vsta$$register_vd,		!Register new vd.
+!
+! The following internal routines must be called from kernel mode
+!
+	vsta$$dclexh;			!Declare exit handler (the old fashion way)
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	SYS$QIOW,			!Queue I/O request system service
+	vsta$get_error_block,		!Get the VSTA error block
+	vsta$get_default_protection,	!Get default SDA object protection
+	lib$set_symbol,			!RTL CLI symbol definition
+	lib$get_ef,			!RTL event flag allocation
+	lib$free_ef,			!RTL event flag deallocation
+	lib$get_vm,			!RTL memory allocation routine
+	lib$free_vm;			!RTL memory deallocation routine
+!
+! INCLUDE FILES:
+!
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB constant data declarations
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';		! Color lookup table data declarations
+LIBRARY 'VSTA$LIBRARY:VSVDSVD';		! Virtual terminal definitions
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	! VS specific $QIO codes + modifiers
+LIBRARY 'VSTA$LIBRARY:TXTCODES';	! TEXT specific $QIO codes
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error code symbols
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		! Common symbols
+LIBRARY 'SYS$LIBRARY:LIB';		! Get access to VMS system services
+!
+! Define PSECTs for this library module
+!
+	$VSTA_PSECT;
+!
+! BLISS-32 built-in machine instructions
+!
+BUILTIN
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+
+GLOBAL LITERAL
+	max_acp_error_block_len = 1000;	! room for longest possible error block
+					! (number of bytes)
+LITERAL
+	condition_vector = 1;		!Use secondary exception vector
+
+!
+! Define macro for getting an efn.  We exit if we get a failure, since such
+! failure could easily mean premature operation signalling.
+!
+macro $get_efn =
+	begin
+	external routine lib$get_ef;
+	external vsta$_noefn;
+	local s, efn;
+	if not (s = lib$get_ef (efn))
+	then $exit (code = .s)
+	else
+	    if .efn eql -1
+	    then $exit (code = vsta$_noefn);
+	.efn
+	end %;
+!
+! . . . and one for freeing same.
+!
+	macro $free_efn (efa) =
+	    begin
+	    local s;
+	    external routine lib$free_ef;
+	    if not (s = lib$free_ef (efa))
+	    then $exit (code = .s)
+	    else ss$_normal
+	    end
+	    % ;
+
+OWN
+	previous_handler,		  !Stash address of previous handler
+	exit_handler_on: INITIAL($false), !"Boolean" exit handler set flag
+	exit_status: INITIAL(SS$_NORMAL), !Image exit status value
+	exit_control_block: VECTOR[4]	  !Exit control block
+	  INITIAL(0,0,0,0);
+
+GLOBAL
+	our_pid,			!Filled in by GETJPI
+	acp_error_exists : initial (0),	! Set to 1 when an error exists.
+	acp_error_block : vector [max_acp_error_block_len, byte],
+					! error block for most recent call
+	fixed_acp_error_block : vector [max_acp_error_block_len, byte],
+					! fixed error block
+	vsta$gl_first_call: INITIAL($true); !"Boolean" first VSTA call flag
+
+own
+	our_item_list: VECTOR[4]	!GETJPI control list for various
+					!process parameters.
+	  INITIAL((JPI$_PID ^ 16) + 4,our_pid,0,0);
+
+EXTERNAL
+	vsta$gl_local_error:,	  	!"Boolean" local error on flag
+	vd_chan: WORD ,		  	!Channel to template
+	local_msgvec: REF VECTOR,	!Local error message vector
+	local_msgvec_size:,		!Local error message vector size
+	errors_on:,			!"Boolean" error display on flag
+	vsta$gb_prot_symbol: VECTOR,	!Default protection symbol name
+	vsta$gq_prot_desc: VECTOR,	!Default protection symbol desc.
+	impure_area: BLOCK[vsta$k_pp_length,BYTE]	!Per-process info
+	;
+
+global routine vsta$obsolete
+!++
+! Functional description:
+!
+!	This routine is called when an old program attempts to call an
+!	obsolete library routine, which the vsta_obsolete_routine macro
+!	arranges for.
+!
+! Formal parameters:
+ (
+	pc		! program pc where obsolete call ocurred
+ ) =
+! Return value:
+!
+!	An error message revealing the PC of the erroneous call is conjured
+!	up and returned.
+!
+!--
+
+	begin
+
+	! Return an error indicating location of the call.
+	!
+	lib_ret_err (vsta$_obsolete, integer_type, .pc)
+
+	end;
+
+
+%SBTTL 'vsta$$exit_handler -- VAXstation Library Exit Handler'
+GLOBAL ROUTINE vsta$$exit_handler(
+			exit_status_adr		!Exit status value address
+				) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for any cleanup processing resulting
+! from use of the VAXstation library that won't be handled elsewhere. If
+! the image exit status is even, then an attempt will be made to retrieve
+! a final error block from the ACP on behalf of the process. This error
+! block will be output if it exists.
+!	NOTE: To overcome exit handler dispatching stupidity, this exit
+! handler merely declares the "real" exit handler which will be invoked after
+! all other user-mode exit handlers have had their shots. This is the only
+! mechanism which insures that we are the last user-mode exit handler to
+! execute.
+!
+! FORMAL PARAMETERS:
+!
+!	EXIT_STATUS_ADR : Address of longword image exit status
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status value
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan;			!Channel to template VD
+!
+! Inform the ACP that we are performing image rundown. Get a channel to
+! generic vaxstation device to get us through $QIO and eventually to the
+! vaxstation ACP. If it fails, then it looks like we don't do image rundown.
+!
+	IF vsta$$get_template_chan(dummy_chan) THEN
+	  $QIOW(
+		CHAN   = .dummy_chan,
+		FUNC   = IO$_DELETE OR IO$M_VS);
+!
+! Declare the "real" exit handler to execute after all other user-mode handlers
+!
+	exit_control_block[1] =	vsta$$real_exit_handler;
+!
+	$DCLEXH( DESBLK = exit_control_block );
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! end of routine vsta$$exit_handler
+
+
+%SBTTL 'vsta$$real_exit_handler -- VAXstation Library Exit Handler'
+GLOBAL ROUTINE vsta$$real_exit_handler(
+			exit_status_adr		!Exit status value address
+				) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is REALLY responsible for any cleanup processing resulting
+! from use of the VAXstation library that won't be handled elsewhere. If
+! the image exit status is even, then an attempt will be made to retrieve
+! a final error block from the ACP on behalf of the process. This error
+! block will be output if it exists.
+!	NOTE: This exit handler must be the last user-mode exit handler to
+! execute. Any declared before this one will be ignored.
+!
+! FORMAL PARAMETERS:
+!
+!	EXIT_STATUS_ADR : Address of longword image exit status
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status value
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    MACRO
+	status_symbol = %STRING('VSTA$STATUS')%,	!No pun intended
+	default_status = %STRING('%X00000001')%,	!Default status value
+	ctrl_string = %STRING('%X!XL')%;		!$FAO control string
+
+    LITERAL
+	value_len = 10,
+	status_symbol_len = %CHARCOUNT(status_symbol),	!How big is status sym.
+	ctrl_string_len = %CHARCOUNT(ctrl_string);	!$FAO ctrl string size
+
+    EXTERNAL
+	vsta$_facility;					!VSTA$_ facility code
+
+    OWN
+	vsta_status_symbol: VECTOR[status_symbol_len,BYTE]
+	  INITIAL(BYTE(status_symbol)),			!VSTA status symbol
+	fao_ctrl_string: VECTOR[ctrl_string_len,BYTE]
+	  INITIAL(BYTE(ctrl_string));			!$FAO control string
+
+    LOCAL
+	status,						!Return status values
+	outlen,						!Bytes written to value
+	value_buffer: VECTOR[value_len,BYTE]		!Symbol value buffer
+	  INITIAL(BYTE(default_status)),
+	status_desc: VECTOR[2],				!Status sym. desc.
+	ctrl_desc: VECTOR[2],				!Control string desc.
+	value_desc: VECTOR[2],				!Symbol value desc.
+	message_code: REF VECTOR[0,WORD];		!To examine facility
+!
+! Set the VSTA$STATUS to normal by default
+!
+	value_desc[0] = value_len;
+	value_desc[1] = value_buffer;
+	status_desc[0] = status_symbol_len;
+	status_desc[1] = vsta_status_symbol;
+!
+	lib$set_symbol(
+			status_desc,
+			value_desc,
+			%REF(lib$k_cli_local_sym));
+!
+! If this is not a bad status (the low bit is set) then return
+!
+	IF (..exit_status_adr AND %X'1') NEQ 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! If this status value does not correspond to a VSTA$_xxx message, then
+! don't do any additional processing (Until we get back longword status
+! codes from the acp, also try to convert the status into a VSTA$_xxx code)
+!
+	message_code = .exit_status_adr;
+	IF .message_code[1] NEQ vsta$_facility THEN
+	  RETURN SS$_NORMAL;
+!
+! We have a VAXstation error code as a final completion status. Try to get
+! the error block for this message or else just exit with it
+!
+	IF NOT vsta$get_error_block() THEN
+	  RETURN SS$_NORMAL;
+!
+! If we just successfully output the error block, we don't want VMS to display
+! another message. So stash the status somewhere where it can be found and
+! cause a normal exit.
+!
+	ctrl_desc[0] = ctrl_string_len;
+	ctrl_desc[1] = fao_ctrl_string;
+!
+	IF NOT $FAO(
+			ctrl_desc,
+			outlen,
+			value_desc,
+			..exit_status_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+	lib$set_symbol(
+			status_desc,
+			value_desc,
+			%REF(lib$k_cli_local_sym));
+!
+! Force the image to exit normally to prevent VMS from displaying the
+! message again 
+!
+	$EXIT( CODE = SS$_NORMAL);
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! end of routine vsta$$real_exit_handler
+
+
+%SBTTL 'vsta$$condition_handler -- VAXstation Library Condition Handler'
+GLOBAL ROUTINE vsta$$condition_handler(
+		signal_array: REF BLOCK[0,BYTE],	!Signal array
+		mechanism_array: REF BLOCK[0,BYTE]	!Mechanism array
+			): =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for handling conditions specific to
+! the VSTA software. In other words, if a condition is signalled which has
+! the VSTA facility code as the reason, then this routine will handle any
+! necessary processing: displaying the error block for one.
+!	This routine may only be called by the VMS exception dispatcher.
+!
+! FORMAL PARAMETERS:
+!
+!	SIGNAL_ARRAY    : Address of condition signal array
+!				(input parameter)
+!	MECHANISM_ARRAY : Address of condition signal array
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_CONTINUE		!We handled this condition...continue
+!	SS$_RESIGNAL		!Nothing for us to do...resignal
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	CALLG,					!Call with general arg. list
+	argptr;					!Argument pointer address
+
+    EXTERNAL
+	vsta$_facility;				!VSTA$_ facility code
+
+    LOCAL
+	condition_value: REF VECTOR[0,WORD],	!Individual words of condition
+	status;					!Return status value
+!
+! If this is not a VSTA condition, inform the exception dispatcher to resignal
+! and let someone else process it. If this is one of our boys, display
+! whatever's in the error block and inform dispatcher to continue.
+!
+	condition_value = signal_array[CHF$L_SIG_NAME];
+	IF .condition_value[1] EQL VSTA$_FACILITY THEN
+	  BEGIN
+	    vsta$get_error_block();
+	    RETURN SS$_CONTINUE;
+	  END;
+!
+! If we overrode somebody else's exception vector when we declared ours, then
+! give it a chance to do whatever it was going to do.
+!
+	IF .previous_handler NEQ 0 THEN
+	  status = CALLG(argptr(),.previous_handler)
+	ELSE
+	  status = SS$_RESIGNAL;
+!
+	RETURN .status;		!
+!
+    END;			! end of routine vsta$$condition_handler
+
+
+%SBTTL 'vsta$$qiow -- SYS$QIOW Jacket Routine'
+GLOBAL ROUTINE vsta$$qiow(
+			efn,			!Event flag
+			chan,			!Channel number
+			func,			!Function code + modifiers
+			iosb : ref vector [2],	!I/O status block
+			astadr,			!AST routine address
+			astprm,			!AST routine parameter
+			p1,			!SYS$QIOW parameter 1
+			p2,			!SYS$QIOW parameter 2
+			p3,			!SYS$QIOW parameter 3
+			p4,			!SYS$QIOW parameter 4
+			p5,			!SYS$QIOW parameter 5
+			p6			!SYS$QIOW parameter 6
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for allocating an event flag, calling
+! SYS$QIOW with the specified parameters, and deallocating the event flag.
+! The first encountered bad status will be returned. It is up to the caller
+! to check the I/O status block (if any).
+!
+! FORMAL PARAMETERS:
+!
+!	EFN	: Event flag
+!			(input parameter)
+!	CHAN	: Channel number
+!			(input parameter)
+!	FUNC	: Function code + modifiers
+!			(input parameter)
+!	IOSB	: I/O status block
+!			(input parameter)
+!	ASTADR	: AST routine address
+!			(input parameter)
+!	ASTPRM	: AST routine parameter
+!			(input parameter)
+!	P1	: SYS$QIOW parameter 1
+!			(input parameter)
+!	P2	: SYS$QIOW parameter 2
+!			(input parameter)
+!	P3	: SYS$QIOW parameter 3
+!			(input parameter)
+!	P4	: SYS$QIOW parameter 4
+!			(input parameter)
+!	P5	: SYS$QIOW parameter 5
+!			(input parameter)
+!	P6	: SYS$QIOW parameter 6
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status
+!	SS$_xxx			!System service return status values
+!	LIB$_xxx		!RTL error return status values
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+    BUILTIN
+	argptr,					!Argument block pointer
+	CALLG;					!Call with general arg. block
+
+    LOCAL
+	our_iosb : vector [2],			!local iosb
+	status;					!Return status value
+!
+! Use preallocated event flag for the SYS$QIOW (the one specified as a
+! parameter is assumed to be useless).  We allocate it for EACH operation
+! instead of only once at startup, lest an ast routine interrupt us, come
+! through here again and cause the qiow to prematurely fall through.
+!
+	efn = $get_efn;
+!
+! We need an iosb, so use caller's if available.
+!
+	IF .iosb EQL 0 THEN
+	  iosb = our_iosb[0];
+!
+! We have an event flag (and have cleverly replaced the one on the argument
+! stack). Call SYS$QIOW by merely passing the pointer to this argument list
+!
+	status = CALLG(argptr(),SYS$QIOW);
+!
+! If an error occurred, then we retrieve the error block in case the caller
+! asks for it via vsta$get_error_block.  It's important to do this now, because
+! if the caller does something before calling vsta$get_error_block, such
+! as printing "an error occurred", then the acp has already lost the block !
+!
+! We are careful here to only ask the acp for the error block if the qiow
+! even made it to the acp.  For vms-rejected or vddriver-rejected qiow's, we
+! don't get the error block.  We assume that if the qiow status is bad, we
+! never made it to the acp.  If qiow status is good, then we look in iosb,
+! and use bad iosb status to indicate that the qiow made it all the way to
+! the acp and got rejected there, and hence there's a good error block to be
+! had.
+!
+	if .status
+	then
+	    if not .iosb[0]
+	    then get_acp_error_block (.efn);
+!
+! Free event flag.
+!
+	$free_efn (efn);
+!
+	RETURN .status;
+    END;			! Of routine vsta$$qiow
+
+
+%SBTTL 'vsta$$translate_file_spec -- Translate Logical => Actual File Spec'
+GLOBAL ROUTINE vsta$$translate_file_spec(
+		infile_desc: REF BLOCK[0,BYTE],	!Input file name ascii desc.
+		outfile_desc: REF BLOCK[0,BYTE],!Output file name ascii desc.
+		filnam_length			!Actual file name length
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for translating the input file
+! specification which could contain any number of process/group/system
+! logical names imbedded within it into the actual VMS file specification
+! based on the logical name tables of the caller. Read access to the file
+! as well as its existence will then be verified. Any failures will generate
+! an erroneous status return value.
+!
+! FORMAL PARAMETERS:
+!
+!	INFILE_DESC   : Address of input file specification ascii descriptor
+!			(Input parameter)
+!	OUTFILE_DESC  : Address of output file specification ascii descriptor
+!			(Output parameter)
+!	FILNAM_LENGTH : Address to contain length of actual file specification
+!			(Output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!	RMS$_xxx		!RMS error return status values
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+    OWN
+	output_file: VECTOR[NAM$C_MAXRSS,BYTE],	!Expanded file name string
+	file_name: $NAM(),			!File name block address
+	file_fab: $FAB(				!File access block address
+			FOP = NAM
+			);
+
+    LOCAL
+	status,					!RMS return status value
+	name_length: REF VECTOR[0,BYTE];	!Input file spec. length
+!
+! Put the input file specification descriptor into the FAB if the caller
+! is serious about this
+!
+	IF .infile_desc EQL 0 THEN
+	  RETURN SS$_NOSUCHFILE;
+!
+	name_length = infile_desc[vsta$ad_w_size];
+	IF (.name_length[0] NEQ .infile_desc[vsta$ad_w_size]) OR
+	   (.infile_desc[vsta$ad_a_string] EQL 0) THEN
+	  RETURN SS$_NOSUCHFILE;
+!
+	file_fab[FAB$L_NAM] = file_name;
+	file_fab[FAB$B_FNS] = .name_length[0];
+	file_fab[FAB$L_FNA] = .infile_desc[vsta$ad_a_string];
+!
+! We'll put the expanded file name string into an internal buffer for now
+!
+	file_name[NAM$B_ESS] = NAM$C_MAXRSS;
+	file_name[NAM$L_ESA] = output_file;
+!
+! Use RMS to extract the actual file name from the string passed by the
+! caller
+!
+	IF (NOT (status = $PARSE( FAB = file_fab ))) THEN
+	  RETURN .status;
+!
+! RMS makes sure the the output file specification descriptor is valid
+!
+	name_length = outfile_desc[vsta$ad_w_size];
+	file_name[NAM$B_RSS] = .name_length[0];
+	file_name[NAM$L_RSA] = .outfile_desc[vsta$ad_a_string];
+!
+! If the file doesn't exist or the caller doesn't have read access to the
+! directory entry for the file, then return the indication.
+!
+	IF (NOT (status = $SEARCH( FAB = file_fab ))) THEN
+	  RETURN .status;
+!
+! Return the size of the resultant file specification string
+!
+	.filnam_length = .file_name[NAM$B_RSL];
+!
+! If the caller is incapable of opening this file, return the indication
+!
+	IF (NOT (status = $OPEN( FAB = file_fab ))) THEN
+	  RETURN .status;
+!
+	$CLOSE( FAB = file_fab );
+!
+	RETURN SS$_NORMAL;
+    END;			! Of routine vsta$$translate_file_spec
+
+
+%SBTTL 'vsta$$terminal_found -- Find terminal block in list'
+global ROUTINE vsta$$terminal_found(
+			tty_chan,			!TTY channel number
+			tty_adr				!Address of block found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will search the linked list of terminal information
+! blocks for the channel number specified and return the address of the block
+! if found. The value of the function is either $true (=1) or $false (=0)
+! depending on whether or not the terminal was found.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number of terminal
+!				(input parameter)
+!	TTY_ADR  : Address to contain the address of the terminal block found
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Successful return => terminal block found
+!	$false (=0)		!No such device (Terminal undefined)
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	ct_ptr: REF BLOCK[0,BYTE];	 !Ptr to arbitrary CT block
+!
+! Find this channel number in the terminal information list
+!
+	.tty_adr = 0;
+	ct_ptr = .impure_area[vsta$a_tty_info];
+	WHILE (.ct_ptr NEQ impure_area[vsta$a_tty_info]) DO
+	  IF .ct_ptr[vsta$ct_l_tty_chan] EQL .tty_chan THEN
+	    BEGIN
+	      .tty_adr = .ct_ptr;
+	      RETURN $true;
+	    END
+	  ELSE
+	    ct_ptr = .ct_ptr[vsta$ct_a_next_ptr];
+!
+      RETURN $false;		! Could not find this channel number
+    END;			! End of routine vsta$$terminal_found
+
+
+%SBTTL 'vsta$$channel_found -- Get Appropriate terminal block'
+GLOBAL ROUTINE vsta$$channel_found(
+			tty_chan,			!TTY channel number
+			tty_adr				!Address of block found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will check the value passed in TTY_CHAN to see if its
+! a valid channel number address. If the address OR its contents are zero,
+! this routine will return the address of the "selected" terminal information
+! block (if one has been defined). Otherwise, this routine will look for the
+! specified channel number in the list of known terminals and return the block
+! if found.
+! 	The value of the function is either $true (=1) or $false (=0)
+! depending on whether or not the terminal was found.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number of terminal
+!				(input parameter)
+!	TTY_ADR  : Address to contain the address of the terminal block found
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Successful return => terminal block found
+!	$false (=0)		!No such device (Terminal undefined)
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	stb: REF BLOCK[0,BYTE];			!"Selected" terminal info block
+
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF .tty_chan EQL 0 THEN
+	  BEGIN
+	    IF .impure_area[vsta$a_curr_tty_ptr] EQL
+		impure_area[vsta$a_curr_tty_ptr] THEN
+	      RETURN $false;
+	    stb = .impure_area[vsta$a_curr_tty_ptr];
+	    .tty_adr = .stb[vsta$st_a_curr_tty];
+	  END
+	ELSE
+	  IF ..tty_chan EQL 0 THEN
+	    BEGIN
+	      IF .impure_area[vsta$a_curr_tty_ptr] EQL
+		  impure_area[vsta$a_curr_tty_ptr] THEN
+		RETURN $false;
+	      stb = .impure_area[vsta$a_curr_tty_ptr];
+	      .tty_adr = .stb[vsta$st_a_curr_tty];
+	    END
+	  ELSE
+	    IF NOT vsta$$terminal_found(..tty_chan,.tty_adr) THEN
+	      RETURN $false;
+!
+      RETURN $true;
+    END;			! End of routine vsta$$channel_found
+
+
+%SBTTL 'vsta$$assign_existing_tty -- Assign channel to Existing Terminal'
+global ROUTINE vsta$$assign_existing_tty(
+			tty_chan,			!TTY channel number
+			devnam_desc: REF BLOCK[0,BYTE],	!Device name desc.
+			terminal_type			!Terminal type
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will assume that the device name parameter is a valid
+! VD device (i.e. _VDA13:, etc.) and will attempt to assign a channel number
+! to it, find out what kind of emulated terminal it is, and store the
+! information in process heap store.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Address to contain longword channel number of terminal
+!				(output parameter)
+!	DEVNAM_DESC   : Address of device name ascii descriptor
+!				(input parameter)
+!	TERMINAL_TYPE : Address of longword terminal type
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !Return status value
+	iosb: VECTOR[4,WORD],		 !I/O status block
+	tty_type,			 !Temporary storage for device type
+	ndb: REF BLOCK[0,BYTE],		 !Terminal information block
+	unit_no: WORD,			 !Device unit number
+	dev_type: BYTE,			 !Device type
+	device_char: VECTOR[7] INITIAL((DVI$_UNIT^16)+4,0,0,
+				(DVI$_DEVTYPE^16)+4,0,0,0);
+					 !Virtual device characteristics
+!
+! Get device information to see what kind of terminal it is and store the
+! information
+!
+	device_char[1] = unit_no;
+	device_char[4] = dev_type;
+!
+	status = $GETDVIW(
+			DEVNAM = .devnam_desc,
+			IOSB   = iosb,
+			ITMLST = device_char);
+!
+	IF NOT .status THEN
+	  RETURN .status;
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Verify that this is the right kind of terminal (whatever was asked for)
+!
+	IF (tty_type = (SELECTONE .dev_type OF
+				    SET
+				      [DT$_VT102]      : vs$k_vtem_vt100;
+				      [DT$_TEK4014]    : vs$k_vtem_4014;
+				      [DT$_TTYUNKN]    : vs$k_vtem_generic;
+    				      [DT$_VD]	       : vs$k_vtem_generic;
+				    TES))
+		NEQ .terminal_type THEN
+	  SELECTONE .terminal_type OF
+	    SET
+	      [vs$k_vtem_vt100]	  : lib_ret_err(vsta$_notvt100);
+	      [vs$k_vtem_4014]    : lib_ret_err(vsta$_nottek4014);
+	      [vs$k_vtem_generic] : lib_ret_err(vsta$_notnative);
+	    TES;
+!
+! Device checks out -- Assign a channel to it on behalf of the caller
+!
+	IF (NOT (status = $ASSIGN(
+				DEVNAM = .devnam_desc,
+				CHAN = .tty_chan))) THEN
+	  RETURN .status;
+!
+! Add a terminal to our data base of known devices
+!
+	IF (NOT (status = vsta$$add_terminal(ndb))) THEN
+	  RETURN .status;		!Error return status
+!
+	ndb[vsta$ct_l_tty_chan] = ..tty_chan;
+	ndb[vsta$ct_b_tty_type] = .tty_type;
+	ndb[vsta$ct_l_vd_id] = .unit_no;
+
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vsta$$assign_existing_tty
+
+
+%SBTTL 'vsta$$build_device_name -- Build VAXstation Device Name'
+global ROUTINE vsta$$build_device_name(
+			unit_no,			!Device unit number
+			devnam_desc: REF BLOCK[0,BYTE],	!Device name desc.
+			devnam_length			!Device name length
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will take the unit number passed as a parameter and the
+! process wide channel to the template virtual display device and build a
+! device name. In other words, a unit number of 12 for a process which has
+! a template virtual display of _VDC0: will get the device name _VDC12:
+! returned.
+!
+! FORMAL PARAMETERS:
+!
+!	UNIT_NO	      : Longword unit number of terminal
+!				(input parameter)
+!	DEVNAM_DESC   : Address of device name ascii descriptor
+!				(input parameter)
+!	DEVNAM_LENGTH : Address to contain device name length
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! IMPLICIT OUTPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    MACRO
+	fill_string = %STRING('!UL:')%;
+
+    LITERAL
+	fill_length = %CHARCOUNT(fill_string);
+
+    OWN
+	unit_fill: VECTOR[fill_length,BYTE] INITIAL(BYTE(fill_string));
+
+    LOCAL
+	status,				 !Return status value
+	iosb: VECTOR[4,WORD],		 !I/O status block
+	device_name: VECTOR[64,BYTE],	 !Template device name string
+	device_name_length,		 !Template device name length
+	device_desc: VECTOR[2],		 !Template device name descriptor
+	device_char: VECTOR[4] INITIAL((DVI$_DEVNAM^16)+64,0,0,0);
+					 !Virtual device characteristics
+!
+! Get device information to see what kind of terminal it is and store the
+! information
+!
+	device_char[1] = device_name;
+	device_char[2] = device_name_length;
+!
+	status = $GETDVIW(
+			CHAN   = .vd_chan,
+			IOSB   = iosb,
+			ITMLST = device_char);
+!
+	IF NOT .status THEN
+	  RETURN .status;
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Build virtual device name from unit number and template device name
+!
+	CH$MOVE(
+		fill_length,
+		unit_fill,
+		device_name + 4);
+	device_desc[0] = 8;
+	device_desc[1] = device_name;
+!
+	RETURN $FAO(
+		device_desc,
+		.devnam_length,
+		.devnam_desc,
+		.unit_no
+			);
+!
+    END;			! End of routine vsta$$build_device_name
+
+
+%SBTTL 'vsta$$get_template_chan -- Get channel to Template VD Device'
+GLOBAL ROUTINE vsta$$get_template_chan(
+			tty_chan			!TTY channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning a channel number to the
+! template virtual display device for this process. This channel number is
+! used for operations which require a path to the correct ACP for the caller
+! but also transparent access to any device. The following algorithm is used
+! to determine the channel number to use:
+!	1. If channel already assigned, return it.
+!	2. If SYS$INPUT translates to a virtual display device, assign a
+!	   channel number to its template and return it.
+!	3. If SYS$OUTPUT translates to a virtual display device, assign a
+!	   channel number to its template and return it.
+!	4. If SYS$COMMAND translates to a virtual display device, assign a
+!	   channel number to its template and return it.
+!	5. If VSTA$LIB_VD0 translates to a virtual display template, assign a
+!	   channel number to it and return it. (*** FOR TESTING ONLY ***)
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Address to contain word channel number of template
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! IMPLICIT OUTPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_ACCERR		!VAXstation software/hardware access failure
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    EXTERNAL
+	VSTA$_ACCERR;				!VAXstation access failure
+
+    MACRO
+	vsta_input   = %STRING('SYS$INPUT')%,
+	vsta_output  = %STRING('SYS$OUTPUT')%,
+	vsta_command = %STRING('SYS$COMMAND')%,
+	vsta_vd0     = %STRING('VSTA$LIB_VD0')%;
+
+    LITERAL
+	vsta_input_length = %CHARCOUNT(vsta_input),
+	vsta_output_length = %CHARCOUNT(vsta_output),
+	vsta_command_length = %CHARCOUNT(vsta_command),
+	vsta_vd0_length = %CHARCOUNT(vsta_vd0);
+
+    OWN
+	pid,
+	item_list: VECTOR[4]
+	  INITIAL((JPI$_OWNER ^ 16) + 4,pid,0,0),
+	input_lognam: VECTOR[vsta_input_length,BYTE]
+	  INITIAL(BYTE(vsta_input)),
+	output_lognam: VECTOR[vsta_output_length,BYTE]
+	  INITIAL(BYTE(vsta_output)),
+	command_lognam: VECTOR[vsta_command_length,BYTE]
+	  INITIAL(BYTE(vsta_command)),
+	vd0_lognam: VECTOR[vsta_vd0_length,BYTE]
+	  INITIAL(BYTE(vsta_vd0));
+
+    LOCAL
+	arg_block: INITIAL(0),			!$CMKRNL argument block
+	iosb: VECTOR[4,WORD],			!I/O status block
+	lognam_desc: VECTOR[2];			!Logical name descriptor
+
+!
+! If VD_CHAN already assigned, just return it
+!
+	IF .vd_chan NEQ 0 THEN
+	  BEGIN
+	    .tty_chan = .vd_chan;
+	    RETURN SS$_NORMAL;
+	  END;
+!
+! First try translation of SYS$INPUT and see if assigned to a VD device
+!
+	lognam_desc[0] = vsta_input_length;
+	lognam_desc[1] = input_lognam;
+!
+	IF vsta$$logical_assigned(
+			.tty_chan,
+			lognam_desc) THEN
+	  RETURN SS$_NORMAL;
+!
+! Next try translation of SYS$OUTPUT and see if assigned to a VD device
+!
+	lognam_desc[0] = vsta_output_length;
+	lognam_desc[1] = output_lognam;
+!
+	IF vsta$$logical_assigned(
+			.tty_chan,
+			lognam_desc) THEN
+	  RETURN SS$_NORMAL;
+!
+! Next try translation of SYS$COMMAND and see if assigned to a VD device
+!
+	lognam_desc[0] = vsta_command_length;
+	lognam_desc[1] = command_lognam;
+!
+	IF vsta$$logical_assigned(
+			.tty_chan,
+			lognam_desc) THEN
+	  RETURN SS$_NORMAL;
+!
+! So far, we're not doing so well. We may be the subprocess of a legitimate
+! VAXstation user. So go searching through any parent process' login terminals
+! to see if we can find a VD device.
+!
+	IF $GETJPIW( IOSB = iosb, ITMLST = item_list ) THEN
+	  IF .iosb[0] THEN
+	    IF vsta$$parent_has_vd(
+			.tty_chan,
+			.pid) THEN
+	      RETURN SS$_NORMAL;
+!
+! Lastly try translation of VSTA$LIB_VD0 and see if assigned to a VD device
+!
+! ***NOTE: This last one is for testing only and has been commented out
+!
+!	lognam_desc[0] = vsta_vd0_length;
+!	lognam_desc[1] = vd0_lognam;
+!
+!	IF vsta$$logical_assigned(
+!			.tty_chan,
+!			lognam_desc) THEN
+!	  RETURN SS$_NORMAL;
+!
+      RETURN VSTA$_ACCERR;	! Could not find template VD device
+    END;			! End of routine vsta$$get_template_chan
+
+
+%SBTTL 'vsta$$logical_assigned -- Assign to Logical Names Template'
+global ROUTINE vsta$$logical_assigned(
+			tty_chan,			!TTY channel number
+			logical_desc			!Logical name desc.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning a channel number to the
+! template virtual display device for this logical name. In other words, if
+! the logical name specified translates to a virtual display device, a
+! channel will be assigned to its template, the channel number stored in
+! VD_CHAN for future use, and the channel number will be returned in TTY_CHAN.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Address to contain word channel number of template
+!				(output parameter)
+!	LOGICAL_DESC  : Address of logical name ascii descriptor
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! IMPLICIT OUTPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true  (=1) : Able to assign channel to template virtual display
+!	$false (=0) : Unable to assign channel to template virtual display
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    MACRO
+	vd_device = %STRING('VD')%,
+	vt_device = %STRING('VT')%,
+	unit_string = %STRING('0:')%;
+
+    LITERAL
+	unique_size = %CHARCOUNT(vd_device),
+	vt_size = %CHARCOUNT(vt_device),
+	unit_size = %CHARCOUNT(unit_string),
+	escape = 27;
+
+    OWN
+	phy_devnam: VECTOR[64,BYTE],	! Physical device name
+	phy_devnam_len,			! Physical device name length
+	item_list: VECTOR[4] INITIAL(	! $GETDVI item list
+	(dvi$_tt_phydevnam^16)+64,	! to get the physical device name
+	phy_devnam, phy_devnam_len,0),	! string and length
+	vt_devnam: VECTOR[vt_size,BYTE] INITIAL(BYTE(vt_device)),
+	vsta_device: VECTOR[unique_size,BYTE] INITIAL(BYTE(vd_device)),
+	template_unit: VECTOR[unit_size,BYTE] INITIAL(BYTE(unit_string));
+
+    LOCAL
+	vd_adr,				 !Start address of VD in device name
+	iosb: VECTOR[4,WORD],		 !I/O status block for $GETDVI
+	device_name: VECTOR[128,BYTE],	 !Device name string
+	device_name_length,		 !Device name string length
+	device_desc: VECTOR[2];		 !Device name descriptor
+
+!
+! If the logical name passed as a parameter doesn't translate at all, then
+! return indication
+!
+	device_desc[0] = 128;
+	device_desc[1] = device_name;
+!
+	IF (NOT ($TRNLOG(
+			LOGNAM = .logical_desc,
+			RSLLEN = device_name_length,
+			RSLBUF = device_desc))) THEN
+	  RETURN $false;
+!
+! First see if its a VD device
+!
+	IF (vd_adr = CH$FIND_SUB(
+			.device_name_length,
+			device_name,
+			unique_size,
+			vsta_device)) EQL 0 THEN
+	  BEGIN
+	    IF (vd_adr = CH$FIND_SUB(
+			.device_name_length,
+			device_name,
+			vt_size,
+			vt_devnam)) EQL 0 THEN
+	      RETURN $false;
+	    device_desc[0] = 1 + CH$FIND_CH(
+			.device_name_length - (.vd_adr - device_name),
+			.vd_adr,
+			%C':') - .vd_adr;
+	    device_desc[1] = .vd_adr;
+	    IF NOT $GETDVIW(
+			DEVNAM = device_desc,
+			ITMLST = item_list,
+			IOSB   = iosb) THEN
+	      RETURN $false;
+	    IF NOT .iosb[0] THEN
+	      RETURN $false;
+	    IF .phy_devnam_len EQL 0 THEN
+	      RETURN $false;
+	    vd_adr = CH$FIND_SUB(.phy_devnam_len, phy_devnam, unique_size,
+					vsta_device);
+	    IF .vd_adr EQL 0 THEN
+	      RETURN $false;
+	  END;
+!
+! Logical name translates to a virtual display device -- Build template
+! device name and assign VD_CHAN to it for future use (if able)
+!
+	CH$MOVE(unit_size,
+		template_unit,
+		.vd_adr + 3);
+!
+	device_desc[0] = 5;
+	device_desc[1] = .vd_adr;
+	IF (NOT ($ASSIGN(
+			DEVNAM = device_desc,
+			CHAN = .tty_chan
+			))) THEN
+	  RETURN $false;
+!
+	vd_chan = ..tty_chan;
+!
+      RETURN $true;		! Return success indication
+    END;			! End of routine vsta$$logical_assigned
+
+
+%SBTTL 'vsta$$parent_has_vd -- Assign to Parent Process Template'
+ROUTINE vsta$$parent_has_vd(
+			tty_chan,			!TTY channel number
+			owner_pid			!Owner process PID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning a channel number to the
+! template virtual display device for specified process. In other words, if
+! the login terminal of the specified process is a virtual display device, a
+! channel will be assigned to its template, the channel number stored in
+! VD_CHAN for future use, and the channel number will be returned in TTY_CHAN.
+!	This routine will call itself recursively as long as parent processes
+! remain.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Address to contain word channel number of template
+!				(output parameter)
+!	OWNER_PID     : Longword PID of process to check login terminal
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! IMPLICIT OUTPUTS:
+!
+!	VD_CHAN : Word channel number to template virtual display device
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true  (=1) : Able to assign channel to template virtual display
+!	$false (=0) : Unable to assign channel to template virtual display
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    MACRO
+	vd_device = %STRING('VD')%,
+	vt_device = %STRING('VT')%,
+	unit_string = %STRING('0:')%;
+
+    LITERAL
+	unique_size = %CHARCOUNT(vd_device),
+	vt_size = %CHARCOUNT(vt_device),
+	unit_size = %CHARCOUNT(unit_string),
+	escape = 27;
+
+    OWN
+	next_pid,
+	phy_devnam: VECTOR[64,BYTE],	! Physical device name
+	phy_devnam_len,			! Physical device name length
+	item_list: VECTOR[4] INITIAL(	! $GETDVI item list
+	(dvi$_tt_phydevnam^16)+64,	! to get the physical device name
+	phy_devnam, phy_devnam_len,0),	! string and length
+	vt_devnam: VECTOR[vt_size,BYTE] INITIAL(BYTE(vt_device)),
+	device_name: VECTOR[7,BYTE],	 !Device name string
+	device_name_length,		 !Device name string length
+	term_item_list: VECTOR[4]	 !$GETJPI item list
+	  INITIAL((JPI$_TERMINAL ^ 16) + 7,device_name,device_name_length,0),
+	owner_item_list: VECTOR[4]	 !$GETJPI item list
+	  INITIAL((JPI$_OWNER ^ 16) + 4,next_pid,0,0),
+	vsta_device: VECTOR[unique_size,BYTE] INITIAL(BYTE(vd_device)),
+	template_unit: VECTOR[unit_size,BYTE] INITIAL(BYTE(unit_string));
+
+    LOCAL
+	status,				 !Return status value
+	iosb: VECTOR[4,WORD],		 !I/O status block for $GETDVI
+	device_desc: VECTOR[2]		 !Device name descriptor
+	  INITIAL(0,device_name),	 !
+	vd_adr;				 !To remember start address of VD
+
+!
+! If the owner_pid is zero, then the process has no owner and its time to
+! give up
+!
+	IF .owner_pid EQL 0 THEN
+	  RETURN $false;
+!
+	status = $GETJPIW(
+			PIDADR = owner_pid,
+			IOSB   = iosb,
+			ITMLST = term_item_list);
+!
+	IF NOT .status THEN
+	  RETURN $false;
+	IF NOT .iosb[0] THEN
+	  RETURN $false;
+!
+! Now if this is a VD device, build a template device name and attempt to
+! assign a channel to it.
+!
+	IF (vd_adr = CH$FIND_SUB(
+			.device_name_length,
+			device_name,
+			unique_size,
+			vsta_device)) NEQ 0 THEN
+	  BEGIN
+	    CH$MOVE(
+		unit_size,
+		template_unit,
+		.vd_adr + 3);
+!
+	    device_desc[0] = 5;
+	    IF NOT $ASSIGN(
+			DEVNAM = device_desc,
+			CHAN = .tty_chan) THEN
+	      RETURN $false;
+	    vd_chan = ..tty_chan;
+	    RETURN $true;
+	  END;
+!
+! This might be a VMS virtual terminal which points to a VD device
+!
+	IF (vd_adr = CH$FIND_SUB(
+			.device_name_length,
+			device_name,
+			vt_size,
+			vt_devnam)) NEQ 0 THEN
+	  BEGIN
+	    device_desc[0] = 1 + CH$FIND_CH(
+			.device_name_length - (.vd_adr - device_name),
+			.vd_adr,
+			%C':') - .vd_adr;
+	    device_desc[1] = .vd_adr;
+	    IF $GETDVIW(
+			DEVNAM = device_desc,
+			ITMLST = item_list,
+			IOSB   = iosb) THEN
+	      IF .iosb[0] THEN
+		IF .phy_devnam_len GTR 0 THEN
+		  BEGIN
+		    vd_adr = CH$FIND_SUB(.phy_devnam_len, phy_devnam,
+					unique_size, vsta_device);
+		    IF .vd_adr NEQ 0 THEN
+		      BEGIN
+			CH$MOVE(
+				unit_size,
+				template_unit,
+				.vd_adr + 3);
+			device_desc[0] = 5;
+			device_desc[1] = .vd_adr;
+			IF NOT $ASSIGN(
+				DEVNAM = device_desc,
+				CHAN = .tty_chan) THEN
+			  RETURN $false;
+			vd_chan = ..tty_chan;
+			RETURN $true;
+		      END;
+		  END;
+	  END;
+!
+! If we get here, then we still haven't found the right parent. Continue
+! the quest...
+!
+	status = $GETJPIW(
+			PIDADR = owner_pid,
+			IOSB   = iosb,
+			ITMLST = owner_item_list);
+!
+	IF NOT .status THEN
+	  RETURN $false;
+	IF NOT .iosb[0] THEN
+	  RETURN $false;
+!
+	RETURN vsta$$parent_has_vd(
+			.tty_chan,
+			.next_pid);
+    END;			! End of routine vsta$$parent_has_vd
+
+
+routine get_acp_error_block(
+!++
+! Functional description:
+!
+!	The acp maintains one error block per process.  As soon as a
+!	VAXstation library routine has failed, THIS routine should be called
+!	(internally) to retrieve the error block in case the user program asks
+!	for it.
+!
+!	Failing to call this routine IMMEDIATELY after a failing library
+!	routine can result in the user program or its debugger or dcl etc.
+!	printing some text on the user's terminal, which causes the error
+!	block to be lost !
+!
+! Formal parameters:
+!
+	efn			!Allocated event flag to use
+	): =
+!
+! Implicit inputs:
+!
+!	max_acp_error_block_len
+!
+! Implicit outputs:
+!
+!	acp_error_block
+!
+!--
+	begin
+
+	local
+	    status,
+	    dummy_chan,			!Channel to template device
+	    iosb: VECTOR[2,LONG];	!I/O status block
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP to retrieve the ACP's
+! error block.
+! If it fails, then whatever failed becomes the error block instead.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_geterr);
+	  END;
+!
+! Get the error block associated with the previous call (if any).
+! If it fails, then whatever failed becomes the error block instead.
+!
+	IF (NOT (status = $QIOW(
+			EFN    = .efn,
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_ACCESS,
+			IOSB   = iosb,
+			P1     = acp_error_block[0],
+			P2     = max_acp_error_block_len
+			))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_geterr);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  BEGIN
+	    lib_add_err(.iosb[0]);
+	    lib_ret_err(vsta$_geterr);
+	  END;
+!
+! Remember that some acp error block now exists.
+!
+	acp_error_exists = 1;
+
+	ss$_normal
+
+	end;
+
+%SBTTL 'vsta$$build_local_msgvec -- Build Local Error Message Vector'
+GLOBAL ROUTINE vsta$$build_local_msgvec(
+			status_code,		! status code being returned,
+			param1_type,		! optional parameter 1 type
+			param1,			! optional parameter 1
+			param2_type,		! optional parameter 2 type
+			param2			! optional parameter 2
+			! . . .
+				) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for building an error message vector
+!	according to the status and parameters passed. There will be one of
+!	these local error message vectors stored per-process in the library.
+!	A VSTA$_xxx failure status which is explicitly returned by the library
+!	to the caller will cause this error block to be generated. If the
+!	subsequent library call is to VSTA$GET_ERROR_BLOCK and the failure
+!	status was a local one, the local error block will be retrieved.
+!	Otherwise, the error block will be retrieved from the ACP.
+!	The format of this call is exactly the same as the general
+!	error handler. In other words, integer parameters are passed by value
+!	as is the status code and string parameters are passed by descriptor.
+!	String parameters will be converted into counted strings and must
+!	therefore be less than 256 characters long.
+!	
+!	NOTE: This routine requires dynamic memory allocation and should not
+!	      be called due to insufficient dynamic memory available.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	STATUS_CODE : Longword status code being returned
+!	PARAM1_TYPE : Longword optional parameter 1 type for message
+!	PARAM1      : Longword optional parameter 1 (value or descriptor)
+!	PARAM2_TYPE : Longword optional parameter 2 type for message
+!	PARAM2      : Longword optional parameter 2 (value or descriptor)
+!	! . . .
+!
+! SIDE EFFECTS:
+!
+!	Dynamic memory will be consumed if possible.
+!
+! Completion code:
+!
+!	SS$_NORMAL	: Normal successful completion
+!	SS$_xxx		: System service error return status
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	actualcount,				!Number of args. passed
+	actualparameter;			!Specific parameter value
+
+    LOCAL
+	status,					!Return status value
+	add_on,					!Adjustment to rel. offsets
+	index,					!Old msg vector loop index
+	vector_size,				!New msg vector size
+	string_len,				!String parameter lengths
+	string_desc: REF VECTOR,		!String parameter descriptors
+	data_storage,				!Data storage adr. in msgvec
+	msg_el: REF VECTOR[0,WORD],		!To refer msgvec element
+	message_code: REF VECTOR[0,WORD],	!To refer to facility code
+	old_msgvec: REF VECTOR,			!Ptr to old message vector
+	msgvec: REF VECTOR;			!Ptr to message vector
+
+!
+! Compute the size of the new message vector (padded to a longword boundary).
+!
+	vector_size = 12;
+	INCR param_number FROM 2 TO actualcount() BY 2 DO
+	  CASE actualparameter(.param_number)
+			FROM integer_type TO string_type OF
+	    SET
+	      [integer_type] :
+			BEGIN
+			  vector_size = .vector_size + 8;
+			END;
+	      [string_type] :
+			BEGIN
+			  string_desc = actualparameter(.param_number + 1);
+			  vector_size = .vector_size + 5 + MIN(256,
+					(.string_desc[0] AND %X'ffff'));
+			END;
+	    TES;
+!
+	vector_size = .vector_size + (4 - (.vector_size MOD 4));
+!
+! Allocate enough memory for the message vector plus all the data which
+! must be imbedded in the vector (including anything from the old error block).
+!
+	IF (NOT (status = lib$get_vm(
+			%REF(.local_msgvec_size + .vector_size),
+			msgvec))) THEN
+	  RETURN .status;
+!
+	old_msgvec = .local_msgvec;
+	local_msgvec = .msgvec;
+!
+! Build the message vector for $PUTMSG based on the type of status
+! code (for some reason its different with system and RMS status codes).
+! Note that it is stored in a slightly different format than what is passed
+! to $PUTMSG since it must be relocatable.
+!
+	msgvec[1] = .status_code;
+	msgvec[2] = 0;
+!
+	SELECTONE .status_code<16,16> OF
+	  SET
+	    [system_code] :		!System service facility code
+		msgvec[0] = 1;
+	    [rms_code]    :		!RMS facility code
+		msgvec[0] = 2;
+	    [OTHERWISE]   : 		!Some user defined facility code
+		BEGIN
+!
+! Define the number of arguments and FAO count for this message and compute
+! the "absolute" address into which to store the data
+!
+		  msgvec[0] = 2 + (msgvec[2] = (actualcount() - 1) / 2);
+		  msg_el = msgvec[3];
+		  data_storage = msgvec[0] + ((.msgvec[2] + 3) * 4) +
+				MAX(0,.local_msgvec_size - 4);
+!
+! For each parameter descriptor passed (if any) add them in a packed,
+! relocatable fashion into the message vector
+!
+		  INCR param_number FROM 2 TO actualcount() BY 2 DO
+		    BEGIN
+		      msg_el[0] = actualparameter(.param_number);
+		      CASE .msg_el[0] FROM integer_type TO string_type OF
+			SET
+			  [integer_type] :
+				BEGIN
+				  .data_storage =
+					actualparameter(.param_number + 1);
+				  msg_el[1] = .data_storage - msgvec[0];
+				  data_storage = .data_storage + 4;
+				END;
+			  [string_type] :
+				BEGIN
+				  string_desc =
+					actualparameter(.param_number + 1);
+				  string_len = (MIN(256,
+					(.string_desc[0] AND %X'ffff')));
+				  CH$MOVE(
+					1,
+					string_len,
+					.data_storage);
+				  CH$MOVE(
+					.string_len,
+					.string_desc[1],
+					.data_storage + 1);
+				  msg_el[1] = .data_storage - msgvec[0];
+				  data_storage = .data_storage +
+						   .string_len + 1;
+				END;
+			TES;
+		      msg_el = msg_el[0] + 4;
+		    END;
+		END;
+	  TES;
+!
+! The new stuff has been added to the message vector -- If we have an old
+! message vector, then it has to be updated (relative offsets to data)
+! and placed into the new message vector
+!
+	IF .old_msgvec NEQ 0 THEN
+	  BEGIN
+	    add_on = (.msgvec[0] + 1) * 4;
+	    index = 1;
+	    WHILE .index LEQ .old_msgvec[0] DO
+	      BEGIN
+		message_code = old_msgvec[.index];
+		SELECTONE .message_code[1] OF
+		  SET
+	            [system_code] :		!System service facility code
+		   	index = .index + 1;
+		    [rms_code]    :		!RMS facility code
+		  	index = .index + 2;
+		    [OTHERWISE]   : 		!Some user facility code
+			BEGIN
+!
+! For each $FAO parameter, adjust the offset into the message vector
+!
+			  INCR param_number FROM 1 TO .old_msgvec[.index+1] DO
+			    BEGIN
+		              msg_el = old_msgvec[.param_number + .index + 1];
+			      msg_el[1] = .msg_el[1] + .add_on - 4;
+		            END;
+			  index = .index + 2 + .old_msgvec[.index + 1];
+			END;
+		  TES;
+	      END;
+!
+! Now copy the updated old message vector into the new buffer
+!
+	    CH$MOVE(
+		.local_msgvec_size - 4,
+		.old_msgvec + 4,
+		.msgvec + .add_on);
+	    msgvec[0] = .msgvec[0] + .old_msgvec[0];
+	  END;
+!
+! Update the message vector size and deallocate the old error block
+!
+	lib$free_vm(local_msgvec_size,old_msgvec);
+	local_msgvec_size = MAX(0,.local_msgvec_size - 4) +
+						.vector_size;
+!
+	RETURN SS$_NORMAL;	!return successful allocation indication
+END;				! of routine vsta$$build_local_msgvec
+
+
+%SBTTL 'vsta$$delete_local_error -- Delete Local Error Block'
+GLOBAL ROUTINE vsta$$delete_local_error =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting the local error block
+! maintained by the VAXstation library. If the last error status code returned
+! to the application program was the result of a library detected error, then
+! the error block must be deleted to initiate a new error block.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	LOCAL_MSGVEC_SIZE   : Local message vector size
+!	LOCAL_MSGVEC	    : Local message vector address
+!	VSTA$GL_LOCAL_ERROR : Local error block existence indicator
+!
+! IMPLICIT OUTPUTS:
+!
+!	LOCAL_MSGVEC_SIZE   : Local message vector size
+!	LOCAL_MSGVEC	    : Local message vector address
+!	VSTA$GL_LOCAL_ERROR : Local error block existence indicator
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL    : Successful deletion of message vector
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+!
+! If there is no local error block, just return
+!
+	IF NOT .vsta$gl_local_error THEN
+	  RETURN SS$_NORMAL;
+!
+! Free the memory occupied by the error block and clear all indications of its
+! existence
+!
+	lib$free_vm(local_msgvec_size,local_msgvec);
+!
+	vsta$gl_local_error = local_msgvec_size = local_msgvec = 0;
+!
+	RETURN SS$_NORMAL;	! return success indication
+END;				! of routine vsta$$delete_local_error
+
+
+%SBTTL 'vsta$$unbuild_msgvec -- Unbuild Error Message Vector'
+global ROUTINE vsta$$unbuild_msgvec(
+			msgvec: REF VECTOR,	!Message vector address
+			vector_size,		!Message vector size
+			maybe_scan_flag,	! OPTIONAL, 1 means only scan
+			reason_rank,		! which reason to scan for when
+						! scan_flag is set
+			reason_offset_adr	! where to write offset if
+						! scan_flag is set
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for converting a relocatable error message
+! vector into a format suitable for a call to $PUTMSG. The message vector as
+! input will require the conversion of relative offsets into the
+! block into the virtual addresses required by $FAO. This block will contain
+! all the data required by a $PUTMSG call (and its $FAO call) and will no
+! longer be transportable to another process after conversion.
+!
+!	If SCAN_FLAG is set, the routine doesn't really bother converting,
+!	but instead scans for a particular portion of the block, telling
+!	the caller where that portion is.
+!
+!	The format of the relocatable block as input is as follows (see the
+! system services manual for a description of the format for a $PUTMSG call
+! which is what the block will look like after calling this routine):
+!
+!	MSGVEC => 		    ----------------------------
+!				    ! Number of args to caller !
+!				    !--------------------------!
+!				    !     Status Value         !
+!				    !--------------------------!
+!				    !  $FAO argument count     !
+!				    !--------------------------!
+!				    ! Offset    ! Integer-type !
+!				    !--------------------------!
+!				    ! Offset    ! String-type  !
+!				    !--------------------------!
+!				    ! Offset    ! Integer-type !
+!				    !--------------------------!
+!				    ! Offset    ! String-type  !
+!				    !--------------------------!
+!				    !          . . .	       !
+!				    !			       !
+!				    !--------------------------!
+!				    !  Counted string data     !
+!				    !  and integer values      !
+!				    !			       !
+!				    !__________________________!
+!
+! FORMAL PARAMETERS:
+!
+!	MSGVEC	    : Address of message vector
+!			(input/output parameter)
+!	VECTOR_SIZE : Address for message vector size
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    LOCAL
+	cur_reason_rank : initial (0),		!Reason rank counter
+	status,					!Return status value
+	index : initial (1),			!Loop index
+	msg_el: REF VECTOR[0,WORD],		!To refer msgvec element
+	message_code: REF VECTOR[0,WORD];	!To refer to facility code
+
+	bind
+!
+! Decide if we're scanning or not.  If MAYBE_SCAN_FLAG has been supplied
+! by the caller, it's low bit indicates whether we are or not, and if
+! MAYBE_SCAN_FLAG hasn't been supplied, we assume we're NOT scanning.
+!
+	    scan_flag =
+		begin
+		if parameter_address (maybe_scan_flag) neq 0
+		then .maybe_scan_flag
+		else 0
+		end,
+!
+! Establish length of message vector.
+!
+	    msg_len = MIN(.msgvec[0],(.vector_size/4 - 1));
+!
+! Modify the number of arguments element of the message vector if the size
+! specified as a parameter is forcing a truncation of the vector.  Only do
+! this if we're not scanning.
+!
+	if not scan_flag
+	then msgvec[0] = msg_len;
+!
+! Convert the message vector for $PUTMSG based on the type of status
+! code (for some reason its different with system and RMS status codes).
+!
+	WHILE (.index LEQ msg_len) DO
+	  BEGIN
+	    message_code = msgvec[.index];
+!
+! See if the current rank we're working on is the one the caller is interested
+! in during a scan.  If so, tell caller the offset and we're done.
+!
+	    if scan_flag
+	    then
+		if .cur_reason_rank eql .reason_rank
+		then
+		    begin
+		    .reason_offset_adr = .index;
+		    return ss$_normal
+		    end;
+
+	    SELECTONE .message_code[1] OF
+	      SET
+		[system_code] :		!System service facility code
+			index = .index + 1;
+		[rms_code]    :		!RMS facility code
+			index = .index + 2;
+		[OTHERWISE]   : 	!Some user defined facility code
+			BEGIN
+!
+! Determine the FAO count for this message.  If not scanning, then convert the
+! relocatable format into "absolute" where appropriate.
+!
+			  INCR param_number FROM 1 TO .msgvec[.index + 1] DO
+			    BEGIN
+			      msg_el = msgvec[.index + .param_number + 1];
+			      if not scan_flag
+			      then CASE .msg_el[0] FROM integer_type
+				TO string_type OF
+				SET
+				  [integer_type] :
+					msgvec[.index + .param_number + 1] = 
+						.(.msgvec + .msg_el[1]);
+				  [string_type] :
+					msgvec[.index + .param_number + 1] =
+						.msgvec + .msg_el[1];
+				TES;
+			    END;
+			  index = .index + 2 + .msgvec[.index + 1];
+			END;
+	      TES;
+!
+! Step to the next rank to be processed.
+!
+	  cur_reason_rank = .cur_reason_rank + 1
+
+	  END;
+!
+! We've scanned all the reasons in the block.  If caller was scanning,
+! and we never reached the one she wanted, return a 0 to indicate that
+! no such rank exists.
+!
+	if scan_flag then return 0;
+
+	RETURN SS$_NORMAL;	!return successful conversion indication
+END;				! of routine vsta$$unbuild_msgvec
+
+
+%SBTTL 'vsta$$convert_color_from_user -- Convert Caller-Specified Color Number'
+GLOBAL ROUTINE vsta$$convert_color_from_user(
+				old_color_number,	!Old color value
+				new_color_number	!New color
+					) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for converting the color number specified
+! by a caller to a VAXstation library routine to its corresponding internal
+! value (as known to the ACP and device). This is to temporarily allow the
+! library to correspond to the documentation until the concept of halftone
+! and colors is ironed out.
+!
+! FORMAL PARAMETERS:
+!
+!	OLD_COLOR_NUMBER : Longword specified color number value
+!				(input parameter)
+!	NEW_COLOR_NUMBER : Address for longword converted color number
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LITERAL
+	black = 0,			!User-known value for black
+	our_white = 1,			!Internal value for white
+	white = 16;			!User-known value for white
+
+!
+! Change the specified color to what we think represents that same color
+! (If its out of the known range, then force it to wrap).
+!
+	old_color_number = .old_color_number MOD (white + 1);
+!
+	CASE .old_color_number FROM black TO white OF
+	  SET
+	    [black]    :
+		.new_color_number = .old_color_number;
+	    [white]    :
+		.new_color_number = our_white;
+	    [INRANGE]  :
+		.new_color_number = .old_color_number + 1;
+	  TES;
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$$convert_color_from_user
+
+
+%SBTTL 'vsta$$convert_color_to_user -- Convert to User Color Number'
+GLOBAL ROUTINE vsta$$convert_color_to_user(
+				old_color_number,	!Old color value
+				new_color_number	!New color
+					) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for converting the color number from
+! VAXstation internal value (as known to the ACP and device) to what the user
+! expects for a color value. This is to temporarily allow the
+! library to correspond to the documentation until the concept of halftone
+! and colors is ironed out.
+!
+! FORMAL PARAMETERS:
+!
+!	OLD_COLOR_NUMBER : Longword specified color number value
+!				(input parameter)
+!	NEW_COLOR_NUMBER : Address for longword converted color number
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LITERAL
+	black = 0,			!User-known value for black
+	our_white = 1,			!Internal value for white
+	white = 16;			!User-known value for white
+
+!
+! Change the specified color to what the user thinks represents that same color
+!
+	CASE .old_color_number FROM black TO white OF
+	  SET
+	    [black]    :
+		.new_color_number = .old_color_number;
+	    [our_white]    :
+		.new_color_number = white;
+	    [INRANGE]  :
+		.new_color_number = .old_color_number - 1;
+	  TES;
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$$convert_color_to_user
+
+
+%SBTTL 'vsta$$init -- VAXstation Library Initialization Routine'
+GLOBAL ROUTINE vsta$$init =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for any and all library initialization
+! which must be done at run-time to make this library PIC and SHR.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA : Per-process data base
+!
+! IMPLICIT OUTPUTS:
+!
+!	VSTA$GL_FIRST_CALL : "Boolean" first VSTA call indicator
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,
+	iosb: VECTOR[4,WORD],			!I/O status block
+	arg_block: 				!$CMKRNL argument list
+	   INITIAL(0);
+
+!
+	vsta$gl_first_call = $false;
+!
+! Declare our exit handler and condition handler
+!
+	exit_control_block[1] =	vsta$$exit_handler;
+	exit_control_block[3] = exit_status;
+!
+	$DCLEXH( DESBLK = exit_control_block );
+	$SETEXV(
+		VECTOR = condition_vector,
+		ADDRES = vsta$$condition_handler,
+		PRVHND = previous_handler);
+!
+! If the SDA object default protection is not yet set, then set it!
+! (Note: This happens automatically if the CLI symbol is undefined when calling
+!	 vsta$get_default_protection).
+!
+	vsta$gq_prot_desc[1] = vsta$gb_prot_symbol;
+	vsta$get_default_protection(arg_block);
+!
+! Initialize the impure area
+!  the second word of the queue-header = the backward ptr
+	impure_area[vsta$a_tty_info] = impure_area[vsta$a_tty_info];
+	impure_area[vsta$a_tty_info_BACK] = impure_area[vsta$a_tty_info];
+	impure_area[vsta$a_curr_tty_ptr] = impure_area[vsta$a_curr_tty_ptr];
+	impure_area[vsta$a_curr_tty_ptr_BACK] = impure_area[vsta$a_curr_tty_ptr];
+	impure_area[vsta$l_color_spec] = 1;
+!
+! Get various process parameters that we may need.
+!
+	status = $GETJPIW(
+			IOSB   = iosb,
+			ITMLST = our_item_list);
+!
+	IF NOT .status THEN
+	  RETURN .status;
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$$init
+
+
+%SBTTL 'vsta$$add_terminal -- Add a Terminal Information Block'
+global ROUTINE vsta$$add_terminal(
+				tty_adr,	!New terminal info block addr.
+				lognam_size	!Logical name length
+				) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding a new general terminal
+! information block. This contains information for each terminal for each
+! process in the process's heap store. Some of this information is not
+! maintained in this format anyplace else and some of it is maintained here
+! and in system space to allow swifter access to the data (without bothering
+! the VAXstation ACP).
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_ADR : Address to contain the address of the new general terminal
+!		  information block being allocated.
+!			(input parameter)
+!	LOGNAM_SIZE : Longword logical name length
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	ctb: REF BLOCK[0,BYTE],		 !New terminal information block
+	status;				 !To contain return status value
+!
+! Allocate heap storage for the general terminal information block
+!
+	IF (NOT (status = lib$get_vm(
+				%REF(vsta$ct_k_ct_length + .lognam_size),
+				ctb))) THEN
+	  RETURN .status;		!RTL error return status
+!
+! Initialize any terminal defaults
+!
+	ctb[vsta$ct_w_size] = vsta$ct_k_ct_length + .lognam_size;
+	ctb[vsta$ct_b_type] = 0;
+	ctb[vsta$ct_l_tty_chan] = 0;
+	ctb[vsta$ct_b_tty_type] = 0;
+	ctb[vsta$ct_l_vd_id] = 0;
+!
+! Put it at the head of the list of terminal information for this process
+!
+	.tty_adr = .ctb;
+	INSQUE(.ctb,impure_area[vsta$a_tty_info]);
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$$add_terminal
+
+
+%SBTTL 'vsta$$delete_terminal -- Delete terminal block from list'
+global ROUTINE vsta$$delete_terminal(
+			tty_adr: REF BLOCK[0,BYTE]	!Address of TTY block
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will delete this terminal information block from the
+! linked list of terminal information being maintained for each process and
+! if its in the "selected" terminal list, it will be deleted from there also.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_ADR      : Address of the terminal block to delete
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	found,				 !"Boolean" search criteria
+	curr_nd_ptr: REF BLOCK[0,BYTE],	 !Ptr to arbitrary CT/ST block
+	status;				 !Return status value
+!
+! Delete this terminal information block from the linked list of all
+! terminal information being maintained for each process
+!
+	REMQUE(.tty_adr,tty_adr);
+!
+! Delete this terminal information block from the linked list of all
+! "selected" terminal information being maintained for each process
+!
+	found = $false;
+	curr_nd_ptr = .impure_area[vsta$a_curr_tty_ptr];
+	WHILE (NOT .found) AND (.curr_nd_ptr NEQ 
+				impure_area[vsta$a_curr_tty_ptr]) DO
+	  IF .curr_nd_ptr[vsta$st_a_curr_tty] EQL .tty_adr THEN
+	    found = $true
+	  ELSE
+	    curr_nd_ptr = .curr_nd_ptr[vsta$st_a_next_ptr];
+!
+! Now that we've searched the "selected" terminal list, if found delete it
+! from the list and deallocate the memory allocated for this block
+!
+	IF .found THEN
+	  BEGIN
+	    REMQUE(.curr_nd_ptr,curr_nd_ptr);
+!
+	    lib$free_vm(%REF(vsta$st_k_st_length),curr_nd_ptr);
+	  END;
+!
+! Now delete the logical name (if any) for this terminal and free
+! the data base
+!
+	IF .tty_adr[vsta$ct_l_lognam_size] GTR 0 THEN
+	  $DELLOG(
+		LOGNAM = tty_adr[vsta$ct_l_lognam_size] );
+!
+	lib$free_vm(
+		%REF(.tty_adr[vsta$ct_w_size]),
+		%REF(.tty_adr));
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vsta$$delete_terminal
+
+
+global routine vsta$$register_vd
+!++
+! Functional description:
+!
+!	After a new virtual display has been created, this routine is called
+!	to cache information about the display and to optionally create a
+!	logical name.
+!
+! Formal parameters:
+ (
+	vd_id,			! virtual display id
+	vd_type,		! kind of virtual display (generic, vt100 etc.)
+	perm_flag,		! Permenent device indicator
+	lognam : ref $string_descriptor,
+				! optional logical name to assign (address of
+				! descriptor)
+	vd_chan			! optional address into which to write vd
+				! channel.
+ ) =
+!
+! Side effects:
+!
+!	A channel is assigned on the virtual display, data is cached, and
+!	a logical name may be assigned.
+!
+!--
+
+	begin
+
+	local
+
+	    status,			 ! Return status.
+	    lognam_len,			 !Logical name length
+	    lognam_table,		 !Which logical name table to use
+	    lognam_status:		 !To remember status from $CRELOG
+	      INITIAL(SS$_NORMAL),
+	    ndb: REF BLOCK[0,BYTE],	 !For heap storage of VD_ID, VD_CHAN
+	    native_chan: WORD,		 !Temporary storage for channel no.
+	    device_name_length,		 !Virtual device name string length
+	    device_desc: VECTOR[2],	 !Virtual device name descriptor
+	    device_name: VECTOR[9,BYTE]; !Virtual device name string
+!
+! Initialize local descriptor.
+!
+	device_desc[0] = 9;
+	device_desc[1] = device_name;
+
+! Virtual display has been created -- Build virtual device name from
+! unit number returned in I/O status block
+!
+	IF (NOT (status = vsta$$build_device_name(
+			.vd_id,
+			device_desc,
+			device_name_length
+				))) THEN
+	  RETURN .status;
+	device_desc[0] = .device_name_length;
+!
+! Get a "real" channel number to this device to pass back to caller for
+! doing I/O operations to this device
+!
+	IF (NOT (status = $ASSIGN(
+				DEVNAM = device_desc,
+				CHAN = native_chan
+				))) THEN
+	  RETURN .status;
+!
+	IF parameter_address(vd_chan) NEQ 0 THEN
+	  .vd_chan = .native_chan;
+!
+! Take terminal logical name passed as a parameter and assign it to this
+! virtual device.
+!
+	lognam_len = 0;
+	IF parameter_address(lognam) NEQ 0 THEN
+	  IF (lognam_len = .lognam[sd$w_len]) GTR 0 THEN
+	    BEGIN
+	      IF .perm_flag EQL $true THEN
+		lognam_status = $CRELOG(
+					TBLFLG = 1,	!Group logical name
+					LOGNAM = .lognam,
+					EQLNAM = device_desc)
+	      ELSE
+		lognam_status = 0;
+!
+	      IF NOT .lognam_status THEN
+		IF (NOT (lognam_status = $CRELOG(
+					TBLFLG = 2,	!Process logical name
+					LOGNAM = .lognam,
+					EQLNAM = device_desc
+				))) THEN
+	          lognam_len = 0;
+	    END;
+!
+! Save certain virtual terminal information in heap storage for faster access
+!
+	IF (NOT (status = vsta$$add_terminal(ndb,.lognam_len))) THEN
+	  RETURN .status;		!Error return status
+!
+	ndb[vsta$ct_l_tty_chan] = .native_chan;	!Channel number to device
+	ndb[vsta$ct_b_tty_type] = .vd_type;
+	ndb[vsta$ct_l_vd_id] = .vd_id;		!Virtual Display ID
+	ndb[vsta$ct_l_lognam_size] = .lognam_len;
+	ndb[vsta$ct_a_lognam] = ndb[vsta$ct_b_logical_name];
+!
+	IF .lognam_len GTR 0 THEN
+	  CH$MOVE(
+		.lognam_len,
+		.lognam[sd$a_adr],
+		.ndb[vsta$ct_a_lognam]);
+
+	.lognam_status
+
+	end;
+
+
+%SBTTL 'vsta$$dclexh -- Declare VAXstation Library Exit Handler'
+GLOBAL ROUTINE vsta$$dclexh =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding the VAXstation library's exit
+! handler to the user-mode exit handler linked list for the current image.
+! Since our exit handler will be doing the $PUTMSGing if the image is exiting
+! with a VSTA$_ facility status code, our exit handler will be manually added
+! to the end of this linked list. That way we can force an image exit with
+! SS$_NORMAL once we've done the $PUTMSG and not have to worry about overriding
+! any user-defined, user-mode exit handlers declared before or after ours.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	This routine requires access to non-paged pool and must execute in
+! kernel mode. This routine is commented out until both necessary and possible
+! to execute in kernel mode here.
+!
+!--
+
+    BEGIN
+
+!    EXTERNAL
+!	CTL$GL_THSUPR;			 !Ptr to supervisor mode exit handlers
+!
+!    LOCAL
+!	eh_ptr: REF VECTOR;		 !Arbitrary exit handler block pointer
+!
+! Find the user-mode exit control block which is currently at the end of the
+! linked list (points to zero).
+!
+!	eh_ptr = CTL$GL_THSUPR + 4;
+!	WHILE .eh_ptr[0] NEQ 0 DO
+!	  eh_ptr = .eh_ptr[0];
+!
+! Found it. Now make it point to the VAXstation library's exit control block.
+!
+!	eh_ptr[0] = exit_control_block;
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$$dclexh
+
+end
+eludom

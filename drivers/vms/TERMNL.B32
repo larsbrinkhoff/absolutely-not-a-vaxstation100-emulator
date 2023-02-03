@@ -1,0 +1,367 @@
+module termnl (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! Routines to support things like:
+!
+!	type ('The numbers ', decimal(.p1), ' and' , decimal(.p2),
+!		' are prime.');
+!
+! Use termio.req to get macros, and link source
+! with termnl.obj.
+
+library 'vsta$library:termio';
+library 'vsta$library:libmacros';	! symbols like "$string_descriptor"
+library 'sys$library:starlet';
+
+$vsta_psect;				! Define PSECTs
+
+	literal bufSiz = 200;		! maximum size of record, small enough
+					! for most editors
+	own
+	    iniFlag:initial(0),
+	    bufferedLength,
+	    bufferedPointer,
+	    buf:vector[bufSiz, byte],
+	    fab:$fab (fnm = 'sys$output:', rat=cr),
+	    rab:$rab (fab = fab, rbf = buf);
+
+forward routine
+
+	break:novalue,
+	octal0:novalue,
+	hex0:novalue,
+	shwdes0,
+	clearBuffer,
+	checkTermOpen,
+	openTerminal,
+	dumpBuffer,
+	vstaerr0:novalue,
+	shwerr0:novalue,
+	type0,
+	decimal0:novalue,
+	justType:novalue,
+	typenum;
+
+global
+	! Set this to cause next error to not be printed and not call break;
+	silentErrorFlag:initial(0),
+
+	! Turn this off to prevent errors from being printed.
+	show_errors_flag : initial(1);
+
+! break routine, convenient to set a breakpoint at.
+! It gets called from various spots where errors are detected.
+global routine break:novalue = return,
+
+octal0(value):novalue =			! convert to octal
+	begin
+	external routine ots$cvt_l_to;
+	typeNum (.value, ots$cvt_l_to)
+	end,
+
+hex0(value):novalue =			! convert to hex
+	begin
+	external routine ots$cvt_l_tz;
+	typeNum (.value, ots$cvt_l_tz)
+	end,
+
+decimal0(value):novalue =		! convert to decimal
+	begin
+	external routine ots$cvt_l_ti;
+	typeNum (.value, ots$cvt_l_ti)
+	end;
+
+global routine typeNum
+!++
+! Functional description:
+!
+!	Print number in any base.
+!
+! Formal parameters:
+ (
+	value,			! number to print
+	conversion_routine	! routine that does the conversion
+ ) =
+!
+!--
+	begin
+
+	literal
+
+	    max_num_chars = 32;! big enough for signed binary
+
+	local
+
+	    num_string : vector [max_num_chars, byte],
+				! receives ascii line from $fao
+	    num_out_desc : $string_descriptor,
+	    s;
+
+	bind routine
+
+	    convert = .conversion_routine;
+!
+! Initialize descriptor for maximum length number.
+!
+	num_out_desc[sd$w_len] = max_num_chars;
+	num_out_desc[sd$a_adr] = num_string[0];
+!
+! Produce string containing number.
+!
+	if not (s = convert (
+	    value,			! address of number to convert
+	    num_out_desc[$base],	! descriptor for result
+	    1,				! minimum number of digits
+	    4				! convert longword
+	    ))
+	then return .s;
+!
+! Find where first non-space is.
+!
+	if .num_string[0] neq %c ' '
+	then num_out_desc[sd$a_adr] = num_string[0]
+	else num_out_desc[sd$a_adr] = ch$find_not_ch (
+	    max_num_chars,
+	    num_string[0],
+	    %c ' '
+	    );
+!
+! Adjust descriptor to only include the number, not the spaces.
+!
+	num_out_desc[sd$w_len] =
+	    max_num_chars - .num_out_desc[sd$a_adr] + num_string[0];
+!
+! Put number into output stream.
+!
+	shwdes0 (num_out_desc[$base])
+
+    end;
+
+! Routine to handle typing and error messages.
+! The first arg is 0 for standard type, 1 for error message, 2 for typing
+! a partial record.
+!
+global routine doTyping (
+    code
+	 ) =
+	begin
+	builtin actualCount, actualParameter;
+
+	macro
+
+	    ! fetch next arg and keep track of how many have been processed
+	    nextArg = actualParameter(argsDone = .argsDone + 1) %,
+
+	    showingText =
+
+		! If not an error message, always show it
+		(not doingError
+
+			or
+
+		! If it's an error message, print it if we're not suppressing
+		! it and if we're not suppressing all error messages.
+		!
+		doingError and not .silentErrorFlag and .show_errors_flag) %,
+
+	    ! see if this call is for doing an error at all
+	    doingError = (.code eql 1) %,
+
+	    ! see if we're printing a partial record
+	    partialRecord = (.code eql 2) %;
+
+	local argsDone;
+
+	if showingText
+	then
+	    begin
+
+	    ! Error messages begin at left margin with question mark
+	    !
+	    if doingError then
+		begin
+		typeCarriageReturn();
+		shwdes0 (%ascid '? ')
+		end;
+
+	    ! Scan args, displaying items in the formats specified.
+	    !
+	    argsDone = 1;
+	    until .argsDone eql actualCount() do
+		begin
+		bind code = nextArg;
+		selectOne code of
+		set
+		[p_shwerr]:shwerr0(nextArg);
+		[p_shwdes]:shwdes0(nextArg);
+		[p_hex]:hex0(nextArg);
+		[p_decimal]:decimal0(nextArg);
+		[p_vstaerr]:vstaerr0(nextArg);
+		tes
+		end;
+	    if not partialRecord then typeCarriageReturn();
+
+	    ! For error, allow programmer to catch error with a breakpoint at
+	    ! "break"
+	    !
+	    if doingError then break()
+
+	    end;
+
+	! The silengErrorFlag only suppresses one error message, so clear it.
+	silentErrorFlag = 0;
+
+	! Give a failure return
+	0
+
+	end;
+
+global routine type0 (funnyLength,txt) =
+	begin
+	local length;
+	length = .funnyLength and %x'0FFFF';
+	checkTermOpen();	!Open the terminal if necessary
+	if .length gtr bufSiz
+	then
+	    begin
+	    dumpBuffer();
+	    return error ('String passed to TYPE0 is ', decimal (.length),
+		' characters long, and maximum allowed is ', decimal (bufSiz))
+	    end;
+	if .length+.bufferedLength gtr bufSiz
+	then dumpBuffer();
+	ch$move (.length, .txt, .bufferedPointer);
+	bufferedLength = .bufferedLength + .length;
+	bufferedPointer = ch$plus(.bufferedPointer, .length)
+	end;
+
+global routine ! Open terminal if called first time.
+! otherwise remember we were called and don't open it again.
+checkTermOpen =
+	begin
+	!
+	! Iniflag is initially 0
+	! This routine is the only routine that uses it
+	!
+	if not .iniFlag
+	then
+	    begin
+	    openTerminal();
+	    iniFlag = 1
+	    end;
+	1		!.iniFlag is routine value
+			! if anyone cares..
+	end;
+
+global routine ! Open terminal for input and output.
+! This routine exits from the program entirely if there's a failure.
+openTerminal =
+    begin
+    !
+    ! Open the terminal for read and write
+    !
+	local status;
+    if not (STATUS = $OPEN(FAB=fab))
+	then $EXIT(CODE=.STATUS);
+    $CONNECT(RAB=rab);
+    clearBuffer()
+    end;
+
+global routine 
+! Dump buffer outputs buffered text accumulated so far.  The main reason it
+! is buffered at all rather than sent to terminal immediately is so that under
+! batch the records will look right in the log file.
+dumpBuffer =
+	begin
+	rab[rab$w_rsz] = .bufferedLength;
+	$put (rab=rab);
+	clearBuffer()
+	end;
+
+global routine 
+! Clear text buffer, usually done at initialization and after dumping the buffer.
+clearBuffer =
+	begin
+	bufferedLength = 0;
+	bufferedPointer = buf[0];
+	ss$_normal
+	end;
+
+global routine ! Print VAXstation error diagnostic.
+vstaerr0 (status):novalue =
+	begin
+
+	external routine
+
+	    vsta$get_error_block;
+
+	literal
+
+	    err_blk_len = 1000;		! room for error block
+
+	local
+
+	    s,
+	    error_block : vector [err_blk_len];
+!
+! Since error block printer will go straight to terminal, we dump whatever
+! is buffered first, in order that things appear in the right order.
+!
+	dumpBuffer ();
+!
+! Print the error block.
+!
+	if not (s = vsta$get_error_block ())
+	then error (
+	    'VAXstation call AND VSTA$GET_ERROR_BLOCK both failed.  Status:',
+	    shwerr (.s),
+	    'Message for original status:', shwerr (.status)
+	    );
+
+	ss$_normal
+
+	end;
+
+global routine ! Print the text for an error code
+shwerr0 (code):novalue =
+	begin
+	local msglen,msgbuf:vector[256,byte], desc:vector[2], s;
+	desc[0] = 256;
+	desc[1] = msgbuf[0];
+	if not (s = $getmsg (msgid=.code, msglen=msglen, bufadr=desc[0]))
+	then error ('$getmsg failed in shwerr');
+
+	! This parameter is only returned in rightmost 16 bits
+	msglen =  .msglen and %x'ffff';
+
+	! always show system error messages on their own line
+	typeCarriageReturn();
+
+	type0 (.msglen, msgbuf)
+	end;
+
+global routine ! Print out string represented as standard descriptor
+shwdes0 (desc:ref vector) =
+	type0 (.desc[0], .desc[1]);
+
+global routine justType(it):novalue =			! type character with no attribute
+					! checking
+    begin
+    local char;
+    ch$wchar(.it,ch$ptr(char));         ! put character in word for output
+    type0(1,ch$ptr(char),0)
+    end;				! type single character
+
+! Used by typeCarriageReturn macro
+global routine tcr =
+    begin
+    checkTermOpen();			!Make sure terminal is open
+    dumpBuffer()
+    end;
+
+end
+eludom

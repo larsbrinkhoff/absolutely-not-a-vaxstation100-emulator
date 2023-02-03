@@ -1,0 +1,338 @@
+module vs$$print(	 ! VS100 frame buffer to bitmap file dump utility.
+		ADDRESSING_MODE(NONEXTERNAL=GENERAL,EXTERNAL=GENERAL),
+		ident = 'V1.2'
+		) =
+begin
+
+!++
+! Facility: VAXstation hardcopy subsystem.
+!
+! Abstract:
+!	This program dumps the frame buffer of a VS100 to a bitmap file.
+
+! Environment: VAXstation 
+!
+!--
+!
+! Include files:
+!
+	library 'SYS$LIBRARY:STARLET.L32';
+	library	'VSTA$LIBRARY:VSTADEF.L32';
+	library	'VSTA$LIBRARY:VSTANATIV.L32';
+	library	'VSTA$LIBRARY:VSTAGBL.L32';
+	library	'VSTA$LIBRARY:VSTAMACS.L32';	! Keyword macros
+	library 'VSTA$LIBRARY:LIBMACROS';	! Symbols like $log_error
+!
+! PSECT Definitions
+!
+$vsta_psect;
+!
+! External routines:
+!
+External routine
+
+	sys$assign,
+	vsta$$error,
+	vs$$acp_get_vm,
+	vs$$acp_free_vm;
+!
+! Table of contents:
+!
+forward routine
+
+	vs$$print_screen,
+	vs$$print_frame_buffer_to_file;
+
+
+! Macros:
+!
+! Equated symbols:
+!
+GLOBAL LITERAL
+	TRUE = 1,
+	FALSE = 0;
+!
+! Own storage:
+!
+
+OWN
+    outputFile_rsa: BLOCK [NAM$C_MAXRSS,BYTE],	! Resultant string
+    outputFile_nam: $NAM
+		(RSS = NAM$C_MAXRSS		! Resultant string buffer size
+		,RSA = outputFile_rsa		! Resultant string buffer adr.
+		),
+    outputFile_fab: $FAB
+		(FNM = 'vsta$hilib:vstaprint.dat'	! name
+		,FAC = <BIO,GET,PUT>		! Block I/O (low overhead)
+		,NAM = outputFile_nam		! Name block address
+		,MRS = 512			! Max record size
+		,ALQ = 100
+		,DEQ = 100
+		,FOP = <CBT>			! Contiguous, best try
+		,RFM = FIX			! Fixed length records
+		),
+    outputFile_rab: $RAB
+		(FAB = outputFile_fab
+		);
+
+!GLOBAL
+!
+
+GLOBAL ROUTINE vs$$print_screen  =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+begin
+local
+	status;
+
+if not (status=vs$$print_frame_buffer_to_file(0,0,1088,864)) then
+return .status;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Spawn the process to do the sixelization and output.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+return SS$_NORMAL;
+end;	! Routine vs$$print_screen
+
+GLOBAL ROUTINE vs$$print_screen_rectangle(x,y, size_x, size_y, invert)  =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+begin
+local
+	status;
+
+if not (status=vs$$print_frame_buffer_to_file(.x, .y, .size_x,
+		 .size_y, .invert)) then
+return .status;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Spawn the process to do the sixelization and output.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+$SETPRN(PRCNAM = $DESCRIPTOR('SYSTEM')); ! Set process name (ignore errors)
+
+status = $creprc(
+		IMAGE = $DESCRIPTOR('sys$system:loginout.exe'),
+		INPUT = $DESCRIPTOR('vsta$com:subprint.com'),
+		OUTPUT = $DESCRIPTOR('vsta$com:subprint.log'),
+		ERROR =  $DESCRIPTOR('vsta$com:subprint.err'),
+		PRCNAM = $DESCRIPTOR('VSSUBMIT'),
+		BASPRI = 4	! Give it a standard priority.
+		);
+if not .status then			! If we got an error,
+  if .status neq SS$_DUPLNAM then	! and it's not just a previous request,
+    return vsta$$error(.status);	! then return the error.
+
+
+
+
+
+return SS$_NORMAL;
+end; 	! Routine vs$$print_screen_rectangle
+
+routine vs$$print_frame_buffer_to_file(x, y, size_x, size_y, invert) =
+begin
+
+external
+	vsta$a_frame_buffer: ref modified_bmds,	! Defined in vbcontrol.b32
+	vsta$gl_screen,
+	vs$gw_vbchan: word;
+
+local
+	local_buffer_desc: modified_bmds,	! Modified descriptor
+	frame_buffer_desc: modified_bmds,	! Modified descriptor
+	clipping_mask: vector[2,word],		! X,Y for one clipping rect.
+	calculated_buffer_size,			! Holds size of VAXmem buffer.
+	vb_channel,				! Channel to VB?: device.
+	number_of_blocks,			! calculated_buffer_size / 512
+	fractional_block,			! ditto, mod 512
+	map_value,				! Inverting, or non-inverting.
+	temp,					! temp holder for pointers.
+	status;
+
+
+! Get memory for a buffer the correct size to hold the bitmap that
+! will be copied into it from the frame buffer.  Put the address
+! of this buffer as returned by the GET_VM routine into the local
+! buffer descriptor.
+!
+calculated_buffer_size = ( (.size_x+15)/16 ) * (2*.size_y);	! Times Z = 1.
+number_of_blocks = (.calculated_buffer_size / 512);		! Disk blocks
+fractional_block = .calculated_buffer_size MOD 512;		! Remainder
+if (not (STATUS=VS$$ACP_GET_VM( calculated_buffer_size,		! # of bytes.
+				local_buffer_desc[mbmd$a_addr],	! Address
+				0) ) )
+then return (.status);	! Needs error handling...
+! .vsta$gl_screen;
+frame_buffer_desc[mbmd$a_addr] = .VSTA$A_FRAME_BUFFER [MBMD$A_ADDR];
+frame_buffer_desc[mbmd$w_size_x] = 1088;	
+frame_buffer_desc[mbmd$w_size_y] = 864;
+frame_buffer_desc[mbmd$w_size_z] = 1;		! Only one bitplane on VS100
+frame_buffer_desc[mbmd$w_locate] = vsta$k_dispmem;! Source is in display memory
+
+! local_buffer_desc[mbmd$a_addr] was filled in by the call to GET_VM above.
+local_buffer_desc[mbmd$w_size_x] = .size_x;
+local_buffer_desc[mbmd$w_size_y] = .size_y;
+local_buffer_desc[mbmd$w_size_z] = 1;		! Only one bitplane on VS100
+local_buffer_desc[mbmd$w_locate] = vsta$k_vaxmem; ! Destination is in VAX mem.
+
+clipping_mask[0] = .size_x;
+clipping_mask[1] = .size_y;
+
+if .invert eql False then map_value = vsta$k_map_notsrc
+	else map_value = vsta$k_map_src;
+
+status = $DRIVECOPY(
+		 CHAN	= .vs$gw_vbchan		! ACP's channel to VB:
+		,SRCTYP	= vsta$k_src_bm
+		,SOURCE = frame_buffer_desc
+		,SRCOFX = .x
+		,SRCOFY = .y
+		,MSKTYP = vsta$k_msk_rectangle
+		,MASK	= clipping_mask[0]
+		,DST	= local_buffer_desc
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = vsta$k_map_sourcedest
+		,MAPVAL = .map_value
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 1
+		,ASTADR = 0
+		,ASTPRM = 0
+		);
+
+IF NOT .status 
+THEN return vsta$$error(.status);	! Needs error handling...
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Create the output file.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+if not (status = $create ( FAB = outputFile_fab)
+			)
+	then return vsta$$error(.status);
+
+if not (status = $connect ( RAB = outputFile_rab)
+			)
+	then return vsta$$error(.status);
+
+outputFile_rab [RAB$w_RSZ] = 512;	! Write 512 byte records.
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Write the Bitmap descriptor into block one of the file.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+temp = .local_buffer_desc[mbmd$a_addr];	! Save this pointer.
+
+local_buffer_desc[mbmd$a_addr] = 512;	! Data in file starts at byte 512.
+outputFile_rab [RAB$l_RBF] = local_buffer_desc[mbmd$a_addr];
+outputFile_rab [RAB$l_BKT] = 1;	! Block zero is first block of file. 
+
+if not (status = $write ( RAB = outputFile_rab)
+			)
+	then return vsta$$error(.status);
+local_buffer_desc[mbmd$a_addr] = .temp;	! Restore the pointer.
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Loop through and write one block for each 512 bytes in bitmap.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+incr counter from 2 to (.number_of_blocks +1) do
+begin	! Loop: write 512 bytes, bump pointer, do it again.
+outputFile_rab [RAB$l_RBF] =
+	 .local_buffer_desc[mbmd$a_addr] + (512*(.counter-2));
+outputFile_rab [RAB$l_BKT] = .counter;
+
+if not (status = $write ( RAB = outputFile_rab)
+			)
+	then return vsta$$error(.status);
+end;	! Loop:
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Write remaining bytes as a partial block
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+outputFile_rab [RAB$w_RSZ] = .fractional_block;	! Number of bytes to write.
+outputFile_rab [RAB$l_RBF] =
+	 .local_buffer_desc[mbmd$a_addr] + 512 * .number_of_blocks;
+outputFile_rab [RAB$l_BKT] = .number_of_blocks+2;
+
+if not (status = $write ( RAB = outputFile_rab)
+			)
+	then return vsta$$error(.status);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Close output file.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+if not (status = $close ( FAB = outputFile_fab)
+			)
+	then return vsta$$error(.status);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!	Free up the memory used for the buffer.  (Avoid losing memory)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+if (not (STATUS=VS$$ACP_FREE_VM( calculated_buffer_size,	! # of bytes.
+				local_buffer_desc[mbmd$a_addr],	! Address
+				0) ) )
+then return (.status);	! Needs error handling...
+
+RETURN ss$_normal;
+
+end;	! Routine vs$$print_frame_buffer_to_file
+
+end
+eludom

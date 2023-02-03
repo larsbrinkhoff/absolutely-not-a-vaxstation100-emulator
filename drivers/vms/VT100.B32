@@ -1,0 +1,617 @@
+MODULE VT100 (
+		IDENT = 'VT100 handler module'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module does VT100 things.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vt100$$_init,		!Initialize
+    vt100$$_clearpage,		!Clear page
+    vt100$$_writestring,	!Write a string at current position
+    vt100$$_write_crlfs,	!Write one or more CRLF's
+    vt100$$_setpos,		!Set current writing position
+    vt100$$_getpos,		!Get current writing position
+    vt100$$_set_scroll,		!Set scrolling region
+    vt100$$_clear_scroll,	!Clear scrolling region (opposite of SET)
+    vt100$$_refresh,		!Refresh screen
+    cursor_home,		!Move cursor to home
+    move_cursor,		!Move cursor to arbitrary position
+    set_scrolling_region,	!Sets the VT100 scrolling region
+    output_sequence,		!Output a sequence of chars
+    do_output_str_crlf,		!Output a string and crlf
+    do_crlf,			!Output a CRLF from current pos.
+    do_output_str,		!Output a string
+    clear_rest_of_line,		!Clear rest of line from current pos
+    output_str,			!Output a string at current pos
+    vt100$$_exit_handler;	!Exit handler
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+OWN
+    tty_chan,			!Channel to terminal
+    vt100_line_of_spaces: VECTOR [80,BYTE] INITIAL (REP 80/4 OF ('    ')),
+    vt100_data_base: VECTOR [80*24, BYTE],
+    scroll_first_line,
+    scroll_last_line,
+    cur_line,
+    cur_char,
+    exitsts;			!Status of exit
+
+LITERAL
+    ch$esc = %O'33';		!Escape
+
+
+GLOBAL ROUTINE vt100$$_init =	!Initialize VT100 database
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initializes the VT100 display database.
+!	Must be called before any other VT100 routines.
+!--
+BEGIN
+OWN
+    exit_h_block: VECTOR [4]
+		INITIAL (0, vt100$$_exit_handler, 1, exitsts);
+LOCAL
+    status;
+!
+! Get channel to terminal and make sure it is a terminal
+!
+IF NOT (status =
+    $assign	(DEVNAM = %ASCID 'TT'
+		,CHAN = tty_chan
+		)
+	)
+  THEN RETURN .status;
+
+scroll_first_line = 0;		!No special scrolling region
+scroll_last_line = 0;		!No special scrolling region
+
+IF NOT (status = vt100$$_clearpage ()
+	)
+  THEN RETURN .status;
+!
+! Establish an exit handler to restore terminal characteristics
+!
+IF NOT (status =
+    $dclexh	(DESBLK = exit_h_block
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_clearpage =	!Clear page
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes escape sequence to clear the page.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Set database to all spaces, then do escape seq to clear page
+!
+INCR i FROM 1 TO 24 DO
+    CH$MOVE	(80		!80 characters to move
+		,vt100_line_of_spaces	!From here
+		,vt100_data_base [(.i - 1) * 80]
+		);
+cur_line = 1;
+cur_char = 1;
+!
+! Database is now correct. Make screen correct.
+!
+cursor_home ();
+output_sequence (ch$esc, %C'[', %C'2', %C'J');
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_writestring	!Write a string at current position
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes a string at the current position
+!	Truncated to end-of-line.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_len: WORD,
+    new_str_desc: VECTOR [2],
+    copy_str_desc: VECTOR [2],
+    byte_address,			!Address of a byte
+    ptr_crlf;				!Position of next CRLF
+BIND
+    ref_byte = .byte_address : BYTE;
+
+str_len = .str_desc [0];		!Get string length
+new_str_desc [0] = .str_len;		!Copy complete str desc
+new_str_desc [1] = .str_desc [1];
+
+WHILE (ptr_crlf = CH$FIND_CH	(.new_str_desc [0]
+				,.new_str_desc [1]
+				,%O'12'		!LF
+				) NEQ 0
+	) DO
+    BEGIN				!Found a CRLF in the string
+    str_len = .ptr_crlf - .new_str_desc [1];	!Get length of string before LF
+    copy_str_desc [0] = .str_len;		!Assume no CR before LF
+    IF (.str_len NEQ 0)			!Maybe there is a CR char
+      THEN
+	BEGIN
+	byte_address = .ptr_crlf - 1;	!Address of possible CR byte
+	IF (.ref_byte EQL %O'15')
+	  THEN copy_str_desc [0] = .str_len - 1; !Don't send CR character
+	END;
+    copy_str_desc [1] = .new_str_desc [1];
+    do_output_str_crlf (copy_str_desc);
+    new_str_desc [0] = .new_str_desc [0] - .str_len;
+    new_str_desc [1] = .new_str_desc [1] + .str_len;
+    IF (.new_str_desc [0] EQL 0) THEN EXITLOOP;
+    END;
+!
+! Ok, there are no longer any strings ending with CRLF.
+! If there are more chars to output, do so.
+!
+IF (.new_str_desc [0] NEQ 0) THEN
+    BEGIN
+    do_output_str (new_str_desc);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_write_crlfs	!Write CRLF's
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes one or more CRLF's from current position
+! FORMAL PARAMETERS:
+	(number				!Number of CRLFs
+	) =
+!--
+BEGIN
+IF (.number LEQ 0)
+  THEN RETURN SS$_BADPARAM;
+
+INCR i FROM 1 TO .number DO
+    do_crlf ();
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_setpos		!Set current writing position
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets the current writing position and moves the cursor there
+! FORMAL PARAMETERS:
+	(line			!What line (1 to 24)
+	,char			!What char pos (1 to 80)
+	) =
+!--
+BEGIN
+move_cursor (.line, .char);	!Move the cursor there
+cur_line = .line;
+cur_char = .char;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_getpos
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns current line and character position
+!	(suitable for calling "SETPOS" with)
+! FORMAL PARAMTERS:
+	(line			!Address of where to store line
+	,char			!Address of where to store char
+	) =
+!--
+BEGIN
+
+.line = .cur_line;
+.char = .cur_char;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_refresh =	!Refresh entire screen
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Refreshes the screen
+!--
+BEGIN
+LOCAL
+    line_with_crlf: VECTOR [82,BYTE],
+    num_chars,			!Number of chars excluding CRLF
+    line_start,			!Address of start of line
+    str_desc: VECTOR [2];
+
+cursor_home ();
+line_start = 0;		!Index of start of this line
+str_desc [1] = line_with_crlf;
+
+INCR i FROM 1 TO 24 DO
+     BEGIN
+     ! Since we effectively have spaces, don't print any trailing spaces
+     ! Find last printing character on each line
+     str_desc [0] = 0;		!Assume no chars on this line
+     DECR j FROM 79 TO 0 DO
+	BEGIN
+	IF (.vt100_data_base [.line_start + .j] NEQ %C' ')
+	  THEN
+		BEGIN
+		str_desc [0] = .j + 1;
+		EXITLOOP;
+		END;
+	END;
+     ! Copy the printing part of the line, if any
+     IF (.str_desc [0] NEQ 0)
+      THEN
+	CH$MOVE	(.str_desc [0]
+		,vt100_data_base [.line_start]
+		,line_with_crlf
+		);
+     ! Add a CRLF
+     line_with_crlf [.str_desc [0]] = %O'15';
+     line_with_crlf [.str_desc [0] + 1] = %O'12';
+     str_desc [0] = .str_desc [0] + 2;
+     !
+     ! Write it out
+     !
+     output_str (str_desc);		
+
+     line_start = .line_start + 80;	!Point to beginning of next line
+     END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_set_scroll		!Set scrolling region
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets up a scrolling region
+!	This tells the VT100 module that the user wishes to write
+!	normally in a region and won't tell this module what is there.
+!	  A subsequent refresh of the screen will leave the scroll
+!	area blank.
+! FORMAL PARAMETERS:
+	(beg_line
+	,end_line
+	) =
+!--
+BEGIN
+LOCAL
+    line_start;
+
+IF (.beg_line LEQ 0) OR (.end_line GTR 24)
+  THEN RETURN SS$_BADPARAM;
+!
+! Write blanks into the new scroll region database
+!
+line_start = (.beg_line - 1) * 80;	!Index into vt100_data_base
+INCR i FROM .beg_line TO .end_line DO
+	BEGIN
+	CH$MOVE	(80
+		,vt100_line_of_spaces
+		,vt100_data_base [.line_start]
+		);
+	line_start = .line_start + 80;
+	END;
+!
+! Actually do it
+!
+set_scrolling_region (.beg_line, .end_line);
+
+scroll_first_line = .beg_line;
+scroll_last_line = .end_line;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vt100$$_clear_scroll =	!Clear scrolling region
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets scrolling region to entire screen again
+!--
+BEGIN
+set_scrolling_region (1, 24);		!Set scrolling region to entire screen
+scroll_first_line = 0;			!Forget we were scrolling
+scroll_last_line = 0;			! . .
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cursor_home =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Moves cursor to home position
+!	Does not update database
+!--
+BEGIN
+!
+! On the VT100, this is done by direct cursor addressing
+!
+RETURN move_cursor (1,1)	!Move to line 1, char 1
+END;
+
+ROUTINE move_cursor
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Moves cursor to position (line, char).
+!	line is between 1 and 24.  char between 1 and 80.
+! FORMAL PARAMETERS:
+	(line
+	,char
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    ch_str: BLOCK [20,BYTE],
+    str_len: WORD,
+    ch_desc: VECTOR [2],
+    ch_sequence: VECTOR [20,BYTE] INITIAL (' [!ZB;!ZBH'),
+    status;
+!
+! Get FAO input string
+!
+ch_desc [0] = 10;
+ch_desc [1] = ch_sequence;
+ch_sequence [0] = ch$esc;
+!
+! Get real terminal control string by doing FAO
+!
+str_desc [0] = 20;
+str_desc [1] = ch_str;
+IF NOT (status =
+    $fao	(ch_desc		!CTRSTR
+		,str_len		!OUTLEN
+		,str_desc		!OUTBUF
+		,.line			!P1
+		,.char			!P2
+		)
+	)
+  THEN RETURN .status;
+
+str_desc [0] = .str_len;
+
+RETURN output_str (str_desc)
+END;
+
+ROUTINE set_scrolling_region
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets the VT100 scrolling region
+! FORMAL PARAMETERS:
+	(beg_line
+	,end_line
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    ch_str: BLOCK [20,BYTE],
+    str_len: WORD,
+    ch_desc: VECTOR [2],
+    ch_sequence: VECTOR [20,BYTE] INITIAL (' [!ZB;!ZBr'),
+    status;
+!
+! Get FAO input string
+!
+ch_desc [0] = 10;
+ch_desc [1] = ch_sequence;
+ch_sequence [0] = ch$esc;
+!
+! Get real terminal control string by doing FAO
+!
+str_desc [0] = 20;
+str_desc [1] = ch_str;
+IF NOT (status =
+    $fao	(ch_desc		!CTRSTR
+		,str_len		!OUTLEN
+		,str_desc		!OUTBUF
+		,.beg_line		!P1
+		,.end_line		!P2
+		)
+	)
+  THEN RETURN .status;
+
+str_desc [0] = .str_len;
+
+RETURN output_str (str_desc)
+END;
+
+ROUTINE output_sequence
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes an arbitrary sequence of characters
+! FORMAL PARAMETERS:
+	(char_1, char_2 !. . . an arbitrary number
+	) =
+!--
+BEGIN
+BUILTIN
+    ARGPTR;
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [100,BYTE];
+BIND
+    argblk = ARGPTR () : VECTOR;
+
+str_desc [0] = .argblk [0];	!Get # of arguments
+str_desc [1] = str_itself;
+
+INCR i FROM 1 TO .str_desc [0] DO
+    str_itself [.i - 1] = .argblk [.i];
+
+RETURN output_str (str_desc)
+END;
+
+ROUTINE do_output_str_crlf
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Outputs a string and CRLF at current position,
+!	and updates internal data base.
+! FORMAL PARAMETERS:
+	(str_desc		!String minus CRLF
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    do_output_str (.str_desc)		!Output the string
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    do_crlf ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE do_crlf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes a CRLF at current position, and fixes database
+!--
+BEGIN
+
+clear_rest_of_line ();			!Clear rest of current line
+output_sequence (%O'15',%O'12');	!Output a CRLF
+
+cur_char = 1;
+cur_line = .cur_line + 1;		!Update database
+
+IF (.cur_line GTR 24)			!Watch out for line overflow
+  THEN .cur_line = 24;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE do_output_str
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Outputs a string at current position,
+!	and updates internal data base.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_len: WORD,
+    new_str_desc: VECTOR [2],
+    status;
+
+new_str_desc [1] = .str_desc [1];	!Start at same place
+str_len = .str_desc [0];		!Get length he wants to write
+!
+! Get length to output, truncating to 80
+!
+new_str_desc [0] = str_len = MIN (.str_len, 80 - .cur_char + 1);
+
+IF NOT (status =
+    output_str (new_str_desc)
+	)
+  THEN RETURN .status;
+
+!
+! Update internal database
+!
+CH$MOVE		(.str_len
+		,.new_str_desc [1]
+		,vt100_data_base [((.cur_line - 1) * 80) + .cur_char - 1]
+		);
+cur_char = .cur_char + .str_len;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE clear_rest_of_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the sequence to erase rest-of-line, if necessary,
+!	and updates internal database.
+!--
+BEGIN
+LOCAL
+   foo;
+
+IF (.cur_char EQL 81)
+  THEN	RETURN SS$_NORMAL;		!Nothing to do
+
+output_sequence (ch$esc, %C'[', %C'K');	!Clear to end of line
+CH$MOVE		(80 - .cur_char + 1		!# spaces to move in
+		,vt100_line_of_spaces
+		,vt100_data_base [((.cur_line - 1) * 80) + .cur_char - 1]
+		);
+!
+! leave cur_line and cur_char where they are.
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE output_str
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Outputs an arbitrary sequence at current position
+!	** does not update internal current position **
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_len: WORD,
+    status;
+
+str_len = .str_desc [0];		!Just get length of string
+
+IF (.str_len EQL 0)
+  THEN RETURN SS$_NORMAL;		!Output the null string
+
+IF NOT (status =
+    $qiow	(CHAN = .tty_chan
+		,FUNC = IO$_WRITEVBLK
+		,P1 = .str_desc [1]	!Address
+		,P2 = .str_len		!Length
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE vt100$$_exit_handler =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Cleans up terminal on exit
+!--
+BEGIN
+!
+! If there was a scrolling region set, clear it
+!
+IF (.scroll_first_line NEQ 0)
+  THEN  set_scrolling_region (1, 24);
+
+move_cursor (24, 1);		!Leave cursor at bottom of screen
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

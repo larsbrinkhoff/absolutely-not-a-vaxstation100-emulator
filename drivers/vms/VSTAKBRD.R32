@@ -1,0 +1,115 @@
+ 
+!*** MODULE VSTA$KBRD ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+! 
+!  WGA Move-object-to-keyboard Specific Constants
+! 
+literal vsta$k_kbrd_object_type = 2;    ! Move data to USART
+literal vsta$k_kbrd_device_dest = 2;    ! Keyboard is data destination
+! 
+!  LK201 Parameter Limits
+! 
+literal max_kbrd_volume = 7;            ! Number of autorepeat buffers
+literal max_kbrd_buffer = 3;            ! Number of autorepeat buffers
+literal max_autorepeat_timeout = 63;    ! Max. autorepeat timeout
+literal max_autorepeat_interval = 126;  ! Max. autorepeat interval
+literal max_division = 14;              ! Max. keyboard divisions
+! 
+!  LK201 Default Settings
+! 
+literal vsta$k_kbrd_default_volume = 2; ! Default keyboard volume
+literal vsta$k_kbrd_buf0_timeout = 100; ! Default timeout for buffer 0
+literal vsta$k_kbrd_buf0_interval = 30; ! Default interval for buffer 0
+literal vsta$k_kbrd_buf1_timeout = 60;  ! Default timeout for buffer 1
+literal vsta$k_kbrd_buf1_interval = 30; ! Default interval for buffer 1
+literal vsta$k_kbrd_buf2_timeout = 100; ! Default timeout for buffer 2
+literal vsta$k_kbrd_buf2_interval = 40; ! Default interval for buffer 2
+literal vsta$k_kbrd_buf3_timeout = 60;  ! Default timeout for buffer 3
+literal vsta$k_kbrd_buf3_interval = 40; ! Default interval for buffer 3
+! 
+!  LK201 Parameter Possibilities
+! 
+literal vsta$k_kbrd_volume1 = 7;        ! Lowest possible volume
+literal vsta$k_kbrd_volume2 = 6;        ! 
+literal vsta$k_kbrd_volume3 = 5;        ! 
+literal vsta$k_kbrd_volume4 = 4;        ! 
+literal vsta$k_kbrd_volume5 = 3;        ! 
+literal vsta$k_kbrd_volume6 = 2;        ! 
+literal vsta$k_kbrd_volume7 = 1;        ! 
+literal vsta$k_kbrd_volume8 = 0;        ! Highest possible volume
+literal vsta$k_kbrd_low_volume = 7;     ! Lowest keyboard volume
+literal vsta$k_kbrd_high_volume = 0;    ! Highest keyboard volume
+! 
+literal vsta$m_kbrd_wait_led = 1;       ! Wait LED bit
+literal vsta$m_kbrd_compose_led = 2;    ! Compose LED bit
+literal vsta$m_kbrd_lock_led = 4;       ! Lock LED bit
+literal vsta$m_kbrd_hold_led = 8;       ! Hold-screen LED bit
+literal vsta$m_kbrd_all_leds = 15;      ! All keyboard LEDs mask
+! 	
+literal vsta$k_main_array_division = 1; ! Main keyboard array division
+literal vsta$k_num_keypad_division = 2; ! Numeric keypad division
+literal vsta$k_delete_char_division = 3; ! Delete character division
+literal vsta$k_return_tab_division = 4; ! Return-tab key division
+literal vsta$k_lock_compose_division = 5; ! Lock-compose key division
+literal vsta$k_shift_ctrl_division = 6; ! Shift-control key division
+literal vsta$k_hor_cursor_division = 7; ! Horizontal cursor division
+literal vsta$k_ver_cursor_division = 8; ! Vertical cursor division
+literal vsta$k_edit_keypad_division = 9; ! Edit keypad division
+literal vsta$k_local_func_division = 10; ! Local function key division
+literal vsta$k_func2_division = 11;     ! Function key group 2 division
+literal vsta$k_func3_division = 12;     ! Function key group 3 division
+literal vsta$k_help_menu_division = 13; ! Help-menu key division
+literal vsta$k_func5_division = 14;     ! Function key group 5 division
+! 
+literal vsta$k_kbrd_down_only = 0;      ! Keyboard down-only mode
+literal vsta$k_kbrd_auto_down = 1;      ! Keyboard autorepeat-down mode
+literal vsta$k_kbrd_up_down = 3;        ! Keyboard up-down mode
+! 
+!  LK201 Specific Commands
+! 
+literal xmit_inhibit = 137;             ! Inhibit keyboard transmission
+literal xmit_resume = 139;              ! Resume keyboard transmission
+literal leds_on = 19;                   ! Turn on LEDs
+literal leds_off = 17;                  ! Turn off LEDs
+literal keyclick_enable = 27;           ! Enable keyclick
+literal keyclick_disable = 153;         ! Disable keyclick
+literal sound_keyclick = 159;           ! Sound keyclick
+literal bell_enable = 35;               ! Enable bell
+literal bell_disable = 161;             ! Disable bell
+literal sound_bell = 167;               ! Sound bell
+literal autorepeat_enable = 227;        ! Enable autorepeat
+literal autorepeat_disable = 225;       ! Disable autorepeat
+literal autorepeat_rate = 120;          ! Set autorepeat rate
+literal identify = 171;                 ! Request keyboard ID
+literal reinitiate = 253;               ! Reinitiate keyboard
+literal init_defaults = 211;            ! Reinstate default settings
+literal test_mode = 203;                ! Put keyboard into test mode
+! 
+!  Keyboard Command Buffer
+! 
+literal vs$kbrd_k_block_size = 13;      ! Length of data block
+macro kbrd_cmd_buffer = 0,0,0,0 %;
+literal vs$kbrd_s_kbrd_cmd_buffer = 13;
+macro vs$kbrd_w_iosb1 = 0,0,16,0 %;     ! I/O status block - word 1
+macro vs$kbrd_w_iosb2 = 2,0,16,0 %;     ! I/O status block - word 2
+macro vs$kbrd_w_iosb3 = 4,0,16,0 %;     ! I/O status block - word 3
+macro vs$kbrd_w_iosb4 = 6,0,16,0 %;     ! I/O status block - word 4
+macro vs$kbrd_w_size = 8,0,16,0 %;      ! Data block size
+macro vs$kbrd_w_type = 10,0,16,0 %;     ! Data block type
+macro vs$kbrd_b_cmd_buffer = 12,0,8,0 %; ! Keyboard cmd buffer address
+!  
+!  End of module VSTA$KBRD
+! 

@@ -1,0 +1,44 @@
+ ;
+ ;	LOGINOUT data structure definitions
+ ;
+ ; IDENT	'V04-000'
+ ;
+
+ ;++
+ ; FACILITY:  Login
+ ;
+ ; ABSTRACT:
+ ;
+ ;	These are the structure definitions used only by LOGIN
+ ;
+ ; ENVIRONMENT:
+ ;
+ ;	VAX/VMS operating system.
+ ;
+ ;--
+ 
+ ;
+ ; Define LOGIN -> LOGOUT communication region
+ ;
+ ; This structure is used as process permanent own storage for cells which
+ ; must be remembered from LOGIN to LOGOUT.  This structure may not be used
+ ; by any facility other than LOGINOUT, and thus, may be changed at any time
+ ; (unlike PPD, which must remain constant forever).
+ ;
+
+ 	.MACRO	$LGIDEF,$GBL
+
+ 	$DEFINI	LGI,$GBL
+
+
+ $DEF	LGI$L_ORIGUIC	.BLKL		; Original UIC at job creation time
+ $EQU	LGI$S_OUTFNM	20
+ 					; for spooling log file in batch jobs
+ $DEF	LGI$T_OUTFNM	.BLKB	20	; For batch, file name/type of output
+ $DEF	LGI$C_LENGTH
+ $EQU	LGI$C_CHARTIME	15			; Terminal driver timeout value
+
+ $DEF	LGI$K_LENGTH
+ 	$DEFEND	LGI,$GBL,DEF
+
+ 	.ENDM	$LGIDEF

@@ -1,0 +1,536 @@
+	.TITLE	VS$HI_LOGIN_MAR -- macro routines involved in automatic login
+	.IDENT	'V00-000'
+
+;++
+; FACILITY: VAXstation ACP
+;
+; ABSTRACT:
+;
+;	Lookup the supplied username in the authorization file.  
+;	Return the record if valid, else return the
+;	default values.
+;
+; ENVIRONMENT:
+;	VAXstation ACP
+;
+;--
+
+	.SBTTL	DECLARATIONS
+;
+; MACROS:
+;
+	$FABDEF				; define FAB
+	$RABDEF				; define RAB
+	$RMSDEF				; define RMS status codes
+	$SSDEF				; define system status codes
+	$UAFDEF				; define authorization file offsets
+	$LOGDEF				; define logical name masks
+
+	$IPLDEF				; INTERRUPT PRIORITY LEVELS
+	$PCBDEF				; PROCESS CONTROL BLOCK
+	$PRDEF				; PROCESSOR REGISTERS
+	$PRTDEF				; PAGE PROTECTION CODES
+	$PTEDEF				; PAGE TABLE ENTRY
+
+
+	$IACDEF				;IMAGE ACTIVATION FLAGS
+	$PHDDEF				;PROCESS HEADER DEFINITIONS
+
+;
+; EQUATED SYMBOLS:
+;
+
+	NAMEDSC = 4			; offset to username descriptor
+	PWDDSC = 8			; offset to password string descriptor
+	BUFDSC = 12			; offset to user buffer descriptor
+
+	RETRY_RLK = 2			; number of retries if record is locked
+	SLEEP_RLK = 75			; MS to sleep before retrying a GET
+	RECSIZ = 80			; maximum length for password string
+
+	UAF$_NORMAL = 1
+	UAF$_INVUSR = -2
+	UAF$_INVPWD = -4
+
+	UAF$S_USERNAME = 12		; TEMP - fix MDL to produces this
+	UAF$S_PWD = 8
+
+;
+; OFFSETS (FROM AP) FOR INPUT ARGUMENT LIST FOR LIB$Px_MERGE 
+;
+
+FILNAM=4				; Address of image file name descriptor
+DFLTNAM=8				; Address of default file name descriptor
+HDRBUF=12				; Address of image header buffer
+RETADR=16				; Address of quadword for range of
+					;  virtual addresses actually mapped
+;
+; OWN STORAGE:
+;
+	.PSECT	$OWN$		LONG,NOEXE
+
+PASSWORD_BUF:				; Buffer to upcase password into
+	.BLKB	RECSIZ
+
+ENCRYPT_BUF:				; Buffer to encrypt password into
+	.BLKB	UAF$S_PWD
+
+USERNAME_DSC:				; Username descriptor
+	.WORD	UAF$S_USERNAME,0
+	.BLKA	1
+
+PASSWORD_DSC:				; Password descriptor
+	.BLKW	2
+	.ADDRESS PASSWORD_BUF
+
+	.PSECT	_LIB$CODE	RD,NOWRT,PIC,SHR,BYTE,EXE
+;
+; UAF file name string
+;
+
+UAFNAME:	.ASCII	/SYSUAF/
+UAFSIZE=.-UAFNAME
+
+DEFNAME:	.ASCII	/SYS$SYSTEM:.DAT/
+DEFSIZE=.-DEFNAME
+
+;
+; Default username
+;
+
+DEFUSER:	.ASCII /DEFAULT     /
+	ASSUME . EQ DEFUSER+UAF$S_USERNAME
+
+WAKEDELTA:
+	.LONG	-10*1000*SLEEP_RLK,-1
+
+ENCRYPT_DSC:				; Encrypted password descriptor
+	.LONG	UAF$S_PWD
+	.ADDRESS ENCRYPT_BUF
+
+	.SBTTL	VALIDATE_USER - subroutine to lookup username
+
+;++
+;
+; FUNCTIONAL DESCRIPTION:
+;
+;	Routine to lookup the username in the SYSUAF file, optionally 
+;	validate the password, and return the UAF record.
+;
+; CALLING SEQUENCE:
+;
+;	CALLS OR CALLG
+;
+; INPUTS:
+;
+;	NAMEDSC - address of the string descriptor for the username string
+;	PWDDSC - address of the string descriptor for the password string
+;	BUFDSC - address of the buffer descriptor for the user's buffer
+;		 to receive the UAF record.
+;
+; IMPLICIT INPUTS:
+;
+;	none
+;
+; OUTPUTS:
+;
+;	The buffer described by BUFDSC receives the user's record if
+;	the username string is found and the password is valid.  If
+;	the username string is not found, then the default record is
+;	returned.
+;
+; IMPLICIT OUTPUTS:
+;
+;	none
+;
+; ROUTINE VALUE:
+;
+;	UAF$_NORMAL - username and password ok
+;	UAF$_INVPWD - password not valid
+;	UAF$_INVUSR - Username not valid
+;	RMS error code - error on UAF file
+;
+; SIDE EFFECTS:
+;
+;	none
+;--
+
+
+;
+; Register Usage:
+;	R4 - username string address
+;	R5 - user buffer address
+;	R6 - FAB address
+;	R7 - RAB address
+;
+	.ENABL	LSB
+ 
+LGI$SEARCHUSER::			; find the user authorization record
+	.WORD	^M<R2,R3,R4,R5,R6,R7,R8> ; entry save amsk
+	CLRL	-(SP)			; set search only flag
+ 
+5$:	MOVAB	-FAB$K_BLN(SP),R6	; allocate a FAB in the stack
+	MOVAB	-RAB$K_BLN(R6),R7	; then a RAB
+	MOVL	R7,SP			; now create the space
+	MOVC5	#0,(SP),#0,#FAB$K_BLN+RAB$K_BLN,(SP) ; zero FAB and RAB
+	ASSUME	FAB$B_BLN EQ FAB$B_BID+1 ; check for byte adjacency
+	MOVW	#FAB$K_BLN@8!FAB$C_BID,- ; set block length and block ID-
+		FAB$B_BID(R6)		; values into proper fields of FAB
+	MOVAL	UAFNAME,FAB$L_FNA(R6)	; insert file name address
+	MOVB	#UAFSIZE,FAB$B_FNS(R6)	; insert file name size
+	MOVAL	DEFNAME,FAB$L_DNA(R6)	; insert default file name address
+	MOVB	#DEFSIZE,FAB$B_DNS(R6)	; insert default name size
+	MOVB	#<<1@LOG$C_GROUP>!<1@LOG$C_PROCESS>>,-
+		FAB$B_DSBMSK(R6)	; disable process and group logical
+					; name translation
+	BBSS	#FAB$V_GET,FAB$B_FAC(R6),7$ ; get access only
+7$:	MOVB	#FAB$M_GET!FAB$M_PUT!-	; share all operations
+		FAB$M_UPD!FAB$M_DEL,FAB$B_SHR(R6)
+	MOVB	#FAB$C_IDX,FAB$B_ORG(R6); indexed organization
+	MOVB	#FAB$C_VAR,FAB$B_RFM(R6); variable length records
+	ASSUME	RAB$B_BLN EQ RAB$B_BID+1; check for byte adjacency
+	MOVW	#RAB$K_BLN@8!RAB$C_BID,-; set block length and block ID-
+		RAB$B_BID(R7)		; values into proper fields of RAB
+	MOVB	#RAB$C_KEY,RAB$B_RAC(R7); keyed access
+	BBSS	#RAB$V_NLK,RAB$L_ROP(R7),8$ ; don't lock anbody's record
+8$:	MOVB	#10,RAB$B_MBC(R7)	; multi-block reads
+	MOVL	BUFDSC(AP),R5		; get user descriptor address
+	MOVW	(R5),RAB$W_USZ(R7)	; user buffer size
+	MOVL	4(R5),R5		; save buffer address in R5
+	MOVL	R5,RAB$L_UBF(R7)	; put user buffer address in rab
+	MOVAB	(R5),RAB$L_KBF(R7)	; username is copied just before GET
+	MOVB	#UAF$S_USERNAME,RAB$B_KSZ(R7)
+	MOVAL	(R6),RAB$L_FAB(R7)	; insert FAB address
+
+;
+; Enable all privileges that we are authorized to have just to enhance
+; the possibility of accessing the SYSUAF file.
+;
+
+	MNEGL	#1,-(SP)		; Initialize a mask of all ones
+	MNEGL	#1,-(SP)
+	CLRQ	-(SP)			; Allocate quadword for previous privs
+	MOVL	SP,R8			; Point to two quadwords
+	$SETPRV_S ENBFLG=#1,-		; Enable SYSPRV
+		PRVADR=8(R8),-
+		PRVPRV=(R8)		; And save previous privilege mask
+;
+; Open the File and connect RAB
+;
+
+	$OPEN	FAB=(R6)
+	BLBS	R0,14$
+	CMPL	R0,#RMS$_SNE		; If sharing is not enabled try
+	BEQL	10$			; accessing it without sharing.
+	CMPL	R0,#RMS$_SPE		; The same goes for insufficient
+	BEQL	10$			; dynamic memory problems.
+	CMPL	R0,#RMS$_DME
+	BNEQ	15$
+10$:	CLRB	FAB$B_SHR(R6)
+	$OPEN	FAB=(R6)
+	BLBC	R0,15$			; exit on error
+14$:	$CONNECT RAB=(R7)		; connect RAB to FAB
+	BLBS	R0,16$			; exit on error
+15$:	BRW	EXIT
+16$:	MOVAQ	@NAMEDSC(AP),R4		; get username descriptor addr
+	PUSHL	R5			; protect R5 for later (clobber R0-4)
+	MOVC5	(R4),@4(R4),#^A\ \,#UAF$S_USERNAME,UAF$T_USERNAME(R5)
+	POPL	R5
+
+	ASSUME	UAF$S_USERNAME GT 0	; Loop entry can be optimized
+
+	MOVL	#UAF$S_USERNAME-1,R0	; Upcase username
+18$:	CMPB	UAF$T_USERNAME(R5)[R0],#^A\a\
+	BLSSU	19$
+	CMPB	UAF$T_USERNAME(R5)[R0],#^A\z\
+	BGTRU	19$
+	BICB2	#^O040,UAF$T_USERNAME(R5)[R0]
+19$:	SOBGEQ	R0,18$
+
+;
+; Check for DEFAULT user name and deny access if a match occurs.
+;
+
+	CMPC3	#UAF$S_USERNAME,UAF$T_USERNAME(R5),DEFUSER
+	BEQL	50$
+	BSBW	GET_RECORD		; get the record
+	BLBC	R0,40$			; exit on error
+20$:	MOVL	#UAF$_NORMAL,R0		; good return
+	BRB	EXIT
+
+40$:
+	CMPL	R0,#RMS$_RNF		; non-existent user?
+	BNEQ	EXIT			; take RMS error otherwise
+50$:	MOVC3	#UAF$S_USERNAME,DEFUSER,(R5) ; load DEFAULT record
+	BSBB	GET_RECORD
+	BLBC	R0,EXIT			; take RMS error
+	MOVL	#UAF$_INVUSR,R0		; load status code
+EXIT:
+	PUSHL	R0			; save status
+	$DISCONNECT	RAB=(R7)	; clean up shop
+	$CLOSE		FAB=(R6)	;
+;
+; Restore privileges which were current on entry to this routine
+;
+	$SETPRV_S ENBFLG=#0,-		; Disable all current privileges
+		PRVADR=8(R8)
+	$SETPRV_S ENBFLG=#1,-		; Restore privilege mask of caller
+		PRVADR=(R8)
+	POPL	R0
+	RET				; return
+	.DSABL	LSB
+
+GET_RECORD:				; This routine will try to GET the user
+					; record and retries if it is locked.
+	MOVL	#RETRY_RLK,R3		; prepare for a number of retries
+	BRB	20$
+10$:	$SCHDWK_S DAYTIM=WAKEDELTA	; before retrying schedule wake up
+	BLBC	R0,20$
+	$HIBER_S			; if that worked we can take a nap
+20$:	$GET	RAB=(R7)		; try to get the record
+	CMPL	R0,#RMS$_RLK		; was it locked?
+	BNEQ	30$
+	SOBGEQ	R3,10$			; try again if it was
+30$:	RSB
+
+
+
+	.SBTTL	PROTCLI -- CHANGE THE PROTECTION ON THE CLI PAGES
+	.PSECT	$CODE$,NOWRT,EXE,WORD
+;++
+; LGI$PROTECT_CLI - CHANGE THE PROTECTION ON THE CLI PAGES
+;
+;	THIS ROUTINE IS CALLED TO CHANGE THE OWNER AND PROTECTION OF THE
+;	MAPPED CLI PAGES.  THEY ARE CREATED OWNED BY USER MODE, AND THIS
+;	ROUTINE CHANGES THE OWNER TO SUPERVISOR MODE;  IF ANY PAGES ARE
+;	WRITEABLE, THE PROTECTION IS CHANGED TO DISALLOW USER MODE WRITING.
+;
+; INPUTS:
+;
+;	4(AP) = ADDRESS OF CLI $IMGACT RETURN ADDRESS ARRAY
+;
+;	MODE = KERNEL
+;
+; OUTPUTS:
+;
+;	CTL$AG_IMAGE = SAVED CLI ADDRESS ARRAY
+;
+;	PTE$V_OWN OF ALL CLI PTE'S CHANGED TO PSL$C_SUPER
+;	PTE$V_PROT OF ALL WRITEABLE CLI PTE'S CHANGED TO PRT$C_URSW
+;--
+LGI$PROTECT_CLI::
+	.WORD	^M<R2,R3,R4,R5,R6>	;
+	$LKWSET_S INADR=PROT_ROUTINE	; LOCK ROUTINE IN WORKING SET
+	BLBC	R0,20$			; BR IF FAILURE
+	MOVL	4(AP),R1		; GET ADDRESS OF CLI ADDRESS ARRAY
+	MOVQ	(R1),R5			; GET CLI ADDRESS ARRAY
+	CMPL	R5,R6			; FIRST ADDRESS GTRU LAST?
+	BGTRU	10$			; BR IF YES - ORDER IS OK
+	MOVL	R6,R5			; SWITCH ORDER OF ADDRESSES
+	MOVL	(R1),R6			; ...
+10$:	BICW	#VA$M_BYTE,R5		; CLEAR BYTE OFFSETS
+	BICW	#VA$M_BYTE,R6		; ...
+	MOVL	R5,R2			; GET FIRST ADDRESS OF CLI
+	MOVL	SCH$GL_CURPCB,R4	; GET ADDRESS OF PCB
+	MOVL	CTL$GL_PHD,R5		; GET ADDRESS OF PHD WINDOW
+	JSB	MMG$PTEINDX		; CONVERT VA TO PTE INDEX
+	BLBS	R0,30$			; BR IF SUCCESS
+20$:	RET				;
+30$:	DSBINT	#IPL$_ASTDEL		; DISABLE AST DELIVERY
+PROT_LOOP:
+	TSTL	@PCB$L_PHD(R4)[R3]	; FAULT IN PAGE TABLE PAGE
+	DSBINT	#IPL$_SYNCH		; DISABLE SWAPPING
+	MOVL	@PCB$L_PHD(R4)[R3],R0	; GET PAGE TABLE ENTRY
+	CMPZV	#PTE$V_OWN,#PTE$S_OWN,-	; IS PAGE CURRENTLY OWNED BY USER MODE?
+		R0,#PSL$C_USER		;
+	BNEQ	20$			; BR IF NOT
+	INSV	#PSL$C_SUPER,-		; MAKE THE OWNER SUPERVISOR MODE
+		#PTE$V_OWN,#PTE$S_OWN,R0
+	IFNOWRT #1,(R2),10$		; BR IF PAGE NOT WRITEABLE
+	INSV	#PRT$C_URSW,-		; MAKE PAGE WRITEABLE ONLY BY SUPER
+		#PTE$V_PROT,#PTE$S_PROT,R0
+10$:	MOVL	R0,@PCB$L_PHD(R4)[R3]	; SAVE NEW PTE
+	BGTR	20$			; BR IF NOT VALID
+	INVALID	R2			; INVALIDATE TRANSLATION BUFFER
+20$:	ENBINT				; RE-ENABLE SWAPPING AND PAGEFAULTS
+	DECL	R3			; DECREMENT PTE INDEX
+	MOVAB	-512(R2),R2		; DECREMENT VA
+	CMPL	R2,R6			; ALL PAGES DONE?
+	BGEQU	PROT_LOOP		; BR IF NO - CONTINUE
+	ENBINT				; RE-ENABLE AST'S
+	MOVL	#1,R0			; SET SUCCESS
+	RET
+
+PROT_ROUTINE:				; PROTECTION ROUTINE DESCRIPTOR
+	.LONG	LGI$PROTECT_CLI,PROT_ROUTINE
+
+	.SBTTL	EXECUTE_IMAGE, ACTIVATE AN IMAGE
+;---
+;
+;	THIS ROUTINE IS COPIED INTO P1 SPACE (AND THEREFORE MUST BE PIC),
+;	AND WHEN CALLED, WILL RUNDOWN THE LOGIN IMAGE AND ACTIVATE ANOTHER
+;	IMAGE (ESSENTIALLY A CHAIN).  AFTER THE IMAGE COMPLETES, THE PROCESS
+;	WILL BE TERMINATED.
+;
+; INPUTS:
+;
+;	ACCESS MODE IS EXECUTIVE.
+;
+;	MMG$IMGHDRBUF = IMAGE HEADER BUFFER, THE FIRST QUADWORD CONTAINS
+;			A DESCRIPTOR OF THE IMAGE FILE SPECIFICATION.
+;
+; OUTPUTS:
+;
+;	NONE, CONTROL NEVER RETURNS TO THE CALLER.
+;---
+
+EXECUTE_IMAGE::
+	.WORD	0
+
+	$RUNDWN_S ACMODE=#PSL$C_USER	; RUNDOWN LOGIN IMAGE
+	CLRL	R8			; SKIP HIBERNATION BEFORE EXECUTION
+	MOVAB	G^MMG$IMGHDRBUF,AP	; POINT TO IMGHDR BUFFER/FILESPEC
+	JMP	G^EXE$PROCIMGACT	; ACTIVATE THE REQUESTED IMAGE
+
+	.SBTTL LIB$Px_MERGE - Merge an Image into P0 or P1 Space
+;++
+; FUNCTIONAL DESCRIPTION:
+;
+; This routine merges an image into P0 or P1 space. 
+;
+; If called at LIB$P0_MERGE, a simple merged image activation is performed,
+; placing the designated image at the high address end of P0 space.
+;
+; A more complicated sequence of events is required to merge an image into
+; the low address end of P1 space. Because the image activator must know the
+; exact amount of P1 space needed for the image being merged, LIB$P1_MERGE
+; first merges the image into P0 space with the expand region option.  After
+; this merge is completed, the routine computes the P1 range that will hold
+; the image.  This is done by finding the first free P1 page and computing
+; the number of pages just mapped into P0 space.  A P1 virtual address range
+; is then computed.  The pages mapped into P0 space are deleted and second
+; merge image activate is done.  This time the expand region option is turned
+; off and the exact P1 range needed is specified. 
+;
+; CALLING SEQUENCE:
+;
+;	CALLS	#4,LIB$Px_MERGE
+;
+; INPUT PARAMETERS:
+;
+;	FILNAM(AP)  = Address of image file name descriptor
+;	DFLTNAM(AP) = Address of default file name descriptor
+;	HDRBUF(AP)  = Address of 512-byte image header buffer
+;	RETADR(AP)  = Address of quadword for range of virtual addresses mapped
+;
+; IMPLICIT INPUT:
+;
+;	none
+;
+; OUTPUT PARAMETERS:
+;
+;	none
+;
+; IMPLICIT OUTPUT:
+;
+;	The address range actually mapped is returned in the RETADR quadword
+;	provided as an input parameter.
+;
+;	The first block of the image header is copied to the 512-byte buffer
+;	provided as an input parameter.
+;
+; COMPLETION CODES:
+;
+;	R0 low bit set => Image successfully merged
+;
+;		SS$_NORMAL
+;
+;	R0 low bit clear => Error occurred while activating image
+;
+;		SS$_NOPRIV	Entry was as LIB$P1_MERGE and process
+;				does not have CMKRNL privilege.
+;
+;		Various errors returned by $IMGACT and $DELTVA
+;
+; SIDE EFFECTS:
+;
+;	If entry is at LIB$P1_MERGE, the permanent portion of P1 space is
+;	expanded to accommodate the merged image. 
+;
+;--
+
+	.ENABL		LOCAL_BLOCK
+
+	.PSECT	_LIB$CODE PIC,SHR,BYTE,RD,EXE,NOWRT
+
+LIB$P0_MERGE::
+	.WORD	^M<R2,R3,R4,R5,R6,R7>	;REGISTER SAVE MASK
+	MOVL	#<IAC$M_MERGE!IAC$M_EXPREG>,R7 ;IMAGE ACTIVATION FLAGS
+	BRB	10$			;JOIN COMMON CODE PATH
+
+LIB$P1_MERGE::
+	.WORD	^M<R2,R3,R4,R5,R6,R7>	;REGISTER SAVE MASK
+	MOVL	#<IAC$M_MERGE!IAC$M_EXPREG!IAC$M_P1MERGE>,R7
+10$:	MOVZWL	#^X3FF,-(SP)		;END VA FOR BLUEPRINT P0 VA RANGE
+	MOVZWL	#^X200,-(SP)		;START VA FOR BLUEPRINT P0 VA RANGE
+	MOVL	SP,R4			;ADR OF INPUT VA RANGE
+	CLRQ	-(SP)			;RETURN VA RANGE
+	MOVL	SP,R5			;ADR OF RETURN VA RANGE
+	CLRQ	-(SP)			;PLACE TO HOLD IDENT
+	MOVL	SP,R6			;ADR OF IDENT QUADWORD
+	$IMGACT_S	-		;P0 MERGE IMAGE ACTIVATE CALL
+		NAME=@FILNAM(AP),-	;FILE NAME
+		DFLNAM=@DFLTNAM(AP),-	;DEFAULT FILE NAME
+		HDRBUF=@HDRBUF(AP),-	;IMAGE HEADER BUFFER ADDRESS
+		IMGCTL=R7,-		;IMAGE ACTIVATION FLAGS
+		INADR=(R4),-		;INPUT BLUEPRINT P0 RANGE
+		RETADR=(R5),-		;RETURN VA RANGE
+		IDENT=(R6)		;NO IDENT PARAMETER
+	BLBC	R0,IMGACT_ERR		;BR IF ERROR IN $IMGACT
+	BBC	#IAC$V_P1MERGE,R7,50$	;ALL DONE IF P0 MERGE
+	MOVQ	(R5),R2			;R2=START VA, R3=END VA  (MAPPED)
+	SUBL2	R2,R3			;GET # OF BYTES MAPPED
+	MOVL	@#CTL$GL_PHD,R0		;GET ADR OF PROCESS HEADER
+	ADDL3	#^X1FF,PHD$L_FREP1VA(R0),4(R4) ;GET END VA IN P1 SPACE
+	SUBL3	R3,4(R4),(R4)		;GET START VA IN P1 SPACE
+	$DELTVA_S	-		;DELETE P0 VIRTUAL ADDRESS RANGE MAPPED
+		INADR=(R5)		;VA RANGE RETURNED BY $IMGACT
+	BLBC	R0,100$			;BRANCH IF ERROR IN $DELTVA
+	ASSUME	IAC$V_EXPREG LE 7	;BIT MUST BE IN LOW-ORDER BYTE
+	BICB2	#IAC$M_EXPREG,R7	;TURN OFF EXPREG BIT BEFORE P1 ACTIVATE
+	$IMGACT_S	-		;NOW ACTIVATE IMAGE INTO P1 SPACE
+		NAME=@FILNAM(AP),-	;FILE NAME
+		DFLNAM=@DFLTNAM(AP),-	;DEFAULT FILE NAME
+		HDRBUF=@HDRBUF(AP),-	;IMAGE HEADER BUFFER ADDRESS
+		IMGCTL=R7,-		;IMAGE ACTIVATION FLAGS
+		INADR=(R4),-		;INPUT EXACT P1 RANGE
+		RETADR=(R5),-		;RETURN VA RANGE
+		IDENT=(R6)		;NO IDENT PARAMETER
+	BLBC	R0,IMGACT_ERR		;BRANCH IF ERROR IN $IMGACT
+	PUSHL	(R5)			;GET NEW BASE OF CONTROL REGION
+	PUSHL	#1			;ONE ARGUMENT FOR ROUTINE
+	$CMKRNL_S SET_NEWCTLBAS,(SP)	;SET A NEW CONTROL REGION BASE
+50$:	$IMGFIX_S			;PERFORM ADDRESS RELOCATION
+	BLBC	R0,IMGACT_ERR		;QUIT IF ERROR OCCURS
+	MOVQ	(R5),@RETADR(AP)	;SET RETURN VA RANGE ACTUALLY MAPPED
+	MOVZBL	#SS$_NORMAL,R0		;REPORT SUCCESSFUL MERGE IMAGE ACTIVATE
+100$:	RET				; AND RETURN TO CALLER
+
+IMGACT_ERR:
+	ADDL3	#1,(R5),R1		;ANYTHING AT ALL MAPPED?
+	BEQL	100$			;BR IF NOTHING MAPPED (SKIP $DELTVA)
+	PUSHL	R0			;REMEMBER RETURN STATUS CODE
+	$DELTVA_S	-		;DELETE P0 VIRTUAL ADDRESS RANGE MAPPED
+		INADR=(R5)		;VA RANGE RETURNED BY $IMGACT
+	MOVL	(SP)+,R0		;RESTORE ORIGINAL ERROR CODE
+	BRB	100$			;JOIN COMMON CODE
+	.DSABL	LSB
+
+
+SET_NEWCTLBAS:
+	.WORD	0			;NO REGISTERS TO SAVE
+	MOVL	4(AP),G^CTL$GL_CTLBASVA	;SET A NEW CONTROL REGION BASE
+	MOVZBL	#SS$_NORMAL,R0		;SET STATUS CODE 
+	RET				;CONTINUE
+
+	.END

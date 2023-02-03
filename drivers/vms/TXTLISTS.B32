@@ -1,0 +1,427 @@
+module lists (addressing_mode (
+	external = general,	! allow external routines to be far away
+	nonexternal = general	! allow things like str$upcase to be called
+	))
+= begin
+
+
+! This module contains routines for manipulating lists.
+
+library 'vsta$library:txtsym';
+library 'vsta$library:libmacros';
+
+! PSECT definitions
+
+$vsta_psect;
+
+forward routine!s . . .
+	deleteList,		! delete an entire list
+	deleteElements,		! delete elements from a list
+	appendElement,		! add one element to end of a list
+	findElement,		! search list for an element
+	addElements;		! add elements to list
+
+external routine!s . . .	! defined in txtalloc8
+	alcful,			! allocate block of fullwords
+	deallocateFullwords;	! deallocate block of fullwords
+
+%sbttl 'General list manipulation routines'
+
+! Currently, lists are organized like this:
+!
+!		_________________
+!		| space		|
+!		-----------------
+!		| element 1	|
+!		-----------------
+!		| element 2	|
+!		-----------------
+!		|   . . .	|
+!
+! where space is the amount of SPACE for elements,
+! not to be confused with the number of elements actually in use, which is
+! not stored in the list itself (users of lists must maintain the actual length
+! themselves).
+!
+! A constant called
+!
+!		chunkSize
+!
+! is used for controlling a list's size.  If a deletion from a list causes
+! the number of unused slots to be at least chunkSize fullwords, the list
+! is reallocated with some multiple of chunkSize fullwords less as its
+! count.
+!
+! If an augmentation of elements requires more space than is available, a
+! new list is allocated with a multiple of chunkSize fullwords more added on.
+!
+! The value of chunkSize is chosen so as to be large enough to avoid frequent
+! reallocation and copying of lists, but small enough so that lists don't
+! take up too much more extra memory.
+
+literal chunkSize = 5;		! small for now, for debugging
+
+! The extra overhead of occasional reallocation of lists is accepted in trade
+! for the efficiency of indexing into the lists, which can be done as a
+! standard vector.  Other choices, such as linked lists, would avoid the
+! allocation problems, but are less efficiently indexed or scanned.
+
+routine deleteList
+!++
+! Functional description:
+!
+!	Delete an entire list, given address of POINTER to list.
+!
+! Formal parameters:
+ (
+    listPtr		! address of pointer to list
+	   ) =
+!--
+
+	if ..listPtr eql 0
+	then return true
+	else begin
+	bind
+	    ! Get list itself
+	    list = ..listPtr:vector,
+
+	    ! Get list length, which is first word of list itself, plus one
+	    ! for itself.
+	    length = .list[0] + 1;
+
+	! Deallocate the list
+	deallocateFullwords(length, list[0]);
+
+	! Clear pointer to list
+	.listPtr = 0;
+
+	! Give success return
+	true
+
+	end;
+
+global routine deleteElements
+!++
+! Functional description:
+!
+!	Delete elements from a list.  This routine generally returns true, but
+!	could fail due to a failure reallocating a smaller list.
+!
+! Formal parameters:
+ (
+    oldCount,			! number of elements currently in use
+    listAdrAdr,			! pointer to address of list
+    first,			! rank of first element to be deleted
+    last			! rank of last element to be deleted
+		) =
+!--
+
+	! Give quick return if degenerate case no existent list yet.
+	! This prevents access violation while trying to read listBlk[0].
+	!
+	if .oldCount eql 0
+	then return true
+	else
+
+	begin
+	bind
+
+	    ! get current address of list
+	    listBlk = ..listAdrAdr:vector,
+
+	    ! get total space for elements currently allocated
+	    oldSpace = .listBlk[0],
+
+	    ! Calculate new number of elements after deletion.  If this number
+	    ! is 0, delete the entire list and return immediately.  This causes
+	    ! the list address to be 0, which 1) guarantees that when all
+	    ! elements are deleted, we get into the same 0 state we were in
+	    ! before any elements existed at all, and 2) routines can look at
+	    ! list address and test for 0 to see if there are any elements.
+	    !
+	    newCount =
+		begin
+		bind temp = .oldCount - .last + .first - 1;
+		if temp eql 0
+		then return deleteList (.listAdrAdr)
+		else temp
+		end,
+
+	    ! Calculate free space available in current list
+	    oldFree = oldSpace - .oldCount,
+
+	    ! Calculate free space that would be available after deletion,
+	    ! named with "temporary" as a prefix, since if this space is large
+	    ! enough, the list will be reallocated with less free space
+	    !
+	    tmpFree = oldSpace - newCount,
+
+	    ! Calculate number of chunks that can be deleted (hopefully 0)
+	    xChunks = tmpFree / chunkSize,
+
+	    ! Calculate new space for after some chunks are possibly deleted
+	    newFree = tmpFree - xChunks*chunkSize,
+
+	    ! Calculate new total space in list after deletion
+	    newSpace = newCount + newFree,
+
+	    ! Decide whether a new vector needs to be allocated, according to
+	    ! whether the total new space is different than the old
+
+	    newFlag = newSpace neq oldSpace,
+
+	    ! Establish vector into which diminished list should be written.
+	    ! This is usually the same as the vector we were handed, but if a
+	    ! chunkSize or more free space will be left after the deletion, we
+	    ! allocate a new vector.
+	    !
+	    newList =
+		begin
+		if newFlag
+		then allocateFullwords(newSpace+1)
+		else listBlk[0]
+		end:vector,
+
+	    ! Calculate size of left portion, i.e. number of fullwords being
+	    ! kept at the beginning of the list before the deletion.
+	    leftSize = .first - 1,
+
+	    ! Calculate address of left portion
+	    leftPtr = listBlk[1],
+
+	    ! Calculate size of right portion, i.e. the part that follows
+	    ! the deletion
+	    rightSize = .oldCount - .last,
+
+	    ! Calculate address of right portion
+	    rightPtr = listBlk[1 + .last],
+
+	    ! Calculate address to which right portion will be copied, to
+	    ! overwrite the deletion
+	    newRightPtr = newList[.first];
+
+	! If new vector got allocated, it's left portion needs to be set up
+	! by copying the left portion from the original vector.
+	if newFlag
+	then
+	    begin
+	    ch$move (leftSize*4, leftPtr, newList[1])
+	    end;
+
+	! Achieve the actual deletion by moving the right portion to just
+	! after the left portion.
+	!
+	ch$move (rightSize*4, rightPtr, newRightPtr);
+
+	! Update header with total space in list
+	newList[0] = newSpace;
+
+	! If a new list got allocated, deallocate the old one, if it existed.
+	!
+	if newFlag
+	then
+	    if listBlk[0] neq 0
+	    then deallocateFullwords (oldSpace + 1, listBlk[0]);
+
+	! Update address of list which may have changed if list shrank enough
+	! to allow reallocation.
+	.listAdrAdr = newList;
+
+	! Give success return
+	true
+
+	end;
+
+global routine appendElement
+!++
+! Functional description:
+!
+!	Add one more element at the end of a list.
+!	This routine returns true on success, and false if failure.
+!	The most common failure would be that there is no more free space.
+!	For this routine, note that the ADDRESS of the word containing the list address
+!	is supplied by the caller instead of the list address itself.  This is because
+!	the append operation may have to reallocate the list, in which case it wants
+!	to know where to store the new address
+!
+! Formal parameters:
+ (
+    size,			! number of elements currently in use
+    addr,			! address of word holding list address
+    newOne			! element being appended
+	      ) =
+!--
+
+	begin
+	local s, newList:ref vector;
+
+	! Make room for the new one.
+	! Return false if couldn't.
+	if not (s = addElements( .size, .addr, .size, 1))
+	then return .s;
+
+	! Get base of vector after expansion
+	newList = ..addr;
+
+	! Fill in the new element
+	newList[.size + 1] = .newOne;
+
+	! Say everything worked by returning true
+	true
+
+	end;
+
+global routine findElement
+!++
+! Functional description:
+!
+!	Search specified list for particular element, returning 0 or its rank.
+!
+! Formal parameters:
+ (
+    len,			! number of elements in list
+    lst:ref vector,		! list to be searched
+    element			! element to search for
+	    ) =
+!--
+
+	begin
+
+	! scan all elements, return rank if find interesting one
+	incr i from 1 to .len do
+	if .lst[.i] eql .element
+	then return .i;
+
+	! Couldn't find it, so return 0
+	0
+
+	end;
+
+global routine addElements
+!++
+! Functional description:
+!
+!	Make room for new elements in a list after a particular one.
+!	Return 0 on failure, and (possibly new) address of list on success
+!
+! Formal parameters:
+ (
+    oldCount,			! number of elements in use
+    listAdrAdr,			! address holding base of list
+    after,			! rank of element before new ones
+    quantity			! how many new elements
+		) =
+!--
+
+	begin
+	bind
+
+	    ! Get base of list
+	    listBlk = ..listAdrAdr:vector,
+
+	    ! Get total space for elements currently allocated.
+	    ! Check for none allocated yet, indicated by vector address of 0.
+	    oldSpace =
+		begin
+		if listBlk[0] eql 0
+		then 0
+		else .listBlk[0]
+		end,
+
+	    ! Calculate new number of elements after addition
+	    newCount = .oldCount + .quantity,
+
+	    ! Calculate free space available in current list
+	    oldFree = oldSpace - .oldCount,
+
+	    ! Calculate free space that would be available after addition,
+	    ! named with "temporary" as a prefix, since if this space is
+	    ! depleted, the list will be reallocated with more free space
+	    tmpFree = oldSpace - newCount,
+
+	    ! Calculate number of chunks that need to be added (hopefully 0)
+	    xChunks =
+		begin
+		if tmpFree geq 0
+		then 0
+		else (chunkSize - tmpFree - 1)/chunkSize
+		end,
+
+	    ! Calculate new space for after some chunks are possibly added
+	    newFree = tmpFree + xChunks*chunkSize,
+
+	    ! Calculate new total space in list after addition
+	    newSpace = newCount + newFree,
+
+	    ! Decide whether a new vector needs to be allocated, according to
+	    ! whether the total new space is different than the old
+
+	    newFlag = newSpace neq oldSpace,
+
+	    ! Establish vector into which augmented list should be written.
+	    ! This is usually the same as the vector we were handed,
+	    ! but is a newly allocated vector if we ran out of space and had
+	    ! to move.
+	    newList =
+		begin
+		if newFlag
+		then allocateFullwords(1 + newSpace)
+		else listBlk[0]
+		end:vector,
+
+	    ! Calculate size of left portion, i.e. number of fullwords being
+	    ! kept at the beginning of the list before the addition.
+	    leftSize = .after,
+
+	    ! Calculate address of left portion
+	    leftPtr = listBlk[1],
+
+	    ! Calculate size of right portion, i.e. the part that follows
+	    ! the addition
+	    rightSize = .oldCount - .after,
+
+	    ! Calculate address of right portion
+	    rightPtr = listBlk[1 + .after],
+
+	    ! Calculate address to which right portion will be copied, to
+	    ! make room for the addition
+	    newRightPtr = newList[1 + .quantity + .after];
+
+	! If new vector got allocated, it's left portion needs to be set up
+	! by copying the left portion from the original vector.
+	if newFlag
+	then
+	    begin
+	    ch$move (leftSize*4, leftPtr, newList[1])
+	    end;
+
+	! Move right portion to make room for new element
+	ch$move (rightSize*4, rightPtr, newRightPtr);
+
+	! Update header with total space in list, but don't try to if there
+	! isn't even a list yet, which will occur if there wasn't before, and
+	! we're being asked to add 0 elements, which will occur if
+	! vs$$txt_createTextBlock is asked to create 0 lines, which is
+	! reasonable if the caller wants to add the lines later herself.
+	! For instance, vsta$$create_menu does this.
+	!
+	if newList[0] neq 0
+	then newList[0] = newSpace;
+
+	! If a new list got allocated, deallocate the old one, if it existed.
+	!
+	if newFlag
+	then
+	    if listBlk[0] neq 0
+	    then deallocateFullwords (oldSpace + 1, listBlk[0]);
+
+	! Update address of list, which may have been reallocated
+	.listAdrAdr = newList;
+
+	! Give success return
+	true
+
+	end;
+
+end
+eludom

@@ -1,0 +1,194 @@
+module STOPACPS (	! Stop VAXstation ACP Processes
+		ident = 'VSTA V1.2-01',
+		main = STOP_ACPS
+		) =
+begin
+
+!++
+! Facility:
+!
+!	VAXstation display system software
+!
+! Abstract:
+!
+!	This module contains all the routines necessary for organized
+! shutdown of all VAXstation ACPs on a given system.
+!
+! Environment:
+!
+!	VAX/VMS with at least 1 VAXstation and VAXstation display system
+! software installed.
+!
+!--
+
+!
+! Include files:
+!
+
+    library 'SYS$LIBRARY:LIB.L32';
+    library 'VSTA$LIBRARY:LINKAGE.L32';
+
+!
+! Table of contents:
+!
+
+forward routine
+
+    STOP_ACPS: novalue,
+    STOP;
+
+!
+! External references:
+!
+
+external routine
+
+    IOC$VERIFYCHAN:	VERIFYCHAN addressing_mode(absolute);
+
+
+routine STOP_ACPS :novalue =
+!++
+! Functional description:
+!
+!	This is the main routine responsible for shutting down ALL the
+! VAXstation ACPs on the system its being run on. This is normally done
+! as part of site-specific system shutdown procedures.
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+    begin
+    local
+	STATUS;			! Exit status value
+
+    if not (STATUS = $CMKRNL(ROUTIN=STOP))
+	then $EXIT(CODE=.STATUS)
+
+    end; ! routine STOP_ACP
+
+
+routine STOP =
+
+!++
+! Functional description:
+!
+!	This routine does all the "real" work in kernel mode. We start by
+! building the template VD device name for the first ACP and proceed as long
+! as template VD devices exist (or until we run out of available controllers).
+! If the template is in a state which indicates that an ACP is running, then
+! we ask the ACP to kill itself via the IO$_MOUNT ! IO$M_DELETE $QIO.
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	All the ACP processes disappear.
+!
+!--
+
+begin
+literal
+	MAX_CONTROLLERS = 26;				!Max. templates
+own
+	NAM:vector [5,byte] initial (byte('VDx0:')),	!Template device name
+	NAMD:vector [2,long] initial (5,NAM);		!Template name desc.
+local
+	VD_CHAN: word,					!Channel to template
+	CCB: ref block[0,byte],				!Channel control block
+	UCB: ref block[0,byte],				!Unit control block
+	STATUS: initial(SS$_NORMAL),			!Return status value
+	CONTROLLER: byte initial(byte(0));		!Template controller
+
+!
+! While available device controllers exist and we're able to get channels
+! to those template devices and the ACPs are still around, destroy them.
+!
+while (.CONTROLLER lss MAX_CONTROLLERS) and (.STATUS) do
+    begin
+    CONTROLLER = .CONTROLLER + 1;
+    NAM[2] = .CONTROLLER + %X'40';		! 1 = 'A', 3 = 'C', etc
+!
+! If we can't get a channel to this template device, then there is no
+! need to continue
+!
+    if (STATUS = $ASSIGN(
+			CHAN=VD_CHAN,
+			DEVNAM=NAMD,
+			ACMODE=PSL$C_USER))
+    then begin
+!
+! If we can't see the channel control block, something is screwed up and we
+! should not continue
+!
+	if (STATUS = IOC$VERIFYCHAN(.VD_CHAN;CCB))
+	then begin	! Channel OK
+!
+! So far so good. If the template is mounted, indicating that an ACP is
+! present, then send a request to it requesting self-destruction.
+!
+! NOTE: If the ACP process itself is NOT there, then this operation will
+!	never terminate. This means that the process can not be deleted by
+!	VMS which is running this program. However, if only used during
+!	system shutdown, this is a non-issue.
+!
+	    UCB = .CCB[CCB$L_UCB];
+	    if (.UCB[UCB$L_DEVCHAR] and DEV$M_MNT) neq 0 then
+		$QIOW(
+			CHAN=.VD_CHAN,
+			FUNC=IO$_MOUNT or IO$M_DELETE);
+
+	    end;	! Channel control block found OK
+
+	$DASSGN( CHAN=.VD_CHAN );
+	end;	! $ASSIGN succeeded on template device
+
+    end;	! While templates remain loop
+!
+! If the status which caused us to exit the loop was something other than
+! SS$_NOSUCHDEV, then return that to the caller
+!
+    if .CONTROLLER lss MAX_CONTROLLERS then
+      if .STATUS neq SS$_NOSUCHDEV then
+	return .STATUS;
+
+return SS$_NORMAL;
+end; ! routine STOP
+
+
+end ! module STOPACPS
+eludom

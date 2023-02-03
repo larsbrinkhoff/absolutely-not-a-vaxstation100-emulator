@@ -1,0 +1,486 @@
+MODULE TXTINIT (
+		IDENT = 'TXT Initialization'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL,
+				NONEXTERNAL = GENERAL)) =
+BEGIN
+
+! This module contains code to initialize the TXT services when
+! the ACP is started up. It reads from VSTA$FONT:FONTSDEF.TXT
+! to define the various system-wide fonts used by the ACP itself.
+
+!
+! ENVIRONMENT:
+!	VSACP, at system start-up time.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vs$$txt_init_systemwide_fonts,	! Entry point from ACP init code.
+    open_def_file,			!Open the definition file
+    read_def_record,			!Read a record from the definition file
+    interpret_def_record,		! Parse the record and call the routine
+					!"Define system-wide font"
+    skip_leading_spaces,		!Ignore spaces after comma's
+					! (allow file to be more readable).
+    get_rendition,			!Parse the rendition
+    close_def_file;			!Close definition file
+
+EXTERNAL ROUTINE
+    vs$$txt_defineSystemwideFont,
+    vsta$$error;
+    
+LIBRARY 'vsta$library:txtsym';
+LIBRARY 'vsta$library:vserrors';	!Only need "string_type" and "integer_type"
+LIBRARY 'vsta$library:libmacros';
+!LIBRARY 'vs:termio';
+
+LIBRARY 'sys$library:starlet';
+
+! PSECT Definitions
+
+$vsta_psect;
+
+OWN
+    font_fab: $FAB
+		(FNM = 'VSTA$FONT:FONTSDEF.TXT'
+		,FAC = <GET>
+		),
+    font_rab: $RAB
+		(FAB = font_fab
+		,USZ = 512		!Size of input record buffer
+		),
+    which_record,		!Which record is being read and interpreted
+    rec_desc: VECTOR [2];	! Descriptor to line
+
+
+GLOBAL ROUTINE vs$$txt_init_systemwide_fonts =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	  Called at system startup to define system-wide fonts as
+!	specified in the file VSTA$FONT:FONTSDEF.TXT.
+!	  Errors are logged, and if there are any the routine
+!	returns FALSE after trying to define all the fonts.
+!--
+BEGIN
+LOCAL
+    input_buffer: VECTOR [512,byte],	!Input buffer addr
+    rec_len,			!Length of this record
+    got_error_flag,
+    status;
+!
+! The input buffer is in local storage to save data space
+!
+font_rab [rab$l_ubf] = input_buffer;	!Get ptr to input buffer
+rec_desc [1] = input_buffer;
+got_error_flag = 0;			!No error yet.
+!
+! Open the file
+!
+IF NOT open_def_file ()
+  THEN RETURN false;
+
+!
+! Loop reading records and processing them until EOF
+!
+which_record = 0;			!Incr when reading new record
+WHILE 1 DO
+    BEGIN
+    IF NOT (status =
+	read_def_record (input_buffer, rec_len)
+	    )
+      THEN
+	BEGIN
+	IF (.status NEQ 0)		!EOF
+	  THEN got_error_flag = 1;	!No, we got a bad error.
+	EXITLOOP;
+	END;
+    rec_desc [0] = .rec_len;		!Get descriptor to record
+    IF NOT (status =
+	interpret_def_record (input_buffer, .rec_len)	!Log any errors
+	    )
+     THEN got_error_flag = 1;
+    END;		!Of WHILE 1 DO..
+!
+! Close the font definition file
+!
+IF NOT close_def_file ()
+  THEN RETURN false;			!Error logged, return
+
+IF (.got_error_flag)
+  THEN RETURN false
+  ELSE RETURN true
+
+END;
+
+ROUTINE open_def_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open the font definition file.
+!	It MUST be there. If not, bomb the ACP.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $open	(FAB = font_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);	!Explain RMS error
+    RETURN $bug (vsta$_open_fnts
+		,string_type, %ASCID 'VSTA$FONTS:FONTSDEF.TXT'
+		);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = font_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $bug (vsta$_conn_fnts
+		,string_type, %ASCID 'VSTA$FONTS:FONTSDEF.TXT'
+		);
+    END;
+
+RETURN true
+END;
+
+ROUTINE read_def_record
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read next non-blank record from the font definition file
+! FORMAL PARAMETERS:
+	(bufadr: REF VECTOR [512,BYTE]
+	,length			!Returned length or record read in
+	) =
+! RETURN VALUES:
+!	0 if EOF, else error code has been logged.
+!--
+BEGIN
+LOCAL
+    rec_size,
+    status;
+
+rec_size = 0;
+WHILE (.rec_size EQL 0) DO
+    BEGIN
+    which_record = .which_record + 1;	!Read next record
+    IF NOT (status =
+	$get	(RAB = font_rab)
+	    )
+      THEN
+	BEGIN
+	IF (.status EQL RMS$_EOF)
+	  THEN RETURN 0;		!Return EOF code
+	RETURN $system_error (.status);
+	END;
+
+    rec_size = .font_rab [rab$w_rsz];	!Get record size
+    IF (.rec_size NEQ 0)
+      THEN
+	BEGIN
+	IF (.bufadr [0] EQL %C'!')	!Ignore comment lines
+	  THEN rec_size = 0;
+	END;
+    END;
+!
+! Non-zero record; return with length
+!
+.length = .rec_size;
+RETURN true
+END;
+
+ROUTINE interpret_def_record
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Interpret the font definition record and define the system-wide font
+! FORMAL PARAMETERS:
+	(bufaddr: REF VECTOR [512,BYTE]
+	,length
+	) =
+!--
+BEGIN
+MACRO
+    $bad_rec =
+	BEGIN
+	RETURN $error		(vsta$_badfondef	!Error code
+				,integer_type, .which_record
+				,string_type, rec_desc
+				)
+	END %;
+LOCAL
+    rem_desc: VECTOR [2],		!Descriptor to remainder of line
+    fn_desc: VECTOR [2],		!Descriptor to filename string
+    tf_desc: VECTOR [2],		!Descriptor to typeface string
+    typesize,
+    rend_bits,
+    comma_pos,				!Position of next comma
+    adr_ch: REF VECTOR [,BYTE],		!To reference characters
+    last_delim_comma,			!if "true", last delimiter was a comma
+    len_ts_str,				!Length of Typesize string
+    len_rend_str,			!Length of rendition string
+    status;
+!
+! Record must be in the form:
+!	filename,typeface,typesize[,rend-bit[,rend-bit...]]
+! rend-bit is one of: BOLD, ITALIC
+!
+rem_desc [0] = .length;
+rem_desc [1] = .bufaddr;
+skip_leading_spaces (rem_desc);		!Allow leading spaces before filename
+rend_bits = 0;		!Assume no rendition bits
+!
+! Up to first comma includes the filename
+!
+comma_pos = CH$FIND_CH	(.rem_desc [0]	!Length
+			,.rem_desc [1]	!Ptr
+			,%C','		!Search for comma
+			);
+IF (.comma_pos EQL 0)
+  THEN $bad_rec;
+
+fn_desc [0] = .comma_pos - .rem_desc [1];	!Get length of filename str
+fn_desc [1] = .rem_desc [1];
+IF (.fn_desc [0] EQL 0)
+  THEN $bad_rec;
+!
+! Make rem_desc point to after <filename>,
+!
+rem_desc [0] = .rem_desc [0] - .fn_desc [0] - 1;
+rem_desc [1] = .rem_desc [1] + .fn_desc [0] + 1;
+skip_leading_spaces (rem_desc);		!Allow blanks after "filename,"
+IF (.rem_desc [0] EQL 0)
+  THEN $bad_rec;
+!
+! Search for comma after typeface
+!
+comma_pos = CH$FIND_CH	(.rem_desc [0]
+			,.rem_desc [1]
+			,%C','
+			);
+IF (.comma_pos EQL 0)
+  THEN $bad_rec;
+
+tf_desc [0] = .comma_pos - .rem_desc [1];	!Get length of typeface str
+tf_desc [1] = .rem_desc [1];
+IF (.tf_desc [0] EQL 0)
+  THEN $bad_rec;
+!
+! Make rem_desc point to after <typeface>,
+!
+rem_desc [0] = .rem_desc [0] - .tf_desc [0] - 1;
+rem_desc [1] = .rem_desc [1] + .tf_desc [0] + 1;
+skip_leading_spaces (rem_desc);		!Allow spaces before typesize
+IF (.rem_desc [0] EQL 0)
+  THEN $bad_rec;
+!
+! Next is typesize, delimited by either comma or EOS
+!
+adr_ch = .rem_desc [1];			!Typesize string starts here.
+comma_pos = CH$FIND_CH	(.rem_desc [0]
+			,.rem_desc [1]
+			,%C','
+			);
+IF (.comma_pos NEQ 0)
+  THEN
+    BEGIN
+    len_ts_str = .comma_pos - .rem_desc [1];
+    last_delim_comma = 1;
+    END
+  ELSE
+    BEGIN
+    len_ts_str = .rem_desc [0];	!Remainder of string
+    last_delim_comma = 0;		!EOS ended string
+    END;
+
+IF (.len_ts_str EQL 0)
+  THEN $bad_rec;
+!
+! Get desc to REND[,REND] if last delimiter was a comma
+!
+rem_desc [0] = .rem_desc [0] - .len_ts_str - 1;
+rem_desc [1] = .rem_desc [1] + .len_ts_str + 1;
+!
+! Parse typesize
+!
+typesize = 0;
+INCR i FROM 0 TO .len_ts_str - 1  DO
+    BEGIN
+    IF ((.adr_ch [.i] LSS %C'0') OR (.adr_ch [.i] GTR %C'9'))
+      THEN $bad_rec;
+    typesize = .typesize * 10 + .adr_ch [.i] - %C'0';
+    END;
+!
+! Now loop until delimiter was EOS.
+!
+rend_bits = 0;			!No renditions specified so far
+WHILE (.last_delim_comma) DO
+    BEGIN
+    skip_leading_spaces (rem_desc);	!Skip leading spaces
+    comma_pos = CH$FIND_CH	(.rem_desc [0]
+				,.rem_desc [1]
+				,%C','
+				);
+    IF (.comma_pos EQL 0)
+      THEN
+	BEGIN
+	last_delim_comma = 0;	!Last delimiter was EOS
+	len_rend_str = .rem_Desc [0];
+	END
+      ELSE
+	len_rend_str = .comma_pos - .rem_Desc [1];
+  !
+  ! If valid rendition, set the bit. Else report error and return.
+  !
+    IF NOT (get_rendition (.len_rend_str, .rem_desc [1], rend_bits))
+      THEN $bad_rec;		!Invalid rendition
+  !
+  ! Go on to next rendition, if any
+  !
+    rem_desc [0] = .rem_desc [0] - .len_rend_str - 1;
+    rem_desc [1] = .rem_desc [1] + .len_rend_str + 1;
+    END;
+!
+! Record is ok, define the systemwide font.
+!
+IF NOT (status =
+    vs$$txt_defineSystemWideFont
+		(fn_desc
+		,tf_desc
+		,.typesize
+		,.rend_bits
+		)
+	)
+  THEN
+    BEGIN
+    RETURN $error	(VSTA$_DEFSYSWFAI
+			,integer_type, .which_record
+			);
+    END;
+
+RETURN true
+END;
+
+ROUTINE skip_leading_spaces
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Skip leading spaces in a string and adjust the descriptor
+!	to point to the first non-blank character. If all remaining
+!	characters are blank, return a null descriptor.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    num_spaces,
+    adr_ch: REF VECTOR [,BYTE];
+
+IF (.str_desc [0] EQL 0)
+  THEN RETURN SS$_NORMAL;		!String already blank, return
+
+num_spaces = 0;				!Count spaces
+adr_ch = .str_desc [1];
+INCR i FROM 0 TO .str_desc [0] - 1 DO
+    BEGIN
+    IF ((.adr_ch [.i] EQL %C' ') OR (.adr_ch [.i] EQL %C'	'))
+      THEN num_spaces = .num_spaces + 1
+      ELSE EXITLOOP;		!Found first non-space
+    END;
+
+IF (.num_spaces EQL 0)
+  THEN RETURN SS$_NORMAL;
+
+str_desc [0] = .str_desc [0] - .num_spaces;	!Skip the spaces
+str_desc [1] = .str_Desc [1] + .num_spaces;	! . . (or tabs)
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_rendition
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse the rendition and OR in the bit if it's valid.
+!	If not valid, return 0 status.
+! FORMAL PARAMETERS:
+	(len
+	,addr: REF VECTOR [,BYTE]
+	,rend_bits
+	) =
+!--
+BEGIN
+OWN
+    rend_num_items: INITIAL (4),		!# items in table.
+    rend_table: VECTOR [4 * 2]
+		INITIAL	(%ASCID 'BLINK'
+			,rend_blink_bit
+			,%ASCID 'BOLD'
+			,rend_bold_bit
+			,%ASCID 'ITALIC'
+			,rend_italics_bit
+			,%ASCID 'UNDERLINE'
+			,rend_underscore_bit
+			);
+LOCAL
+    table_ascid: REF VECTOR [2],
+    table_item_len: WORD,
+    table_item_str: REF VECTOR [,BYTE];
+
+IF (.len EQL 0)
+   THEN RETURN 0;			!0-length, no good.
+!
+! Start by up-casing the string in place.
+!
+INCR i FROM 1 TO .len DO
+    BEGIN
+    IF ((.addr [.i - 1] GEQ %C'a') AND (.addr [.i - 1] LEQ %C'z'))
+      THEN addr [.i - 1] = .addr [.i - 1] - %O'40';	!Make uppercase
+    END;
+!
+! Loop for each entry in table.
+!
+INCR i FROM 1 TO .rend_num_items DO
+    BEGIN
+    table_ascid = .rend_table [(.i - 1) * 2];	!Get %ASCID address
+    table_item_len = .table_ascid [0];	!Get length
+    table_item_str = .table_ascid [1];	!Get addr
+    IF (.table_item_len EQL .len)
+      THEN
+	BEGIN
+      ! Compare this item
+	IF (CH$EQL (.len, .table_item_str, .len, .addr))
+	  THEN
+	    BEGIN
+	    .rend_bits = ..rend_bits OR .rend_table [(.i - 1) * 2 + 1];
+	    RETURN SS$_NORMAL
+	    END;
+	END;
+    END;
+
+!
+! Not found, return 0
+!
+RETURN 0
+END;
+
+ROUTINE close_def_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the font definition file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = font_fab)
+	)
+  THEN RETURN vsta$$error (.status);
+
+RETURN true
+END;	
+END
+ELUDOM

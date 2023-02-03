@@ -1,0 +1,807 @@
+MODULE DOC$GEN (
+		IDENT = 'VSTADOC Utility DCL command parser'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides the logic to generate the
+!	encoded doc file from the input file, and write a listing file.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$generate_file,		!Generate the file
+    process_eof,		!process EOF
+    process_eol,		!Process EOL
+    process_ff,			!Process FF in text
+    process_text_line,		!Process text line
+    process_cmd_end,		!Command end
+    process_cmd_text,		!Command line
+    append_space_to_cmd,	!Append a space to the command line
+    append_str_to_cmd,
+    put_list_hdr,		!Put listing header
+    put_list_dec,		!Append dec number to listing line.
+    doc$$gen_add_irb,		!Add a routine call entry to current line
+    cleanup_after_error,	!Cleanup if error occurs.
+    release_gen_memory;		!Release all memory used by GENERATE
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$open_source,		!Open source file
+    doc$$open_list,		!Open listing file
+    doc$$get_source_token,	!Get next token from source file
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$close_source,		!Close source file
+    doc$$close_edf,		!Close encoded doc file
+    doc$$abort_edf,		!Abort edf file
+    doc$$close_list,		!Close listing file
+    doc$$abort_list,		!Abort listing file
+    doc$$close_rvw,		!Close REVIEW file
+    doc$$abort_rvw,		!Abort REVIEW file
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type out a line on TTY
+    doc$$gen_start,		!Start the GENERATE process
+    doc$$gen_command,		!Execute a GENERATE command
+    doc$$gen_text_string,	!Process text string (will cause a
+				! WRITE TEXT call)
+    doc$$gen_ff,		!Form feed in text
+    doc$$gen_eof,		!Generate EOF
+    doc$$gen_eol,		!Generate EOL in text
+    doc$$gen_break,		!Generate a BREAK command
+    doc$$get_multinational,	!Translate 7-bit to 8-bit
+    doc$$kwd_crossref,		!Find page numbers for keyword references
+    doc$$do_index,		!Write the index pages
+    doc$$do_review_file,	!Write the RVW file
+    doc$$do_edf_file,		!Write the EDF file
+    doc$$write_toc,		!Write out the TOC
+    doc$$cleanup_toc,		!Clean up the TOC
+    lib$get_vm,
+    lib$free_vm;
+
+EXTERNAL
+    fatal_error,
+    num_user_errors,		!Number of user errors processed
+    doc_input_file_desc: VECTOR [2],
+    doc_edf_file_desc: VECTOR [2],
+    doc_list_file_desc: VECTOR [2],
+    doc_rvw_file_desc: VECTOR [2],
+    doc$gl_src_open_flag,
+    doc$gl_lis_open_flag,
+    doc$gl_edf_open_flag,
+    doc$gl_rvw_open_flag,
+    doc$gl_src_desc,		!Resultant name strings
+    doc$gl_lis_desc,
+    doc$gl_rvw_desc,
+    doc$gl_edf_desc,
+    doc$gl_page_q: VECTOR [2],
+    lineb: REF txt_line_block;	!Line block
+!
+OWN
+    last_was_cmd_end,		!Set to 1 if last token was command end
+    cur_page_number,		!Current page number
+    have_token_flag,		!=1 if already read in next token
+    curr_token,			!Current source token
+    token_desc,			!Addr of descriptor for token
+    cmd_line: VECTOR [512,BYTE],
+    cmd_desc: VECTOR [2] INITIAL (0, cmd_line);
+
+BUILTIN
+    INSQUE, REMQUE;
+
+
+GLOBAL ROUTINE doc$$generate_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attempts to generate the encoded doc file from the source file.
+! IMPLICIT INPUTS:
+!	doc_input_file_desc, doc_list_file_desc, doc_edf_file_desc
+!--
+BEGIN
+LOCAL
+    status;
+
+num_user_errors = 0;		!No user errors yet
+fatal_error = 0;		!No fatal errors yet
+last_was_cmd_end = 0;
+IF NOT (status =
+    doc$$gen_start ()		!Initialize the GENERATE subroutines
+	)
+  THEN RETURN .status;
+!
+!
+! Open source file
+!
+IF NOT (status =
+    doc$$open_source	(doc_input_file_desc)
+	)
+  THEN RETURN .status;
+!
+! Open list file if given
+!
+IF (.doc_list_file_desc [0] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$open_list	(doc_list_file_desc)
+	   )
+      THEN
+	BEGIN
+	cleanup_after_error ();
+	RETURN .status;
+	END;
+    END;
+!
+! Print first page header.
+!
+cur_page_number = 1;
+put_list_hdr ();
+!
+! Loop reading tokens and processing them until fatal error
+! or EOF has been processed.
+!
+DO
+    BEGIN
+    IF NOT (.have_token_flag)
+      THEN
+	BEGIN
+	IF NOT (status =
+	    doc$$get_source_token	(curr_token	!Addr of token
+					,token_desc	!Addr of token str-desc
+					)
+		)
+ 	  THEN EXITLOOP;
+	END;
+
+    have_token_flag = 0;
+    CASE .curr_token FROM 0 TO doc_tok$_maxtoken OF
+	SET
+	[doc_tok$_eof]: process_eof ();
+	[doc_tok$_eol]: process_eol ();
+	[doc_tok$_ff]: process_ff ();
+	[doc_tok$_text_line]: process_text_line (.token_desc);
+	[doc_tok$_cmd_end]: process_cmd_end ();
+	[doc_tok$_cmd_text]: process_cmd_text (.token_desc);
+	TES;
+    END		!Of "do-expression"
+  UNTIL (.curr_token EQL doc_tok$_eof) OR (.fatal_error);
+
+IF (.fatal_error)
+  THEN
+    BEGIN
+    cleanup_after_error ();
+    RETURN SS$_BADPARAM;			!?Can't generate file
+    END;
+!
+! Normal end - close files.
+!
+doc$$close_source ();
+IF (.doc$gl_lis_open_flag NEQ 0)
+  THEN  doc$$close_list ();			!List file open, close it
+IF (.doc$gl_edf_open_flag NEQ 0)
+  THEN  doc$$close_edf ();
+IF (.doc$gl_rvw_open_flag NEQ 0)
+  THEN  doc$$close_rvw ();
+
+release_gen_memory ();			!Release all memory used
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_eol =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Process an EOL in the text
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.last_was_cmd_end)
+  THEN
+	1		!don't do anything
+  ELSE
+	BEGIN
+	IF NOT (status = doc$$gen_eol ()
+		)
+	  THEN RETURN .status;
+	END;
+
+last_was_cmd_end = 0;	!Last token was not cmd end.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_cmd_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	End of command sequence seen. Execute command.
+!--
+BEGIN
+LOCAL
+    status;
+
+last_was_cmd_end = 1;		!Remember we last saw cmd_end
+doc$$get_multinational (cmd_desc);	!7-bit to 8-bit conversion
+
+IF NOT (status =
+    doc$$gen_command (cmd_desc)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_cmd_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Command line given.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    cmd_line_too_long,
+    status;
+
+last_was_cmd_end = 0;		!Don't care if last was command end.
+cmd_line_too_long = 0;		!Not too long yet.
+
+!
+! Copy initial string to cmd_line
+!
+cmd_desc [0] = .str_desc [0];
+
+CH$MOVE	(.cmd_desc [0]
+	,.str_desc [1]
+	,cmd_line);
+
+WHILE 1 DO
+    BEGIN
+  !
+  ! Read following token to see if more command text or what.
+  !
+    IF NOT (status =
+	doc$$get_source_token	(curr_token
+				,token_desc
+				)
+	    )
+      THEN
+	BEGIN
+	fatal_error = 1;
+	RETURN .status;
+	END;
+  !
+  ! Set status as follows:
+  ! 1 = exit loop and go back to main loop with token
+  ! 3 = loop back.
+  ! other = error, return status.
+  !
+    CASE .curr_token FROM 0 TO doc_tok$_maxtoken OF
+	SET
+	[doc_tok$_eof] :
+		BEGIN
+		have_token_flag = 1;
+		$gen_error ('%ERR: EOF before command ends');
+		status = 1;	!EXITLOOP
+		END;
+	[doc_tok$_eol] :
+		status = 3;	!Skip this
+	[doc_tok$_ff] :
+		BEGIN
+		doc$$append_list_line (%ASCID '%WARN: Form feed in command ignored');
+		doc$$put_list_line ();
+		status = 3;		!Ignore in command text
+		END;
+	[doc_tok$_cmd_end] :
+		status = 1; 		!EXITLOOP
+	[doc_tok$_text_line] : 
+		status = doc$$error (SS$_BADPARAM);	!?Can't happen
+	[doc_tok$_cmd_text] :
+		BEGIN
+		! Append this string to command if we can.
+		IF (.cmd_line_too_long)
+		  THEN status = 3
+		  ELSE
+		    IF ((.cmd_desc [0] + 1 + .str_desc [0]) GTR 512)
+		      THEN
+			BEGIN
+			append_space_to_cmd ();
+			append_str_to_cmd (.str_desc);
+			$gen_error ('%ERR: Command line too long');
+			status = 3;		!IGNORE this token
+			cmd_line_too_long = 1;	!Remember it's too long.
+			END
+		      ELSE
+			BEGIN
+			append_space_to_cmd ();
+			append_str_to_cmd (.str_desc);
+			status = 3;		!Go back for another token
+			END;
+		END;  !Of cmd text.
+	TES;
+    IF (.status EQL 1)
+      THEN EXITLOOP;
+    IF (.status NEQ 3)
+      THEN
+	BEGIN
+	fatal_error = 1;
+	RETURN .status;			!doc$$error (?)
+	END;
+    END;		!While 1 DO...
+
+have_token_flag = 1;		!Go back to main loop with next token
+RETURN SS$_NORMAL
+END;
+
+ROUTINE append_space_to_cmd =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends a space " " to command text
+!	if we can. Truncate if necessary, but
+!	the caller must give the warning.
+!--
+BEGIN
+OWN
+    pos_space: INITIAL (%C' ');
+
+IF (.cmd_desc [0] GTR 511)
+  THEN RETURN SS$_NORMAL;	!No room
+
+CH$MOVE	(1
+	,pos_space
+	,.cmd_desc [1] + .cmd_desc [0]
+	);
+
+cmd_desc [0] = .cmd_desc [0] + 1;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE append_str_to_cmd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends text string to command text.
+!	Truncate if necessary, but the caller must give the warning.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    num_chars_move,
+    status;
+
+num_chars_move = .str_desc [0];
+IF ((.num_chars_move + .cmd_Desc [0]) GTR 512)
+  THEN num_chars_move = 512 - .cmd_desc [0];	!Too long, truncate.
+IF (.num_chars_move EQL 0)
+  THEN RETURN SS$_NORMAL;
+
+CH$MOVE	(.num_chars_move
+	,.str_desc [1]
+	,.cmd_desc [1] + .cmd_desc [0]
+	);
+
+cmd_desc [0] = .cmd_desc [0] + .num_chars_move;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_text_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Text line given.
+! FORMAL PARAMETERS:
+	(line_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+last_was_cmd_end = 0;		!Don't care if last was cmd end
+doc$$get_multinational (.line_desc);	!7-bit to 8-bit conversion
+!
+! Call routine to do a Writetext.
+!
+IF NOT (status =
+    doc$$gen_text_string	(.line_desc)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_ff =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Process a form feed in the text
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (doc$$gen_ff ()
+	)
+  THEN RETURN .status;
+
+cur_page_number = .cur_page_number + 1;
+put_list_hdr ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE process_eof =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Processes an EOF
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Generate a break to make sure all pages and text is written.
+!
+IF NOT (status =
+    doc$$gen_break ()
+	)
+  THEN RETURN .status;
+
+!
+! Find page numbers where the keywords are.
+!
+IF NOT (status =
+    doc$$kwd_crossref ()
+	)
+  THEN RETURN .status;
+!
+! Generate the index pages
+!
+IF NOT (status =
+    doc$$do_index ()
+	)
+  THEN RETURN .status;
+!
+! Generate the table of contents pages
+!
+IF NOT (status =
+    doc$$write_toc ()
+	)
+  THEN RETURN .status;
+!
+! Finish up generation
+!
+IF NOT (status =
+    doc$$gen_eof ()
+	)
+  THEN RETURN .status;
+!
+! Write the RVW file
+!
+IF (.doc_rvw_file_desc [0] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$do_review_file (doc_rvw_file_desc)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! Write the EDF file
+!
+IF (.doc_edf_file_desc [0] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	doc$$do_edf_file (doc_edf_file_desc)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_list_hdr =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the page header for the listing.
+! IMPLICIT INPUTS:
+!	cur_page_number, VMS date/time, doc$gl_src_desc
+!--
+BEGIN
+OWN
+    ff_char: INITIAL (%O'14'),
+    ff_desc: VECTOR [2] INITIAL (1,ff_char),
+    dt_str: VECTOR [30,BYTE],
+    dt_str_desc: VECTOR [2] INITIAL (0, dt_str);
+LOCAL
+    page_num_desc: VECTOR [2],
+    page_num_str: VECTOR [10,BYTE],
+    page_num_len: WORD,
+    dt_len: WORD,
+    status;
+
+IF (.dt_str_desc [0] EQL 0)
+  THEN
+    BEGIN		!Create date/time string
+    dt_str_desc [0] = 30;
+    $fao	(%ASCID '!%D'
+		,dt_len		!Output length
+		,dt_str_desc	!Output buffer
+		,0
+		);
+    IF (.dt_len GTR 3)
+      THEN  dt_len = .dt_len - 3;	!Don't print .hh (hundredths of secs)
+    dt_str_desc [0] = .dt_len;
+    END;
+!
+! Just like the BLISS compiler, first thing is a <FF>.
+!
+doc$$append_list_line (ff_desc);
+doc$$put_list_line ();
+!
+! First line of header, including page number
+!
+doc$$append_list_line (%ASCID 'VSTADOC GENERATE listing      ');
+doc$$append_list_line (dt_str_desc);
+doc$$append_list_line (%ASCID '   Page ');
+put_list_dec (.cur_page_number);
+doc$$put_list_line ();
+!
+! Second line of header, including source file name
+!
+doc$$append_list_line (doc$gl_src_desc);
+doc$$put_list_line ();
+!
+! And leave a blank line before the source lines
+!
+doc$$put_list_line ();		!And a blank line
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_add_irb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Adds an RCALL entry to the current line block.
+! FORMAL PARAMETERS:
+	(type		!Type of routine call (e.g. doc_rcal$K_set_typeface)
+	,len		!Length of the block (not including header)
+	,addr		!Where it is
+	) =
+!--
+BEGIN
+LOCAL
+    place: REF ir_hdr,		!Place where entry goes
+    prev_hdr: REF ir_hdr,	!Previous header addr
+    len_incl_header,
+    status;
+
+len_incl_header = .len + irb$S_ir_hdr;	!Get length, including header
+
+IF NOT (status =
+    lib$get_vm	(%REF (.len_incl_header), place)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Can''t get memory for IRCALL block');
+    RETURN doc$$error (.status)
+    END;
+!
+! Set up the header
+!
+place [irb$a_flink] = 0;
+place [irb$w_type] = .type;
+place [irb$w_size] = .len_incl_header;
+!
+! Copy the contents of the block to the memory address
+!
+IF (.len NEQ 0)
+  THEN
+    CH$MOVE	(.len
+		,.addr
+		,.place + irb$S_ir_hdr
+		);
+!
+! Insert in single-linked queue.
+!
+IF (.lineb [lin$w_num_rcals] EQL 0)
+  THEN
+    BEGIN
+    lineb [lin$w_num_rcals] = 1;
+    lineb [lin$a_rcal_list] = .place;		!List starts here (first entry)
+    lineb [lin$a_rcal_listend] = .place;	!List ends here, at first entry
+    END
+  ELSE
+    BEGIN
+    prev_hdr = .lineb [lin$a_rcal_listend];	!Get address of prev entry
+    prev_hdr [irb$a_flink] = .place;		! Put link to this entry in prv
+    lineb [lin$w_num_rcals] = .lineb [lin$w_num_rcals] + 1;
+    lineb [lin$a_rcal_listend] = .place;	!New end of list
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cleanup_after_error =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Cleans up (closes files, etc.) after an error
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.doc$gl_lis_open_flag NEQ 0)
+  THEN doc$$abort_list ();
+
+IF (.doc$gl_src_open_flag NEQ 0)
+  THEN doc$$close_source ();
+
+IF (.doc$gl_edf_open_flag NEQ 0)
+  THEN doc$$abort_edf ();
+
+IF (.doc$gl_rvw_open_flag NEQ 0)
+  THEN doc$$abort_rvw ();
+
+release_gen_memory ();		!Release all memory used by GENERATE
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_list_dec
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends a decimal number to the current listing line.
+! FORMAL PARAMTERS:
+	(num		!The number
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    the_str: VECTOR [20,BYTE],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 20;
+str_Desc [1] = the_str;
+
+IF NOT (status =
+    $fao	(%ASCID '!SL'
+		,str_len		!Outlen
+		,str_desc		!Outbuf
+		,.num			!P1
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+str_desc [0] = .str_len;
+
+doc$$append_list_line (str_Desc);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE release_gen_memory =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Release all memory used by GENERATE.
+!--
+BEGIN
+LOCAL
+    temp,
+    pb: REF page_block,
+    lb: REF txt_line_block,
+    irh: REF ir_hdr,
+    status;
+!
+! Current line block
+!
+IF (.lineb NEQ 0)
+THEN
+    IF NOT (status =
+	lib$free_vm (%REF (lin$S_txt_line_block), lineb)
+	    )
+      THEN
+	BEGIN
+	$typeline ('%Can''t release memory for line block');
+	doc$$error (.status);
+	END;
+
+lineb = 0;
+doc$$cleanup_toc ();		!Clear table of contents entry queue.
+!
+! Get rid of all memory used
+!
+pb = .doc$gl_page_q [0];	!Point to first page block
+WHILE (.pb NEQ doc$gl_page_q [0]) DO
+    BEGIN
+    lb = .pb [pgb$a_line_q_hdr_fl];	!Point to first line block
+    WHILE (.lb NEQ pb [pgb$a_line_q_hdr_fl]) DO
+	BEGIN
+	!
+	! Release line block sub-memory
+	!
+	irh = .lb [lin$a_rcal_list];	!Point to list of RCALs
+	WHILE (.irh NEQ 0) DO
+	    BEGIN
+	    temp = .irh [irb$a_flink];
+	    IF NOT (status =
+		lib$free_vm (%REF (.irh [irb$w_size]), irh)
+		    )
+	      THEN
+		BEGIN
+		$typeline ('%Error releasing memory for IRB');
+		doc$$error (.status);
+		END;
+	    irh = .temp;		!Link to next block
+	    END;
+	temp = .lb [lin$w_wrd_actual_num] * wrd$S_word_block;
+	IF (.temp NEQ 0)
+	  THEN
+	    BEGIN
+	    IF NOT (status =
+		lib$free_vm (temp, lb [lin$a_word_block])
+		    )
+	      THEN
+		BEGIN
+		$typeline ('%Error releasing memory for word blocks');
+		doc$$error (.status);
+		END;
+	    END;
+	temp = .lb [lin$w_num_extra_flds] * fld$S_fld_block;
+	IF (.temp NEQ 0)
+	  THEN
+	    BEGIN
+	    IF NOT (status =
+		lib$free_vm (temp, lb [lin$a_fld_block])
+		    )
+	      THEN
+		BEGIN
+		$typeline ('%Error releasing memory for extra flds');
+		doc$$error (.status);
+		END;
+	    END;
+
+	REMQUE (.lb, temp);
+	IF NOT (status =
+	    lib$free_vm (%REF (lin$S_txt_line_block), lb)
+		)
+	  THEN
+	    BEGIN
+	    $typeline ('% Error releasing memory for line block');
+	    doc$$error (.status);
+	    END;
+	lb = .pb [pgb$a_line_q_hdr_fl];	!Go to next line block
+	END;
+
+    REMQUE (.pb, temp);
+    IF NOT (status =
+	lib$free_vm (%REF (pgb$S_page_block), pb)
+	    )
+      THEN
+	BEGIN
+	$typeline ('% Error releasing memory for page block');
+	doc$$error (.status);
+	END;
+    pb = .doc$gl_page_q [0];	!Get new first page entry
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

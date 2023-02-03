@@ -1,0 +1,332 @@
+%title 'vsta$vtem_vt100_cursors VaxStation Vt100 Emulator Module'
+MODULE vsta$vtem_vt100_cursors (ADDRESSING_MODE (EXTERNAL=GENERAL,
+						NONEXTERNAL=GENERAL))=
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---This module contains all the cursor control routines for the vt100
+!   emulator.  This includes the start and stop procedures for the cursors,
+!   the blink procedure for the alpha cursor, the routines which call the
+!---virtual display services to display and erace the cursors.
+
+%sbttl 'Declarations'
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE!S
+
+ 	 vt$$cur_start_cursor		:
+	,vt$$cur_stop_cursor		:
+	,vt$$cur_cursor_blink_ast	:NOVALUE
+	,vt$$cur_vkb_translator		:
+	;
+
+EXTERNAL ROUTINE!S
+
+	 vsta$$error
+	,vsta$$vds_turn_cursor_off
+	,vsta$$vds_turn_cursor_on
+	;
+
+
+!-----------------------------------------------------------------
+!  external file inclusion area
+!-----------------------------------------------------------------
+REQUIRE 'VSTA$LIBRARY:vsvtem100.r32';
+LIBRARY 'sys$library:starlet';
+
+!-----------------------------------------------------------------
+!  PSECT Definitions
+!-----------------------------------------------------------------
+PSECT
+	CODE = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	PLIT = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	OWN  = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	GLOBAL=_vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL));
+
+LITERAL
+	 false = 0
+	,true = 1
+	;
+
+MACRO
+	 $RETURN_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 RETURN (vsta$$error(status)))%
+
+	,$REPORT_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 (vsta$$error(status)))%
+	,$CLEAR(bitfld) = bitfld = 0%
+	,$SET(bitfld) = bitfld = 1%
+	;
+
+
+
+
+
+%sbttl 'vt$$cur_cursor_blink_ast --  Vt100 Emulator internal routine'
+GLOBAL ROUTINE vt$$cur_cursor_blink_ast
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This is the ast routine call when the alpha cursor timer goes off.  Its 
+!   action is to check to see if the alpha cursor is still to be displayed
+!   if so then if cursor on then restore cursor area from backing store 
+!   otherwise writes foreground to the cursor area and resets the cursor timer.
+!   At end a check is made to see if cursor is to be shut off in which case
+!   in which case the cursor area is restored
+!
+!   Exclusion problem:  This routine assumes that a cancel cursor command can
+!   occur at any given time.  Thus an exclusion flag is used to gain access to
+!   cursor control.  If a cancel request arrives while the blink process is in
+!   control then the blink process will check for this and try to perform the
+!   cancel process itself.  If access to control is denied then it is assumed 
+!   that the cancel process has control and the request will be satisfied.  
+!   Cancelation has top priority.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	id: REF BLOCK [,BYTE]		! pointer to the vt100 database
+	):
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+	NOVALUE=
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls the native graphics invert routine
+!
+!--
+BEGIN
+
+
+OWN
+
+	 blink_period: VECTOR [2,LONG] INITIAL (-5*1000*1000,-1)
+	;
+
+RETURN
+END;
+
+
+
+
+
+
+%sbttl 'vt$$cur_stop_cursor -- Vt100 Emulator internal routine'
+GLOBAL ROUTINE vt$$cur_stop_cursor
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine performs the action of canceling the blinking tektronix
+!   alpha cursor
+!
+!   exclusion problem - This routine may be called at any time.  If at the
+!   time this routine tries to gain access to cursor control, the request
+!   fails it is assumed that the blink process is in control and will perform
+!   the cancelation process on its own.  Top priority is that a request to
+!---cancel cursor is not lost.
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(id: REF BLOCK [,BYTE]):=	! pointer to Tektronix Emulator database
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---Error is returned if cancel attempt fails from lower level.  If cancel request
+!---occurs when no cursor is present (should never happen) then no problem since
+!---there is no harm in restoring from backing store.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: 
+!
+!---A cancel of any pending timer requests for this display is performed
+!
+!--
+BEGIN
+
+
+IF NOT vsta$$vds_turn_cursor_off( .id [vt$l_virtual_display_id])
+THEN $RETURN_ERROR(vsta$_cntresvttxt);
+
+
+RETURN ss$_normal;
+                                                               
+END;
+
+
+
+
+
+%sbttl 'vt$$cur_start_cursor -- Vt100 Emulator internal routine'
+GLOBAL ROUTINE vt$$cur_start_cursor
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine first displays the cursor on the screen and then sets the
+!   cursor timer to initiate the alpha cursor blink process.  Note that the
+!---ast routine for the timer is tk$$cur_alpha_blink_ast.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 id: REF BLOCK [,BYTE]
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---Failure may occure from lower level so pass on error path
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---The timer service routine is called
+!
+!--
+BEGIN
+
+OWN
+
+	 blink_period: VECTOR [2,LONG] INITIAL (-5*1000*1000,-1)
+	;
+
+LOCAL
+	 multiplier: INITIAL (1)
+	;
+
+BIND
+	 line_state = id [vt$b_line_state]: VECTOR [,BYTE]
+	;
+
+!
+!  If the line state is not single then we need a wide cursor Placed twice as
+!  far from the left edge as would be normally
+!
+IF .line_state [ .id [vt$l_cursor_row]-1] NEQ vt$k_single
+THEN multiplier = 2;
+
+IF NOT vsta$$vds_turn_cursor_on(
+				 .id [vt$l_virtual_display_id]
+				,(.id[vt$l_cursor_column]-1) 
+					* vt$k_character_width 
+					* .multiplier
+					+ 1
+				,(.id[vt$l_cursor_row]-1) * vt$k_character_height
+				,vt$k_character_width * .multiplier
+				,vt$k_character_height
+			       )
+THEN $RETURN_ERROR(vsta$_cntinvvtcur);
+
+!$SETIMR(
+!	 DAYTIM=blink_period
+!	,ASTADR=vt$$cur_cursor_blink_ast
+!	,REQIDT=.id
+!       )
+!THEN BEGIN
+!	$REPORT_ERROR(vsta$_vtbadtimer);
+!	$RETURN_ERROR(vsta$_vtcurnostart);
+!     END;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE vt$$cur_vkb_translator
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is used by the virtual keyboard to get the next word in the
+!   generation buffer to be put into the input stream or returns bad status
+!   if the gereration buffer is empty. This is the same mechanism that answer
+!---back and terminal status is reported.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 id: REF BLOCK [,BYTE]		! address of vt100 data base
+	,input_word: WORD		! translation table entry for key press
+	,output_byte: REF VECTOR [,BYTE]
+					! address to put output word
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!---true if something was returned to the address of output_word_a
+!---false otherwise
+!
+!  SIDE EFFECTS:
+!
+!---Escape sequences are generated for the keypad and cursor keys and
+!---reports to the host are put into the input stream via this routine
+!
+!--
+BEGIN
+
+BIND 
+	 gen_buffer = id [vt$b_generation_buffer]: 
+				VECTOR [vt$k_generation_max_index,BYTE]
+	;
+
+!-------------------------------------------------------
+! CLEAR upper byte of output area
+!-------------------------------------------------------
+	output_byte[1] = 0;
+
+!-------------------------------------------------------
+!  Put the next byte of the generation buffer into
+!  the output byte and decriment the generation buffer index.
+!  If the generation buffer is empty (index=-1) then return bad status
+!-------------------------------------------------------
+IF .id [vt$l_generation_buffer_ptr] GTR 
+   .id [vt$l_generation_buffer_index] 		
+	THEN RETURN false;
+
+output_byte[0] = .gen_buffer[.id [vt$l_generation_buffer_ptr]];
+id [vt$l_generation_buffer_ptr] = .id [vt$l_generation_buffer_ptr]
+						+ 1;
+RETURN ss$_normal
+
+END;
+
+
+END
+ELUDOM

@@ -1,0 +1,277 @@
+MODULE VS$SRV_CMD (
+			IDENT = 'HI SERVER command parser'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+! This module parses commands (VBA0-COMMAND) for the human interace.
+! This is mainly for debugging purposes.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_cmd_get_logname,	!Compute logical name
+				! e.g. "VBA0-COMMAND"
+    vsta$$check_command,	!Check for command (every few seconds).
+    check_for_logcommand,	!Check for command in logical name
+    do_command_parse;		!Do command
+
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'SYS$LIBRARY:TPAMAC';		!Parsing macros
+LIBRARY 'VSTA$LIBRARY:VSSRVMACS';
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!VSSERVE symbols and data structure defs.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error codes and macros
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Common VSTA symbols/macros
+
+!
+! DEFINE PSECTS
+!
+$vsta_psect;
+
+OWN
+    command_log_name_string: BLOCK [40,BYTE],
+    command_log_name_desc: VECTOR [2]
+			INITIAL (0, command_log_name_string),
+    command_buffer: BLOCK [120,BYTE],
+    command_buf_desc: VECTOR [2]
+			INITIAL (0, command_buffer),
+    cmd_type;				!What command
+
+!
+! Command types
+!
+LITERAL
+    S_CMD$COMMENT = 1,		! a comment
+    S_CMD$INVENTORY = 2,	!INVENTORY command
+    S_CMD$BIGGEST = 2;		!Biggest number used
+
+! Macro to make the TPARSE control block addressable as a block
+! through the argument pointer
+MACRO
+	TPARSE_ARGS =
+		BUILTIN AP;
+		MAP AP: REF BLOCK [,BYTE];
+		%;
+!
+! TPARSE parameter block
+!
+OWN TPARSE_BLOCK : BLOCK [TPA$K_LENGTH0, BYTE]
+	INITIAL	(TPA$K_COUNT0	!Longword count
+		,TPA$M_ABBREV	! Allow abbreviation
+		);
+!
+! TPARSE state table
+!
+$INIT_STATE (c_state, c_key);
+!
+! Read the command keyword
+!
+$STATE (start,
+	(TPA$_EOS, TPA$_EXIT,, S_CMD$COMMENT, cmd_type), !blank string
+	('!', TPA$_EXIT,, S_CMD$COMMENT, cmd_type),	!  and comments ok
+	('INVENTORY', parse_end,, S_CMD$INVENTORY, cmd_type),
+	(TPA$_ANY, TPA$_FAIL)	!Anything else a failure
+	);
+
+$STATE (parse_end,
+	(TPA$_EOS, TPA$_EXIT),
+	(TPA$_ANY, TPA$_FAIL)	!Anything else a failure
+	);
+
+!
+! Must fix PSECTS - side effect of using LIB$TPARSE..
+!
+PSECT OWN = $OWN$;
+PSECT GLOBAL = $GLOBAL$;
+
+EXTERNAL ROUTINE
+    vsta$$srv_deb_broad,		!Broadcast string to oper.
+    vsta$$srv_append_string,		!Append string 1 to string 2
+    vs$$post_ast_request,		!Queue an AST request.
+    vsta$$srv_inventory,		!Take inventory
+    vsta$$error_logger,
+    lib$tparse;				!Parse a string
+
+EXTERNAL
+    hi_vbname_desc: VECTOR [2];		!%ASCID 'VBA0:'
+
+
+GLOBAL ROUTINE vsta$$srv_cmd_get_logname =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Computes the logical name that we'll use to get commands from.
+!	Then tells the operator what to do with it.
+! IMPLICIT INPUTS:
+!	hi_vbname_desc
+! IMPLICIT OUTPUTS:
+!	command_log_name_desc
+!--
+BEGIN
+LOCAL
+    what_buffer: BLOCK [100,BYTE],
+    what_desc: VECTOR [2],
+    len_without_colon: WORD,		!length of "VBA0" string
+    status;
+
+len_without_colon = .hi_vbname_desc [0] - 1;
+command_log_name_desc [0] = .len_without_colon;
+CH$MOVE	(.len_without_colon
+	,.hi_vbname_desc [1]
+	,command_log_name_string
+	);
+vsta$$srv_append_string (%ASCID '-COMMAND', command_log_name_desc);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$check_command
+!++
+! FUNCTIONAL DESCRIPTION:
+!	AST routine called when command clock runs out.
+!	It performs a command if any are waiting.
+! FORMAL PARAMETERS:
+	(qtaddr		!Address of longword to get address of quadword
+			! for new delta time, or left 0
+			! (Filled in for "WAIT" command)
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT check_for_logcommand ()
+  THEN RETURN SS$_NORMAL;		!Error
+
+IF (.status EQL SS$_NOTRAN)		!(Success code)
+  THEN RETURN SS$_NORMAL;		!Nothing to do.
+
+!
+! Got a command - go do it
+!
+do_command_parse ();		!parse the command
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE check_for_logcommand =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Checks for command in logical name.
+!	If there, reads it,
+!	else sets command_buf_desc [0] = 0.
+!
+!	If there are errors, a message is broadcast
+!	to the oper. and HI exits.
+!--
+BEGIN
+LOCAL
+    real_command_len: WORD,
+    logname_table: BYTE,	!Which logname table
+    status;
+
+command_buf_desc [0] = 120;	!allow max room
+
+status =
+    $trnlog	(LOGNAM = command_log_name_desc
+		,RSLBUF = command_buf_desc
+		,RSLLEN = real_command_len
+		,TABLE = logname_table	!Probably system-wide name
+		);
+
+IF (.status EQL SS$_NOTRAN)
+  THEN RETURN .status;		!No command waiting
+
+IF (.status NEQ SS$_NORMAL)
+  THEN
+    BEGIN
+    vsta$$error_Logger (.status);
+    $tell_opr ('?Bad status from $trnlog');
+    RETURN .status;
+    END;
+!
+! Status is normal - got a command
+!
+command_buf_desc [0] = .real_command_len;
+
+!
+! Delete the logical name
+!
+status =
+    $dellog	(TBLFLG = .logname_table	!Which table
+		,LOGNAM = command_log_name_desc	!Which logical name
+		);
+
+IF NOT (.status)
+  THEN
+    BEGIN
+    vsta$$error_logger (.status);
+    $tell_opr ('?dellog failed');
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE do_command_parse =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the command in the buffer and does it.
+!	if error, set Cmd_type to 0 and broadcast a message
+!	to the operator.
+!--
+BEGIN
+LOCAL
+    status;
+
+cmd_type = 0;			!Blank out command type
+
+$tell_opr ('Attempting to parse:');
+vsta$$srv_deb_broad (command_buf_desc);
+
+tparse_block [TPA$L_STRINGCNT] = .command_buf_desc [0];
+tparse_block [TPA$L_STRINGPTR] = .command_buf_desc [1];
+status = lib$tparse (tparse_block, c_state, c_key);
+IF NOT (.status)
+  THEN
+    BEGIN
+    $tell_opr ('?Command syntax error, "HELP" for help');
+    cmd_type = 0;
+    RETURN .status
+    END;
+
+!
+! Execute the command
+!
+RETURN (CASE .cmd_type
+	FROM 1 TO S_CMD$BIGGEST OF
+	SET
+
+	[S_CMD$COMMENT] :
+		SS$_NORMAL;
+	[S_CMD$INVENTORY]:
+		BEGIN
+		vsta$$srv_inventory ()
+		END;
+	[OUTRANGE] :
+		SS$_BADPARAM;	!Return error code that will be reported
+	TES
+	)	!End of case
+
+END;
+
+END
+ELUDOM
