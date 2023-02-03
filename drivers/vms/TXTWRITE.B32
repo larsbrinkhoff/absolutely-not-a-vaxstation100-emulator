@@ -1,0 +1,1801 @@
+module txtwrite (
+		ADDRESSING_MODE (EXTERNAL = GENERAL,
+				NONEXTERNAL = GENERAL)) =
+begin
+
+
+! Routines for writing text on a virtual display
+
+library 'vsta$library:termio';
+library 'vsta$library:txtsym';
+library 'vsta$library:libmacros';	! symbols like $log_error_and_return
+library 'vsta$library:vserrors';	! symbols like integer_type
+library 'sys$library:starlet';		! symbols like ss$_normal
+
+forward routine!s . . .
+	fill_text,		! fill routine for far right writes
+	vs$$txt_appendText,	! append text in field
+	vs$$txt_insertText,	! insert text in a field at a given position
+	vs$$txt_writeText,	! write text in field (overwriting eclipsed characters)
+	write_text,		! inner routine for writing text
+	write_updated_text,	! write new text to screen
+	vs$$txt_change_typeface,! change typeface of some existing text
+	vs$$txt_change_typesize,! change typesize of some existing text
+	vs$$txt_change_baseline,! change baseline of some existing text
+	vs$$txt_change_rendition,	! change rendition of existing text
+	vs$$txt_change_writing_color,	! change color of some text
+	vs$$txt_change_background_color,! change text background color of some text
+	change_attribute;	! inner routine for changing some attribute
+
+external routine!s . . .
+	alcbyt,			! allocate string (or other byte array)
+	alcful,			! allocate block
+	cache_vd_font_data,	! Cache newly chosen font.
+	chooseFont,		! find font that best fits current settings
+	clone_upcased_string,	! Allocate upcased version of string.
+	cloneString,		! make copy of string
+	cloneStringBlock,	! Make new string block with same attributes as old
+	deallocateBytes,	! release storage taken up by string
+	deallocateStringBlock,	! release a string block and its string
+	deallocateFullwords,	! release storage
+	deallocate_text_block,	! deallocate a text block
+	findFib,		! given font id, get address of its fib
+	findLeft,		! find fringe strings
+	find_font_image,	! get address of font for particular string
+	findRight,
+	font_already_chosen,	! See if cached font data is valid.
+	forgetString,		! release string storage
+	insertStringsAfter,	! insert new strings in field block
+	vsta$$txt_measure_field_portion,	! measure width of part of a field
+	measure_string_width,	! measure width of particular string
+	vsta$$txt_measure_width,	! measure width of string with particular font
+	mergeStrings,		! merge two string blocks
+	printField,		! refresh text in one field
+	releaseStringsBetween,	! release strings from field block
+	sameAttributes,		! decide if two strings are of same attributes
+	string_intersects,	! see if two strings intersect, and if so where
+	truncate,		! truncate a string in a string block
+	updateEnds,		! fix values of str_beg, str_end
+	vs$$acp_free_vm,
+	vs$$acp_get_vm,
+	vs$$txt_set_rendition;
+
+!
+! PSECT definitions
+!
+$vsta_psect;
+
+external
+
+	n_system_font_transactions;	! number of system-wide transactions
+
+literal
+!
+! Constant for ascii space character.
+!
+	txt$k_space = 32;
+
+routine fill_text
+!++
+! Functional description:
+!
+!	This routine is called when someone tries to write text starting
+!	beyond existing text in a field.  This routine's reponsibility
+!	is to fill with exactly enough spaces so that such is no longer
+!	the case.  The spaces are printed using NORMAL rendition, not
+!	CURRENT rendition.
+!
+! Formal parameters:
+ (
+	id,				! which virtual display
+	txtBlk : ref text_block,	! database for accessing renditions
+	lineNum,			! which line
+	fieldPos,			! which field
+	nFillers			! how many spaces to write
+ ) =
+!
+!--
+	begin
+
+
+	local
+
+	    current_rendition,
+	    space_desc : $string_descriptor,
+	    s;
+!
+! Remember current rendition.
+!
+	current_rendition = .txtBlk[txt_curRend];
+!
+! Temporarily set rendition to normal so filled spaces will appear correctly.
+!
+	if not (s = vs$$txt_set_rendition (
+	    .id,		! which virtual display
+	    -1,			! turn off all renditions
+	    0			! don't turn any on
+	    ))
+	then return .s;
+!
+! Get enough memory for the spaces we'll fill with.
+!
+	if not vs$$acp_get_vm (nFillers, space_desc[sd$a_adr], 0)
+	then return $sysres (vsta$_getmem
+			,integer_type, .nFillers
+			,string_type, %ASCID 'space fill characters'
+			);
+!
+! Fill in length portion of the descriptor.
+!
+	space_desc[sd$w_len] = .nFillers;
+!
+! Fill the buffer with spaces.
+!
+	ch$fill(txt$k_space, .nFillers, .space_desc[sd$a_adr]);
+!
+! Append the spaces onto the actual field.
+!
+	s = vs$$txt_appendText (
+	    .id,
+	    space_desc[sd$w_len],
+	    .lineNum,
+	    .fieldPos
+	    );
+!
+! Free up memory we used.
+!
+	vs$$acp_free_vm (nFillers, space_desc[sd$a_adr], 0);
+	if not .s then return .s;	!append-text failed
+!
+! Restore correct rendition for the display.
+!
+	if not (s = vs$$txt_set_rendition (
+	    .id,		! which virtual display
+	    -1,			! turn off all renditions
+	    .current_rendition	! turn on whatever was on before
+	    ))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+global routine vs$$txt_appendText
+!++
+! Functional description:
+!
+!	Append text to end of existing text in a field.  This is equivalent
+!	to some writeText call, but saves the caller from having to know
+!	how many characters exist in the field prior to the write.
+!
+! Formal parameters:
+ (
+	id,				! virtual display id
+	desc:ref string_descriptor,	! string being appended
+	lineNum,			! which line's field to append
+	fieldPos			! which field on line to append
+ ) =
+!--
+
+	begin
+
+	bind
+	    ! Get text block for this virtual display.
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get field block
+	    fldBlk = getFieldBlock (txtBlk[base], .lineNum, .fieldPos):field_block;
+
+	! Use standard write text procedure, specifying one more than number
+	! of characters in field as position.
+	!
+	vs$$txt_writeText
+	    (.id, .desc, .lineNum, .fieldPos, 1+.fldBlk[fld_nChars])
+
+	end;
+
+global routine vs$$txt_insertText
+!++
+!
+! Functional description:
+!
+!	Insert text into a field, "moving" eclipsed text to make room, rather
+!	than overwriting it.
+!
+!	We'll be lazy about this.  Instead of having all sorts of
+!	coalescence smarts in this routine, we'll merely insert a bunch
+!	of spaces in the appropriate existing string, and then call
+!	write-text to do the rest of the work.
+!
+! Formal parameters:
+ (
+	id,				! virtual display id
+	desc:ref string_descriptor,	! text being inserted
+	lineNum,			! which line to insert on
+	fieldPos,			! which field to insert in
+	charPos				! which character position first
+					! inserted character should fall at
+ ) =
+!--
+
+	begin
+
+	local
+
+	    font_rend,			! rendition bits defined with font
+	    cell_flag;			! 1 if font is a cell font
+
+	label getStrBlk;
+
+	bind
+
+	    ! Get text block for this virtual display.
+	    txtBlk = getTextBlock(.id) : text_block,
+
+	    ! Get line database.
+	    !
+	    linBlk = getLineBlock (.id, .lineNum) : line_block,
+
+	    ! Get field block for field whose text is being modified
+	    fldBlk = getFieldBlock(txtBlk[base], .lineNum, .fieldPos):field_block,
+	    ! Get list of strings for this field.
+	    !
+	    strLst = .fldBlk[fld_strings]:vector,
+
+	    ! Figure out which existing string block our new string should
+	    ! be inserted in.
+	    !
+	    strBlk =
+		getStrBlk:
+		begin
+		incr i from 1 to .fldBlk[fld_nStrings] do
+		    begin
+		    bind
+			! Get next string block
+			tryStrBlk = .strLst[.i]:string_block;
+
+		    if .tryStrBlk[str_beg] leq .charPos
+			and .tryStrBlk[str_end] gtr .charPos
+		    then leave getStrBlk with tryStrBlk[base]
+		    end;
+
+		! If the string is being inserted at or beyond the end of the
+		! existing characters in the field, let write-text handle it.
+		!
+		return vs$$txt_writeText (.id, .desc, .lineNum, .fieldPos, .charPos)
+	    
+		end : string_block,
+
+	    ! Decide which font will be used for the insertion.
+	    !
+	    font_id =
+		begin
+		local temp, s;
+		if not font_already_chosen (
+		    txtBlk[base],
+		    temp,
+		    font_rend,
+		    cell_flag
+		    )
+		then
+		    if not (s = chooseFont(
+			.txtBlk[txt_nFonts],
+			.txtBlk[txt_fonts],
+			.linBlk[lin_height],
+		 	txtBlk[txt_curTypefaceLen],
+			.txtBlk[txt_curSize],
+			.txtBlk[txt_curRend],
+			.txtBlk[txt_curBase],
+			temp,
+			font_rend,
+			cell_flag
+			))
+		    then return .s
+		    else
+			begin
+			cache_vd_font_data (
+			    txtBlk[base],
+			    .temp,
+			    .font_rend,
+			    .cell_flag
+			    );
+			.temp
+			end
+		else .temp
+		end,
+!
+! Calculate fib address.
+!
+	    fiBlk =
+		begin
+		local temp, s;
+		if not (s = findFib (font_id, temp, 0))
+		then return .s
+		else .temp
+		end : fib,
+!
+! Calculate temporary fib address, that is fib for the text adjacent to the
+! text being inserted.
+!
+	    temp_fiBlk =
+		begin
+		local temp, s;
+		if not (s = findFib (.strBlk[str_fid], temp, 0))
+		then return .s
+		else .temp
+		end : fib,
+!
+! Get width to be taken up by string being inserted.
+!
+	    insertion_width =
+		begin
+		local temp, s;
+		if not (s = vsta$$txt_measure_width (
+		    .desc[sd_len],
+		    .desc[sd_adr],
+		    fiBlk[base],
+		    temp))
+		then return .s
+		else .temp
+		end,
+!
+! Get width to temporarily be taken up by string being inserted.  That is,
+! the width the string would take up if inserted in the same font as the
+! characters near it.
+!
+	    temp_insertion_width =
+		begin
+		local temp, s;
+		if not (s = vsta$$txt_measure_width (
+		    .desc[sd_len],
+		    .desc[sd_adr],
+		    temp_fiBlk[base],
+		    temp))
+		then return .s
+		else .temp
+		end,
+!
+! Get new total width.
+!
+	    new_total_width = .fldBlk[fld_used_width] + insertion_width,
+!
+! Get temporary total width, which is total width if string were inserted
+! in same font as other characters near it.
+!
+	    temp_total_width = .fldBlk[fld_used_width] + temp_insertion_width,
+
+	    ! Calculate resultant length of string in string block, which is
+	    ! length of old string in block plus length of new one being 
+	    ! inserted.
+	    !
+	    resLen = .strBlk[str_len] + .desc[sd_len],
+
+	    ! Allocate memory to hold resultant string.
+	    !
+	    resAdr = allocateBytes(resLen),
+
+	    ! Calculate lengths and addresses of the prefix and suffix strings,
+	    ! which are the portions of the old string that we want to end up
+	    ! before and after the new string being inserted.
+	    !
+	    preLen = .charPos - .strBlk[str_beg],
+	    preAdr = .strBlk[str_ptr],
+	    sufLen = .strBlk[str_len] - preLen,
+	    sufAdr = preAdr + preLen;
+
+	! Give an error if the insertion would overflow width of the field.
+	!
+	if new_total_width gtr .fldBlk[fld_size]
+	then
+	    begin
+	    deallocateBytes (resLen, resAdr);
+	    $return_error (
+		vsta$_ins_no_rm,
+		integer_type, insertion_width,
+		integer_type, .fldBlk[fld_used_width],
+		integer_type, .fldBlk[fld_size]
+		)
+	    end;
+
+	! Copy three pieces into resultant string: beginning of old string,
+	! new string (merely as a placeholder), and end of old string
+	!
+	ch$copy (preLen, preAdr, .desc[sd_len], .desc[sd_adr], sufLen, sufAdr,
+	    0, resLen, resAdr);
+
+	! Throw away old short string.
+	forgetString(strBlk[str_len]);
+
+	! Point string block at resultant expanded string.
+	!
+	strBlk[str_len] = resLen;
+	strBlk[str_ptr] = resAdr;
+	strBlk[str_width] = .strBlk[str_width] + temp_insertion_width;
+!
+! Update end parameters for expanded field.  The total width that
+! we specify is NOT the width that the final field's text will
+! necessarily be !!  It's the total width IF the string were inserted
+! in the same exact font as the text in the string block.  We're going
+! to fix up the font and actual width with our call to write_text.
+!
+	updateEnds (fldBlk[base], temp_total_width);
+
+	! Use write-text to perform actual insertion, coalescence, and
+	! display update.
+	!
+	write_Text (.id, .desc, .lineNum, .fieldPos, .charPos,
+	    txtBlk[base], txtBlk[base], font_id, .font_rend, .cell_flag)
+
+	end;
+
+global routine vs$$txt_writeText
+!++
+!
+! Functional description:
+!
+!	Write text to virtual display, at a given line, field, and character
+!	position.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id
+    desc:ref string_descriptor,	! descriptor of string to write
+    lineNum,			! which line to write to
+    fieldPos,			! which field, identified by position
+    charPos			! which character position
+	  ) =
+!
+! Value:
+!
+!	Return failure or success code.
+!	A more common failure would be that the text being written causes
+!	characters not to fit in the field.
+!	A less common failure would be that dynamic memory allocation failed
+!	due to running out of memory.
+!--
+
+	begin
+
+	bind
+
+	    ! For user write-text, the virtual display's text block provides
+	    ! both the current settings and the pointers to other blocks.
+	    !
+	    both_blocks = getTextBlock (.id) : text_block;
+
+	! Call inner routine to do the work.
+	!
+	write_text (.id, .desc, .lineNum, .fieldPos, .charPos,
+	    both_blocks[base], both_blocks[base], 0)
+
+	end;
+
+routine write_text
+!++
+! Functional description:
+!
+!	Inner routine for writing text.  This is used both by vs$$txt_writeText
+!	and vs$$txt_change_xxx.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id
+    desc:ref string_descriptor,	! descriptor of string to write
+    lineNum,			! which line to write to
+    fieldPos,			! which field, identified by position
+    charPos,			! which character position
+    curTextBlock : ref text_block,	! block containing settings to use.
+    tree_block : ref text_block,	! block containing pointers to lines.
+    font_id,			! 0 or particular font id (generally this arg
+				! will be 0 unless we're called from insert-text
+    font_rend,			! font rendition bits, IF font_id is non-0
+    cell_flag			! 1 if font specified by font_id is a cell font
+	  ) =
+!
+! See vs$$txt_writeText for more details.
+!
+!--
+	
+	begin
+
+	local left, right, leftBlock:ref string_block, rightMerge, leftMerge,
+	    rightBlock, allMerge, curStringList:ref vector, s, old_total_width,
+	    new_total_width, old_portion_width, new_portion_width,
+	    old_spaces_flag : initial (0),
+	    new : ref string_block, newPtr, locStrBlk : string_block,
+	    larger_str : string_descriptor, fiBlk : ref fib;
+
+	bind
+
+	    ! Get height of line.
+	    !
+	    linBlk = getLineBlock (.id, .lineNum) : line_block,
+	    lin_hit = .linBlk[lin_height],
+
+	    ! Get address of current field database
+	    curFieldBlock = getFieldBlock(tree_block[base], .lineNum,
+		.fieldPos) :field_block,
+
+	    ! Get width of this field.
+	    field_width = .curFieldBlock[fld_size],
+
+	    ! Get total strings currently in this field
+	    nStrings = .curFieldBlock[fld_nStrings],
+
+	    ! number of characters in this field so far
+	    nChars = .curFieldBlock[fld_nChars],
+
+	    ! Calculate how many spaces need to precede the string being
+	    ! written.  This number is only non-zero if the write position is
+	    ! to the right of existing text, forcing us to fill.
+	    nFillers = max (0, .charPos-nChars-1),
+
+	    ! address of characters
+	    addr = .desc[sd_adr],
+
+	    ! calculate new position after write
+	    newPos = .charPos + .desc[sd_len];
+!
+! Before doing any more work, see if we decided we need to fill with spaces
+! due to this write being for text starting beyond the current end of existing
+! text in the field.  If so, we fill and then start over (in case the fillers
+! cause a change in some of our already-computed parameters).
+!
+	if nFillers gtr 0 then
+	    begin
+
+	    builtin
+
+		callg,			! allows general routine call
+		ap;			! holds address of parameter list
+
+	    if not (s = fill_text
+		(.id, tree_block[base], .lineNum, .fieldPos, nFillers))
+	     then return .s;
+
+	    return callg (.ap, write_text)
+	    end;
+!
+! Fill in parameters for possible new string block, at least those needed by
+! the sameAttributes routine.
+!
+	locStrBlk[block_id] = string_block_id;
+	locStrBlk[str_size] = .curTextBlock[txt_curSize];
+	locStrBlk[str_base] = .curTextBlock[txt_curBase];
+	locStrBlk[str_fid] = .curTextBlock[txt_fid];
+	locStrBlk[str_offset] = .curTextBlock[txt_curOffset];
+	locStrBlk[str_rendition] = .curTextBlock[txt_curRend];
+	locStrBlk[str_inkColor] = .curTextBlock[txt_curInk];
+	locStrBlk[str_backgroundColor] = .curTextBlock[txt_curBack];
+	ch$move (
+	    8,
+	    curTextBlock[txt_curTypefaceLen],
+	    locStrBlk[str_typeface_len]);
+				! Copy typeface.  We'll allocate new one if
+				! we decide to keep this string block.
+!
+! See if this operation is so simple that all we need to do is overwrite
+! a portion of the sole string for the field.  If so, do it, update the
+! overwritten portion on the screen and be done.  Note the various things
+! that worry us into not taking this short cut, such as font recomputation
+! requirement, or non-cell text.
+!
+	if nStrings eql 1			! make sure exactly one string.
+	then
+	    begin
+	    bind strBlk = .vector[.curFieldBlock[fld_strings], 1]
+		: string_block;
+	    if sameAttributes (locStrBlk[base], strBlk[base])
+					! make sure same attributes
+	    then
+	    if .strBlk[str_cell_flag]	! make sure it's a cell font.
+	    then
+		if .charPos geq 1 and .charPos + .desc[sd_len] - 1
+		    leq nChars 		! demand total overlay
+		then
+		    if .font_id eql 0	! make sure not insertion
+		    then
+			    if .n_system_font_transactions
+				eql .tree_block[txt_n_sys] and
+				.tree_block[txt_stab_att]
+					! make sure we know what font.
+			    then
+				begin	! Simple overlay !!
+				ch$move (
+				    .desc[sd_len],
+				    addr,
+				    .strblk[str_ptr] + .charPos - 1
+				    );
+				return printField (
+				    .id,	! Which vd to update
+				    tree_block[base],	! text block
+				    .lineNum,	! Which line to update
+				    .fieldPos,	! Which field to update
+				    .charPos,	! Which character to start with
+				    .charPos + .desc[sd_len] - 1,
+						! Only print what changed
+				    0,		! Don't repaint lefthand white
+				    1,		! Better still clear old text
+				    0		! Don't repaint righthand white
+				    )
+				end
+	    end;
+!
+! Get list of strings for current field
+!
+	curStringList = .curFieldBlock[fld_strings];
+!
+! Decide if we're appending a string onto the end of a field of the same
+! attributes of the last string already existing in the field.  If so,
+! don't bother to allocate a new string block for this write operation.
+! Instead, merely deallocate the old string in the last existing string block,
+! reallocating a NEW string in which we stuff the old and new string.
+!
+! We must also make sure the new string fits.
+!
+	if .curFieldBlock[fld_nChars] + 1 eql .charPos	! make sure appending
+	then
+	    if nStrings gtr 0			! make sure some strings exist
+	    then
+		if .tree_block[txt_n_sys] eql .n_system_font_transactions
+		    and .tree_block[txt_stab_att]	! make sure font valid
+		then
+		    begin			! look at last string
+		    bind lstStrBlk =		! get last string block
+			.curStringList[.curFieldBlock[fld_nStrings]]
+			: string_block;
+		    if sameAttributes (locStrBlk[base], lstStrBlk[base])
+						! make sure same attributes
+		    then
+			begin			! now see if string fits
+			if not (s = findFib (
+			    .lstStrBlk[str_fid],
+			    fiBlk
+			    ))
+			then $log_error_and_return (.s);
+			if not (s = vsta$$txt_measure_width (
+			    .desc[sd_len],
+			    .desc[sd_adr],
+			    fiBlk[base],
+			    new_portion_width
+			    ))
+			then $log_error_and_return (.s);
+			if (new_total_width = .new_portion_width
+			    + .curFieldBlock[fld_used_width]) gtr field_width
+			then $return_error (
+			    vsta$_wrt_no_rm,
+			    integer_type, field_width,
+			    integer_type, .curFieldBlock[fld_used_width],
+			    integer_type,
+			    .new_portion_width + .curFieldBlock[fld_used_width]
+			    );
+		!
+		! String fits, so we'll allocate a string large enough
+		! for old and new strings, deallocate old string, and put
+		! in new one appended onto old.
+		!
+		larger_str[sd_adr] = allocateBytes (larger_str[sd_len] = 
+		    .lstStrBlk[str_len] + .desc[sd_len]
+		    );
+		ch$copy (
+		    .lstStrBlk[str_len], .lstStrBlk[str_ptr],
+		    .desc[sd_len], .desc[sd_adr],
+		    0, .lstStrBlk[str_len] + .desc[sd_len],
+		    .larger_str[sd_adr]
+		    );
+		if not (s = deallocateBytes (
+		    .lstStrBlk[str_len],
+		    .lstStrBlk[str_ptr]))
+		then $log_error_and_return (.s);
+		ch$move (8, larger_str[sd_len], lstStrBlk[str_len]);
+		lstStrBlk[str_width] = .lstStrBlk[str_width] +
+		    .new_portion_width;
+
+		updateEnds (curFieldBlock[base], .new_total_width);
+		return write_updated_text (
+		    0,			! we know this isn't an insertion
+		    curTextBlock[base],	! text block for vd
+		    curFieldBlock[base],
+		    .charPos,
+		    newpos,
+		    .new_portion_width,
+		    0,			! no text was overwritten
+		    0,			! not overwriting spaces
+		    .id,		! which display we're writing to
+		    .lineNum,		! which line
+		    .fieldPos		! which field
+		    )
+			end			! of "now see if string fits"
+		    end;			! of "look at last string"
+!
+! Now that we don't have various simple cases, we'll allocate a string block,
+! and copy our local values into it.
+!
+! This block will subsequently be either stored as part of field, or deleted
+! if we discover that new string is of similar attributes to an
+! adjacent one, and can hence be concatenated.
+!
+	new = allocateFullwords(string_block_length);
+	newPtr =
+	    (if .desc[sd_len] neq 0
+	    then allocateBytes(.desc[sd_len])
+	    else 0);
+	ch$move (string_block_length * 4, locStrBlk[base], new[base]);
+	new[str_len] = .desc[sd_len];
+	new[str_ptr] = .newPtr;
+	ch$move(.desc[sd_len], addr, .newPtr);
+	new[str_beg] = .charPos;	! needed by mergeStrings
+	new[str_end] = .charPos + .desc[sd_len];
+!
+! Allocate new version of typeface, but clean up if can't due to
+! memory full.
+!
+	if not (s = cloneString (curTextBlock[txt_curTypefaceLen],
+	    new[str_typeface_len]))
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    return .s
+	    end;
+
+	! Choose which font to use for printing this string, which will be
+	! in one of our args if we were called from insert-string.  If called
+	! from the outside world, we'll determine the font now.
+	!
+	if .font_id neq 0
+	then
+	    begin
+	    new[str_fid] = .font_id;
+	    new[str_font_rend] = .font_rend;
+	    new[str_cell_flag] = .cell_flag
+	    end
+	else
+	    if not font_already_chosen (
+		tree_block[base],
+		new[str_fid],
+		new[str_font_rend],
+		new[str_cell_flag]
+		)
+	    then
+		if not (s = chooseFont(
+		    .curTextBlock[txt_nFonts],
+		    .curTextBlock[txt_fonts],
+		    lin_hit,
+		    curTextBlock[txt_curTypefaceLen],
+		    .curTextBlock[txt_curSize],
+		    .curTextBlock[txt_curRend],
+		    .curTextBlock[txt_curBase],
+		    new[str_fid],
+		    new[str_font_rend],
+		    new[str_cell_flag]
+		    ))
+		then
+		    begin
+		    deallocateStringBlock (new[base]);
+		    return .s
+		    end
+		else cache_vd_font_data (
+		    tree_block[base],
+		    .new[str_fid],
+		    .new[str_font_rend],
+		    .new[str_cell_flag]
+		    );
+
+	! Get total used width before this change.
+	old_total_width = .curFieldBlock[fld_used_width];
+
+	! Get portion of width being overwritten.
+	!
+	if not (s = vsta$$txt_measure_field_portion (
+	    curFieldBlock[base],
+	    .charPos,
+	    .charPos + .desc[sd_len] - 1,
+	    old_portion_width))
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    return .s
+	    end;
+!		
+! Get width of new part.
+!
+	if not (s = measure_string_width (new[base], new_portion_width))
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    return .s
+	    end;
+
+	! Get total width after change.
+	!
+	new_total_width = .old_total_width - .old_portion_width +
+	    .new_portion_width;
+
+	! Give an error if this overwriting will cause more characters than fit
+	! to be in the field.
+	!
+	if .new_total_width gtr field_width
+	then
+	    begin
+	    deallocateStringBlock (new[base]);
+	    $return_error (
+		vsta$_wrt_no_rm,
+		integer_type, field_width,
+		integer_type, .old_total_width,
+		integer_type, .new_total_width
+		)
+	    end;
+
+	! Fill in width of this string.  Note that we couldn't do this until
+	! we'd chosen a font.
+	!
+	new[str_width] = .new_portion_width;
+!
+! Now that we know the string fits, let's check for the common case of writing
+! a string into an empty field, in which case we'll dispense with fancy
+! coalescence and merely insert the new string block, update the end variables,
+! and print the string.
+!
+! If we indeed are writing a new string into an empty field, we'll further
+! check to see if the new string is all SPACES written in NORMAL rendition with
+! text background color equal to that of virtual display.
+! If so, we'll not even bother to send the string to the screen at all !
+!
+	if nStrings eql 0 			! make sure no strings yet.
+	then
+	    begin
+	    if not (s = insertStringsAfter (
+		curFieldBlock[base],	! add string to this field
+		0,			! add it at beginning
+		new[base]		! this is it
+		))
+	    then return .s;
+	    updateEnds (curFieldBlock[base], .new_total_width);
+	    if ch$fail (ch$find_not_ch (	! check for all spaces
+		.desc[sd_len],
+		.desc[sd_adr],
+		txt$k_space			! bug!  We should really use
+		))				! space index from font
+	    then
+		if .new[str_rendition] eql 0	! check for normal rendition
+		then
+		    if .new[str_backgroundColor] eql .tree_block[txt_vd_color]
+						! check for null color
+		    then return ss$_normal;	! nothing to write
+	    return printField (
+		.id,	! Which vd to update
+		tree_block[base],	! text block
+		.lineNum,	! Which line to update
+		.fieldPos,	! Which field to update
+		1,		! New text in field, so print from position 1
+		.desc[sd_len],	! Print entire new text
+		0,		! Don't repaint lefthand white
+		0,		! No old text to clear.
+		0		! Don't repaint righthand white
+		)
+	    end;
+
+	! get indices of left and right fringes
+	!
+	left = findLeft(curFieldBlock, .charPos);
+	right = findRight(curFieldBlock, newPos);
+
+	! Generate a starting point for coalescence, which consists of
+	! three things:
+	!
+	!	leftBlock	left fringe or 0
+	!	new		new string block
+	!	rightBlock	right fringe or 0
+	if .left neq 0
+	then leftBlock = .curStringList[.left]
+	else leftBlock = 0;
+	if .right neq 1+nStrings
+	then rightBlock = .curStringList[.right]
+	else rightBlock = 0;
+
+	! Handle NONdegenerate cases.
+	! Nondegenerate cases are where the left and right fringe aren't the
+	! same string.
+	!
+	if .left neq .right
+	then
+	    begin
+
+	    ! Try to absorb
+	    ! right fringe string into new string, remembering in rightMerge
+	    ! whether we could or not.
+	    !
+	    if .rightBlock neq 0
+	    then
+		begin
+		if not (s = mergeStrings(
+		    new[base],
+		    .rightBlock,
+		    1,
+		    rightMerge
+		    ))
+		then return .s
+		end
+	    else rightMerge = 0;
+
+	    ! If left fringe string exists, attempt to absorb 
+	    ! new string into it, remembering whether we could in leftMerge
+	    !
+	    if .leftBlock neq 0
+	    then
+		begin
+		if not (s = mergeStrings(.leftBlock, new[base], 0, leftMerge))
+		then return .s
+		end
+	    else leftMerge = 0;
+
+	    ! At this point, rightMerge indicates whether right fringe got
+	    ! aborbed into new string, indicating that right fringe may
+	    ! be released.
+	    ! Leftmerge indicates whether new string (and possibly right
+	    ! fringe too !) got aborbed into left fringe.
+	    ! We must now do combinations of the following:
+	    !
+	    ! 1)	If the right fringe got aborbed, release it.
+	    !
+	    ! 2)	If the new string got absorbed into the left, release
+	    !		new string.
+	    !
+	    ! 3)	Release all strings between left and right fringe.
+	    !
+	    ! 4)	If new string didn't get absorbed into left, insert
+	    !		it.
+	    !
+	    ! Here's a chart of possible combinations, showing action to
+	    ! be taken, with deletion of middle strings implied for each:
+	    !
+	    !	leftMerge	rightMerge	action
+	    !	---------	----------	------
+	    !	0		0		Insert new after
+	    !					left.
+	    !
+	    !	0		1		Delete right.  Insert new after
+	    !					left.
+	    !
+	    !	1		0		Delete new.
+	    !
+	    !	1		1		Delete right.  Delete new.
+
+	    case .leftMerge*2 + .rightMerge from 0 to 3 of
+	    set
+	    [%b'00']:
+		begin
+		if not (s = releaseStringsBetween(curFieldBlock, .left, .right))
+		then return .s;
+		if not (s = insertStringsAfter(
+		    curFieldBlock,
+		    .left,
+		    new[base]
+		    ))
+		then return .s
+		end;
+	    [%b'01']:
+		begin
+		if not (s = releaseStringsBetween(curFieldBlock, .left, .right+1))
+		then return .s;
+		if not (s = insertStringsAfter(
+		    curFieldBlock,
+		    .left,
+		    new[base]
+		    ))
+		then return .s
+		end;
+	    [%b'10']:
+		begin
+		if not (s = releaseStringsBetween(curFieldBlock, .left, .right))
+		then return .s;
+		deallocateStringBlock(new[base])
+		end;
+	    [%b'11']:
+		begin
+		if not (s = releaseStringsBetween(curFieldBlock, .left, .right+1))
+		then return .s;
+		deallocateStringBlock(new[base])
+		end;
+	    tes
+	    end
+
+	else
+
+	    ! We have the
+	    ! case of both fringe strings being the same one, as in
+	    !
+	    !	___________________________________________________________
+	    !	| left substring | overlap substring	| right substring |
+	    !	-----------------------------------------------------------
+	    !			 |  new string		|
+	    !			 ------------------------
+	    !
+	    ! The overlap will definitely be thrown away.  Since the substrings
+	    ! are all part of one string, they have the same attribute.  So
+	    ! the question is, does the new string have matching attributes.
+	    ! If so, just write it in.  If not, we must break the result into
+	    ! three separate strings.
+
+		begin
+		
+		! Define pointers, lengths and other parameters describing the
+		! three substrings of the old string.
+
+		bind
+
+		    leftBeg = .leftBlock[str_beg],
+		    leftPtr = .leftBlock[str_ptr],
+		    newBeg = .charPos,
+
+		    ! Calculate left length as it will be after truncation.
+		    newLeftLen = newBeg - leftBeg,
+
+		    rightBeg = newBeg + .desc[sd_len],
+		    rightEnd = .leftBlock[str_end],
+
+		    ! Calculate right and left lengths before truncation.
+		    !
+		    rightLen = .leftBlock[str_len],
+		    leftLen = rightLen,
+
+		    midPtr = ch$plus(leftPtr, newLeftLen),
+		    rankBefore = .left - 1,
+		    rankAfter = .left + 1;
+
+		if sameAttributes(new[base], .leftBlock)
+		then
+
+		    begin
+!
+! Set up old_spaces_flag to indicate truth if the string being overwritten
+! is all spaces (in normal rendition, and same as what we're writing), in
+! which case we'll know for later that we needn't clear the old text first.
+!
+! For now, unless the configuration is real simple, we'll NOT set
+! old_spaces_flag.
+!
+	    if ch$fail (ch$find_not_ch (
+		.desc[sd_len],
+		midPtr,
+		txt$k_space
+		))
+	    then
+		if .leftBlock[str_rendition] eql 0
+		then
+		    if .leftBlock[str_backgroundColor] eql
+			.curTextBlock[txt_curBack]
+		    then old_spaces_flag = 1	! we're overwriting spaces.
+		    else old_spaces_flag = 0	! non-black spaces.
+		else old_spaces_flag = 0	! not regular rendition.
+	    else old_spaces_flag = 0;		! found a non-space.
+!
+! attributes are same, so just write string in middle, and
+! update string width.
+!
+		    ch$move(.desc[sd_len], addr, midPtr);
+		    leftBlock[str_width] = .leftBlock[str_width] +
+		        .new_portion_width - .old_portion_width;
+		    deallocateStringBlock(new[base])
+
+		    end
+		else
+
+		    ! Different attributes, so clone old string into two parts.
+		    ! In left part, delete overlap at right.
+		    ! In right part, delete overlap at left.
+		    ! Insert new left, new string, and new right into field.
+		    !
+		    begin
+
+		    local newLeft, newRight;
+
+		    if not (s = cloneStringBlock(.leftBlock, newLeft))
+		    then return .s;
+
+		    if not (s = cloneStringBlock(.leftBlock, newRight))
+		    then return .s;
+
+		    truncate (.newLeft, newLeftLen + 1, leftLen);
+		    truncate (.newRight, 1, .desc[sd_len] + newLeftLen);
+		    if not (s = releaseStringsBetween(curFieldBlock, rankBefore, rankAfter))
+		    then return .s;
+		    if not (s = insertStringsAfter(curFieldBlock, rankBefore,
+			.newLeft, new[base], .newRight))
+		    then return .s
+		    end
+		end;
+			
+	! Update beginning and end positions of each string of field, and
+	! remember field width.
+	!
+	updateEnds(curFieldBlock, .new_total_width);
+!
+! Compute what needs redisplaying and do it.
+!
+	write_updated_text (
+	    .font_id,		! non-0 if this is an insertion
+	    curTextBlock[base],	! text block for vd
+	    curFieldBlock[base],
+	    .charPos,
+	    newpos,
+	    .new_portion_width,
+	    .old_portion_width,
+	    .old_spaces_flag,
+	    .id,		! which display we're writing to
+	    .lineNum,		! which line
+	    .fieldPos	! which field
+		    );
+
+	! Give success return from routine
+	true
+
+	end;
+
+routine write_updated_text
+!++
+! Functional description:
+!
+!	Decide according to field format and portion being rewritten what
+!	portion of the field needs to be redisplayed, and do it.
+!
+! Formal parameters:
+ (
+	font_id,		! non-0 if insertion
+	curTextBlock : ref text_block,	! text block for vd
+	curFieldBlock : ref field_block,	! block for field being updated
+	curpos,			! see write_text for explanation
+	newpos,			! rank of leftmost character to RIGHT of new
+	new_portion_width,	! width of new text written
+	old_portion_width,	! width of text being overwritten
+	old_spaces_flag,	! 1 if overwriting normal spaces
+	id,			! which display we're writing to
+	lineNum,		! which line
+	fieldPos		! which field
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    left_rank, refresh_left_flag, refresh_right_flag,
+	    clear_old_text_flag, right_rank;
+
+!
+! Establish refresh_left_flag, which we set to indicate that left-hand
+! field whitespace needs to be displayed due to this insertion or
+! write operation having changed the width of the whitespace.
+!
+! In this and the next two computations (refresh_text_flag,
+! refresh_right_flag), the presense of a recomputed .font_id indicates that
+! this is an insertion as opposed to an overwrite.
+!
+! Left white-space refresh is needed for the following cases:
+!
+! 1)	For any non-left (centered or right)-justified insertion, indicated by
+!	.font_id non-0.
+!
+! 2)	For any non-left-justified write operation IF the new text's width
+!	is of different width than the text that got overwritten.
+!
+	if .font_id neq 0
+	then
+	    if .curFieldBlock[fld_format] neq ff_left
+	    then refresh_left_flag = 1		! non-left-justified insertion.
+	    else refresh_left_flag = 0		! left-justified insertion.
+	else
+	    if .curFieldBlock[fld_format] neq ff_left
+	    then
+		if .new_portion_width neq .old_portion_width
+		then refresh_left_flag = 1	! non-left-justified write of
+						! different width than old txt.
+		else refresh_left_flag = 0	! non-left, equal width.
+	    else refresh_left_flag = 0;		! left-justified write.
+!
+! If we decided we need to repaint the left white space, then we'll
+! start printing text at the beginning of the field.  Otherwise, we'll start
+! printing with the leftmost character that was written or inserted.
+!
+	if .refresh_left_flag
+	then left_rank = 1
+	else left_rank = .curPos;
+!
+! Now compute clear_old_text_flag, which indicates, when set, that the new text
+! being written to the screen should first have old text beneath it cleared.
+!
+! For mid-line insertions (indicated by .font_id non-0), we'll always
+! clean out the old text first.
+!
+! For left-justified fields, text being written over non-text, such as
+! at the end of line, we needn't attempt to clean out old text first.
+!
+! If the field is left-justified, and the old and new text are the same
+! width and we know we're overwriting spaces, we'll NOT bother to clear the
+! old text first.  This is usually
+! O.K. but is a BUG in that if the new text happens tobe of a smaller font
+! height but is the same width, some of the old text will remain.
+!
+! A useful improvement for the future is to make the hardware know to clear
+! old text that happens to coincide with the hole in o's and a's etc., and
+! to teach measure_field_portion to tell us the highest and lowest point on
+! the line the old portion being overwritten encompassed ( computed from the
+! old text's font and baseline).  With both of
+! these enhancements, we could avoid clearing the old text if the new text's
+! upper and lower bounds on the line totally encompassed the overwritten
+! text's bounds, AND the new width equaled the old.
+!
+	if .font_id eql 0
+	then
+	    if .curFieldBlock[fld_format] eql ff_left
+	    then
+		if .old_portion_width eql 0
+		then clear_old_text_flag = 0	! overwriting clean space.
+		else
+		    if .old_portion_width neq .new_portion_width
+		    then clear_old_text_flag = 1
+						! overwriting different width.
+		    else
+			if .old_spaces_flag
+			then clear_old_text_flag = 0
+						! overwriting same width over
+						! spaces.
+			else clear_old_text_flag = 1
+						! same width, but non-spaces
+						! might be underneath.
+	    else clear_old_text_flag = 1	! ovrwrtng, non-lft justified.
+	else clear_old_text_flag = 1;		! inserting.
+!
+! Compute refresh_right_flag, which indicates whether the right-hand whitespace
+! needs to be repainted.  This is true if:
+!
+! 1)	We're inserting (as opposed to overwriting)
+!
+! 2)	We're writing into a centered field, and
+!	the new text is of a different width than what got overwritten.
+!
+! 3)	We're writing into a left-justified field, and we're overwriting
+!	something of non-0 width that's of a different width than what's being
+!	written (i.e. we try to avoid rewriting the right whitespace if we're
+!	merely appending to a left-justified field).
+!
+	if .font_id eql 0
+	then
+	    if .curFieldBlock[fld_format] eql ff_center
+	    then
+		if .new_portion_width neq .old_portion_width
+		then  refresh_right_flag = 1	! center-justified, writing
+						! with different width.
+		else refresh_right_flag = 0	! center-justified, but
+						! widths are the same.
+	    else
+		if .curFieldBlock[fld_format] eql ff_left
+		then
+		    if .old_portion_width neq 0
+		    then
+			if .old_portion_width eql .new_portion_width
+			then refresh_right_flag = 0
+						! left-justified overwriting
+						! same width.
+			else refresh_right_flag = 1
+						! left-justfified overwriting
+						! different width.
+		    else refresh_right_flag = 0	! lft-jstified, appending 2 end
+		else refresh_right_flag = 0	! right justified.
+	else refresh_right_flag = 1;		! inserting something.
+!
+! If we decided to repaint the right-hand white space, then repaint the text
+! all the way to the end of the field.  Otherwise, only repaint the portion
+! of the text that is new.
+!
+	if .refresh_right_flag
+	then right_rank = .curFieldBlock[fld_nChars]
+	else right_rank = .newPos - 1;
+
+	printField (
+	    .id,
+	    curTextBlock[base],
+	    .lineNum,
+	    .fieldPos,
+	    .left_rank,		! leftmost character of field to display.
+	    .right_rank,	! rightmost.
+	    .refresh_left_flag,	! 1 for repainting lefthand whitespace
+	    .clear_old_text_flag,	! 1 if old text needs to be cleared
+	    .refresh_right_flag	! 1 if right-hand whitespace needs to be pntd
+	    )
+
+	end;
+
+global routine vs$$txt_change_typeface
+!++
+! Functional description:
+!
+!	Change the typeface of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	desc : string_descriptor,	! new typeface to write text with
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!--
+
+	! Let inner routine do the work.
+	change_attribute (.id, text_block_str[0, txt_curTypefaceLen],
+	    .desc, 0, 0, .line_no, .field_pos, .beg_rank, .n);
+
+global routine vs$$txt_change_typesize
+!++
+! Functional description:
+!
+!	Change the typesize of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	new_size,		! new size
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!
+! Completion codes:
+!
+!	Any write-text error can occur.
+!
+!--
+
+	! Let inner routine do the work.
+	!
+	change_attribute (.id, text_block_str[0, txt_curSize], .new_size, 0,
+	    0, .line_no, .field_pos, .beg_rank, .n);
+
+global routine vs$$txt_change_baseline
+!++
+! Functional description:
+!
+!	Change the baseline of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	new_base,		! new baseline
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!
+! Completion codes:
+!
+!	Any write-text error can occur.
+!
+!--
+
+	! Let inner routine do the work.
+	!
+	change_attribute (.id, text_block_str[0, txt_curBase], .new_base, 0,
+	    0, .line_no, .field_pos, .beg_rank, .n);
+
+global routine vs$$txt_change_rendition
+!++
+! Functional description:
+!
+!	Change the rendition of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	off_mask,		! which bits to turn off
+	on_mask,		! which bits to turn on
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!
+! Completion codes:
+!
+!	Any write-text error can occur.
+!--
+
+	begin
+
+	local s;
+
+	! Let inner routine do the work.
+	!
+	change_attribute (.id, text_block_str[0, txt_curRend], 0, .off_mask,
+	    .on_mask, .line_no, .field_pos, .beg_rank, .n)
+
+	end;
+
+global routine vs$$txt_change_writing_color
+!++
+! Functional description:
+!
+!	Change the writing color of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	new_color,		! color to change text to
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!
+! Completion codes:
+!
+!	Any write-text error can occur.
+!
+!--
+
+	! Let inner routine do the work.
+	!
+	change_attribute (.id, text_block_str[0, txt_curInk], .new_color, 0,
+	    0, .line_no, .field_pos, .beg_rank, .n);
+
+global routine vs$$txt_change_background_color
+!++
+! Functional description:
+!
+!	Change the background color of some existing text, while leaving other
+!	attributes of the text alone.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to affect
+	new_color,		! new background color
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	beg_rank,		! rank of first character to affect
+	n			! number of chars, neg left, pos right
+ ) =
+!
+! Completion codes:
+!
+!	Any write-text error can occur.
+!
+!--
+
+	! Let inner routine do the work.
+	!
+	change_attribute (.id, text_block_str[0, txt_curBack], .new_color, 0,
+	    0, .line_no, .field_pos, .beg_rank, .n);
+
+routine change_attribute
+!++
+! Functional description:
+!
+!	Does the work of change-xxx routines.
+!
+!	The strategy used is that for each string of the field that intersects
+!	the character ranks the caller wants changed, a standard write_text
+!	is performed to make the change.  However, instead of using the real
+!	text block to find which settings to use for the write, a mock text
+!	block is filled in with the string's settings, with only a single
+!	item changed.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display to operate on
+	item_type,		! type of item being changed, represented by
+				! byte offset into textblock where current
+				! value for that setting is stored.
+	new_value,		! new value for item, unless rendition
+	off_mask,		! rendition bits to turn off
+	on_mask,		! rendition bits to turn on (only valid if
+				! item_type specifies rendition)
+	line_no,		! which line's text to change
+	field_pos,		! which field within line to affect
+	anchor,			! rank of leftmost character to affect if
+				! non-negative, use last character if 0
+	n			! number of chars, neg left, pos right, 0 means
+				! go to end
+ ) =
+!
+! Completion codes:
+!
+!	Whatever write_text returns.  For instance, if the user says to
+!	change the typeface to something that causes a field overflow, this
+!	error is returned as the completion code.
+!--
+
+	begin
+
+	local
+
+	    ! Leftmost rank to do.
+	    !
+	    beg_rank,
+
+	    ! Rightmost rank to do.
+	    !
+	    end_rank,
+
+	    ! Index for which internal string we're doing.
+	    !
+	    i,
+
+	    ! Descriptor for upcased typeface
+	    !
+	    up_typ_desc : string_descriptor preset ([sd_len] = 0),
+
+	    ! Designator for substring being rewritten
+	    sub_des : string_descriptor,
+
+	    ! Status return from write-text
+	    s,
+
+	    ! Leftmost character rank within string that is relevant.
+	    int_left,
+
+	    ! Rightmost relevant rank within string.
+	    int_right,
+
+	    ! Get a mock text block to represent settings.
+	    settings : ref text_block;
+
+	bind
+
+	    ! Get text block associated with virtual display.
+	    txtBlk = getTextBlock (.id) : text_block,
+
+	    ! Get field block for this text block.
+	    !
+	    fldBlk = getFieldBlock (txtBlk[base], .line_no, .field_pos) :
+		field_block,
+
+	    ! Get list of strings for this field.
+	    strLst = .fldBlk[fld_strings] : vector;
+!
+! Initialize leftmost and rightmost character to be affected.  There are
+! six possible situations resulting from two situations for specified
+! starting position (0 for last existing character, and non-0 for a
+! particular character rank), and three situations for number of
+! characters (neg means move left from starting position, 0 means move
+! right all the way to end, and pos means move right)
+!
+	case (.anchor neq 0)*3 + (if .n lss 0 then 0 else if .n eql 0
+	    then 1 else 2) from 0 to 5 of
+	set
+!
+! anchor eql 0, n lss 0, do last abs(n) chars
+!
+	[0] :
+	    begin
+	    beg_rank = .fldBlk[fld_nChars] + .n + 1;
+	    end_rank = .fldBlk[fld_nChars]
+	    end;
+!
+! anchor eql 0, n eql 0, do only last character.
+!
+	[1] :
+	    begin
+	    beg_rank = .fldBlk[fld_nChars];
+	    end_rank = .fldBlk[fld_nChars]
+	    end;
+!
+! anchor eql 0, n gtr 0, do at most last character.
+!
+	[2] :
+	    begin
+	    beg_rank = .fldBlk[fld_nChars];
+	    end_rank = .fldBlk[fld_nChars] + .n - 1
+	    end;
+!
+! anchor neq 0, n lss 0, do abs(n) chars including anchor.
+!
+	[3] :
+	    begin
+	    beg_rank = .anchor + .n + 1;
+	    end_rank = .anchor
+	    end;
+!
+! anchor neq 0, n eql 0, do from anchor to end.
+!
+	[4] :
+	    begin
+	    beg_rank = .anchor;
+	    end_rank = .fldBlk[fld_nChars]
+	    end;
+!
+! anchor neq 0, n gtr 0, do n chars starting from anchor.
+!
+	[5] :
+	    begin
+	    beg_rank = .anchor;
+	    end_rank = .anchor + .n - 1
+	    end;
+	tes;
+!
+! Get a mock text block to represent settings.
+!
+	settings = allocateFullwords (text_block_length);
+!
+! Initialize mock block with pointers to fonts and lines, so that
+! write_text knows what they are.
+!
+	ch$move (text_block_length * 4, txtBlk[base], settings[base]);
+!
+! Initialize the status (s) in case there are no strings in the field
+!
+	s = ss$_normal;
+!
+! Make upcased version of typeface if supplied.
+!
+	if .item_type eql text_block_str[0, txt_curTypeFaceLen]
+	then
+	    if not (s = clone_upcased_string (.new_value, up_typ_desc[sd_len]))
+	    then return .s;
+!
+! Start with first string of field.
+!
+	i = 1;
+!
+! Look at all strings of this field.
+!
+	while .i leq .fldBlk[fld_nStrings] and .beg_rank leq .end_rank do
+!
+! Only process this string if it intersects interesting range.
+!
+	if string_intersects (
+	    .strLst[.i],
+	    .beg_rank,
+	    .end_rank,
+	    int_left,
+	    int_right)
+	then
+
+	    begin
+
+	    bind
+
+		! Get base of string block to be modified by change.
+		strBlk = .strLst[.i] : string_block,
+
+		! Get length affected by change modulo this string.
+		sub_len = .int_right - .int_left + 1,
+
+		! Get address of substring affected.
+		sub_adr = .strBlk[str_ptr] + .int_left - .strBlk[str_beg];
+!
+! For items we're not changing, copy string's existing
+! value into the settings block so that that attribute
+! doesn't change.
+!
+	    settings[txt_curOffset] = .strBlk[str_offset];
+!
+! If we're changing the rendition, accumulate the new rendition
+! for this string by turning off and on the requested bits.
+!
+	    if .item_type eql text_block_str[0, txt_curRend]
+	    then settings[txt_curRend] = .strBlk[str_rendition]
+		and not .off_mask or .on_mask
+	    else settings[txt_curRend] = .strBlk[str_rendition];
+!
+! If we're changing typeface, specify new one upcased, else use
+! old one.
+!
+! There's a subtle bug here.  Due to possible changes in the font definitions
+! between the original writing and the change-attributes call, it's possible
+! for a requested change of something *other* than the typeface to result in a
+! typeface change too!!  For instance, if only typeface "a" was defined when
+! the string was printed, but the current typeface setting was "b", the string
+! has a stored typeface of "b", but it was printed with a font of typeface "a".
+! If typeface "b" was subsequently defined, and then a request is made to
+! change some attribute of the string, the rewrite will display the string with
+! typeface "b" !!
+!
+	    if .item_type eql text_block_str[0, txt_curTypeFaceLen]
+	    then
+		begin
+		settings[txt_curTypefaceLen] = .up_typ_desc[sd_len];
+		settings[txt_curTypeFaceAdr] = .up_typ_desc[sd_adr]
+		end
+	    else
+		begin
+		settings[txt_curTypeFaceLen] = .strBlk[str_typeface_len];
+		settings[txt_curTypeFaceAdr] = .strBlk[str_typeface_adr]
+		end;
+!
+! If we're changing a color, use new one, else use old one.
+!
+	    if .item_type eql text_block_str[0, txt_curBack]
+	    then settings[txt_curBack] = .new_value
+	    else settings[txt_curBack] = .strBlk[str_backgroundColor];
+
+	    if .item_type eql text_block_str[0, txt_curInk]
+	    then settings[txt_curInk] = .new_value
+	    else settings[txt_curInk] = .strBlk[str_inkColor];
+!
+! If we're changing the type size, use the new one, else use the existing one.
+!
+	    if .item_type eql text_block_str[0, txt_curSize]
+	    then settings[txt_curSize] = .new_value
+	    else settings[txt_curSize] = .strBlk[str_size];
+!
+! If we're changing the base line, use the new one, else use the existing one.
+!
+	    if .item_type eql text_block_str[0, txt_curBase]
+	    then settings[txt_curBase] = .new_value
+	    else settings[txt_curBase] = .strBlk[str_base];
+!
+! Build descriptor to substring being reprinted.
+!
+	    sub_des[sd_len] = sub_len;
+	    sub_des[sd_adr] = sub_adr;
+!
+! Mark that this vd's attributes are no longer stable. This prevents write_text
+! from using the old cached font for the changed text.
+!
+	    txtBlk[txt_stab_att] = 0;
+!
+! Use standard write-text to cause the requested change, so that errors are
+! caught in the standard way.
+!
+	    if not (s = write_text (
+		.id,
+		sub_des,
+		.line_no,
+		.field_pos,
+		.int_left,
+		settings[base],
+		txtBlk[base],
+		0
+		))
+	    then exitLoop;
+!
+! Mark that this vd's attributes are no longer stable. This prevents subsequent
+! write_text from using the newly cached font.
+!
+	    txtBlk[txt_stab_att] = 0;
+!
+! Since changed string may have been merged with strings on either side
+! of it, or caused there to be more strings than before, we must restart
+! the loop.
+!
+	    i = 1;
+!
+! Remember how far we've gotten so far.
+!
+	    beg_rank = .int_left + sub_len
+
+	    end
+!
+! If a particular string did NOT contain any characters in the interesting
+! range, then proceed to the next string.
+!
+	else i = .i + 1;
+!
+! Deallocate mock text block used for settings.
+! Don't use deallocate_text_block, since we don't really want lines
+! deleted, etc.
+!
+	deallocateFullwords (text_block_length, settings[base]);
+!
+! Release space taken up by up-cased version of typeface string.
+!
+	if .up_typ_desc[sd_len] neq 0
+	then forgetString (up_typ_desc[sd_len]);
+!
+! Return status, which is in s as returned from write_text.
+!
+	.s
+
+	end;
+	
+end
+eludom

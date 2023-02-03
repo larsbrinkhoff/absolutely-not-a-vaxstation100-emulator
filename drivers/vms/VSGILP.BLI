@@ -1,0 +1,463 @@
+! VSGILP.BLI - VaxStation GIdis Linear Pathes processes, Bliss source
+!
+MODULE VSTA$GID_lp(
+    IDENT = 'GIDIS linear paths',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This file contains routines for drawing linear paths.  Linear
+!	paths are those that can be drawn with the draw-curve command. 
+!	The other paths are character strings and shaded areas.  The linear
+!	paths module is controlled by the pathed processes module.
+!
+!	To use this module, require VSGILP.REQ to declare the routines
+!	and symbols.
+!
+! Environment:
+!
+!
+GLOBAL LITERAL GID$$LP_Edit_level = 9;
+!
+!--
+LIBRARY 'VSTA$LIBRARY:vsging';			! Native Graphics interface
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+LIBRARY 'vsta$library:vstasyms';
+
+library_file_crock;
+
+$vsta_psect;
+
+LITERAL			! Pathing_submode literals
+    GID$$LP_vector_mode = 1,
+    GID$$LP_open_curve_mode = 2,
+    GID$$LP_closed_curve_mode = 3;
+
+EXTERNAL ROUTINE
+    VS$$ACP_get_vm,
+    VS$$ACP_free_vm;
+
+EXTERNAL ROUTINE vsta$$error;
+
+FORWARD ROUTINE GID$$LP_flush_lines;
+
+
+!+
+ROUTINE add_to_path(
+    flag_word,	!
+    X,		!
+    Y		!
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+	path_index;		! Word index into PATH for next entry
+
+    dc_block = .sf[ dc_stuff];
+
+    path_index = .sf[ path_count]*3;
+    dc_block[ dc_path, .path_index] = .X;
+    dc_block[ dc_path, .path_index+1] = .Y;
+    dc_block[ dc_path, .path_index+2] = .flag_word;
+    sf[ path_count] = .sf[ path_count] + 1;
+    IF (.flag_word AND path_move_flag) EQL 0
+    THEN dc_block[ dc_useful_path] = 1;
+    (IF .sf[ path_count] GEQ .sf[ path_buffer_size]
+    THEN GID$$LP_flush_lines()
+    ELSE 1)
+    END;
+
+
+!+
+ROUTINE path_length_heuristic =
+! Routine value:
+!	Guess for length of draw curve state block, in bytes
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Guess at how big of a path buffer we need, in coordinate pairs
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    1000
+    END;
+
+
+GLOBAL ROUTINE GID$$LP_new_lines =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+!	Current Draw-curve buffer area state, if any
+! Implicit outputs:
+!	New draw-curve state, initialized
+! Function:
+!	Create a new draw curve buffer
+! Algorithm:
+!	If one already exists, free it.
+!	Then create a new one.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+	status;
+
+    IF .sf[ dc_len] NEQ 0
+    THEN	! Buffer exists, cause it to go away
+        VS$$ACP_free_vm( sf[ dc_len], sf[ dc_stuff]);
+    sf[ path_buffer_size] = path_length_heuristic();
+!	For each coordinate pair, there is 3 words in the path
+!	buffer, so multiply by 6 bytes the path size estimate
+!	when allocating memory
+    sf[ dc_len] = (.sf[ path_buffer_size] * 6) + dc_table_size;
+    status = VS$$ACP_get_vm( sf[ dc_len], sf[ dc_stuff]);
+    IF NOT .status THEN VSTA$$Error( .status);
+    sf[ path_count] = 0;
+    dc_block = .sf[ dc_stuff];
+    dc_block[ dc_useful_path] = 0;
+    add_to_path(
+	path_move_flag,
+	.sf[ x_hard_pos],
+	.sf[ y_hard_pos])
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_end_lines =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Send current draw-curve buffer on its way
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    ROUTINE dc_completion_routine(
+	state: REF state_instance FIELD (draw_curve_fields)
+	) =
+	BEGIN
+	VS$$ACP_Free_vm( state[ dc_block_length], state)
+	END;
+
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+        status;
+
+    dc_block = .sf[ dc_stuff];
+
+    IF .dc_block[ dc_useful_path]
+    THEN ! Path is not just positioning, draw something
+	BEGIN
+
+!	Set of draw_curve block to containt the current values of things.
+!	(The path is already there, but that is all.)
+
+	dc_block[ dc_block_length] = .sf[ dc_len];
+	dc_block[ dc_pixel_width] = .sf[ x_pixel_size];
+	dc_block[ dc_pixel_height] = .sf[ y_pixel_size];
+	dc_block[ dc_map] = .sf[ map_for_dc];
+	dc_block[ dc_pattern_block, 0] = .sf[ line_texture_length];
+	dc_block[ dc_pattern_block, 1] = .sf[ writing_pattern];
+	dc_block[ dc_pattern_block, 2] = .sf[ line_texture_mult];
+	dc_block[ dc_clip_x] = .sf[ clipping_x];
+	dc_block[ dc_clip_y] = .sf[ clipping_y];
+	dc_block[ dc_clip_width] = .sf[ clipping_width];
+	dc_block[ dc_clip_height] = .sf[ clipping_height];
+
+	status = $VstaDraw(
+	    SRCTYP = nat$k_src_constant,
+	    SOURCE = .sf[ source1],
+	    MSKTYP = nat$k_msk_rectangle,
+	    MASK = dc_block[ dc_rect_mask],
+	    DSTTYP = nat$k_dst_vd,
+	    DST = .sf[ display_id],
+	    MAPTYP = .sf[ map_type_for_dc],
+	    MAPADR = dc_block[ dc_map],
+	    PTHNUM = .sf[ path_count],
+	    PTHADR = dc_block[ dc_path, 0],
+	    PATMOD = .sf[ pattern_mode],
+	    PATACT = nat$k_ptn_update,
+	    PATBLK = dc_block[ dc_pattern_block, 0],
+	    PATSTA = .sf[ pattern_state],! This is the address of the pattern
+	    ! state block
+	    SSRTYP = nat$k_src_constant,
+	    SSOURC = .sf[ source2],
+	    RECNUM = 1,
+	    RECADR = dc_block[ dc_clip_list],
+	    ASTADR = dc_completion_routine,
+	    ASTPRM = .sf[ dc_stuff]);
+	END
+    ELSE ! The path was not a useful thing to process, don't bother
+	BEGIN
+	status = VS$$ACP_free_vm( sf[ dc_len], sf[ dc_stuff]);
+	END;
+
+    IF NOT .status THEN VSTA$$Error( .status);
+    sf[ dc_len] = 0;
+    sf[ dc_stuff] = 0;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$LP_flush_lines =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Perform any partial drawing and reinitialize buffers for more
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+        status;
+
+    LOCAL
+	next_path_buffer_size,
+	next_dc_stuff: REF state_instance FIELD (draw_curve_fields),
+	next_dc_len,
+	next_path_count;
+	
+    dc_block = .sf[ dc_stuff];
+    next_path_buffer_size = path_length_heuristic();
+    next_dc_len = (.next_path_buffer_size * 6) + dc_table_size;
+    status = VS$$ACP_get_vm( next_dc_len, next_dc_stuff);
+    IF NOT .status THEN VSTA$$Error( .status);
+
+    next_dc_stuff[ dc_useful_path] = 0;	! No drawing in this path yet
+
+    SELECTONE .sf[ pathing_submode] OF
+    SET
+    [ GID$$LP_open_curve_mode, GID$$LP_closed_curve_mode]:
+	BEGIN ! The new packet should contain the last 3 points in curved modes
+	IF .sf[ path_count] LEQ 3
+	THEN ! There are 3 or fewer points, so nothing changes
+	    BEGIN
+	    next_path_count = .sf[ path_count];
+	    INCR i FROM 0 TO (.sf[ path_count]*3)-1 DO
+	        next_dc_stuff[ dc_path, .i] = .dc_block[ dc_path, .i];
+	    END
+	ELSE ! Move the last 3 points to new buffer, make the 1st a move.
+	    BEGIN
+	    INCR i FROM 0 TO 8 DO
+		BEGIN
+		LOCAL offset;
+		offset = (.sf[ path_count] - 3) * 3;
+		next_dc_stuff[dc_path, .i] = .dc_block[ dc_path, .i + .offset];
+		END;
+	    next_dc_stuff[ dc_path, 2] = path_move_flag;! Change flag words
+	    next_dc_stuff[ dc_path, 5] = path_move_flag OR path_curved_flag;
+	    next_path_count = 3;
+	    END;
+	END;
+    [ OTHERWISE]:
+	BEGIN	! Uncurved path, leave the new buffer with current position
+	next_path_count = 1;
+	next_dc_stuff[ dc_path, 0] = .sf[ x_hard_pos];
+	next_dc_stuff[ dc_path, 1] = .sf[ y_hard_pos];
+	next_dc_stuff[ dc_path, 2] = path_move_flag;
+	END;
+    TES;
+
+    status = GID$$LP_end_lines();
+    IF NOT .status THEN VSTA$$Error( .status);
+
+    sf[ path_count] = .next_path_count;
+    sf[ dc_stuff] = .next_dc_stuff;
+    sf[ dc_len] = .next_dc_len;
+    sf[ path_buffer_size] = .next_path_buffer_size;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_linear_continue(	! Continue a path
+    X,					! Ending X in Hardware coordinate space
+    Y					! Ending Y in Hardware coordinate space
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Continue a path in the current shading mode and path type
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+        status;
+
+    dc_block = .sf[ dc_stuff];
+    SELECTONE .sf[ pathing_submode] OF
+    SET
+    [ GID$$LP_vector_mode]:
+	BEGIN
+	add_to_path( .sf[ print_last_pixel],
+	    .X,
+	    .Y)
+	END;
+    [ GID$$LP_open_curve_mode, GID$$LP_closed_curve_mode]:
+	BEGIN
+	sf[ first_counter] = .sf[ first_counter] + 1;
+	IF .sf[ first_counter] GTR 2
+	THEN ! There are printable segments in the curve, so turn off the
+	     ! move flag in the last printable segment
+	    BEGIN
+	    dc_block[ dc_path, .sf[ path_count]*3 - 1] =
+		.sf[ print_last_pixel] OR path_curved_flag;
+	    dc_block[ dc_useful_path] = 1;	! Path is useful
+	    END;
+	IF .sf[ first_counter] LSS 3
+	THEN ! We are getting the endpoints for closing the curve
+	    BEGIN
+	    sf[ first_few_x, .sf[ first_counter]] = .X;
+	    sf[ first_few_y, .sf[ first_counter]] = .Y;
+	    END;
+	add_to_path(
+	    path_curved_flag OR path_move_flag,
+	    .X,
+	    .Y)
+	END;
+    [ OTHERWISE]: 1 !Gidis not in correct pathing submode
+    TES
+    END;
+
+
+GLOBAL ROUTINE GID$$LP_reposition(
+	X,
+	Y
+	) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    add_to_path( path_move_flag,
+	.sf[ x_hard_pos],
+	.sf[ y_hard_pos])
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_polygon_begin_open =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ pathing_submode] = GID$$LP_vector_mode;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_curveline_begin_open =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ first_counter] = 0;
+    sf[ first_few_x, 0] = .sf[ x_hard_pos];
+    sf[ first_few_y, 0] = .sf[ y_hard_pos];
+    sf[ pathing_submode] = GID$$LP_open_curve_mode;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_curveline_begin_closed =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ first_counter] = 0;
+    sf[ first_few_x, 0] = .sf[ x_hard_pos];
+    sf[ first_few_y, 0] = .sf[ y_hard_pos];
+    sf[ pathing_submode] = GID$$LP_closed_curve_mode;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$LP_linear_end =
+! Routine value:
+!	Error status
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	dc_block : REF state_instance FIELD (draw_curve_fields),
+        status;
+
+    dc_block = .sf[ dc_stuff];
+    SELECTONE .sf[ pathing_submode]
+    OF SET
+    [ GID$$LP_closed_curve_mode]:
+	BEGIN !	Add points needed to close curve and end it!
+	dc_block[ dc_path, .sf[ path_count]*3 - 1] =
+	    .sf[ print_last_pixel] OR path_curved_flag;
+
+!	The only reason for not doing the following is that we know that
+!	add_to_path will do it for us:
+!	dc_block[ dc_useful_path] = 1;
+
+	status = add_to_path(
+	    path_curved_flag OR .sf[ print_last_pixel],
+	    .sf[ first_few_x, 0],
+	    .sf[ first_few_y, 0]);
+	status = add_to_path(
+	    path_curved_flag OR .sf[ print_last_pixel],
+	    .sf[ first_few_x, 1],
+	    .sf[ first_few_y, 1]);
+	status = add_to_path(
+	    path_curved_flag OR .sf[ print_last_pixel] OR path_move_flag,
+	    .sf[ first_few_x, 2],
+	    .sf[ first_few_y, 2]);
+	IF NOT .status THEN VSTA$$Error( .status);
+	status = GID$$LP_reposition( .sf[ x_hard_pos], .sf[ y_hard_pos])
+	END;
+    [ OTHERWISE]: status = 1;
+    TES;
+    .status
+    END;
+
+END
+ELUDOM

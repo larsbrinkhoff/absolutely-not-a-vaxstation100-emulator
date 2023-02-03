@@ -1,0 +1,207 @@
+module shostk (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+library 'vsta$library:termio';		! get terminal diagnostics macros
+library 'vsta$library:libmacros';	! symbols like "$parameter_or_0"
+external routine
+	dumpBuffer,
+	type0;
+
+forward routine!s
+	showStack,
+	unwind : novalue,
+	goToLine:novalue,
+	cursorUp:novalue,
+	vt100ScrollUp:novalue,
+	vt100ScrollDown:novalue,
+	ansi:novalue;
+
+$vsta_psect;			! Define PSECTs
+
+
+global routine showStack
+!++
+! Functional description:
+!
+!	Routine for showing args to routines.
+!	This routine currently assumes you're on a VT100 and that you just
+!	executed
+!
+!		DBG> SHOW CALLS n	! "n" is optional
+!		DBG> CALL SHOWSTACK(n)	! "(n)" is optional
+!
+!	The routine interleaves the args after the routine names.
+!
+! Formal parameters:
+ (
+	optional_n		! OPTIONAL number of routines to show.
+				! particularly useful when the entire list
+				! is so deep that it scrolls off the screen
+ ) =
+!
+!--
+
+    begin
+    builtin fp;				! get vax builtin register names
+
+    literal bottomLines = 2;
+
+    bind
+	framePointer = .fp;
+
+    local frame:ref vector,argblk:ref vector,nargs,calledFrom, depth, curLine,
+	n,
+	fudge,
+	fudge2 : initial (3), firstFrame;
+
+!    external firstFrame;
+    firstFrame = 0;
+!   type ('Values are hex.  Each line is routine address followed by args:');
+
+    ! Count how many subroutines deep we are
+    frame = framePointer;
+!
+! Decide how many to do, all or specified number.
+!
+	if $parameter_or_0 (optional_n) neq 0
+	then
+	    begin
+	    n = .optional_n;
+	    fudge = -1
+	    end
+	else
+	    begin
+	    n = -1;
+	    fudge = -3
+	    end;
+
+    depth = 0;
+    until .frame[2] eql 0 or .depth eql .n do		! loop for all frames
+	begin
+	depth = .depth + 1;
+	frame = .frame[3]
+	end;
+
+    ! Get rid of garbage at bottom several lines
+    incr i from 1 to .fudge2 do vt100ScrollDown (1);
+
+    ! Put cursor after first routine line
+    goToLine (curLine = 24 - .depth - .fudge);
+
+    frame = framePointer;		! top frame is in register
+    incr i from 1 to max (.n, .depth-3) do
+					! loop for all frames except funny ones
+					! set up by debugger
+	begin
+	argblk = .frame[2];		! get base of current arg block
+	nargs = .argblk[0];		! first word of arg block is how many
+	calledFrom = .frame[4];		! get pc of the call (or near it!)
+!	typePart (hex(.calledFrom));	! first show where called from
+!	if .nargs neq 0 then typePart (' - ');
+					! separate pc from args
+
+	! Scroll up line with routine line (and everything above it) to
+	! make room for line revealing args
+	vt100ScrollUp(.curLine);
+
+	incr i from 1 to .nargs do	! start loop to print args
+	    typePart (hex(.argblk[.i]),'	');
+					! type an arg and a tab
+
+	curLine = .curLine + 1;
+
+	frame = .frame[3]		! link to "previous" frame
+	end;
+
+    ! Leave scrolling region as entire screen
+    vt100ScrollUp (24);
+
+    ! Force output to appear
+    dumpBuffer()
+
+    end;
+
+global routine unwind : novalue =
+!++
+! Functional description:
+!
+!	Call this from the debugger to clean up the stack before saying
+!	"go beg" to restart your program.  Yes, you could merely rerun your
+!	program from dcl, but the debugger takes so long to give a
+!	prompt.
+!
+!--
+
+	signal(0);
+
+! Scroll up Vt100, all lines from top through current line
+! Leave cursor at beginning of current line
+
+routine vt100ScrollUp (
+    curLine		! Which line we're on now
+	 ):novalue =
+	begin
+
+	! Set scrolling region
+	ansi();
+	typePart ('1;',decimal(.curLine),'r');
+
+	! Put cursor back at current line
+	goToLine (.curLine);
+
+	! Cause the scroll by typing a linefeed
+	type0(1, %ref(10))
+	end,
+
+! Scroll down Vt100, all lines from given line through bottom
+! Leave cursor at beginning of given line
+
+vt100ScrollDown (
+    curLine		! Which line we're on now
+	 ):novalue =
+	begin
+
+	! Set scrolling region
+	ansi();
+	typePart (decimal(.curLine),';24r');
+
+	! Put cursor back at current line
+	goToLine (.curLine);
+
+	! Cause the scroll by typing a reverse index
+	type0(2, uplit byte(27,%o'115'))
+	end,
+
+! Move the cursor to left margin and up n lines
+cursorUp (
+    n
+	     ):novalue =
+	begin
+
+	! Do carriage return to get to left margin
+	type0 (1, %ref(13));
+
+	! Reverse index specified number of lines
+	ansi();
+	typePart (decimal(.n), 'A')
+
+	end,
+
+! Go to line n
+goToLine (
+    n
+	 ):novalue =
+	begin
+	ansi();
+	typePart (decimal(.n), ';1H')
+	end,
+
+! Start ansi escape sequence
+ansi:novalue = typePart ('[');
+	
+end
+eludom

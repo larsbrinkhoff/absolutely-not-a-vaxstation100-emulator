@@ -1,0 +1,266 @@
+MODULE docfile;
+/*
+/* Binary document file offsets used by VSTADOC and the human interface.
+/*
+/* Misc constants
+/*
+#keyword_length = 31;	{ max number bytes in a keyword - must match docdata
+CONSTANT vsta$K_doc_keyword_length EQUALS #keyword_length;
+/*
+/* Header
+AGGREGATE header_block STRUCTURE PREFIX hdr$;
+	sanity		LONGWORD;	/* Sanity word
+CONSTANT sanity_data EQUALS %X55550101;	/* The value that must be there.
+
+	version		LONGWORD;	/* version number
+	language_key	LONGWORD;	/* which language
+	page_width	WORD UNSIGNED;	/* # pixels of X
+	page_length	WORD UNSIGNED;	/* # pixels in height
+	num_toc_pages	WORD UNSIGNED;	/* # pages in TOC
+	toc_ppe_block	WORD UNSIGNED;	/* Block # where page-ptr-entries start
+	num_body_pages	WORD UNSIGNED;	/* # pages in the body
+	body_ppe_block	WORD UNSIGNED;	/* Block # where body pages start
+	num_index_pages	WORD UNSIGNED;	/* # pages in the index
+	index_ppe_block	WORD UNSIGNED;	/* Block # where index page-ptr-entries
+					/* start.
+	num_keywords	WORD UNSIGNED;	/* number of keywords
+	kwd_num_blocks	WORD UNSIGNED;	/* How many blocks in keyword list
+	title_len	WORD UNSIGNED;	/* How many chars in title
+	title_string	BYTE DIMENSION (128);	/* The title string itself
+CONSTANT block_length EQUALS .;
+END header_block;
+
+AGGREGATE page_ptr_entry STRUCTURE PREFIX ppe$;
+	block		WORD;		/* Which block the page entry is in
+	num_blocks	WORD;		/* How many blocks it takes up
+END page_ptr_entry;
+
+/*
+/* The next 0, 1 or more blocks contains
+/* page-ptr entries for TOC
+/*
+/* Then comes page-ptr entries for main body pages
+/*
+/* Then comes page_ptr entries for index pages
+/*
+/*
+/* Language types
+/*
+CONSTANT (
+	english,
+	french,
+	german,
+	italian,
+	swedish,
+	dutch,
+	HELP,			/* special language for help keywords
+	next_type
+	) EQUALS 0 INCREMENT 1 PREFIX doc_lang$;
+/*
+/* Keyword entries
+/*
+AGGREGATE keyword_block STRUCTURE PREFIX kw$;
+	page_number	WORD UNSIGNED;	/* page number
+	ascii		BYTE DIMENSION (#keyword_length); /* ASCII keyword.
+END keyword_block;
+
+/*
+/* Page entries (starts at top of block)
+/*
+AGGREGATE page_entry STRUCTURE PREFIX pe$;
+	num_ldes	WORD UNSIGNED;	/* How many LDE's there are.
+	checkoff_block	WORD UNSIGNED;	/* Block number where checkoff stuff is
+	num_ck_blocks	WORD UNSIGNED;	/* How many blocks there are.
+	picture_block	WORD UNSIGNED;	/* Block number where picture info starts
+	num_pic_blocks	WORD UNSIGNED;	/* How many blocks there are.
+	editable_block	WORD UNSIGNED;	/* Block number where editable info is
+	num_edit_blocks	WORD UNSIGNED;	/* How many blocks there are.
+END page_entry;
+
+/*
+/* Line entries (These blocks go right after the page_entry)
+/*
+AGGREGATE lindef_entry STRUCTURE PREFIX lde$;
+	num_lines	WORD UNSIGNED;	/* How many lines to define
+	lin_size	WORD UNSIGNED;	/* Line height of each one
+END lindef_entry;
+/*
+/* After the page entry, and at the top of each continuation block,
+/* there is the following entry...
+/*
+AGGREGATE page_block_entry STRUCTURE PREFIX pbe$;
+	num_rcals	WORD UNSIGNED;	/* Number of RCALs in the remainder of
+					/* this block
+END page_block_entry;
+
+/*
+/* Picture block format:
+/*
+AGGREGATE picture_block_header STRUCTURE PREFIX pich$;
+	num_ents	WORD UNSIGNED;	/* Number of picture entries in this block
+END picture_block_header;
+
+#max_chars_picfile = 100;		/* max # chars in picture file name
+CONSTANT pic$K_max_chars_picfile EQUALS #max_chars_Picfile;
+
+AGGREGATE picture_entry STRUCTURE PREFIX pic$;
+	file_name_len	LONGWORD;	/* Number of characters in filename
+	file_str_str	BYTE DIMENSION (#max_chars_picfile);/* The file name
+	x_origin	WORD UNSIGNED;
+	y_origin	WORD UNSIGNED;
+	x_size		WORD UNSIGNED;
+	y_size		WORD UNSIGNED;
+	vd_id		LONGWORD;	/* Storage for the ACP (sneaky!)
+END picture_entry;
+
+/*
+/* CHECKOFF block format:
+/*
+AGGREGATE checkoff_header STRUCTURE PREFIX ckh$;
+	num_ents	WORD UNSIGNED;	/* Number of entries in this block
+END checkoff_header;
+
+AGGREGATE checkoff_entry STRUCTURE PREFIX cke$;
+	type		WORD UNSIGNED;	/* Type code (set to "1")
+	id		WORD UNSIGNED;	/* The ID
+	line		WORD UNSIGNED;	/* Text line number
+	field		WORD UNSIGNED;	/* X-origin of field (text field start)
+	spare_lw	LONGWORD;	/* ACP will use this to store the
+					/* vd-id of the terminal or other AST
+					/* data.
+END checkoff_entry;
+
+/*
+/* Editable field blocks
+/*
+AGGREGATE editable_header STRUCTURE PREFIX edh$;
+	num_ents	WORD UNSIGNED;	/* How many in this block
+END editable_header;
+
+AGGREGATE editable_entry STRUCTURE PREFIX ede$;
+	type		WORD UNSIGNED;	/* Type code (set to 1)
+	id		WORD UNSIGNED;	/* ID
+	size		WORD UNSIGNED;	/* # bytes in this entry
+	line		WORD UNSIGNED;	/* Text line number
+	field		WORD UNSIGNED;	/* Field position
+	y_orig		WORD UNSIGNED;	/* Where in VD field starts
+	space		WORD UNSIGNED;	/* Width of field
+	y_extent	WORD UNSIGNED;	/* Height of field
+	typesize	LONGWORD;	/* Typesize
+	rend_on		LONGWORD;	/* REnd bits to turn on
+	rend_off	LONGWORD;	/* Rend bits to turn off
+	flags		LONGWORD;	/* Edit flags
+	typeface_len	LONGWORD;	/* Length of typeface
+CONSTANT typeface_str EQUALS .;		/* Where typeface string starts
+/*
+/* Edit flags
+/*
+CONSTANT flag_center EQUALS 1;		/* Center the field
+END editable_entry;
+	
+/*
+/* RCAL types
+/*
+CONSTANT (
+	def_field,		/* Define field
+	undef_field,		/* Undefine field (used for default field)
+	center_field,		/* Set field format to CENTER
+	rj_field,		/* Set field format to RIGHTJUSTIFY
+	insert_text,		/* Call INSERT TEXT
+	append_text,		/* Call APPEND TEXT
+	set_selectable,		/* Set SELECTABLE field
+	def_font,		/* DEFINE a font
+	set_typeface,		/* SET TYPEFACE
+	set_typesize,		/* SET TYPESIZE
+	set_rendition,		/* SET RENDITION		
+	editable,		/* Setup editable field.
+	mark_field		/* Mark field (not used in file)
+	) EQUALS 0 INCREMENT 1 PREFIX doc_rcal$;
+/*
+/* RCAL block format
+/* (each type of RCAL is different).
+/* RCAL blocks NEVER cross a block boundary.
+/*
+AGGREGATE rcal_header STRUCTURE PREFIX rcl$;
+	type		WORD UNSIGNED;	/* Type of RCAL
+	size		WORD UNSIGNED;	/* Size of RCAL block (incl header)
+END rcal_header;
+
+AGGREGATE rcal_def_field STRUCTURE PREFIX rcl$;
+	def_fld_line	WORD UNSIGNED;	/* Which line
+	def_fstart	WORD UNSIGNED;	/* Starting position
+	def_fsize	WORD UNSIGNED;	/* Field size
+END rcal_def_field;
+
+AGGREGATE rcal_undef_field STRUCTURE PREFIX rcl$;
+	undef_fld_line	WORD UNSIGNED;	/* Which line
+END rcal_undef_field;
+
+AGGREGATE rcal_center_field STRUCTURE PREFIX rcl$;
+	cen_fld_line	WORD UNSIGNED;	/* Which line
+	cen_fld_id	WORD UNSIGNED;	/* Field id (LM)
+END rcal_center_field;
+
+AGGREGATE rcal_rj_field STRUCTURE PREFIX rcl$;
+	rj_fld_line	WORD UNSIGNED;	/* Which line
+	rj_fld_id	WORD UNSIGNED;	/* Field id
+END rcal_rj_field;
+
+AGGREGATE rcal_insert_text STRUCTURE PREFIX rcl$;
+	ins_txt_line	WORD UNSIGNED;	/* Which line
+	ins_txt_fld	WORD UNSIGNED;	/* Field id
+	ins_txt_size	WORD UNSIGNED;	/* How many bytes follow
+CONSTANT ins_txt_str EQUALS .;		/* Where the field starts
+END rcal_insert_text;
+
+AGGREGATE rcal_append_text STRUCTURE PREFIX rcl$;
+	app_txt_line	WORD UNSIGNED;	/* Which line
+	app_txt_fld	WORD UNSIGNED;	/* Starting field id
+	app_txt_size	WORD UNSIGNED;	/* How many bytes follow
+CONSTANT app_txt_str EQUALS .;		/* Where the field starts
+END rcal_append_text;
+
+AGGREGATE rcal_set_selectable STRUCTURE PREFIX rcl$;
+	sel_x_orig	WORD UNSIGNED;	/* X-origin in VD
+	sel_y_orig	WORD UNSIGNED;	/* Y-origin in VD
+	sel_x_extent	WORD UNSIGNED;	/* X-extent of region
+	sel_y_extent	WORD UNSIGNED;	/* Y-extent of region
+	sel_link	WORD UNSIGNED;	/* Program link (0 if inter-doc ref)
+					/* NOTE: Don't arbitrarily expand width
+					/* of this field.  File VSSRVFORM.B32
+					/* stuffs it and something else into a
+					/* single longword.
+	sel_docpage	WORD UNSIGNED;	/* Page # of inter-doc reference
+END rcal_set_selectable;
+
+AGGREGATE rcal_def_font STRUCTURE PREFIX rcl$;
+	deffont_fn_len	WORD UNSIGNED;	/* Length (bytes) of filename
+	deffont_tf_len	WORD UNSIGNED;	/* Length (bytes) of typeface
+	deffont_ts	WORD UNSIGNED;	/* Typesize
+	deffont_rend	LONGWORD;	/* Rendition bits
+CONSTANT deffont_fn_str EQUALS .;	/* Where the filename string starts
+END rcal_def_font;
+
+AGGREGATE rcal_set_typeface STRUCTURE PREFIX rcl$;
+	typeface_len	WORD UNSIGNED;	/* Length of typeface
+CONSTANT typeface_str EQUALS .;		/* Where the typeface string starts
+END rcal_set_typeface;
+
+AGGREGATE rcal_set_typesize STRUCTURE PREFIX rcl$;
+	typesize	WORD UNSIGNED;	/* What size to set
+END rcal_set_typesize;
+
+AGGREGATE rcal_set_rendition STRUCTURE PREFIX rcl$;
+	rend_on		LONGWORD;	/* Rendition bits to turn on
+	rend_off	LONGWORD;	/* Rendition bits to turn off
+END rcal_set_rendition;
+
+AGGREGATE rcal_editable STRUCTURE PREFIX rcl$;
+	ed_id		WORD UNSIGNED;	/* Editable id
+					/* NOTE: Don't arbitrarily expand width
+					/* of this field.  File VSSRVFORM.B32
+					/* stuffs it and something else into a
+					/* single longword.
+END rcal_editable;
+
+END_MODULE;

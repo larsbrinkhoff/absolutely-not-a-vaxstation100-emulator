@@ -1,0 +1,53 @@
+!++
+! MODULE ERRMACROS - Error macros for the VSACP system
+!--
+
+MACRO
+    $ERROR (status) [] = (
+	external routine vsta$$error;
+	EXTERNAL LITERAL status;
+
+	%if %null(%remaining)
+	%then vsta$$error(status)
+	%else vsta$$error(status,%remaining)
+	%fi
+				)%,	!e.g. $ERROR (vsta$_code, t1, p1,...)
+    $BUG (status) [] = (
+	external vsta$gl_bug;
+	vsta$gl_bug = 1;
+
+	%if %null(%remaining)
+	%then $ERROR (status)
+	%else $ERROR (status,%remaining)
+	%fi
+				)%,	!e.g: $BUG (vsta$_cantgetvd, t1,p1,...)
+    $SYSRES (status) [] = (
+	external vsta$gl_sysres;
+	vsta$gl_sysres = 1;
+
+	%if %null(%remaining)
+	%then $ERROR (status)
+	%else $ERROR (status,%remaining)
+	%fi
+				)%,	!e.g.: $SYSRES (vsta$_nomem)
+
+    $SYSTEM_ERROR (status) = (
+	external routine vsta$$error;
+	vsta$$error (status)
+				)%,	!e.g.: $SYSTEM_ERROR (.s)
+
+    $TOPERR (status) = (
+	external routine vsta$$toperr;
+	EXTERNAL LITERAL status;
+	vsta$$toperr (status)
+				)%,	
+
+    $LOG_ERROR (status) [] = (
+	external routine vsta$$error_logger;
+	EXTERNAL LITERAL status;
+
+	%if %null(%remaining)
+	%then vsta$$error_logger (status)
+	%else vsta$$error_logger (status,%remaining)
+	%fi
+				)%;

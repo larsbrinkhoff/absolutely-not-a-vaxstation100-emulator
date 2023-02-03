@@ -1,0 +1,99 @@
+	.TITLE	VSTA$TV_MACROS
+;
+;++
+;
+; FACILITY:
+;
+;	VAX/VMS VAXstation Shareable Images - VSTASHR and CGLSHR
+;
+; ABSTRACT:
+;
+;
+; 	This module contains common macros for the tranfer vectors to all
+; VSTASHR and CGLSHR procedures. These will allow additions and/or
+; modifications to the libraries without the need to relink existing
+; application programs which use already use procedures in the library as long
+; as the specified conventions are followed. It also serves to define the entry
+; points as universal symbols, defined outside the context of the system
+; sharable image library.
+;
+;--
+
+;
+;	.MACRO	VSTA$DEFINE_ROUTINE
+;
+; This macro is used to add a new entry point into the library. It defines the
+; transfer vector and keeps a count of the number of routines overall in order
+; to pad the programs address space to allow for future expansion of the
+; library. The second parameter to the macro allows you to make an existing
+; routine obsolete. The macro is invoked as follows:
+;
+;	VSTA$DEFINE_ROUTINE routine_name,obsolete_flag
+;
+; where,
+;	routine_name = Name of the library routine name
+;	obsolete_flag =
+;			0 or defaulted  => Routine not obsolete
+;			non-zero	=> Routine IS obsolete
+;
+; NOTE: While generating transfer vectors, if the value MAX_VSTA_ROUTINES is
+;	exceeded, a message will be printed out. The assembly will continue,
+;	but no padding will be added at the end. This implies that existing
+;	programs will probably need to be relinked, and to provide for still
+;	future library expansion, the above mentioned limit should be
+;	increased.
+;
+; IMPLICIT INPUTS:
+;
+;	VSTA_ROUTINE_COUNTER : Count of number of routines defined
+;	MAX_VSTA_ROUTINES    : Limit to expected number of routines
+;	EXCEEDED_COUNT	     : Flag to indicate routine limit exceeded
+;
+; IMPLICIT OUTPUTS:
+;
+;	VSTA_ROUTINE_COUNTER : Count of number of routines defined
+;	MAX_VSTA_ROUTINES    : Limit to expected number of routines
+;	EXCEEDED_COUNT	     : Flag to indicate routine limit exceeded
+;	VSTA_ROUTINE_SIZE    : Size of routine declaration block
+;
+	.MACRO	VSTA$DEFINE_ROUTINE,routine_name,obsolete_flag=0,?L1
+L1:	.TRANSFER	routine_name
+	.MASK		routine_name
+	.IF EQ obsolete_flag
+	JMP		L^2+routine_name
+	.ENDC
+	.IF NE obsolete_flag
+	JMP		L^2+vsta$obsolete
+	.ENDC
+	.BLKB	2
+	vsta_routine_counter=vsta_routine_counter+1
+	.IF LE max_vsta_routines-vsta_routine_counter
+	.IF EQ exceeded_count
+	.PRINT	max_vsta_routines ; Max.VSTA routines exceeded - Relink programs
+	exceeded_count=1
+	.ENDC
+	.ENDC
+	vsta_routine_size=.-L1
+	.ENDM	VSTA$DEFINE_ROUTINE
+;
+;	.MACRO	VSTA$PAD_ROUTINES
+;
+; This macro will pad the program's address space for future library expansion
+; if the routine limit has not been reached. That means that there is growing
+; space reserved for MAX_VSTA_ROUTINES worth of transfer vectors in the image.
+; If the routine limit has been exceeded, then no padding is done.
+;
+; IMPLICIT INPUTS:
+;
+;	VSTA_ROUTINE_COUNTER : Count of number of routines defined
+;	MAX_VSTA_ROUTINES    : Limit to expected number of routines
+;	EXCEEDED_COUNT	     : Flag to indicate routine limit exceeded
+;	VSTA_ROUTINE_SIZE    : Size of routine declaration block
+;
+	.MACRO	VSTA$PAD_ROUTINES
+	.IF EQ exceeded_count
+	.REPEAT max_vsta_routines-vsta_routine_counter
+	.BLKB	vsta_routine_size
+	.ENDR
+	.ENDC
+	.ENDM

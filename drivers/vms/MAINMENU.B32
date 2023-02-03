@@ -1,0 +1,131 @@
+module mainmenu(addressing_mode (external=general, nonexternal=general))
+= begin
+
+!-----------------------
+!
+! This module contains code having to do with the VAXstation main menu.
+! The main menu is different from other menus in that it must ALWAYS be
+! accessible to the user.  Other menus are accessed either some visible
+! pasteboard on which they reside, or a popup pasteboard associated with
+! some selectable region.
+!
+! Since neither of the above two situations are guaranteed all the time,
+! another scheme is necessary by which the main menu may be requested.
+
+forward routine!s
+
+	vsta$$popup_main_menu;		! Called to pop up the main menu.
+
+library 'vsta$library:vssrvdata';	! symbols like hmb$w_width
+library 'vsta$library:vsvssvs';		! symbols like vss$l_ps_x_origin
+library 'vsta$library:libmacros';	! symbols like $base
+library 'sys$library:starlet';		! symbols like ss$_normal
+
+$vsta_psect;				! Define PSECTs
+
+external routine!s
+
+	popup_pb_on_region,		! Pop up a pasteboard.
+	ps_pointer,			! get ps database from ps id.
+	vsta$$mouse_get_vb_info;	! get physical mouse data.
+
+external
+
+	srv$gl_main_menu : hi_menu_block,	! main menu database
+	srv_ps_id,			! physical screen id
+	srv_vs_id,			! virtual screen id
+	vsta$mouse_tell_hi_flag;	! on if object being moved
+
+global routine vsta$$popup_main_menu =
+!++
+! Functional description:
+!
+!	When the "menu key" is pressed on the keyboard, this routine
+!	is called to make the menu appear.
+!
+! Implicit inputs:
+!
+!	srv_ps_id,		! physical screen id
+!	srv_vs_id,		! virtual screen id
+!	srv$gl_main_menu,	! main menu database
+!	vsta$gl_authorized	! flag denoting whether user is authorized yet
+!	vsta$mouse_tell_hi_flag	! says whether something else going on
+!
+! Side effects:
+!
+!	If vsta$mouse_tell_hi_flag is on, meaning something like object-moving
+!	is going on, we act differently (see comments in code).
+!
+!	A window and viewport are created.
+!
+!--
+
+	begin
+
+	local
+
+	    ps_ms_x,
+	    ps_ms_y,			! current physical mouse information
+	    ps_ms_btns,
+	    vs_ms_x,			! coordinates of mouse on vs
+	    vs_ms_y,
+	    ps : ref ps_block,		! database for physical screen
+	    s;				! local status code
+!
+! If user hasn't authorized yet, don't do anything.  (Personally, I'd like
+! to permit the menu even before authorization, since certain functions are
+! conceivably allowable, such as "end session" or "create unlogged in job",
+! but others insist not . . .)
+!
+	if not (external vsta$gl_authorized ; .vsta$gl_authorized)
+	then return ss$_normal;
+!
+! If human interface is doing something dedicated with the mouse (like moving
+! an object), ignore
+! this request for the main menu.  (Suggestion for future enhancements:
+! in such a case, display a box telling the user to please finish moving
+! object before calling up main menu.  Display box until mouse is moved, at
+! which point the box disappears and normal object-moving resumes)
+!
+	if .vsta$mouse_tell_hi_flag
+	then return ss$_normal;
+!
+! Get database of physical screen, so that it's position on virtual screen
+! can be obtained.
+!
+	if not (s = ps_pointer (.srv_ps_id, ps))
+	then $log_error_and_return (.s);
+!
+! Find out where on the physical screen the mouse is.
+!
+	if not (s = vsta$$mouse_get_vb_info (ps_ms_x, ps_ms_y, ps_ms_btns))
+	then $log_error_and_return (.s);
+!
+! Translate physical screen coordinates to virtual screen coordinates.
+!
+	vs_ms_x = .ps[vss$l_ps_x_origin] + .ps_ms_x;
+	vs_ms_y = .ps[vss$l_ps_y_origin] + .ps_ms_y;
+!
+! Pop up the main menu.
+!
+	if not (s = popup_pb_on_region (
+	    ps[$base],		! which physical screen to pop it up on
+	    .vs_ms_x,		! where mouse is on virtual screen
+	    .vs_ms_y,
+	    0,			! no vp
+	    .srv$gl_main_menu[hmb$l_pb],	! which pasteboard
+	    .srv$gl_main_menu[hmb$w_def_x],	! coordinate to line up . . .
+	    .srv$gl_main_menu[hmb$w_def_y]	! . . . with mouse.
+	    ))
+	then $log_error_and_return (.s);
+!
+! All done.  Menu is now visible, and will disappear via
+! routine "maybe_vanish_pb_on_region" when item is selected, or mouse is moved
+! off of menu.
+!
+	ss$_normal
+
+	end;
+
+end
+eludom

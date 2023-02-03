@@ -1,0 +1,1815 @@
+MODULE DOC$RNO (
+		IDENT = 'VSTADOC Utility RUNOFF command routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+!	This module provides RUNOFF-type command processing
+!	for GENERATE.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$gen_start,		!Start generation process
+    doc$$gen_eol,		!EOL on text line
+    doc$$gen_ff,		!Finish last page, setup for new page
+
+    doc$$gen_fill,		!FILL command.
+    doc$$gen_nofill,		!NOFILL command.
+    doc$$gen_blank,		!BLANK command.
+    doc$$gen_break,		!BREAK command.
+    doc$$gen_lm,		!LEFTMARGIN
+    doc$$gen_rm,		!RIGHTMARGIN
+    doc$$gen_indent,		!INDENT
+
+    doc$$gen_text_string,	!Writetext.
+    doc$$gen_selectable,	!Define selectable field + put text in.
+    doc$$gen_center,		!Center text string on line
+
+    doc$$gen_checkoff,		!Check-off item.
+    doc$$gen_editable,		!Editable field requested
+
+    doc$$gen_eof,		!Finish last page, write encoded doc file.
+
+    doc$$gen_set_linesize,	!SET LINESIZE of next line
+    doc$$insure_linesize,	!Make sure a LINESIZE has been specified
+    doc$$gen_set_pagesize,	!SET PAGESIZE (x,y)
+    doc$$insure_pagesize,	!Make sure a PAGESIZE has been specified
+    doc$$gen_set_measurement,	!SET MEASUREMENT-UNITS
+    doc$$gen_title,		!TITLE
+    check_title_fit,		!Make sure the title string fits
+
+    finish_current_page,	!FF or EOF seen.
+    doc$$setup_new_page,	!Setup for a new page.
+    doc$$setup_new_line,
+    write_curr_line,		!Write current line (and setup new line).
+    add_space,			!Add space to line
+    add_2_spaces,		!Add 2 spaces to line
+    find_next_word,		!Find next word in a string
+    finish_lastword,		!Add space(s) if necessary
+    post_word,
+    new_word_block,
+    m_convert;			!Convert measurement-units into pixels.
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:DOCDATA';		!Various internal data structures
+					! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';		!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';		!Macros
+REQUIRE 'VSTA$SOURCE:TXTSYM.REQ';	!Rend_bold_bit, etc.
+!!!LIBRARY 'SYS$LIBRARY:STARLET';	!Taken care of by TXTSYM
+
+EXTERNAL ROUTINE
+    doc$$append_list_line,	!Append string to current list line
+    doc$$put_list_line,		!Write out current list line
+    doc$$error,			!Report an error
+    doc$$gen_error,		!Report a GENERATE error (in listing)
+    doc$$update_pagenum,	!Update page number displayed on terminal
+    doc$$open_line_file,	!Open temporary "lines" file
+    doc$$put_line_file,		!Write line to "lines" file
+    doc$$type_line,		!Type out a line on TTY
+    doc$$type_sts,		!Type text and status on TTY
+    doc$$fld_init,		!Initialize FLD module
+    doc$$idx_init,		!Initialize indexing procedures
+    doc$$toc_init,		!initialize table of contents
+    doc$$font_init,		!Initialize font routines.
+    doc$$pagbrk_init,		!Initialize pagbrk module.
+    doc$$check_linesize,	!Make sure linesize will fit on this page
+    doc$$page_break,		!Cause a page break (FF seen)
+    doc$$font_start_new_page,	!Starting a new page.
+    doc$$insure_font,		!Insure that there is a current font
+    doc$$change_fld,		!Change format of field
+    doc$$gen_add_irb,		!Add an IRB (RCALL) to this line
+    doc$$get_gen_vd,		!Get a VD for GENEREATE
+    doc$$gen_skip,		!Skip N pixels on the line.
+    doc$$preline_processing,	!Prepare to write a line
+    lib$get_vm,			!Get VM
+    lib$free_vm,		!Free VM
+    doc$$measure_text,		!Measure text using current font
+    doc$$gen_set_rendition;	!##: SET RENDITION xxx :##
+
+EXTERNAL
+    doc$_bug,			!"Can't happen" error code
+    fatal_error,
+    num_user_errors,		!Number of user errors processed
+    doc$gl_line_buf: VECTOR [,BYTE], !Line of text.
+    doc$gl_cur_space_width,	!Width of a space in current font.
+    doc$gl_cur_space_height,	!Height of a space in current font.
+    doc$gl_cur_gen_vd,		!Current generate virtual display.
+    doc$gl_cur_typeface_len,	!Length of current typeface string
+    doc$gl_cur_typeface_str,	!Address of typeface string
+    doc$gl_cur_typesize,	!Current typesize
+    doc$gl_cur_rendition;	!Current rendition bits set.
+
+!
+!
+OWN
+    m_units,			!Type of measurement units
+    got_vd_flag,		!Set to 1 if VD created
+				! (as soon as we know the dimensions..!)
+    lastw: REF word_block,	!Last word on this line
+    standby_wordb_addr,		! Address of block of word blocks.
+    our_vd_id,
+    our_vd_width,
+    our_vd_height;
+
+GLOBAL
+    doc$gl_page_q: VECTOR [2]
+		INITIAL (doc$gl_page_q, doc$gl_page_q),
+    doc$gl_cur_page_num,	!Current page number
+    doc$gl_cur_line_on_page,	!Current line number on page.
+    pageb: REF page_block,	!Current page-block
+    lineb: REF txt_line_block,	!Current line-block
+    last_pagex,			!Last pagesize command X
+    last_pagey,			!Last pagesize command Y
+    doc$gl_cur_lm,		!Current left margin
+    doc$gl_cur_rm,		!Current right margin
+    doc$gl_cur_line_height,	!Current line height
+    doc$gl_filling_flag,	!Set to 1 if FILL in effect.
+    text_seen_flag,		!Set to 1 if text generated yet.
+				! (certain commands must be given before this).
+    title_string: VECTOR [128,byte],	!Title string
+    title_str_desc: VECTOR [2]
+		INITIAL (0, title_string);
+
+BUILTIN
+    INSQUE, REMQUE;
+
+GLOBAL ROUTINE doc$$gen_start =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Starts the generation process
+!	Initializes variables, sets up initial "current page", etc.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Cleanup after last generate
+!
+
+! Initialize variables
+!
+doc$gl_cur_page_num = 0;	!First page will be 1.
+text_seen_flag = 0;		!No text seen yet.
+last_pagex = 0;			!No PAGESIZE command seen yet.
+last_pagey = 0;			!. .
+doc$gl_cur_lm = 1;		!Set default left margin.
+doc$gl_cur_rm = 0;		! No right margin yet.
+doc$gl_cur_line_height = 0;	!No line height command yet.
+doc$gl_cur_line_on_page = 1;	!Start at line 1.
+doc$gl_filling_flag = 1;	!Start out with FILL in effect (like RUNOFF)
+m_units = m_units$K_pixels;	!Default measurement units = pixels.
+got_vd_flag = 0;		!Don't have a VD yet.
+title_str_desc [0] = 0;		!No title specified yet.
+
+IF NOT (status =
+    doc$$open_line_file ()	!Open temp file to contain the text lines
+	)
+  THEN RETURN .status;
+IF NOT (status =
+    doc$$fld_init ()		!Initialize the FLD module.
+	)
+  THEN RETURN .status;
+IF NOT (status =
+    doc$$idx_init ()		!Initialize indexing.
+	)
+  THEN RETURN .status;
+IF NOT (status =
+    doc$$toc_init ()		!Initialize table of contents
+	)
+  THEN RETURN .status;
+IF NOT (status =
+    doc$$font_init ()		!Initialize FONT routines
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    doc$$pagbrk_init ()		!Initialize PAGBRK module
+	)
+  THEN RETURN .status;
+!
+! Create initial page header
+!
+IF NOT (status =
+    doc$$setup_new_page ()
+	)
+  THEN RETURN .status;
+!
+! Get a line block
+!
+IF NOT (status =
+    doc$$setup_new_line ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_eol =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Handle EOL on text line
+!--
+BEGIN
+
+IF (NOT (.doc$gl_filling_flag))
+  THEN write_curr_line ()	!Write current line, even if null
+  ELSE
+    BEGIN			!Fill in effect.
+    IF (.lastw EQL 0)
+      THEN RETURN SS$_NORMAL;	!No last word -- do nothing
+    finish_lastword ();		!Add space(s) if necessary
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_ff =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finish last page, setup for new page
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Finish last page
+!
+finish_current_page ();
+
+doc$$setup_new_page ();
+doc$$font_start_new_page ();		!Tell FONT routines that we're
+					! starting a new page.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_fill =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do fill (ala RUNOFF).
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$gen_break ();		!Cause a line break
+doc$gl_filling_flag = 1;	!Yes, we are filling.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_nofill =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Stop filling (ala RUNOFF command .NOFILL)
+!--
+BEGIN
+
+doc$$gen_break ();		!Cause a line break
+doc$gl_filling_flag = 0;	!Not filling anymore
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_break =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Cause a line break (ala RUNOFF).
+!--
+BEGIN
+
+IF (.lineb [lin$w_num_words] NEQ 0)
+  THEN  write_curr_line ();		!And setup new line
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_blank
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write some blank lines (ala RUNOFF).
+! FORMAL PARAMETERS:
+	(num_lines		!Number of lines
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Whether or not FILL is in effect, we do a BREAK followed
+! by writing "N" blank lines.
+!
+doc$$gen_break ();		!Cause a BREAK.
+INCR i FROM 1 TO .num_lines DO
+    BEGIN
+    IF NOT (status =
+        write_curr_line ()
+	   )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_lm
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set LEFTMARGIN to n or +/- n (relative).
+! FORMAL PARAMETERS:
+	(relative_flag
+	,n
+	) =
+! IMPLICIT OUTPUTS:
+!	doc$gl_cur_lm.
+!--
+BEGIN
+LOCAL
+    n_cnv,
+    lm_hold,
+    status;
+
+m_convert (.n, n_cnv);		!Convert to measurement-units
+
+lm_hold = .doc$gl_cur_lm;
+IF (.relative_flag EQL 0)
+  THEN
+    lm_hold = .n_cnv
+  ELSE
+    lm_hold = .lm_hold + .n_cnv;
+
+IF (.lm_hold LSS 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Attempt to make leftmargin negative');
+    RETURN SS$_BADPARAM
+    END;
+!
+! OK, this margin seems ok.
+!
+doc$gl_cur_lm = .lm_hold;	!Set new left margin
+doc$$gen_break ();	!Cause a BREAK.
+lineb [lin$w_leftmargin] = .doc$gl_cur_lm;	!Incase no text was on line.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_rm
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set RIGHTMARGIN to n or +/- n (relative).
+! FORMAL PARAMETERS:
+	(relative_flag
+	,n
+	) =
+!--
+BEGIN
+LOCAL
+    n_cnv,
+    rm_hold,
+    status;
+
+m_convert (.n, n_cnv);		!Convert to measurement_units
+
+rm_hold = .doc$gl_cur_rm;
+IF (.relative_flag EQL 0)
+  THEN
+    rm_hold = .n_cnv
+  ELSE
+    rm_hold = .rm_hold + .n_cnv;
+
+IF (.rm_hold LSS 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Attempt to make rightmargin negative');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Check to make sure we're not past end of page.
+!
+IF (.rm_hold GTR .last_pagex)
+  THEN
+    BEGIN
+    LOCAL
+	err_str: VECTOR [256,BYTE],
+	err_desc: VECTOR [2],
+	err_str_len: WORD;
+    err_desc [0] = 256;
+    err_desc [1] = err_str;
+    IF NOT (status =
+	$fao	(%ASCID '%WARN: Attempt to set RM to !SL; page X-extent is only !SL'	!CTRSTR
+		,err_str_len		!OUTLEN
+		,err_desc		!OUTSTR
+		,.rm_hold		!p1
+		,.last_pagex		!p2
+		)
+	    )
+     THEN
+	BEGIN
+	$typeline ('? $fao failed to gen error for rightmargin');
+	RETURN doc$$error (.status)
+	END;
+    err_desc [0] = .err_str_len;
+    doc$$gen_error (err_desc);		!Write warning in listing
+    rm_hold = .last_pagex;		!Set RM to highest possible value
+    END;
+!
+! OK, this margin seems ok.
+!
+doc$gl_cur_rm = .rm_hold;	!Set new right margin.
+doc$$gen_break ();	!Cause a BREAK.
+lineb [lin$w_rightmargin] = .doc$gl_cur_rm;	!Incase no text was on line.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_indent
+!++
+! FUNCTIONAL DESCRIPTION:
+!	INDENT by n.
+! FORMAL PARAMETERS:
+	(n
+	) =
+!--
+BEGIN
+LOCAL
+    n_cnv,
+    lm_hold,
+    status;
+
+m_convert (.n, n_cnv);		!Convert to measurement-units
+
+doc$$gen_break ();		!Cause a break
+lm_hold = .lineb [lin$w_leftmargin];	!Get left margin
+lm_hold = .lm_hold + .n_cnv;	!Do indentation.
+!
+! Error checking
+!
+IF (.lm_hold GTR .lineb [lin$w_rightmargin])
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Attempt to indent past rightmargin');
+    RETURN SS$_BADPARAM
+    END;
+IF (.lm_hold LSS 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Attempt to indent to a negative margin');
+    RETURN SS$_BADPARAM
+    END;
+!
+! It's ok, store new leftmargin in the lineblock
+!
+lineb [lin$w_leftmargin] = .lm_hold;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_text_string
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write text.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    rem_desc: VECTOR [2],
+    out_desc: VECTOR [2],
+    status;
+
+doc$$insure_pagesize ();	!Make sure a PAGESIZE is specified.
+doc$$insure_linesize ();	!Make sure a LINESIZE is specified.
+doc$$insure_font ();		!Make sure a FONT is current.
+
+rem_desc [0] = .str_desc [0];
+rem_desc [1] = .str_desc [1];
+text_seen_flag = 1;
+status = SS$_NORMAL;		!So far, so good.
+!
+! Continue processing until either:
+!	bad status
+!	rem_desc = 0;
+!
+WHILE (.rem_desc [0] NEQ 0) DO
+    BEGIN
+    IF NOT (status =
+	find_next_word (rem_desc, out_desc)
+	    )
+      THEN EXITLOOP;
+
+    rem_desc [0] = .out_desc [0];
+    rem_desc [1] = .out_desc [1];
+    END;
+
+RETURN .status;
+END;
+
+GLOBAL ROUTINE doc$$gen_selectable
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Define selectable field + put text in.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,link			!Program link (0 if none)
+	,kwd_desc: REF VECTOR [2] !Keyword (optional)
+	,page_num		!Page number (if no keyword)
+	) =
+!--
+BEGIN
+LOCAL
+    irsel: ir_sel,		!Selectable IRB
+    kwd_len,
+    bold_bit_needed,		!=1 if bold was turned on.
+    status;
+
+!
+! If the current rendition does not include BOLD,
+! Automatically do a ##: SET RENDITION BOLD :##
+!
+IF ((.doc$gl_cur_rendition AND rend_bold_bit) NEQ 0)
+  THEN bold_bit_needed = 0	!bold already set
+  ELSE
+    BEGIN
+    bold_bit_needed = 1;	!We needed to set it.
+    doc$$gen_set_rendition (rend_bold_bit, 0); !Set it.
+    END;
+
+doc$$insure_pagesize ();	!Must have some pagesize by now.
+doc$$insure_linesize ();	!Make sure a linesize has been specified.
+doc$$insure_font ();		!Make sure the current font calls are made.
+
+IF NOT (status =
+     post_word (.str_desc)	!Post this string, as 1 word.
+	)
+  THEN RETURN .status;
+!
+! If we had set rendition to BOLD, set it back.
+!    (do a ##: SET RENDITION NO BOLD :##)
+!
+IF (.bold_bit_needed)
+  THEN doc$$gen_set_rendition (0, rend_bold_bit);
+
+!
+! Do the RCAL to set selectable region.
+!
+! cidx = (where line is now) - (# chars in this word)
+
+irsel [irb$w_sel_cidx] = .lineb [lin$w_cidx] - .lastw [wrd$w_len];
+irsel [irb$w_sel_len] = .lastw [wrd$w_len];
+irsel [irb$w_sel_len_pixels] = .lastw [wrd$w_pixels];
+irsel [irb$w_sel_xstart] = .lineb [lin$w_leftmargin] +
+			.lineb [lin$w_space_used] -
+			.lastw [wrd$w_pixels];
+irsel [irb$w_sel_link] = .link;
+
+IF (.kwd_desc NEQ 0)		!If keyword given
+  THEN
+    BEGIN
+    kwd_len = MIN (.kwd_desc [0], kwd$K_key_length); !How many chars in keyword
+  !
+  ! Copy keyword and fill with spaces
+  !
+    IF (.kwd_len GTR 0)
+      THEN
+	CH$COPY	(.kwd_len		!Length of source
+		,.kwd_desc [1]		!Source ptr1
+		,%C' '			!Fill character
+		,kwd$K_key_length	!Dest length
+		,irsel [irb$b_sel_kwd]	!Dest addr.
+		);
+    END
+  ELSE
+    irsel [irb$w_sel_page] = .page_num;	!Otherwise use page number given
+!
+! Do the RCALL
+!
+IF NOT (status =
+    doc$$gen_add_irb
+		(doc_rcal$K_set_selectable
+		,irb$S_ir_sel		!Length
+		,irsel			!Address of block
+		)
+	)
+  THEN RETURN .status;
+
+text_seen_flag = 1;		!Remember some text seen.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_center
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Centers the text string on the next line.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$insure_pagesize ();	!Must have some pagesize by now.
+doc$$insure_linesize ();	!Make sure a linesize has been specified.
+doc$$insure_font ();		!Make sure the current font calls are made.
+doc$$gen_break ();		!Cause a break so we start with a fresh line.
+IF NOT (status =
+    post_word (.str_desc)
+	)
+  THEN RETURN .status;
+
+doc$$change_fld (0, doc$K_ff_center);	!Change 1st field to "Centered".
+doc$$gen_break ();		! and break after the centered text.
+
+text_seen_flag = 1;		!Remember some text seen.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_checkoff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	##: CHECKOFF "item" /ID=n :##
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,id
+	) =
+!--
+BEGIN
+LITERAL
+    check_x_size = 30,		!Width of check mark
+    check_y_size = 15;		!Height of check mark
+LOCAL
+    cke: checkoff_entry,
+    real_cke,			!Address of cke with header, in dynamic memory
+    field_start,		!Where checkmark starts on the line.
+    line_useable_space,
+    line_space_left,
+    irsel: ir_sel,		!Selectable IRB
+    status;
+
+doc$$insure_pagesize ();	!Make sure a PAGESIZE is specified.
+doc$$insure_linesize ();	!Make sure a LINESIZE is specified.
+doc$$insure_font ();		!Make sure a FONT is current.
+
+!
+! Make sure the check mark will fit on this line.
+!
+IF (check_y_size GTR .lineb [lin$w_lineheight])
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Line too short for checkoff box');
+    RETURN SS$_BADPARAM
+    END;
+
+line_useable_space = .lineb [lin$w_rightmargin] - .lineb [lin$w_leftmargin];
+line_space_left = .line_useable_space - .lineb [lin$w_space_used];
+
+IF (check_x_size GEQ .line_space_left)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Not enough room on line for checkoff box');
+    RETURN SS$_BADPARAM
+    END;
+
+!
+! Start a field here.
+!
+field_start = .lineb [lin$w_leftmargin] + .lineb [lin$w_space_used];
+IF NOT (status =
+    doc$$gen_skip (0)
+	)
+  THEN RETURN .status;
+
+irsel [irb$w_sel_cidx] = .lineb [lin$w_cidx];
+irsel [irb$w_sel_xstart] = .field_start;
+
+!
+! There is no RCAL for this; but we have to remember where the check
+! mark is and various other information in the page data base.
+! It is kept in a linked list of "checkoff" entries.
+!
+cke [cke$w_type] = 1;		!Set type to "1"
+cke [cke$w_id] = .id;
+cke [cke$w_line] = .doc$gl_cur_line_on_page;
+cke [cke$w_field] = .field_start;
+cke [cke$l_spare_lw] = 0;	!Clear out the spare longword.
+
+!
+! Start another field past the check mark.
+!
+IF NOT (status =
+    doc$$gen_skip (check_x_size)
+	)
+  THEN RETURN .status;
+
+
+!
+! Try to write the rest of the string, NOFILL, on this line.
+!
+IF NOT (status =
+    post_word (.str_desc)
+	)
+  THEN RETURN .status;
+
+!
+! Do the RCAL to set selectable region.
+!
+
+irsel [irb$w_sel_len] = .lastw [wrd$w_len];
+irsel [irb$w_sel_len_pixels] = .lineb [lin$w_leftmargin] +
+				.lineb [lin$w_space_used] -
+				.irsel [irb$w_sel_xstart];
+irsel [irb$w_sel_link] = .id;
+irsel [irb$w_sel_page] = 0;	!Note, no page.
+
+IF NOT (status =
+    doc$$gen_add_irb
+		(doc_rcal$K_set_selectable
+		,irb$S_ir_sel
+		,irsel
+		)
+	)
+  THEN RETURN .status;
+
+!
+! All ok, INSQUE the cke entry
+!
+IF NOT (status =
+    lib$get_vm (%REF (cke$S_checkoff_entry + 8), real_cke)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '%ERR: Can''t get memory for cke entry: ',.status);
+    RETURN .status
+    END;
+
+CH$MOVE	(cke$S_checkoff_entry
+	,cke
+	,.real_cke + 8
+	);
+INSQUE (.real_cke, .pageb [pgb$a_chk_q_hdr_bl]);	!at end of list.
+pageb [pgb$w_num_chks] = .pageb [pgb$w_num_chks] + 1;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_editable
+!++
+! FUNCTIONAL DESCRIPTION:
+!	##: EDITABLE /space=nn /id=nn /typeface=/typesize=/rend=(r1,r2,no r3)
+!	defines an editable field.
+! FORMAL PARAMETERS:
+	(id
+	,space
+	,typeface_desc: REF VECTOR [2]
+	,typesize
+	,rend_on
+	,rend_off
+	,flags
+	) =
+!--
+BEGIN
+LOCAL
+    ede: REF editable_entry,
+    some_space: VECTOR [512/4],
+    iredit: ir_editable,
+    the_typeface_desc: REF VECTOR [2],
+    the_typesize,
+    the_rend_on,
+    the_rend_off,
+    size_of_ede,		!How many bytes in EDE entry.
+    real_ede,			!Address of the real EDE queue entry
+    status;
+
+ede = some_space;		!Compose ede using local storage
+doc$$insure_pagesize ();	!Make sure a PAGESIZE is specified.
+doc$$insure_linesize ();	!Make sure a LINESIZE is specified.
+
+!
+! We will fit create a new text field on the line.
+!
+IF NOT (status =
+    doc$$gen_skip (0)		!New field starts here.
+	)
+  THEN RETURN .status;
+!
+! Remember start of field in EDE
+!
+ede [ede$w_field] = .lineb [lin$w_space_used] + .lineb [lin$w_leftmargin];
+ede [ede$l_flags] = .flags;	!Remember flags.
+
+IF NOT (status =
+    doc$$gen_skip (.space)
+	)
+  THEN RETURN .status;		!Couldn't add a field this big.
+
+!
+! Build an IRB for the editable field.
+!
+iredit [irb$w_ed_id] = .id;
+IF NOT (status =
+    doc$$gen_add_irb
+		(doc_rcal$K_editable
+		,irb$S_ir_editable
+		,iredit
+		)
+	)
+  THEN RETURN .status;
+
+!
+! Write an EDE.
+! First, make sure all parameters are specified. (If not, use the
+! current settings). This is so the correct font will be used when
+! the field is edited.
+!
+
+the_typeface_desc = .typeface_desc;	!Get address of typeface desc.
+IF (.the_typeface_desc [0] EQL 0)
+  THEN
+    BEGIN
+    the_typeface_desc [0] = .doc$gl_cur_typeface_len;
+    the_typeface_desc [1] = doc$gl_cur_typeface_str;
+    END;
+
+the_typesize = .typesize;
+IF (.typesize EQL 0)
+  THEN typesize = .doc$gl_cur_typesize;
+
+the_rend_on = .rend_on;
+the_rend_off = .rend_off;
+IF ((.the_rend_on EQL 0) AND (.the_rend_off EQL 0))
+  THEN
+    BEGIN
+    the_rend_on = .doc$gl_cur_rendition;
+    the_rend_off = -1;
+    END;
+
+size_of_ede = ede$S_editable_entry + .the_typeface_desc [0];
+
+ede [ede$l_typeface_len] = .the_typeface_desc [0];
+CH$MOVE	(.the_typeface_desc [0]
+	,.the_typeface_desc [1]
+	,.ede + ede$K_typeface_str
+	);
+ede [ede$w_id] = .id;
+ede [ede$w_type] = 1;
+ede [ede$w_size] = .size_of_ede;
+ede [ede$w_line] = .doc$gl_cur_line_on_page;
+ede [ede$w_y_orig] = .pageb [pgb$w_y_so_far];
+ede [ede$w_y_extent] = .lineb [lin$w_lineheight];
+ede [ede$w_space] = .space;		!X extent of field.
+ede [ede$l_rend_on] = .the_rend_on;
+ede [ede$l_rend_off] = .the_rend_off;
+ede [ede$l_typesize] = .the_typesize;
+
+!
+! INSQUE the ede entry
+!
+IF NOT (status =
+    lib$get_vm (%REF (ede$S_editable_entry + .the_typeface_desc [0] + 8)
+		,real_ede)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '%ERR: Can''t get memory for ede entry: ',.status);
+    RETURN .status
+    END;
+
+CH$MOVE	(.size_of_ede
+	,.ede
+	,.real_ede + 8
+	);			!Copy the ede to a more permanent place
+INSQUE (.real_ede, .pageb [pgb$a_edit_q_hdr_bl]);	!at end of list.
+pageb [pgb$w_num_edits] = .pageb [pgb$w_num_edits] + 1;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_eof =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finish last page, and return.
+!--
+BEGIN
+!
+! Finish last page
+!
+finish_current_page ();
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_linesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET LINESIZE of next line
+! FORMAL PARAMETERS:
+	(size			!In pixels
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$insure_pagesize ();	!PAGESIZE must have been specified
+IF NOT (status =
+    doc$$check_linesize (.size)	!Make sure it is OK
+	)
+  THEN RETURN .status;
+
+doc$gl_cur_line_height = .size;
+doc$$gen_break ();		!Cause a break
+lineb [lin$w_lineheight] = .doc$gl_cur_line_height;	!Incase didn't get a new
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$insure_linesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Makes sure that a linesize has been specified. If not, defaults
+!	to 15.
+!--
+BEGIN
+
+IF (.doc$gl_cur_line_height EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%WARN: LINESIZE defaulted to 15');
+    lineb [lin$w_lineheight] = doc$gl_cur_line_height = 15;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_pagesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET PAGESIZE (x,y)
+! FORMAL PARAMETERS:
+	(x
+	,y
+	) =
+!--
+BEGIN
+LOCAL
+    newx,
+    newy,
+    status;
+!
+! Make sure there wasn't a previous "PAGESIZE" command given
+!
+IF (.last_pagex NEQ 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: May not change PAGESIZE in the middle of a document');
+    RETURN SS$_BADPARAM
+    END;
+
+m_convert (.x, newx);
+m_convert (.y, newy);	!Use measurement units - convert to pixels
+!
+! Neither x or y can be zero
+!
+IF (.newx EQL 0) OR (.newy EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: PAGESIZE x,y -- x and y must be positive numbers');
+    RETURN SS$_BADPARAM
+    END;
+
+last_pagex = .newx;
+last_pagey = .newy;
+
+IF (NOT (.got_vd_flag))
+  THEN
+    BEGIN
+    IF NOT (status = doc$$get_gen_vd (.newx, .newy))
+      THEN
+	BEGIN
+	fatal_error = 1;
+	doc$$type_sts (%ASCID '?Can''t get a VD: ', .status);
+	RETURN .status
+	END;
+    got_vd_flag = 1;
+    END;
+
+IF (.doc$gl_cur_rm EQL 0)
+  THEN doc$$gen_rm (0, .newx);	 !Default rightmargin is just past rightmost
+				! pixel in page.
+!
+! If a title has been specified, make sure it fits
+!
+IF (.title_str_desc [0] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	check_title_fit (.title_str_desc [0], title_string, .last_pagex)
+	    )
+      THEN
+	BEGIN
+	$gen_error ('% Title ignored');
+	title_str_desc [0] = 0;
+	RETURN .status;
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$insure_pagesize =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Insures that a PAGESIZE command has been given. If not,
+!	this routine pretends that the user has just said "PAGESIZE 500,500"
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.last_pagex EQL 0)
+  THEN
+    BEGIN
+    $gen_error ('%WARN: PAGESIZE not yet specified, assuming PAGESIZE 500,500');
+    doc$$gen_set_pagesize (500,500);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_set_measurement
+!++
+! FUNCTIONAL DESCRIPTION:
+!	SET MEASUREMENT-UNITS
+! FORMAL PARAMETERS:
+	(type
+	) =
+!--
+BEGIN
+
+m_units = .type;		!Set measurement units type.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_title
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set the title of this document.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    title_len: WORD,
+    status;
+
+title_len = .str_desc [0];
+IF (.title_len GTR 128)
+  THEN
+    BEGIN
+    $gen_error ('%ERR: Title string truncated to 128 characters');
+    title_len = 128;
+    END;
+!
+! Pagesize does not have to be specified yet; but if it is, make
+! sure the title will fit.
+!
+IF (.last_pagex NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	check_title_fit (.title_len, .str_desc [1], .last_pagex)
+	    )
+      THEN RETURN .status;
+    END;
+!
+! Copy title string and setup the string descriptor
+!
+CH$MOVE	(.title_len
+	,.str_desc [1]
+	,title_string
+	);
+title_str_desc [0] = .title_len;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE check_title_fit
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Makes sure that the title fits in the pagesize provided
+! FORMAL PARAMETERS:
+	(len
+	,addr
+	,pagesize_x
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Do measure text using the title font
+! and make sure is less than pagesize_x
+!
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$setup_new_page =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Setup for a new page.
+! IMPLICIT INPUTS:
+!	doc$gl_cur_page_num - last page number.
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$gl_cur_page_num = .doc$gl_cur_page_num + 1;		!Get new page number.
+!
+! Get memory for a page-block and store address in pageb.
+!
+IF NOT (status =
+    lib$get_vm	(%REF (pgb$S_page_block), pageb)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '?Can''t get memory for page block: ', .status);
+    RETURN .status;
+    END;
+!
+! Initialize page block
+!
+pageb [pgb$a_line_q_hdr_fl] = pageb [pgb$a_line_q_hdr_fl];
+pageb [pgb$a_line_q_hdr_bl] = pageb [pgb$a_line_q_hdr_fl];
+pageb [pgb$a_ovl_q_hdr_fl] = pageb [pgb$a_ovl_q_hdr_fl];
+pageb [pgb$a_ovl_q_hdr_bl] = pageb [pgb$a_ovl_q_hdr_fl];
+pageb [pgb$a_chk_q_hdr_fl] = pageb [pgb$a_chk_q_hdr_fl];
+pageb [pgb$a_chk_q_hdr_bl] = pageb [pgb$a_chk_q_hdr_fl];
+pageb [pgb$a_edit_q_hdr_fl] = pageb [pgb$a_edit_q_hdr_fl];
+pageb [pgb$a_edit_q_hdr_bl] = pageb [pgb$a_edit_q_hdr_fl];
+pageb [pgb$w_num_ovls] = 0;
+pageb [pgb$w_num_chks] = 0;
+pageb [pgb$w_num_edits] = 0;
+pageb [pgb$w_page_num] = .doc$gl_cur_page_num;
+pageb [pgb$w_y_so_far] = 0;		!No height used so far..
+!
+! INSERT at rear of queue
+!
+INSQUE (.pageb, .doc$gl_page_q [1]);
+doc$gl_cur_line_on_page = 1;		!Start numbering lines again.
+
+!
+! Tell the terminal user that we're on a new page.
+!
+doc$$update_pagenum (.doc$gl_cur_page_num);	!Update page number displayed
+						! on user's VT100 screen.
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE finish_current_page =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finish current page actions - we are at FF or EOF.
+!--
+BEGIN
+LOCAL
+    status;
+
+doc$$gen_break ();		!Break previous line
+
+doc$$page_break ();		!Cause a page break
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$setup_new_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Setup a line block and store address in lineb
+!	The line is not inserted into this page's queue
+!	until it is written.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Get memory for a line block and store in lineb
+!
+IF NOT (status =
+    lib$get_vm (%REF (lin$S_txt_line_block), lineb)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '?Can''t get memory for line-block: ', .status);
+    RETURN .status;
+    END;
+!
+! Initialize line block
+!
+lineb [lin$w_leftmargin] = .doc$gl_cur_lm;
+lineb [lin$w_rightmargin] = .doc$gl_cur_rm;
+lineb [lin$w_space_used] = 0;		!# pixels used so far.
+lineb [lin$w_lineheight] = .doc$gl_cur_line_height;
+lineb [lin$w_num_words] = 0;
+lineb [lin$w_wrd_actual_num] = param$K_start_num_wrdb;
+lineb [lin$w_cidx] = 0;			!# chars in total-line so far.
+lineb [lin$w_num_rcals] = 0;
+lineb [lin$a_rcal_list] = 0;
+lineb [lin$a_fld_block] = 0;		!No extra fields yet
+lineb [lin$w_num_extra_flds] = 0;
+lineb [lin$l_fld0_attrib] = 0;
+lastw = 0;			!No last word, yet.
+
+
+!
+! If there is a standby (unused) word_block, use it.
+! Else go get one.
+!
+IF (.standby_wordb_addr NEQ 0)
+  THEN
+    BEGIN
+    lineb [lin$a_word_block] = .standby_wordb_addr;
+    standby_wordb_addr = 0;	!Clear it for next time.
+    END
+  ELSE
+    BEGIN
+    IF NOT (status =
+	lib$get_vm	(%REF (param$K_start_num_wrdb * wrd$S_word_block)
+			,lineb [lin$a_word_block]
+			)
+	    )
+      THEN
+	BEGIN
+	fatal_error = 1;
+	doc$$type_sts (%ASCID '? Can''t get memory for word block: ', .status);
+	RETURN .status;
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_curr_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	"write" current line and setup new line-block.
+!	Called when there are enough words on the line, or BLANK
+!	command given, or EOL with NOFILL in effect.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Do page-break pre-processing. May save the current line block,
+! and write out a few more, create a new page, etc.
+!
+IF NOT (status =
+    doc$$preline_processing ()
+	)
+  THEN RETURN .status;
+!
+! Link line block into page block
+!
+INSQUE (.lineb, .pageb [pgb$a_line_q_hdr_bl]);
+!
+! Keep track of the total line height used.
+!
+pageb [pgb$w_y_so_far] = .pageb [pgb$w_y_so_far] + .lineb [lin$w_lineheight];
+!
+! Keep track of which line on the page we're on.
+!
+doc$gl_cur_line_on_page = .doc$gl_cur_line_on_page + 1;	!Bump line number
+!
+! If there are no words on the line, then put the current
+! word-block on "standby" (i.e. available for use by the next line)
+!
+IF (.lineb [lin$w_num_words] EQL 0)
+  THEN
+    BEGIN
+    standby_wordb_addr = .lineb [lin$a_word_block];
+    lineb [lin$a_word_block] = 0;
+    lineb [lin$w_wrd_actual_num] = 0;
+    END;
+!
+! Write line to "lines" file
+!
+IF NOT (status =
+    doc$$put_line_file (.lineb [lin$w_cidx])	!Pass # of characters
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    RETURN .status
+    END;
+
+lineb = 0;			!Clear this so if there is an error,
+				! it won't try to be deallocated.
+doc$$setup_new_line ();		!And setup new line
+RETURN SS$_NORMAL
+END;
+
+ROUTINE add_space =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Add a space to line, break if too long
+!--
+BEGIN
+LOCAL
+    line_useable_space: WORD,
+    line_space_left: WORD,
+    status;
+
+line_useable_space = .lineb [lin$w_rightmargin] - .lineb [lin$w_leftmargin];
+line_space_left = .line_useable_space - .lineb [lin$w_space_used];
+
+IF (.line_space_left GEQ .doc$gl_cur_space_width)
+  THEN
+    BEGIN			!Append to this line
+    IF (.doc$gl_cur_space_height GTR .lineb [lin$w_lineheight])
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Text height is greater than lineheight');
+	RETURN SS$_BADPARAM
+	END;
+    doc$gl_line_buf [.lineb [lin$w_cidx]] = %C' ';
+    lineb [lin$w_cidx] = .lineb [lin$w_cidx] + 1;
+    lineb [lin$w_space_used] = .lineb [lin$w_space_used] + .doc$gl_cur_space_width;
+    END
+  ELSE
+    BEGIN			!Start a new line
+    IF NOT (status =
+	write_curr_line ()
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE add_2_spaces =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Add 2 spaces to line, break if too long
+!--
+BEGIN
+LOCAL
+    line_useable_space: WORD,
+    line_space_left: WORD,
+    add_width: WORD,
+    status;
+
+line_useable_space = .lineb [lin$w_rightmargin] - .lineb [lin$w_leftmargin];
+line_space_left = .line_useable_space - .lineb [lin$w_space_used];
+add_width = 2 * .doc$gl_cur_space_width;
+
+IF (.line_space_left GEQ .add_width)
+  THEN
+    BEGIN			!Append to this line
+    IF (.doc$gl_cur_space_height GTR .lineb [lin$w_lineheight])
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Text height is greater than lineheight');
+	RETURN SS$_BADPARAM
+	END;
+    doc$gl_line_buf [.lineb [lin$w_cidx]] = %C' ';
+    doc$gl_line_buf [.lineb [lin$w_cidx] + 1] = %C' ';
+    lineb [lin$w_cidx] = .lineb [lin$w_cidx] + 2;
+    lineb [lin$w_space_used] = .lineb [lin$w_space_used] + .add_width;
+    END
+  ELSE
+    BEGIN			!Start a new line
+    IF NOT (status =
+	write_curr_line ()
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE find_next_word
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finds and processes next word in a text string.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	,out_desc: REF VECTOR [2]	!desc. to remainder of string
+	) =
+! IMPLICIT INPUTS:
+!	doc$gl_filling_flag - if not filling, return 1 word block.
+!--
+BEGIN
+LOCAL
+    word_desc: VECTOR [2],
+    cptr: REF VECTOR [,BYTE],
+    punc_flag,			!Set to 1 if last char in word was punctuation.
+    ch: BYTE,			!A character.
+    first_space,		!Index of first space character
+    first_nonspace,		!index of first non-space character
+    status;
+
+IF (NOT (.doc$gl_filling_flag))
+  THEN
+    BEGIN
+    IF NOT (status =
+	post_word (.str_desc)		!Whole string is 1 word
+	    )
+      THEN RETURN .status;
+    lastw [wrd$b_delim_type] = wrd$K_delim_none;
+    out_desc [0] = 0;			!Return null descriptor
+    RETURN SS$_NORMAL
+    END;
+!
+! ... code to find a space ...
+!
+cptr = .str_desc [1];		!Point to string.
+first_space = -1;		!Set to index of first space.
+INCR i FROM 0 TO .str_desc [0] - 1 DO
+    BEGIN
+    IF (.cptr [.i] EQL %C' ')
+      THEN
+	BEGIN
+	first_space = .i;
+	EXITLOOP;
+	END;
+    END;
+!
+! If first char is a space, then process "leading spaces"
+!
+IF (.first_space EQL 0)
+  THEN
+    BEGIN			!Handle leading spaces
+    IF (.lastw NEQ 0)		!Prev word on this line? (if yes, add space)
+      THEN finish_lastword ();	! Add space(s) if necessary..
+
+  !
+  ! Look for first non-space character.
+  !
+    first_nonspace = -1;	!Set to index of first non-space seen
+    INCR i FROM 0 TO .str_desc [0] - 1 DO
+	BEGIN
+	IF (.cptr [.i] NEQ %C' ')
+	  THEN
+	    BEGIN
+	    first_nonspace = .i;
+	    EXITLOOP;
+	    END;
+	END;
+    IF (.first_nonspace LSS 0)
+      THEN
+	BEGIN
+	out_desc [0] = 0;	!Nothing but spaces here...
+	RETURN SS$_NORMAL
+	END;
+
+    out_desc [0] = .str_desc [0] - .first_nonspace;
+    out_desc [1] = .str_desc [1] + .first_nonspace;
+    RETURN SS$_NORMAL
+    END;	!Of leading spaces processing.
+!
+! Post this word (whether or not delimited by spaces).
+!
+IF (.first_space GTR 0)
+  THEN word_desc [0] = .first_space
+  ELSE word_desc [0] = .str_desc [0];	!Whole rest of string
+word_desc [1] = .str_desc [1];		!Addr of string
+
+IF NOT (status =
+    post_word (word_desc)
+       )
+  THEN RETURN .status;
+!
+! Set a flag if the last character was a punctuation character.
+!
+IF (.word_desc [0] EQL 0)	!Sanity check before look at last char in word
+  THEN
+    BEGIN
+    doc$$error (doc$_bug, 1);	!Bug 1 - word shouldn't be 0-length!!
+    fatal_error = 1;
+    RETURN SS$_BADPARAM
+    END;
+
+cptr = .word_desc [1] + .word_desc [0] - 1;	!Point to last char in word
+ch = .cptr [0];				!Get it
+punc_flag =
+    (SELECTONE .ch OF
+	SET
+	[%C'.', %C':']: 1;
+	[%C'?', %C'!']: 1;
+	[OTHERWISE]: 0;
+	TES
+    );
+
+IF (.first_space LSS 0)			!No space found
+  THEN
+    BEGIN
+    out_desc [0] = 0;			!No more string
+    lastw [wrd$b_delim_type] = wrd$K_delim_none;
+    IF (.punc_flag)
+      THEN lastw [wrd$b_delim_type] = wrd$K_delim_none_punc;
+    RETURN SS$_NORMAL
+    END;
+!
+! Found space. Post a space (two if last char was punc).
+!
+IF (.punc_flag)
+  THEN
+    BEGIN
+    lastw [wrd$b_delim_type] = wrd$K_delim_punc;
+    add_2_spaces ();
+    END
+  ELSE
+    BEGIN
+    lastw [wrd$b_delim_type] = wrd$K_delim_space;
+    add_space ();
+    END;
+!
+! Return ptr to string after the first space
+!
+IF (.first_space GEQ 0)
+  THEN
+    BEGIN
+    out_desc [0] = .str_desc[0] - (.first_space + 1);
+    out_desc [1] = .str_desc[1] + (.first_space + 1);
+    END
+  ELSE
+    out_desc [0] = 0;		!No string left!
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE finish_lastword =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Depending on delim_type, put a space or two in the text
+! depending on whether or not punctuation was seen at the end of
+! the last word that would require two spaces.
+!--
+BEGIN
+IF ((.lastw [wrd$b_delim_type] EQL wrd$K_delim_none)
+		OR
+    (.lastw [wrd$b_delim_type] EQL wrd$K_delim_none_punc))
+  THEN
+    BEGIN
+    IF (.lastw [wrd$b_delim_type] EQL wrd$K_delim_none)
+      THEN
+	BEGIN
+	lastw [wrd$b_delim_type] = wrd$K_delim_space;
+	add_space ();
+	END
+     ELSE
+	BEGIN
+	lastw [wrd$b_delim_type] = wrd$K_delim_punc;
+	add_2_spaces ();
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE post_word
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Replaces spaces in word, and writes info into wordblock.
+!
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR[2]	!Addr of string in word.
+	) =
+!--
+BEGIN
+LOCAL
+    cptr: REF VECTOR [,BYTE],
+    wstr: VECTOR [512,BYTE],
+    num_hyp,				!Number of hyphen pointers
+    hyp: VECTOR [3,WORD],
+    word_len,			!Word length, in characters
+    word_len_pixels,		!... and in pixels
+    height_pixels,		!Character height (pixels)
+    line_useable_space,
+    line_space_left,		!# pixels left to use on this line
+    temp,
+    wrap_flag,			!Word wraps around to next line
+    status;
+
+num_hyp = 0;			!No hyphenation yet
+wrap_flag = 0;			!No wrap_around occurred yet.
+word_len = 0;			!# chars in word (wstr)
+cptr = .str_desc [1];		!Get ptr to text.
+!
+! Now copy the word, remembering where the hyphens are, and
+! translating null characters to spaces.
+!
+INCR i FROM 0 TO .str_desc [0] - 1 DO
+    (SELECTONE .cptr [.i] OF
+	SET
+	[0]:			!Explicit space
+	    BEGIN
+	    wstr [.word_len] = %C' ';
+	    word_len = .word_len + 1;
+	    END;
+	[1]:			!"Can hyphenate here" marker
+	    BEGIN
+	    IF (.num_hyp LSS 3)
+	      THEN
+		BEGIN
+		hyp [.num_hyp] = .word_len;
+		num_hyp = .num_hyp + 1;
+		END;
+	    END;
+	[OTHERWISE]:		!Ordinary character in a word
+	    BEGIN
+	    wstr [.word_len] = .cptr [.i];
+	    word_len = .word_len + 1;
+	    END;
+	TES
+    );
+!
+! See if the word should be put on this line or the next line,
+! or wrapped around.
+!
+IF NOT (status = doc$$measure_text
+				(.doc$gl_cur_gen_vd	!vd-id
+				,.word_len	!# characters
+				,wstr		!Address of string
+				,word_len_pixels !Output # of pixels
+				,height_pixels	!and Y
+				)
+	)
+  THEN RETURN .status;
+!
+! Make sure the height is LE line height.
+!
+IF (.height_pixels GTR .lineb [lin$w_lineheight])
+  THEN
+    BEGIN
+    $gen_error ('%ERR: TEXT is taller than line height');
+    RETURN SS$_BADPARAM
+    END;
+
+line_useable_space = .lineb [lin$w_rightmargin] - .lineb [lin$w_leftmargin];
+line_space_left = .line_useable_space - .lineb [lin$w_space_used];
+!
+! Get things setup where word will go
+!
+IF (.line_space_left GEQ .word_len_pixels)
+  THEN
+    BEGIN			!Will fit on this line
+    IF NOT (status =
+        new_word_block ()
+	    )
+      THEN RETURN .status;	!Can't get a new word block
+    END
+  ELSE
+    BEGIN			!Whole word won't fit on this line
+    IF (NOT (.doc$gl_filling_flag))
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Not enough room on line for all words');
+	write_curr_line ();
+	RETURN SS$_BADPARAM;
+	END;
+  !
+  ! We are filling. See if we can hyphenate.
+  !
+  ! For now, don't bother. Simply put it all on the next line.
+  !
+    IF NOT (status =
+	write_curr_line ()
+	    )
+      THEN RETURN .status;
+
+    line_useable_space = .lineb [lin$w_rightmargin] - .lineb [lin$w_leftmargin];
+    line_space_left = .line_useable_space - .lineb [lin$w_space_used];
+  !
+  ! Make sure word will fit on THIS line!
+  !
+    IF (.line_space_left LSS .word_len_pixels)
+      THEN
+	BEGIN
+	$gen_error ('%ERR: Line too small to contain word');
+	RETURN SS$_BADPARAM
+	END;
+
+    IF NOT (status =
+	new_word_block ()
+	    )
+      THEN RETURN .status;
+    END;
+
+lastw [wrd$w_len] = .word_len;	!length (characters)
+lastw [wrd$w_pixels] = .word_len_pixels;  !length (pixels)
+lastw [wrd$w_start_pos] = .lineb [lin$w_cidx]; !Starting pos in line
+lineb [lin$w_space_used] = .lineb [lin$w_space_used] + .word_len_pixels;
+!
+! Append text to line
+!
+CH$MOVE	(.word_len
+	,wstr
+	,doc$gl_line_buf + .lineb [lin$w_cidx]
+	);
+lineb [lin$w_cidx] = .lineb [lin$w_cidx] + .word_len;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE new_word_block =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get a new word block for this line. Update
+!	lineb structures, and put address of it in
+!	lastw.
+!--
+BEGIN
+LOCAL
+    temp,
+    status;
+
+IF (.lineb [lin$w_num_words] LSS .lineb [lin$w_wrd_actual_num])
+  THEN
+    BEGIN			!There is room
+    temp = .lineb [lin$w_num_words];
+    lineb [lin$w_num_words] = .temp + 1;
+    lastw = .lineb [lin$a_word_block] + (.temp * wrd$S_word_block);
+    RETURN SS$_NORMAL
+    END;
+
+!
+! Have to get another block of memory
+!
+temp = .lineb [lin$w_wrd_actual_num] + param$K_incr_wrdb;
+IF NOT (status =
+    lib$get_vm  (%REF (.temp * wrd$S_word_block), lastw)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    doc$$type_sts (%ASCID '%ERR: Can''t get memory for word block: ', .status);
+    RETURN .status
+    END;
+!
+! Copy contents of old word block to this one
+!
+CH$MOVE	(.lineb [lin$w_wrd_actual_num] * wrd$S_word_block
+	,.lineb [lin$a_word_block]
+	,.lastw
+	);
+
+lineb [lin$a_word_block] = .lastw;
+lineb [lin$w_wrd_actual_num] = .temp;
+lineb [lin$w_num_words] = .lineb [lin$w_num_words] + 1;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE m_convert
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Convert n, specified in "measurement-units",
+!	to pixels.
+! FORMAL PARAMETERS:
+	(x			!In measurement-units
+	,newx			!Returned, in pixels
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+.newx =
+    (SELECTONE .m_units OF
+	SET
+	[m_units$K_pixels]: .x;	!No conversion
+	[m_units$K_centimeters]:
+		BEGIN
+		.x * 30		!rough estimate
+		END;
+	[m_units$K_inches]:
+		BEGIN
+		.x * 80		!rough estimate
+		END;
+	TES
+    );
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

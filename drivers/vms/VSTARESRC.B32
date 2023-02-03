@@ -1,0 +1,810 @@
+module vstaresrc (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+! This module contains routines for acquiring and relinquishing system
+! resources, such as memory and event flags.
+
+FORWARD ROUTINE!S . . .
+	vsta$$startup_efns,		! Assign some EFN's at startup
+	vsta$$get_ef,			! jacket around lib$get_ef
+	vs$$acp_get_vm,			! jacket around lib$get_vm
+	vs$$acp_free_vm,		! jacket around lib$free_vm
+	vsta$$make_sure_objects_gone,	! call to verify that no objects left
+	unlink_cached_memory,		! remove cached memory from queue
+	link_cached_memory,		! put cached memory back on queue
+	test_get_vm,			! diagnostic replacement for lib$get_vm
+	test_free_vm;			! diagnostic replacement 4 lib$free_vm
+
+library 'vsta$library:vsacpdef';	! symbols like "vm_block"
+library 'vsta$library:vstamacs';	! symbols like "$extsym"
+LIBRARY 'vsta$library:vserrors';	! symbols like integer_type
+library 'vsta$library:libmacros';	! symbols like "$ertn"
+LIBRARY 'sys$library:starlet';		! symbols like ss$_normal
+!
+! PSECT Definitions
+!
+$vsta_psect;
+!
+! $BROAD calls the system service in lieu of a BLISS macro that understands
+!	flag and carcon.
+!
+keywordmacro
+	$BROAD (msgbuf, devnam, flag=0, carcon=32) =
+	    begin
+	    external routine sys$brdcst;
+	    SYS$BRDCST ( msgbuf, devnam, flag, carcon )
+	    end
+	    % ;
+!
+! Define linked list head for allocated virtual memory.  This is checked
+! at end-session to make sure all memory has been released, lest system slowly
+! become clogged.
+!
+global
+
+	vsta$gl_mem_head : vector [2] initial (vsta$gl_mem_head[0],
+	    vsta$gl_mem_head[0]);
+!
+! External routines likely needed by MANY routines.  Those external routines
+! needed by only certain routines are declared within the desirous routine.
+!
+EXTERNAL ROUTINE!S . . .
+	vsta$$error,		! report error
+	vsta$$error_logger;	! report unexpected error
+
+
+GLOBAL ROUTINE vsta$$startup_efns =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Assign EFN's the ACP will need at startup.
+!	These are ones that we shouldn't get and free
+!	"on the fly" because failure to get them would be
+!	fatal.
+! IMPLICIT OUTPUTS:
+!	srv$gl_clock_efn - used for the 1-minute timer.
+!	srv$gl_doc_qio_efn - used to read document files.
+!	vsta$gl_cmd_efn - used for command interrupts (2 seconds)
+!	vsta$gl_term_mbx_efn - used for job term mbx ast's
+! ERROR HANDLING:
+!	If can't get a requested EFN, RETURN $error (vsta$_sysres);
+!--
+BEGIN
+EXTERNAL
+    srv$gl_clock_efn,
+    srv$gl_doc_qio_efn,
+    vsta$gl_cmd_efn,
+    vsta$gl_term_mbx_efn;
+
+IF NOT vsta$$get_ef (srv$gl_clock_efn)
+  THEN RETURN $error (vsta$_sysres);
+
+IF NOT vsta$$get_ef (srv$gl_doc_qio_efn)
+  THEN RETURN $error (vsta$_sysres);
+
+IF NOT vsta$$get_ef (vsta$gl_cmd_efn)
+  THEN RETURN $error (vsta$_sysres);
+
+IF NOT vsta$$get_ef (vsta$gl_term_mbx_efn)
+  THEN RETURN $error (vsta$_sysres);
+
+RETURN SS$_NORMAL
+END;
+
+global routine vsta$$get_ef
+!++
+! Functional description:
+!
+!	This should be used to allocate an event flag instead of lib$get_ef,
+!	in order that you be faithfully told when no event flag is available.
+!
+! Formal parameters:
+ (
+	efn_adr			! where to write event flag number
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s;
+
+	external routine
+
+	    lib$get_ef;
+
+	external
+
+	    vsta$_noefn;
+!
+! Get the event flag.
+!
+	if not (s = lib$get_ef (.efn_adr))
+!
+! If can't, report it as an unexpected error.
+!
+	then return vsta$$error_logger (.s)
+!
+! If no error, make sure we really got one.  If we got -1 back, then
+! there are no available event flags, so report it.
+!
+	else
+	    if ..efn_adr eql -1
+	    then return vsta$$error_logger (vsta$_noefn);
+!
+! Everything o.k.
+!
+	ss$_normal
+
+	end;
+
+
+%sbttl 'VS$$ACP_GET_VM -- Jacket routine for LIB$GET_VM'
+global routine VS$$ACP_GET_VM (
+	n_caller_bytes_adr,	! Address of longword containing size
+	caller_address		! Address of longword to get base
+	) =
+!++
+! All calls to LIB$GET_VM must go through here.
+! Per-process quotas will be maintained here, eventually.
+!--
+    begin
+
+    builtin
+
+	fp,
+	insque,
+	remque;
+
+    external
+
+	VSTA$GQV_MEM: vector;
+
+    local
+
+	I,
+	quick_flag : initial (1),
+	PRESENT_AST,
+	N_CALLER_BYTES,
+	N_OUR_BYTES,
+	OUR_ADDRESS : ref vm_block,
+	vm_end_block : ref vm_block,
+	frame : ref block [,byte],
+	STAT;
+!
+! Get number of bytes caller wants to release.  We round up to nearest
+! multiple of 16 for purposes of efficient chained memory.
+!
+	n_caller_bytes = (..n_caller_bytes_adr + 15) and not %b'1111';
+!
+! Get number of bytes we'll really ask for in order to do bookkeeping.
+!
+	n_our_bytes = .n_caller_bytes + vm$s_vm_block;
+!
+! When deciding which chained queue to attempt to use for quick access,
+! we do it according to caller's demand rather than our extra demand.
+!
+	if (I = ((.n_caller_bytes - 1) ^ -4)) lss
+	    $extsym (vsta$k_num_mem_queues)
+	then
+	    if not remque( .VSTA$GQV_MEM[ .I ^ 1], our_address)
+	    then our_address = .our_address - vm$k_first_adr
+	    else quick_flag = 0
+	else quick_flag = 0;
+
+	if not .quick_flag
+	then
+	    begin
+!
+! Must shut off ast's since lib$get_vm and lib$free_vm have bugs regarding
+! ast reentrance, which bugs aren't fixed until vms version 4.
+!
+	    PRESENT_AST = $SETAST (enbflg = 0);
+!
+! Now get the stuff
+!
+	    if not (STAT = $ertn (LIB$GET_VM) ( 
+		n_our_bytes,
+		our_address
+		)) 
+	    then return VSTA$$ERROR (.STAT);
+!
+! Insert block into linked list of allocated memory.
+!
+	    insque (our_address[vm$a_flink], vsta$gl_mem_head[0]);
+!
+! Re-enable ast's after RTL call if necessary
+!
+	    if (.PRESENT_AST eql SS$_WASSET)
+	    then $SETAST (enbflg = 1)
+
+	    end;
+!
+! Get address of offset block that allows accessing the data that sits
+! BEYOND the caller's portion.
+!
+	vm_end_block = our_address[$base] + .n_caller_bytes;
+!
+! Fill in length in first and last longword.  This will allow detection
+! at free_vm of callers writing beyond the end of blocks and of callers
+! attempting to free blocks twice, or of callers returning blocks they
+! didn't originally allocate.
+!
+	our_address[vm$l_hdr_len] = vm_end_block[vm$l_end_tlr_len]
+	    = .n_caller_bytes;
+!
+! Store a few links of the pc chain.  This allows us to identify the culprit if
+! this block is found to be bad later, or if this block is neglected to be
+! released.  We ASSUME there enough frames to allow us to store several,
+! which is more efficient than checking.  See code at vs$$acp_init that
+! calls several routines in order to guarantee the existence of several
+! frames.
+!
+	frame = .fp;
+ 	our_address[vm$a_caller_pc] = .frame[sf$l_save_pc];
+	frame = .frame[sf$l_save_fp];
+	our_address[vm$a_callr_callr_pc] = .frame[sf$l_save_pc];
+	frame = .frame[sf$l_save_fp];
+	our_address[vm$a_clr_clr_clr_pc] = .frame[sf$l_save_pc];
+	frame = .frame[sf$l_save_fp];
+	our_address[vm$a_cl_cl_cl_cl_pc] = .frame[sf$l_save_pc];
+!
+! Tell caller where his part starts.
+!
+	.caller_address = .our_address + vm$k_first_adr;
+
+	ss$_normal
+
+	end;
+
+%sbttl 'VS$$ACP_FREE_VM -- Jacket routine for LIB$FREE_VM'
+global routine VS$$ACP_FREE_VM (
+	n_caller_bytes_adr, 	! Address of longword containing size
+	caller_address		! Address of longword containing base
+	) =
+!++
+! All calls to LIB$FREE_VM must go through here.
+! Per-process quotas will be maintained here, eventually.
+!--
+    begin
+
+    builtin
+
+	remque,
+	insque;
+
+    external
+
+	vsta$_badfrevm,
+	VSTA$GQV_MEM: vector;
+
+    local
+
+	I,
+	PRESENT_AST,
+	OUR_ADDRESS : ref vm_block,
+	vm_end_block : ref vm_block,
+	N_CALLER_BYTES,
+	N_OUR_BYTES,
+	STAT;
+!
+! Get number of bytes caller wants to release.  We round up to nearest
+! multiple of 16, since the originally allocated amount was also (for purposes
+! of efficient chained memory).
+!
+	n_caller_bytes = (..n_caller_bytes_adr + 15) and not %b'1111';
+!
+! Get number of bytes we'll really release to include bookkeeping ones.
+!
+	n_our_bytes = .n_caller_bytes + vm$s_vm_block;
+!
+! Get address of our block, which includes bookkeeping.
+!
+	our_address = ..caller_address - vm$k_first_adr;
+!
+! Get address of offset block that allows accessing the data that sits
+! BEYOND the caller's portion.
+!
+	vm_end_block = our_address[$base] + .n_caller_bytes;
+!
+! If lengths stored before or after block aren't the same as the length
+! the caller is requesting to release, then announce an error but otherwise
+! don't release the memory.
+!
+! For the case of an error, we announce values for help in debugging.
+!
+	if .our_address[vm$l_hdr_len] neq .n_caller_bytes or
+	    .vm_end_block [vm$l_end_tlr_len] neq .n_caller_bytes
+	then return vsta$$error_logger (
+	    vsta$_badfrevm,
+	    integer_type, .n_caller_bytes,	! amount caller tried to free
+	    integer_type, ..caller_address,	! block caller tried to free
+	    integer_type, .our_address[vm$l_hdr_len],
+						! header length before block
+	    integer_type, .vm_end_block [vm$l_end_tlr_len]
+						! trailer length after block
+	    );
+!
+! Clear out the trailer length.  This allows us to detect buggy code
+! that attempts to free the same block twice.
+!
+	vm_end_block [vm$l_end_tlr_len] = 0;
+
+	if (I = ((.n_caller_bytes - 1) ^ -4)) lss
+	    $extsym (vsta$k_num_mem_queues)
+	then
+	    begin 
+	    insque( our_address[$base] + vm$k_first_adr,
+		VSTA$GQV_MEM [ .I ^ 1])
+	    end
+	else
+	    begin
+!
+! Remove block from linked list of allocated memory.
+!
+	    remque (our_address[vm$a_flink], our_address[vm$a_flink]);
+!
+! Must shut off ast's since lib$get_vm and lib$free_vm have bugs regarding
+! ast reentrance, which bugs aren't fixed until vms version 4.
+!
+	    PRESENT_AST = $SETAST (enbflg = 0);
+!
+! Actually give it back
+!
+	    if not (STAT = $ertn (LIB$FREE_VM) (
+		n_our_bytes,
+		our_address
+		))
+	    then VSTA$$ERROR (.STAT);
+!
+! Must turn ast's back on after RTL call, if necessary
+!
+	    if (.PRESENT_AST eql SS$_WASSET) then $SETAST (enbflg = 1)
+
+	    end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$make_sure_objects_gone =
+!++
+! Functional description:
+!
+!	Call this routine when a session is completely over, in order
+!	to make sure ALL objects are gone.  Give errors if something is
+!	not gone.
+!
+!--
+	begin
+
+	external
+
+	    vsta$gl_mem_head : vector [2],
+	    fib_head : vector [2],
+	    vss$_vp_queue_header : vector [2],
+	    vs$vds_a_pb_lh_ptr : vector [2],
+	    vdb_q_head : vector [2];
+
+	external literal
+
+	    vsta$_blknotgone,
+	    vsta$_memnotgone,
+	    vsta$_vdsnotgone,
+	    vsta$_pbsnotgone,
+	    vsta$_fntsnotgone,
+	    vsta$_vpsnotgone;
+
+	literal
+!
+! Define maximum number of lost memory blocks to print out.  This number should
+! be small enough so as not to totally bog down the error logging device, but
+! large enough so as to allow several classes of errors to be printed.
+!
+	    max_print = 50;
+
+	local
+
+	    present_ast,
+	    n_print,
+	    print_vec : vector [max_print],
+	    save_cl4 : vector [max_print],
+	    lost_block : ref vm_block;
+!
+! Make sure vd's are gone.  Note that for any of the structures that
+! we print an error regarding, we return rather than even checking the rest.
+! This is because we know that vsta$$error_logger will allocate some virtual
+! memory, and we don't want to announce that virtual memory as lost blocks.
+!
+	if .vdb_q_head[0] neq vdb_q_head[0]
+	then return vsta$$error_logger (vsta$_vdsnotgone);
+!
+! Make sure viewports are gone.
+!
+	if .vss$_vp_queue_header[0] neq vss$_vp_queue_header[0]
+	then return vsta$$error_logger (vsta$_vpsnotgone);
+!
+! Make sure pasteboards are gone.
+!
+	if .vs$vds_a_pb_lh_ptr[0] neq vs$vds_a_pb_lh_ptr[0]
+	then return vsta$$error_logger (vsta$_pbsnotgone);
+!
+! Make sure fonts are gone.
+!
+	if .fib_head[0] neq fib_head[0]
+	then return vsta$$error_logger (vsta$_fntsnotgone);
+!
+! We turn off ast's to prevent an item from free list from being used while
+! it is unlinked from the allocated memory queue.  This shouldn't ever
+! happen since we're not supposed to be called until everything is done anyway,
+! but then again if nothing happened that weren't supposed, all this
+! verification code wouldn't be needed at all !
+!
+	present_ast = $setast (enbflg = 0);
+!
+! Unlink cached free memory.  What's left in the allocated memory queue
+! will be announced as lost memory.
+!
+	unlink_cached_memory ();
+!
+! Scan all lost blocks.  We must get them BEFORE calling
+! any error routine, since error routines will generate more memory
+! blocks !
+!
+! Get address of first block.
+!
+	lost_block = .vsta$gl_mem_head[0];
+!
+! Initialize number of blocks accumulated for printing.
+!
+	n_print = 0;
+!
+! Start loop for gathering blocks.
+!
+	while lost_block[$base] neq vsta$gl_mem_head[0] do
+	begin
+
+	bind
+!
+! Get access to data beyond usable memory portion.
+!
+	    lost_end_block = lost_block[$base] + .lost_block[vm$l_hdr_len]
+		: vm_block,
+!
+! Create flag representing truth if this block has already been complained
+! about.
+!
+	    already_complained_flag = .lost_block[vm$a_cl_cl_cl_cl_pc] neq 0,
+!
+! Get the last pc which doubles as control for whether block is to be
+! printed or not.
+!
+	    last_pc = .lost_block[vm$a_cl_cl_cl_cl_pc];
+!
+! Clear last pc so we don't complain about this block again.  Note that
+! we double duty the last pc as a flag so that the vs$$acp_get_vm routine
+! needn't have extra code to initialize a flag.
+!
+! The order of various clearings and copyings is important in order that
+! if a block is NOT printed this time due to being a duplicate, we avoid
+! printing it at the end of next session also, as that would confuse
+! one into thinking that next session generated a memory error, when actually
+! the error was from THIS session.
+!
+	lost_block[vm$a_cl_cl_cl_cl_pc] = 0;
+!
+! Don't complain about any blocks already complained about, or if there are
+! too many.
+!
+	if .n_print lss max_print and already_complained_flag
+	then
+!
+! Use pc of memory requestor to avoid printing duplicates.
+! (Obviously we might fail to report something this way,
+! but once the shadowing one gets fixed the latent one will appear).
+!
+	if
+	    .n_print leq 0 or
+	    (incr i from 0 to .n_print - 1 do
+	    begin
+	    bind known_block = .print_vec[.i] : vm_block;
+	    if .known_block[vm$a_caller_pc] eql .lost_block[vm$a_caller_pc]
+	    then exitLoop 0
+	    else 1
+	    end)
+	then
+	    begin
+!
+! Copy a block address.
+!
+	    print_vec[.n_print] = lost_block[$base];
+!
+! Last pc doubled as flag.  Get actual pc value.
+!
+	    save_cl4[.n_print] = last_pc;
+!
+! Remember how many we have so far.
+!
+	    n_print = .n_print + 1
+
+	    end;	! of what to do if we're printing this one
+!
+! Look at next one.
+!
+	lost_block = .lost_block[vm$a_flink]
+
+	end;	! of scan over all lost blocks
+!
+! Now that we've identified lost memory, put the cached memory back on
+! the queue of allocated memory.  It's important that this be done BEFORE
+! anything is called that will use a block from free queue (like
+! vsta$$error_logger does!).
+!
+	link_cached_memory ();
+!
+! If blocks found other than those already complained about, announce
+! that some memory has been lost.
+!
+	if .n_print gtr 0
+	then vsta$$error_logger (vsta$_memnotgone);
+!
+! Announce the culprits.
+!
+	incr i from 0 to .n_print - 1 do
+	begin
+
+	bind
+
+	    lost_block = .print_vec[.i] : vm_block;
+!
+! If you're reading this because you received the following error
+! in your log and you're wondering what to do about it, here's what:
+! The four numbers printed in the error respectively indicate what routine
+! requested some virtual memory that SHOULD HAVE BEEN RETURNED AND NEVER WAS,
+! what routine called that routine, what routine called that one, and what
+! called that one.
+!
+! Use the VSACP.MAP file produced by the linker to determine the NAMES of
+! the routines.  Then analyze and debug the source code to determine where
+! a call to VS$$ACP_FREE_VM should have been made that wasn't.
+!
+	vsta$$error_logger (vsta$_blknotgone,
+	    integer_type, .lost_block[vm$a_caller_pc],
+	    integer_type, .lost_block[vm$a_callr_callr_pc],
+	    integer_type, .lost_block[vm$a_clr_clr_clr_pc],
+	    integer_type, .save_cl4[.i]
+	    )
+
+	end;
+!
+! Allow ast's again.
+!
+	if (.present_ast eql ss$_wasset) then $setast (enbflg = 1);
+
+	ss$_normal
+
+	end;
+
+routine unlink_cached_memory =
+!++
+! Functional description:
+!
+!	In order to check to see if memory has been lost, the cached free
+!	blocks must be removed from the chain of allocated memory, lest we
+!	get confused.
+!
+!--
+	begin
+
+	builtin
+
+	    remque;
+
+	local
+
+	    queue : ref vector [2],
+	    this_vm : ref vm_block,
+	    this_entry : ref vector [2];
+!
+! Start loop to look at all the queues.
+!
+	incr i from 0 to $extsym (vsta$k_num_mem_queues) * 2 - 1 by 2 do
+	begin
+!
+! Get address of queue being scanned.
+!
+	queue = vector [$extsym (vsta$gqv_mem), .i];
+!
+! Get first element in queue (or perhaps only address of queue header
+! in case where there is nothing).
+!
+	this_entry = .queue[0];
+!
+! Scan the queue, removing all chained memory from allocated queue.
+!
+	while this_entry[0] neq queue[0] do
+	begin
+!
+! Get base address of memory structure.
+!
+	this_vm = this_entry[0] - vm$k_first_adr;
+!
+! Unlink the memory from our chain of allocated blocks.
+!
+	remque (this_vm[vm$a_flink], this_vm[vm$a_flink]);
+!
+! Advance to next entry.
+!
+	this_entry = .this_entry[0]
+
+	end	! of block that unlinks each entry
+
+	end;	! of loop that frees each queue
+
+	ss$_normal
+
+	end;
+
+routine link_cached_memory =
+!++
+! Functional description:
+!
+!	After lost memory has been reported, this routine is called to put
+!	all the cached memory back on the queue of allocated memory
+!	blocks.
+!
+!--
+	begin
+
+	builtin
+
+	    insque;
+
+	local
+
+	    queue : ref vector [2],
+	    this_vm : ref vm_block,
+	    this_entry : ref vector [2];
+!
+! Start loop to look at all the queues.
+!
+	incr i from 0 to $extsym (vsta$k_num_mem_queues) * 2 - 1 by 2 do
+	begin
+!
+! Get address of queue being scanned.
+!
+	queue = vector [$extsym (vsta$gqv_mem), .i];
+!
+! Get first element in queue (or perhaps only address of queue header
+! in case where there is nothing).
+!
+	this_entry = .queue[0];
+!
+! Scan the queue.
+!
+	while this_entry[0] neq queue[0] do
+	begin
+!
+! Get base address of memory structure.
+!
+	this_vm = this_entry[0] - vm$k_first_adr;
+!
+! Link the memory onto our chain of allocated blocks.
+!
+	insque (this_vm[vm$a_flink], vsta$gl_mem_head[0]);
+!
+! Advance to next entry.
+!
+	this_entry = .this_entry[0]
+
+	end	! of block that links each entry
+
+	end;	! of loop that scans each queue
+
+	ss$_normal
+
+	end;
+
+!
+! The following code provides diagnostics which are useful when you are
+! having a virtual memory problem and you need help.  Merely patch the
+! calls within vs$$acp_get_vm and vs$$acp_free_vm to call the following
+! test_get_vm and test_free_vm instead of lib$get_vm and lib$free_vm.
+! The system will run MUCH slower, but hopefully you'll find your problem.
+!
+literal lst_len = 10000;
+own adr_lst : vector [lst_len], len_lst : vector [lst_len];
+macro $say (mess) = vsta$$error_logger ($extsym (vsta$_freevm_for),
+	string_type, %ascid mess) % ;
+
+macro $check =
+begin
+literal n_rep = 20;
+local a : ref vector [2], reps : vector [n_rep], ctr;
+external vsta$gl_mem_head : vector [2];
+a = .vsta$gl_mem_head[0];
+ctr = 0;
+
+while a[0] neq vsta$gl_mem_head[0] do
+begin
+if .ctr lss n_rep
+then reps[.ctr] = a[0];
+
+ctr = .ctr + 1;
+
+if .a[0] eql 0
+then return $say ('0 found in linked allocated memory chain');
+
+incr j from 0 to min (.ctr - 2, n_rep - 1) do
+if .reps[.j] eql a[0]
+then return $say ('duplicate entry found in allocation queue');
+
+a = .a[0]
+
+end
+
+end % ;
+
+routine test_get_vm (len,adr) =
+
+begin
+
+local found : initial (0), s, free_slot : initial (-1);
+
+$check;
+
+if not (s = $ertn (lib$get_vm) (.len, .adr))
+then return $say ('lib$get_vm failed');
+
+incr i from 0 to lst_len - 1 do
+if .adr_lst[.i] eql ..adr
+then return $say ('received memory that''s already allocated')
+else
+	if .adr_lst[.i] eql 0
+	then
+	    if .free_slot eql -1
+	    then free_slot = .i;
+
+if .free_slot eql -1
+then return $say ('no slot left for allocated memory');
+
+adr_lst[.free_slot] = ..adr;
+len_lst[.free_slot] = ..len;
+
+ss$_normal
+
+end;
+
+routine test_free_vm (len, adr) =
+
+begin
+
+local free_slot : initial (-1), s;
+
+$check;
+
+incr i from 0 to lst_len - 1 do
+
+if ..adr eql .adr_lst[.i]
+then
+	if ..len eql .len_lst[.i]
+	then exitLoop free_slot = .i
+	else return $say ('wrong length being freed');
+
+if .free_slot eql -1
+then return $say ('can''t find block being freed');
+
+adr_lst[.free_slot] = 0;
+
+if not (s = $ertn (lib$free_vm) (.len, .adr))
+then return $say ('lib$free_vm failed');
+
+ss$_normal
+
+end;
+
+end
+eludom

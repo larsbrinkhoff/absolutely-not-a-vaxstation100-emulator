@@ -1,0 +1,664 @@
+MODULE fileio (IDENT = 'V04-000',
+	ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY:  Login
+!
+! ABSTRACT:
+!
+!	This module contains I/O routines.
+!
+! ENVIRONMENT:
+!
+!	VAX/VMS operating system.
+!
+!--
+
+!
+! Include files
+!
+
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+REQUIRE 'SHRLIB$:UTILDEF';		! Common BLISS definitions
+REQUIRE 'LIB$:PPDDEF';			! Process permanent data region
+REQUIRE 'LIB$:LGIDEF';			! LOGINOUT private permanent storage
+
+!
+! Table of contents
+!
+
+FORWARD ROUTINE
+    open_input:		NOVALUE,	! Open primary input file
+    close_input:	NOVALUE,	! Close primary input file
+    open_output:	NOVALUE,	! Open primary output file
+    close_output:	NOVALUE,	! Close primary output file
+    write_file:		NOVALUE,	! Write file to primary output
+    write_fao:		NOVALUE,	! Write formatted message to output
+    write_output,			! Write to primary output stream
+    write_timeout:	NOVALUE,	! Write timeout AST
+    get_input:		NOVALUE;	! Get record from primary input stream
+
+!
+! External routines
+!
+
+EXTERNAL ROUTINE
+    create_logical,			! Create logical name with LNM services
+    set_terminal_hangup: NOVALUE,	! Set/clear terminal's hangup state
+    exit_process:	NOVALUE,	! Terminate process
+    handler:		NOVALUE;	! Condition handler
+
+!
+! Define literals
+!
+
+LITERAL
+    cr = 13;				! Carriage return character
+
+!
+! Define message codes
+!
+
+EXTERNAL LITERAL
+    lgi$_openin,
+    lgi$_inputerr,
+    lgi$_outputerr,
+    lgi$_cmdinput;
+
+!
+! OWN storage
+!
+
+OWN
+    rsbuf:	VECTOR [nam$c_maxrss,BYTE]; ! Buffer for resultant filespec
+
+GLOBAL
+    write_output_status,		! WRITE_OUTPUT's last status
+
+    output_nam:	$NAM(			! NAM for SYS$OUTPUT
+		ESA = rsbuf,		! Expanded filespec buffer
+		ESS = %ALLOCATION(rsbuf),
+		RSA = rsbuf,		! Resultant filespec buffer
+		RSS = %ALLOCATION(rsbuf)),
+
+    output_fab:	$FAB(			! FAB for SYS$OUTPUT
+		FNM = 'SYS$OUTPUT',	! Primary filespec
+		DNM = '.LOG',		! Default filespec
+		FAC = PUT,		! Output only
+		RAT = PRN,		! Print file format
+		RFM = VFC,		! Variable length with fixed control
+		FOP = (PPF,SQO,SUP),	! Process permanent file
+					! Sequential only, network optimization
+					! Supersede existing file if explicit
+					! version specified
+		SHR = (GET,UPI),	! Allow others to read file
+		NAM = output_nam),	! Address of NAM block
+
+    output_rab:	$RAB(			! RAB for SYS$OUTPUT
+		MBC = 1,		! 1 block/buffer (limit initial alloc.)
+		MBF = -1,		! 1 buffer/stream (ditto)
+		FAB = output_fab);	! Address of FAB block
+
+GLOBAL
+    input_chan,				! Channel number for SYS$INPUT
+    output_chan,			! Channel number for SYS$OUTPUT
+
+    input_nam:	$NAM(			! NAM for SYS$INPUT
+		RSA = rsbuf,		! Resultant filespec buffer
+		RSS = %ALLOCATION(rsbuf)),
+
+    input_fab:	$FAB(			! FAB for SYS$INPUT
+		FNM = 'SYS$INPUT',	! Primary filespec
+		DNM = '.COM',		! Default filespec
+		FAC = GET,		! Read only
+		RAT = PRN,		! Print format
+		RFM = VFC,		! Variable length
+		FOP = (PPF,SQO,INP),	! Process permanent file
+					! Sequential only, network optimization
+					! input stream
+		NAM = input_nam),	! Address of NAM block
+
+    input_rab:	$RAB(			! RAB for SYS$INPUT
+		FAB = input_fab,	! Address of FAB block
+		ROP = (CVT,TMO,PTA)	! Convert to uppercase on entry
+					! Read with timeout
+					! Purge typeahead so that unsolicited
+					! character that started job is ignored
+		);
+
+!
+! External storage
+!
+
+EXTERNAL
+    pcb_sts: BITVECTOR,			! Our process status flags
+    sys$gb_retry_tmo: BYTE,		! Terminal read timeout value
+    ctl$ag_clidata;			! Process permanent data storage
+
+BIND
+    ppd = ctl$ag_clidata: BBLOCK;	! Address the structure
+
+GLOBAL ROUTINE open_input: NOVALUE =
+
+!---
+!
+!	This routine opens the primary input file.  
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+!	sys$input = Descriptor of SYS$INPUT equivalence string
+!
+! Outputs:
+!
+!	input_fab/rab = FAB/RAB of SYS$INPUT stream
+!
+!	The PPF logical names SYS$INPUT and SYS$COMMAND are created.
+!---
+
+BEGIN
+
+BUILTIN FP;
+
+BIND
+    devchar = input_fab [fab$l_dev] : $BBLOCK;	! Device characteristics
+
+LOCAL
+    ptr,
+    buffer:	BBLOCK [4+nam$c_maxrss],! Buffer for equivalence string
+    bufdesc:	VECTOR [2],		! Descriptor of above buffer
+    status;
+
+.fp = handler;				! Enable condition handler
+!
+! Set up the read timeout from the SYSGEN parameter cell.
+!
+input_rab[rab$b_tmo] = .sys$gb_retry_tmo;
+
+!
+! Open the input file and signal and quit with any errors.
+!
+IF NOT (status = $OPEN(FAB = input_fab))! Open input file
+THEN					! and signal fatal errors
+    SIGNAL_STOP(lgi$_inputerr,0,.status, .input_fab [fab$l_stv]);
+
+!
+! If input device is a terminal, then close the file and reopen it with
+! both read and write access.
+!
+IF .devchar [dev$v_trm]			! If input is from a terminal
+THEN					! Then reopen with read and write access
+    BEGIN
+    $CLOSE(FAB = input_fab);
+    input_fab [fab$b_fac] = fab$m_get OR fab$m_put;
+    IF NOT (status = $OPEN(FAB = input_fab))
+    THEN
+	SIGNAL_STOP(lgi$_inputerr,0,.status, .input_fab [fab$l_stv]);
+    END;
+    
+!
+! Connect to the input file and signal and quit with any errors.
+!
+IF NOT (status = $CONNECT(RAB = input_rab))	! Connect to input file
+THEN						! And signal any errors
+    SIGNAL_STOP(lgi$_inputerr,0,.status, .input_rab [rab$l_stv]);
+
+input_rab [rab$v_ppf_ind] = true;	! Mark ok to use this RAB in user mode
+input_rab [rab$v_ppf_rat] = fab$m_cr; 	! Set default record format
+input_chan = .input_fab [fab$l_stv];	! Save exec channel if terminal
+ppd [ppd$w_inpchan] = .input_fab [fab$l_stv];	! Save exec channel if terminal
+ppd [ppd$l_inpdev] = .input_fab [fab$l_dev];	! Save device characteristics
+ppd [ppd$w_inpifi] = .input_fab [fab$w_ifi];	! and IFI
+ppd [ppd$w_inpisi] = .input_rab [rab$w_isi];	! and ISI
+ppd [ppd$v_inpccl] = .input_nam [nam$v_cncl_dev];	! and concealed attr
+
+CH$MOVE(ppd$c_dvifid, input_nam [nam$t_dvi], ppd [ppd$t_inpdvi]);
+
+buffer [0,0,16,0] = 27;			! Escape character
+buffer [2,0,16,0] = .input_fab [fab$w_ifi];
+ptr = CH$MOVE(CH$RCHAR(input_nam [nam$t_dvi]),
+	input_nam [$BYTEOFFSET(nam$t_dvi)+1,0,0,0], buffer[4,0,0,0]);
+CH$WCHAR_A(':', ptr);			! Append a colon to device name
+bufdesc[0] = CH$DIFF(.ptr, buffer);
+bufdesc[1] = buffer;
+
+create_logical(%ASCID 'SYS$INPUT',	! Re-define SYS$INPUT
+	       bufdesc,
+	       psl$c_exec,
+	       (IF .input_nam [nam$v_cncl_dev]
+		THEN UPLIT(lnm$m_terminal OR lnm$m_concealed)
+		ELSE UPLIT(lnm$m_terminal)));
+
+create_logical(%ASCID 'SYS$COMMAND',	! Define SYS$COMMAND
+	       bufdesc,
+	       psl$c_exec,
+	       (IF .input_nam [nam$v_cncl_dev]
+		THEN UPLIT(lnm$m_terminal OR lnm$m_concealed)
+		ELSE UPLIT(lnm$m_terminal)));
+
+END;
+
+GLOBAL ROUTINE close_input: NOVALUE =
+
+!---
+!
+!	Close the primary input file, so that another may be opened.
+!	This is done in batch jobs with more than one job step.
+!
+! Inputs:
+!
+!	input_fab = FAB for input file
+!
+! Outputs:
+!
+!	All errors are ignored.
+!---
+
+BEGIN
+
+$CLOSE(FAB = input_fab);		! Close input file
+
+END;
+
+GLOBAL ROUTINE open_output: NOVALUE =
+
+!---
+!
+!	This routine opens the primary output file.  It also defines
+!	the logical names SYS$OUTPUT and SYS$ERROR.  SYS$OUTPUT and
+!	SYS$ERROR are always defined as executive mode logical names
+!	to contain the IFI of the output stream.
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+! Outputs:
+!
+!	output_fab/rab = FAB/RAB of SYS$OUTPUT stream
+!
+!	The PPF logical names SYS$OUTPUT and SYS$ERROR are created.
+!---
+
+BEGIN
+
+BUILTIN FP;
+
+BIND
+    lgi = .ppd [ppd$l_lgi]: BBLOCK;	! Address the LGI area
+
+LOCAL
+    ptr,
+    buffer:	BBLOCK [4+nam$c_maxrss],! Buffer for equivalence string
+    bufdesc:	VECTOR [2],		! Descriptor of above buffer
+    status;
+
+.fp = handler;				! Enable condition handler
+
+status = $CREATE(FAB = output_fab);	! Create SYS$OUTPUT file
+
+!
+! If an error was detected, and this is a network job, then allow the
+! job to continue by connecting the output stream to NL:.  This is done
+! so that network jobs are more robust, and proceed even in the case where
+! the user has run out of disk quota, or the disk is out of space.
+!
+
+IF NOT .status				! If error detected,
+    AND .pcb_sts [$BITPOSITION(pcb$v_netwrk)] ! and this is a network job,
+THEN
+    BEGIN
+    output_fab [fab$l_fna] = UPLIT BYTE('_NL:');
+    output_fab [fab$b_fns] = 4;
+    output_fab [fab$b_dns] = 0;
+    status = $CREATE(FAB = output_fab);	! Create SYS$OUTPUT file to NL:
+    END;
+
+IF NOT .status				! If error detected,
+THEN	
+    SIGNAL_STOP(lgi$_outputerr,0,	! then signal fatal error
+		.status, .output_fab [fab$l_stv]);
+
+status = $CONNECT(RAB = output_rab);	! Connect to SYS$OUTPUT file
+
+IF NOT .status				! If error detected,
+THEN
+    SIGNAL_STOP(lgi$_outputerr,0,	! then signal fatal error
+		.status, .output_rab [rab$l_stv]);
+
+output_rab [rab$v_ppf_ind] = true;	! Mark ok to use this RAB in user mode
+output_rab [rab$v_ppf_rat] = fab$m_cr;	! Set default RAT to CR mode
+
+output_chan = .output_fab [fab$l_stv];	! Save exec channel if terminal
+ppd [ppd$l_outdev] = .output_fab [fab$l_dev];	! Save device characteristics
+ppd [ppd$w_outifi] = .output_fab [fab$w_ifi];	! and IFI
+ppd [ppd$w_outisi] = .output_rab [rab$w_isi];	! and ISI
+ppd [ppd$v_outccl] = .output_nam [nam$v_cncl_dev];	! and concealed attr
+
+CH$MOVE(ppd$c_dvifid, output_nam [nam$t_dvi], ppd [ppd$t_outdvi]);
+
+buffer [0,0,16,0] = 27;			! Escape character
+buffer [2,0,16,0] = .output_fab [fab$w_ifi];
+ptr = CH$MOVE(CH$RCHAR(output_nam [nam$t_dvi]),
+	output_nam [$BYTEOFFSET(nam$t_dvi)+1,0,0,0], buffer[4,0,0,0]);
+CH$WCHAR_A(':', ptr);			! Append a colon to device name
+bufdesc[0] = CH$DIFF(.ptr, buffer);
+bufdesc[1] = buffer;
+
+create_logical(%ASCID 'SYS$OUTPUT',	! Re-define SYS$OUTPUT
+	       bufdesc,
+	       psl$c_exec,
+	       (IF .output_nam [nam$v_cncl_dev]
+		THEN UPLIT(lnm$m_terminal OR lnm$m_concealed)
+		ELSE UPLIT(lnm$m_terminal)));
+
+create_logical(%ASCID 'SYS$ERROR',	! Define exec mode SYS$ERROR
+	       bufdesc,
+	       psl$c_exec,
+	       (IF .output_nam [nam$v_cncl_dev]
+		THEN UPLIT(lnm$m_terminal OR lnm$m_concealed)
+		ELSE UPLIT(lnm$m_terminal)));
+
+END;
+
+GLOBAL ROUTINE close_output: NOVALUE =
+
+!---
+!
+!	Close the primary output file, so that it may be spooled to
+!	the print queue.
+!
+! Inputs:
+!
+!	output_fab = FAB for output file
+!	output_rab = RAB for output file
+!
+! Outputs:
+!
+!	All errors are ignored.
+!---
+
+BEGIN
+
+$FLUSH(RAB = output_rab);		! Force update
+$CLOSE(FAB = output_fab);		! Close output file
+
+END;
+
+GLOBAL ROUTINE write_file (filespec): NOVALUE =
+
+!---
+!
+!	Write the contents of a file to SYS$OUTPUT
+!
+! Inputs:
+!
+!	filespec = Address of filespec descriptor
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+MAP
+    filespec:	REF VECTOR;		! Address of descriptor
+
+LOCAL
+    fab:	BBLOCK [fab$c_bln],	! FAB for file access
+    rab:	BBLOCK [rab$c_bln],	! RAB for file access
+    buffer:	VECTOR [128,BYTE],	! Input buffer
+    status;
+
+$FAB_INIT(FAB = fab,
+	FNS = .filespec [0],		! Filespec
+	FNA = .filespec [1],
+	DNM = '.LIS',			! Default filespec
+	FAC = GET,			! Read only
+	FOP = SQO);			! Sequential only optimization
+
+$RAB_INIT(RAB = rab,
+	FAB = fab,			! Address of associated FAB
+	UBF = buffer,			! Address of input buffer
+	USZ = 128);
+
+status = $OPEN(FAB = fab);		! Open the file
+
+IF NOT .status				! If error detected,
+THEN
+    BEGIN
+    SIGNAL(lgi$_openin,1,.filespec,.status,.fab [fab$l_stv]);
+    RETURN;
+    END;
+
+status = $CONNECT(RAB = rab);		! Connect to stream
+
+IF NOT .status				! If error detected,
+THEN
+    BEGIN
+    SIGNAL(lgi$_openin,1,.filespec,.status,.rab [rab$l_stv]);
+    $CLOSE(FAB = fab);			! Close file
+    RETURN;
+    END;
+
+WHILE (status = $GET(RAB = rab))	! For each record which can be read,
+DO
+    BEGIN
+    LOCAL
+	desc:	VECTOR [2];
+
+    desc [0] = .rab [rab$w_rsz];	! Construct descriptor of record
+    desc [1] = .rab [rab$l_rbf];
+
+    write_output(desc);			! Write to SYS$OUTPUT
+    END;
+
+IF .status NEQ rms$_eof			! If loop didn't end normally,
+THEN
+    SIGNAL(lgi$_openin,1,.filespec,.status,.rab [rab$l_stv]);
+
+$CLOSE(FAB = fab);			! Close file
+
+END;
+
+GLOBAL ROUTINE write_fao (ascic_ctlstr, fao_args): NOVALUE =
+
+!---
+!
+!	Format a message and write it to the primary output stream.
+!
+! Inputs:
+!
+!	ascic_ctlstr = Address of ASCIC FAO control string
+!	fao_args = First FAO argument (optional)
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    ctlstr:	VECTOR [2],			! Descriptor of FAO string
+    desc:	VECTOR [2],
+    buffer:	VECTOR [128,BYTE];
+
+ctlstr [0] = CH$RCHAR(.ascic_ctlstr);	! Set up FAO string descriptor
+ctlstr [1] = .ascic_ctlstr+1;
+
+desc [0] = 128;				! Set up result descriptor
+desc [1] = buffer;
+
+$FAOL(CTRSTR = ctlstr,
+	OUTLEN = desc,
+	OUTBUF = desc,
+	PRMLST = fao_args);
+
+write_output(desc);
+
+END;
+
+GLOBAL ROUTINE write_output (recdesc, param, rab_param) =
+
+!---
+!
+!	Write a record to the primary output stream
+!
+! Inputs:
+!
+!	recdesc = Address of descriptor of record
+!	param = $PUTMSG actprm argument (not used)
+!	rab_param = address of rab to use (optional)
+!
+! Outputs:
+!
+!	routine = 0 (when used as $PUTMSG action routine, tells
+!			$PUTMSG not to output message itself)
+!---
+
+BEGIN
+
+BUILTIN
+    ACTUALCOUNT;
+
+MAP
+    recdesc:	REF VECTOR;		! Address of descriptor
+
+BIND
+    timeout = UPLIT(-30*10*1000*1000,-1); ! 30 seconds
+
+LOCAL
+    rab : REF $BBLOCK;
+
+IF ACTUALCOUNT() GEQU 3
+THEN rab = .rab_param
+ELSE rab = output_rab;
+
+IF .rab [rab$w_isi] EQL 0		! If file not yet opened,
+THEN
+    RETURN 0;				! then skip it
+
+rab [rab$w_rsz] = .recdesc [0];
+rab [rab$l_rbf] = .recdesc [1];
+
+$SETIMR(DAYTIM = timeout,		! Set timeout timer going
+	ASTADR = write_timeout,
+	REQIDT = 99);
+
+write_output_status = $PUT(RAB = .rab);	! Output message
+
+$CANTIM(REQIDT = 99);			! Cancel the timer
+
+RETURN 0;
+
+END;
+
+GLOBAL ROUTINE write_timeout: NOVALUE =
+
+!---
+!
+!	The timeout has elapsed while trying to write to the primary
+!	output stream.  We assume that the user pressed control/s to
+!	inhibit completion of the write.  Cancel the I/O to force
+!	completion of the $PUT.
+!
+! Inputs:
+!
+!	None
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+ROUTINE cancel_io =
+    BEGIN
+    $CANCEL(CHAN = .input_chan); ! Cancel the I/O to the terminal
+    $CANCEL(CHAN = .output_chan);
+    1
+    END;
+
+$CMEXEC(ROUTIN = cancel_io);		! Cancel the I/O in exec (RMS) mode
+
+RETURN true;
+
+END;
+
+GLOBAL ROUTINE get_input (rab, mode) : NOVALUE =
+
+!---
+!
+!	Read a record from the primary input stream. A blanket timer is
+!	run around the read to handle obscure cases where the terminal
+!	driver character timeout might not work. This ensures that we
+!	will never end up with a hung job in LOGINOUT.
+!
+! Inputs:
+!
+!	rab = Address of RAB to use
+!	mode = 0 for normal error message if error
+!	     = 1 if just exit quietly on error
+!	     = 2 like 0 except return if timeout (after signaling)
+!
+! Outputs:
+!
+!	None.
+!
+!---
+
+BEGIN
+
+MAP
+    rab: REF $BBLOCK;
+
+LOCAL
+    status;
+
+BIND
+    timeout = UPLIT (-300*10*1000*1000,-1); ! 5 minutes
+
+$SETIMR (DAYTIM = timeout,		! Set timeout timer going
+	 ASTADR = write_timeout,
+	 REQIDT = 99);
+
+status = $GET (RAB = .rab);		! Issue the read
+
+$CANTIM (REQIDT = 99);			! Cancel the timer
+
+!
+! If an error occurs, either signal it or exit quietly, depending on
+! caller's request.
+!
+IF NOT .status
+AND .status NEQ rms$_rtb
+AND (.status NEQ rms$_tmo OR .rab[rab$b_tmo] NEQ 0)
+THEN
+    BEGIN
+    IF NOT .mode
+    THEN
+	BEGIN
+	IF .mode EQL 2
+	AND .status EQL rms$_tmo
+	THEN
+	    SIGNAL((lgi$_cmdinput AND NOT sts$m_severity) OR sts$k_warning, 0,
+		.status, .rab[rab$l_stv])
+	ELSE
+	    SIGNAL_STOP(lgi$_cmdinput, 0,
+		.status, .rab[rab$l_stv]);
+	END
+    ELSE
+	BEGIN
+	set_terminal_hangup(true);
+	$CMEXEC(ROUTIN = exit_process);
+	END;
+    END;
+
+END;
+
+END
+ELUDOM

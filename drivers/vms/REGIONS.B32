@@ -1,0 +1,1681 @@
+module regions (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+! This module implements VAXstation regions, which are rectangular areas on
+! virtual displays.  Regions may be SELECTABLE, which means when the correct
+! mouse button is pressed on the region, something "happens", or a pasteboard
+! may pop up, on which pasteboard may be pasted a menu, the items of which
+! can be other selectable regions.
+
+
+library 'vsta$library:txtcodes';	! Symbols like rgn_op_k_define
+library 'vsta$library:vsvssvs';		! Symbols like ps_block
+library 'vsta$library:vsvdspb';		! things like "vs$$vds_s_rectangle_block"
+library 'vsta$library:vserrors';	! things like "integer_type"
+library 'vsta$library:libmacros';	! things like "$base"
+library 'vsta$library:vsvdsvd';		! things like "rgn_block"
+library 'vsta$library:vstagbl';		! Application program symbols
+library 'vsta$library:vssrvdata';	! vsta$K_bottom_nopoint,...
+library 'sys$library:lib';		! things like "irp$l_iip_count"
+			
+$vsta_psect;				! Define PSECTs
+
+forward routine!s . . .
+
+	lib_set_region_selectable,	! Library entry, set region selectable.
+	vsta$$rgn_set_region_selectable,! Set region to be selectable.
+	set_region_selectable,		! worker routine for selectability
+	popup_pb_on_region,		! Popup a pasteboard on a region
+	maybe_vanish_pb_on_region,	! Make pb vanish if it was popped up
+	vsta$$rgn_lib_request,		! Handle request from library
+	find_visible_vd,		! Find visible vd on a pb
+	vsta$$rgn_define_region,	! Define a region on a virtual display.
+	vsta$$rgn_delete_region,	! Now delete it.
+	inner_delete_region,		! Really delete it.
+	vsta$$rgn_delete_all_regions,	! Delete all regions.
+	region_done_io,			! Complete io for a region.
+	find_region,			! Find a specified region.
+	find_region_in_vdb,		! Given vdb, find region.
+	vsta$$rgn_mouse_squeaked,	! Handle selectability attribute.
+	show_selectable_region,		! Indicate selectability on screen.
+	region_bugged,			! Handle delivery of selection.
+	map_point_to_region,		! Find region given a point.
+	vsta$$rgn_cancel_requests,	! Cancel pid's region requests.
+	vsta$$rgn_cancel_1_vds_requests,! Cancel all rgn ast's for one vd id
+	cancel_region_asts_for_one_vd,	! Cancel all rgn ast's for one vd
+	cancel_one_regions_io;		! Cancel io for one region
+
+external routine!s . . .
+
+	vdc$$set_region_noshow,	! Delete selectable attribute from screen.
+	vs$$acp_get_vm,		! Get memory.
+	vs$$post_ast_request,	! Queue request for later delivery.
+	vs$$vds_pb_found,	! map pb_id to pb database
+	vs$$vds_sobgtr,		! dcrmnt count and return true if now 0
+	vs$$vds_vd_pointer,	! Get vd database, given an id.
+	vs$$vds_vrec_intersect,	! Returns true if two rectangles intersect.
+	vsta$$error_logger,	! Report unexpected error.
+	vsta$$kernel_call,	! Call routine in kernel mode.
+	vsta$$set_rgn_help,	! Associate help keyword with region
+	vsta$$srv_cursor_normal,! Show normal mouse cursor
+	vsta$$srv_cursor_thinking,
+				! Show "busy" mouse cursor
+	vsta$$srv_disp_help_kwd,! Display particular help page
+	vsta$$srv_vp_selected;	! Tell human interface something was selected.
+
+global
+    vsta$gl_popup_vp_id;	!VP-id of the current popped-up PB (else 0)
+
+external
+    vs$gl_acp_pid;
+
+builtin
+
+	insque,			! Allow queue operations
+	remque;
+
+routine lib_set_region_selectable
+!++
+! Functional description:
+!
+!	Respond to library request to set region selectable.  The main
+!	bugaboo is that the program in another process wants its ast routine
+!	called when the region is selected, so we'll arrange for one of
+!	our routines to be called, and that routine in turn will call "done-io"
+!	to deliver the ast to the program.
+!
+! Formal parameters:
+ (
+	vd_id,			! which vd we're setting selectable
+	rdb : ref rdb_block	! region descriptor block
+ ) =
+!
+!--
+
+	begin
+
+	external
+
+	    done_io_allowed_flag,	! flag controlling done_io
+ 	    vs$a_lirp : ref irp_block,	! readable copy of irp
+	    vs$a_irp : ref irp_block;	! current irp
+
+	local
+
+	    vd : ref vdblock,		! display database
+	    s,
+	    rgn : ref rgn_block;	! region being set selectable
+!
+! Find block for region.
+!
+	if not find_region (
+	    .vd_id,
+	    .rdb[rdb$l_x],
+	    .rdb[rdb$l_y],
+	    vd,
+	    rgn)
+	then $return_error (
+	    vsta$_cnt_fnd_selrgn,
+	    integer_type, .rdb[rdb$l_x],
+	    integer_type, .rdb[rdb$l_y]);
+!
+! If the caller specified an ast routine, it wants the execution thereof
+! to occur only when the region has been selected.
+!
+	if .vs$a_lirp[irp$l_ast] neq 0
+	then done_io_allowed_flag = 0
+	else
+!
+! There's no ast routine.
+! If there's no pasteboard either, then treat
+! this call as a request to remove any previously associated ast or
+! pasteboard.
+!
+	    if .rdb[rdb$l_pb_id] eql 0
+	    then
+		begin
+!
+! There's no pasteboard either, so we'll cancel all of this region's
+! selectability.  First, make it's popup pasteboard disappear if it's currently
+! up.
+!
+		if .rgn[rgn$l_pb_id] neq 0
+		then
+		    begin
+		    if not (s = maybe_vanish_pb_on_region (.rgn[rgn$l_pb_id]))
+		    then $log_error_and_return (.s);
+		    rgn[rgn$l_pb_id] = 0
+		    end;
+!
+! Now deliver any previously undelivered ast.
+!
+		cancel_one_regions_io (rgn[$base]);
+		return ss$_normal
+		end;
+!
+! If we get here, we're setting region selectable, as opposed to canceling
+! selectability.
+!
+! Remember the irp address only if there's an ast routine,
+! since if there's not, then there's no io to complete, since we merely
+! pop up the board (if there is one) but tell no one.
+!
+! When filling in a new irp, we make sure old one gets flushed, lest
+! the process hang during exit.
+!
+! We must fill in the irp BEFORE calling set_region_selectable, in order
+! that the selectability attribute remain visible on the region.
+!
+	if .vs$a_lirp[irp$l_ast] neq 0
+	then
+	    begin
+	    cancel_one_regions_io (rgn[$base]);
+	    rgn[rgn$a_irp] = .vs$a_irp
+	    end;
+!
+! Remember owner of request.
+!
+	rgn[rgn$l_pid] = .vs$a_lirp[irp$l_pid];
+!
+! Set the region selectable.
+!
+	if not set_region_selectable (
+	    vd[$base],
+	    rgn[$base],
+	    0,
+	    0,		! no internal service routine or parameter
+	    .rdb[rdb$l_pb_id],
+	    .rdb[rdb$l_pb_x],
+	    .rdb[rdb$l_pb_y],
+	    .rdb[rdb$l_sel_attribute]
+	    )
+	then
+!
+! Selectability failed, so allow done_io.
+!
+	    begin
+	    done_io_allowed_flag = 1;
+!
+! Since we're allowing our caller to complete the io, then we must make
+! sure we clear out the pointer to the io in our database, but only if
+! we wrote it there.
+!
+	    if .vs$a_lirp[irp$l_ast] neq 0
+	    then rgn[rgn$a_irp] = 0;
+
+	    $return_error (
+		vsta$_rgn_not_sel,
+		integer_type, .rdb[rdb$l_x],
+		integer_type, .rdb[rdb$l_y])
+	    end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$rgn_set_region_selectable
+!++
+! Functional description:
+!
+!	Specify that a region is selectable.  That is, when the mouse touches
+!	the region, it lights up to reveal its selectability.  When the region
+!	is actually selected, by pressing the mouse button, either a pasteboard
+!	pops up or a program routine is called, at which point the original
+!	region is no longer selectable and must be set as such again by the
+!	program.
+!
+!	Routine may be called OR pasteboard may be popped up, but not both.
+!
+!	If both the routine and the pb_id are passed as 0 (or ommitted
+!	entirely), the region is made unselectable.
+!
+! Formal parameters:
+ (
+	vd_id,			! Which vd's region is being set
+	rgn_x,			! Coordinates of region being set
+	rgn_y,
+	rtn_adr,		! routine to call when region is selected or 0
+	rtn_prm,		! parameter to pass to routine when called
+	pb_id,			! pasteboard to pop up, 0 for none
+	pb_x,			! coordinates of pb that should coincide . . .
+	pb_y,			! . . . with mouse when it pops up
+	sel_attribute		! How to show selectability
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    vd : ref vdblock,		! Vd database
+	    rgn : ref rgn_block;	! region database
+!
+! Find block for region being set selectable.
+!
+	if not find_region (.vd_id, .rgn_x, .rgn_y, vd, rgn)
+	then $return_error (vsta$_cnt_fnd_selrgn, integer_type, .rgn_x,
+	    integer_type, .rgn_y);
+!
+! Finish with routine that does the work when the databases have already been
+! found.
+!
+	set_region_selectable (
+	    vd[$base],
+	    rgn[$base],
+	    .rtn_adr,
+	    .rtn_prm,
+	    .pb_id,
+	    .pb_x,
+	    .pb_y,
+	    .sel_attribute
+	    )
+
+	end;
+
+routine set_region_selectable
+!++
+! Functional description:
+!
+!	Worker routine for vsta$$rgn_set_region_selectable, for when
+!	region and vd database addresses are already known.
+!
+! Formal parameters:
+ (
+	vd : ref vdblock,	! Which vd's region is being set
+	rgn : ref rgn_block,	! which region
+	rtn_adr,		! routine to call when region is selected or 0
+	rtn_prm,		! parameter to pass to routine when called
+	pb_id,			! pasteboard to pop up, 0 for none
+	pb_x,			! coordinates of pb that should coincide . . .
+	pb_y,			! . . . with mouse when it pops up
+	sel_attribute		! How to show selectability
+ ) =
+!
+!--
+	begin
+
+	local
+	    s;
+!
+! Range check sel_attribute.
+!
+	if ((.sel_attribute eql vsta$K_sel_text)
+		or
+	   (.sel_attribute eql vsta$K_sel_area)
+		or
+	   (.sel_attribute eql vsta$K_sel_reverse))
+	then 1
+	else $return_error (vsta$_bad_sel_att, integer_type, .sel_attribute);
+!
+! Remember which pb to pop up.  If old one is already popped up, get rid
+! of it.
+! We DON'T pop old one down if new one is the same pasteboard.  This allows
+! programs to re-enable a region's ast and popup-pasteboard without fear
+! of the pasteboard that just appeared immediately vanishing.
+!
+! Note that the popping down of the old one causes problems if a program
+! has just received an ast indicating that pb has just popped up, and program
+! now wants to re-enable the ast and specify that a different or no pb should
+! pop up NEXT time.  The problem is that our current code will pop down the
+! old pb immediately, which isn't what program wants.  I assume this problem
+! usually won't happen, since most programs DON'T try to change a region's
+! popup pb to another one.  The way to fix it would be to replace the
+! currently sole pb_id stored in the region database with TWO data, one
+! indicating which pb is currently UP and the other indicating which pb
+! should be popped up next time.
+!
+	if .pb_id neq .rgn[rgn$l_pb_id]
+	then maybe_vanish_pb_on_region (.rgn[rgn$l_pb_id]);
+	rgn[rgn$l_pb_id] = .pb_id;
+!
+! Remember rest of passed info.
+!
+	rgn[rgn$a_rtn_adr] = .rtn_adr;
+	rgn[rgn$l_rtn_prm] = .rtn_prm;
+	rgn[rgn$l_pb_x] = .pb_x;
+	rgn[rgn$l_pb_y] = .pb_y;
+	rgn[rgn$l_sel_attribute] = .sel_attribute;
+!
+! If caller is requesting that region no longer be selectable, then remove
+! selectable attribute from screen for region being made unselectable.
+!
+	if .rgn[rgn$a_rtn_adr] eql 0
+		and
+	    .rgn[rgn$l_pb_id] eql 0
+		and
+	    .rgn[rgn$a_irp] eql 0
+	then
+	    if not (s = vdc$$set_region_noshow (
+		vd[$base],
+		.rgn[rgn$l_x],
+		.rgn[rgn$l_y],
+		.rgn[rgn$l_width],
+		.rgn[rgn$l_height]
+		))
+	    then $log_error_and_return (.s);
+
+	ss$_normal
+
+	end;
+
+global routine popup_pb_on_region
+!++
+! Functional description:
+!
+!	Given a pasteboard and a point (x,y), popup the pasteboard such that
+!	position (x,y) within the pasteboard coincides with the mouse.
+!	(Actually, (x,y) only coincides with the mouse if the pb entirely
+!	fits on the screen.  If it doesn't position it as close as possible
+!	to the desired point such that it fits.)
+!
+! Formal parameters:
+ (
+	ps : ref ps_block,	! ps the mouse is on.
+	vs_ms_x,		! where mouse is on vs.
+	vs_ms_y,
+	vp_id,			! which viewport we're popping up pb on
+	pb_id,			! pasteboard to pop up
+	pb_def_x,		! default x coordinate
+	pb_def_y		! default y coordinate
+ ) =
+!
+!--
+
+	begin
+
+	external
+
+	    srv_ps_id;			! current physical screen
+
+	external routine
+
+	    vp_pointer,
+	    vs$$vds_create_term_window,
+	    vs$$vss_create_vp;
+
+	local
+
+	    vp : ref vp_block,	! database for vp we're popping up pb on
+	    vs_vp_lrx, vs_vp_lry,	! lower right vp coordinates on vs
+	    ps_vp_x, ps_vp_y,	! vp coordinates on ps
+	    ps_vp_lrx, ps_vp_lry,	! lower right vp coordinates on ps
+	    vs_vp_x, vs_vp_y,	! calculated vp origin on vs
+	    vs : ref vs_block,	! vs database for vs mouse is on
+	    pb : ref pb_block,	! points to popup pb database
+	    s;
+!
+! Get vp database if we're popping the menu up on a vp.  There won't
+! necessarily be one.  For instance, the main menu is popped up at the
+! press of a button.
+!
+	if .vp_id neq 0
+	then
+	    if not vp_pointer (.vp_id, vp)
+!
+! If the vp was there but is gone, don't worry.  This happens when a submenu
+! is being called up and hence the previous menu has already been deleted.
+!
+	    then vp_id = 0;
+!
+! Get pb database for popup pb.
+!
+	if not (vs$$vds_pb_found (.pb_id, pb))
+	then return .s;
+!
+! If pasteboard already has a popped up window, the menu
+! is already showing, so quietly return.  The effect to the user is that her
+! extraneous attempt to popup the pb causes no effect on the already-showing
+! pb.
+!
+	if .pb[vs$vds_l_pb_popup_win_id] neq 0
+	then return ss$_normal;
+!
+! Calculate upperleft corner of vp on vs such that
+! mouse will be at specified position of pb.
+!
+	vs_vp_x = .vs_ms_x - .pb_def_x;
+	vs_vp_y = .vs_ms_y - .pb_def_y;
+!
+! Calculate where on the vs the lower right corner will fall (well, one
+! pixel down and to the right of that corner, actually)
+!
+	vs_vp_lrx = .vs_vp_x + .pb[vs$vds_l_pb_length];
+	vs_vp_lry = .vs_vp_y + .pb[vs$vds_l_pb_height];
+!
+! Calculate where on the physical screen this viewport's upperleft corner will
+! fall.
+!
+	ps_vp_x = .vs_vp_x - .ps[vss$l_ps_x_origin];
+	ps_vp_y = .vs_vp_y - .ps[vss$l_ps_y_origin];
+!
+! Calculate where this viewport's lower right corner will fall on the physical
+! screen.
+!
+	ps_vp_lrx = .vs_vp_lrx - .ps[vss$l_ps_x_origin];
+	ps_vp_lry = .vs_vp_lry - .ps[vss$l_ps_y_origin];
+!
+! If viewport is threatening to come up too far left to be entirely visible,
+! move it just enough to the right to make it visible.
+!
+	if .ps_vp_x lss vsta$K_left_nopoint
+	then vs_vp_x = .vs_vp_x - .ps_vp_x + vsta$K_left_nopoint;
+!
+! If viewport is threatening to come up too high to be entirely visible, move
+! it down.
+!
+	if .ps_vp_y lss 0		!Can point at all pixels on top
+	then vs_vp_y = .vs_vp_y - .ps_vp_y;
+!
+! If viewport is threatening to come up too far to the right to be entirely
+! visible, move it left.
+!
+	if .ps_vp_lrx gtr (.ps[vss$l_ps_length] - vsta$K_right_nopoint)
+	then vs_vp_x = .vs_vp_x + .ps[vss$l_ps_length] - .ps_vp_lrx
+			- vsta$K_right_nopoint;
+!
+! If the viewport is threatening to come up too far down to be entirely
+! visible, move it up.
+!
+	if .ps_vp_lry gtr (.ps[vss$l_ps_height] - vsta$K_bottom_nopoint)
+	then vs_vp_y = .vs_vp_y + .ps[vss$l_ps_height] - .ps_vp_lry
+			- vsta$K_bottom_nopoint;
+!
+! Create a window on the pb.  For now, we do this every time
+! we pop up the pb.  For speed one could create and cache the
+! window.
+!
+	if not (s = vs$$vds_create_term_window (
+	    .pb_id,
+	    pb[vs$vds_l_pb_popup_win_id],
+				! write window id directly into pb
+	    %ref (0),		! no particular name
+	    0,			! align window with pb
+	    0,
+	    .pb[vs$vds_l_pb_length],
+	    .pb[vs$vds_l_pb_height]
+	    ))
+	then return .s;
+!
+! Create viewport on window so pb is actually seen.
+!
+	if not (s = vs$$vss_create_vp (
+	    .pb[vs$vds_l_pb_popup_win_id],
+	    .ps[vss$l_ps_vs_id],	! Get vs that ps is on.
+	    pb[vs$vds_l_pb_popup_vp_id],! Write vp id directly into pb.
+	    .vs_vp_x,
+	    .vs_vp_y,
+	    0				! force vp to be on top
+	    ))
+	then return .s;
+
+!
+! Remember what the popup vp id is for the HI. Note that there can only
+! be one of these at any one time. If the user hits a mouse button while
+! pointing at the popup-VP then it will not be found in the WDB data structure
+! ... vsta$$srv_vp_selected will not look for it there if the VP is
+! in this global variable.
+!
+	vsta$gl_popup_vp_id = .pb[vs$vds_l_pb_popup_vp_id];
+!
+! Tell the original viewport which pb is popped up on it.  This allows the
+! pb to be taken down when the viewport is deleted, such as if a vt100 is
+! logged out while it's border menu is showing.
+!
+	if .vp_id neq 0
+	then vp[vss$l_vp_popup_pb] = .pb_id;
+!
+! Force the physical screen to believe that the mouse is now on the pasteboard
+! that we just popped up (which if user merely waits for, it will be).  For
+! the case of the user quickly moving the mouse off the popped up pasteboard,
+! this brute force allows us to know to immediately vanish the pasteboard.
+!
+	ps[vss$l_ps_mouse_pb_id] = .pb_id;
+
+	ss$_normal
+
+	end;
+
+global routine maybe_vanish_pb_on_region
+!++
+! Functional description:
+!
+!	Given a pasteboard that the mouse has just left, if this pb was popped
+!	up, make it disappear.
+!
+! Formal parameters:
+ (
+	pb_id		! pb mouse just left
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    vs$$vds_delete_window;
+
+	local
+
+	    s,
+	    pb : ref pb_block;
+!
+! Get pb database for pb.  If we can't find it, assume pb has been
+! deleted, so give a success return.
+!
+	if not vs$$vds_pb_found (.pb_id, pb)
+	then return ss$_normal;
+!
+! If a popup window exists for this pb, delete the window and
+! forget it existed.
+!
+	if .pb[vs$vds_l_pb_popup_win_id] neq 0
+	then
+	    begin
+	    external srv_gl_ignore_delw;
+	    bind old_window_id = .pb[vs$vds_l_pb_popup_win_id];
+	    srv_gl_ignore_delw = 1;		!Rest of HI doesn't know about
+						! this window
+	    vsta$gl_popup_vp_id = 0;		!Tell HI there is no popup VP
+!
+! Clear cell BEFORE deleting window, so that the delete_vp doesn't come full
+! circle and call us again.
+!
+	    pb[vs$vds_l_pb_popup_win_id] = 0;
+	    if not (s = vs$$vds_delete_window (old_window_id, .vs$gl_acp_pid))
+	    then
+		begin
+		srv_gl_ignore_delw = 0;		!Make sure this gets reset
+		return .s
+		end
+	    end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$rgn_lib_request
+!++
+! Functional description:
+!
+!	Given an rdb from some user library region procedure, handle the
+!	request.
+!
+! Formal parameters:
+ (
+	vd_id,			! id of virtual display being dealt with
+	rdb : ref rdb_block	! Block saying what to do
+ ) =
+!
+!--
+
+	begin
+
+	! Dispatch to appropriate place according to function code.
+	!
+	case .rdb[rdb$l_op] from 0 to rgn_op_k_last of
+	set
+	[rgn_op_k_DEFINE] :
+	    if not vsta$$rgn_define_region (.vd_id, .rdb[rdb$l_x],
+		.rdb[rdb$l_y], .rdb[rdb$l_width], .rdb[rdb$l_height])
+	    then return $toperr (vsta$_defreg);
+	[rgn_op_k_DELETE] :
+	    if not vsta$$rgn_delete_region (.vd_id, .rdb[rdb$l_x],
+		.rdb[rdb$l_y])
+	    then return $toperr (vsta$_delreg);
+	[rgn_op_k_DELETE_ALL] :
+	    if not vsta$$rgn_delete_all_regions (.vd_id)
+	    then return $toperr (vsta$_delall);
+	[rgn_op_k_SET_SELECTABLE] :
+!
+! For this one, we allow the more detailed diagnostic to be returned in the
+! iosb, since there's no error block available (due to asynchronousity) for
+! otherwise seeing the more detailed diagnostics.
+!
+	    return lib_set_region_selectable (.vd_id, rdb[$base]);
+	tes;
+!
+! Sucessful synchronous operations fall through to here.
+!
+	ss$_normal
+
+	end;
+
+routine find_visible_vd
+!++
+! Functional description:
+!
+!	Given a pasteboard and point on that pasteboard, determine if
+!	any virtual display is coincident with that point, and if so, what
+!	coordinates within the vd corresponds to the point.
+!
+!	Typically, the point is the position of the mouse, and the pasteboard
+!	is the one calculated to be the visible pasteboard at that point on
+!	the screen.  The visible vd is being computed in order that a possible
+!	coincident selectable region can be signaled.
+!
+! Formal parameters:
+ (
+	bot_pb_id,		! pasteboard id for bottom pasteboard
+	bot_pb_ms_x,		! location of mouse on bottom pb
+	bot_pb_ms_y,
+	vd_adr,			! Where to write address of vd data
+	vd_ms_x_adr, vd_ms_y_adr
+				! Where to write vd mouse coordinates.
+ ) =
+!
+! Completion code:
+!
+!	This routine returns ss$_normal as long as all calculations proceed
+!	normally, EVEN IF THE MOUSE IS DISCOVERED NOT TO BE IN A VD.
+!
+! Value:
+!
+!	Look at the resultant vd database address.  0 means the mouse
+!	is not currently on a vd.
+!
+!--
+
+	begin
+
+	local
+
+	    pb : ref pb_block,	! database for bottom pb
+	    pbvd : ref vd_block,! Data about a vd on a pb
+	    s;			! Status code from internal routines.
+
+	bind
+
+	    ! Establish addresses in which results will be written.
+	    !
+	    vd = .vd_adr : ref vdblock,
+	    vd_ms_x = .vd_ms_x_adr,
+	    vd_ms_y = .vd_ms_y_adr;
+!
+! Find database for the bottom pb.
+!
+	if not (s = vs$$vds_pb_found (.bot_pb_id, pb))
+	then return .s;
+
+	! Get head of vd chain for this pb.
+	pbvd = .pb[vs$vds_a_pb_vdl_ptr];
+!
+! Look at only the topmost vd that's within bounds on this pb.
+!
+	until pbvd[$base] eql pb[vs$vds_a_pb_vdl_ptr]
+	do
+
+	    begin
+
+	    bind
+
+		! Get origin of this vd on the pb.
+		!
+		pb_vd_x_origin = .pbvd[vs$vds_l_vd_x_coor],
+		pb_vd_y_origin = .pbvd[vs$vds_l_vd_y_coor],
+
+		! Get dimensions of vd.
+		!
+		vd_height = .pbvd[vs$vds_l_vd_height],
+		vd_width = .pbvd[vs$vds_l_vd_length];
+
+	    ! If point is on or down and to the right of this vd's
+	    ! origin, AND point is not beyond this vd's length or height,
+	    ! then this vd is our baby.
+	    !
+	    if pb_vd_x_origin leq .bot_pb_ms_x
+		and pb_vd_y_origin leq .bot_pb_ms_y
+		and .bot_pb_ms_x lss pb_vd_x_origin + vd_width
+		and .bot_pb_ms_y lss pb_vd_y_origin + vd_height
+	    then
+		begin
+
+		! We've got visible vd, so tell caller info.
+		!
+
+		! Get the vdb address for this vd, since the vdb is what
+		! has the chain of regions stored in it.
+		!
+		if not (s = vs$$vds_vd_pointer (.pbvd[vs$vds_l_vd_id], vd))
+		then return .s;
+
+		vd_ms_x = .bot_pb_ms_x - pb_vd_x_origin;
+		vd_ms_y = .bot_pb_ms_y - pb_vd_y_origin;
+
+		return ss$_normal
+
+		end;
+
+	    pbvd = .pbvd[vs$vds_a_vd_next_ptr]
+
+	    end;
+
+	! Mouse isn't on any vd, so return a 0 as the base.
+	vd = 0;
+
+	ss$_normal
+
+end;
+
+global routine vsta$$rgn_define_region
+!++
+! Functional description:
+!
+!	Given a virtual display id and rectangle description, define a
+!	region.  The region may not overlap any other.  This restriction
+!	allows the upperleft corner to serve as a unique identifier for the
+!	region in all future interactions.
+!
+! Formal parameters:
+ (
+	vd_id,		! Virtual display id on which we're defining region
+	rgn_x,		! origin (upperleft corner) of region
+	rgn_y,
+	rgn_width,	! dimensions of region
+	rgn_height,
+	help_keyword	! OPTIONAL address of help keyword descriptor
+ ) =
+!
+! Failures:
+!
+!	The common errors are "no such vd", "attempt to define overlapping
+!	region", and "attempt to define region not fitting on virtual display".
+!
+!--
+
+	begin
+
+	local
+
+	    old_rgn : ref rgn_block,	! Some existing region on vd.
+	    rgn : ref rgn_block,	! Points to region being defined.
+	    s,			! status
+	    vd : ref vdblock;	! vd database
+
+	! Get database for virtual display region being defined on.
+	!
+	if not (s = vs$$vds_vd_pointer (.vd_id, vd))
+	then return .s;
+
+	! Make sure region has positive dimensions. 
+	!
+	if.rgn_x lss 0 or .rgn_y lss 0 or .rgn_width leq 0 or .rgn_height leq 0
+	then $return_error (vsta$_bad_rgn_dim, integer_type, .rgn_x,
+	    integer_type, .rgn_y, integer_type, .rgn_width,
+	    integer_type, .rgn_height);
+
+	! Make sure new region fits on vd.
+	!
+	if .rgn_width + .rgn_x gtr .vd[vdb$w_width] or
+	    .rgn_height + .rgn_y gtr .vd[vdb$w_height]
+	then $return_error (vsta$_rgn_no_fit, integer_type, .rgn_x,
+	    integer_type, .rgn_y, integer_type, .rgn_width,
+	    integer_type, .rgn_height);
+	
+	! Loop over all existing regions on this vd, and return an error
+	! if any of them intersect the one being defined.
+	!
+	old_rgn = .vd[vdb$a_rgn_qfl];
+	until old_rgn[$base] eql vd[vdb$a_rgn_qfl] do
+	if vs$$vds_vrec_intersect (.rgn_x, .rgn_y, .rgn_width, .rgn_height,
+	    old_rgn[rgn$l_x])
+	then $return_error (vsta$_rgn_overlap, integer_type, .rgn_x,
+	    integer_type, .rgn_y, integer_type, .rgn_width,
+	    integer_type, .rgn_height)
+	else old_rgn = .old_rgn[rgn$a_fl];
+
+	! Region looks good.  Allocate a block for it.
+	!
+	if not vs$$acp_get_vm (%ref (rgn$s_rgn_block), rgn)
+	then $return_error (vsta$_rgn_no_alloc);
+
+	! Fill in the region's finer qualities.
+	! 1)	start with all 0's.
+	! 2)	copy region rectangle
+	! 3)	everything else (this line reduces probability of this list
+	!	becoming out-of-date !)
+	!
+	ch$fill (0, rgn$s_rgn_block, rgn[$base]);
+	ch$move (VS$VDS_S_RECTANGLE_BLOCK, rgn_x, rgn[rgn$l_x]);
+
+	! Put new region in list of regions for virtual display.
+	!
+	insque (rgn[$base], vd[vdb$a_rgn_qfl]);
+!
+! If a help keyword has been supplied, associate it with the region.
+!
+	if $parameter_or_0 (help_keyword) neq 0
+	then
+	    if not (s = vsta$$set_rgn_help (
+		.vd_id,		! which virtual display
+		.rgn_x,		! coordinates of region
+		.rgn_y,
+		vsta$$srv_disp_help_kwd,
+				! routine that puts help page up
+		.help_keyword	! specify keyword identifying page
+		))
+	    then $log_error_and_return (.s);
+!
+! "the big green light"
+!
+	ss$_normal
+
+	end;
+
+global routine vsta$$rgn_delete_region
+!++
+! Functional description:
+!
+!	Given a vd id and region origin, delete the region.
+!
+! Formal parameters:
+ (
+	vd_id,			! Which virtual display's region to delete.
+	rgn_x,			! origin of region
+	rgn_y
+ ) =
+!
+! Return value:
+!
+!	Return an error if the specified region doesn't exist.  Note that
+!	if you want to merely "make sure" regions are gone without the penalty
+!	of an error, you can use vsta$$rgn_delete_all_regions.
+!
+!--
+
+	begin
+
+	local
+
+	    rgn : ref rgn_block,! Region block
+	    s,			! status
+	    vd : ref vdblock;	! vd database
+
+	! Find block for region being deleted.
+	!
+	if not find_region (.vd_id, .rgn_x, .rgn_y, vd, rgn)
+	then $return_error (vsta$_rgn_not_del, integer_type, .rgn_x,
+	    integer_type, .rgn_y);
+
+	inner_delete_region (vd[$base], rgn[$base])
+
+	end;
+
+routine inner_delete_region
+!++
+! Functional description:
+!
+!	Given a region block, delete the region.
+!
+! Formal parameters:
+ (
+	vd : ref vdblock,	! Virtual display database
+	rgn : ref rgn_block	! Which region to delete.
+ ) =
+!
+! Side effects:
+!
+!	If any qio is outstanding on the region, it is canceled.
+!
+!	If the region has a popped up pasteboard, it is popped down first.
+!
+!	If the regions was showing the selectability attribute, remove
+!	the attribute.
+!--
+
+	begin
+
+	external routine
+
+	    vs$$acp_free_vm;	! release memory
+
+	local
+
+	    s;			! status
+!
+! Remove selectable attribute from screen.
+!
+	if not (s = vdc$$set_region_noshow (
+	    vd[$base],
+	    .rgn[rgn$l_x],
+	    .rgn[rgn$l_y],
+	    .rgn[rgn$l_width],
+	    .rgn[rgn$l_height]
+	    ))
+	    then $log_error_and_return (.s);
+!
+! Remove region from queue (before deleting it's parts, in
+! case ast routines are doing things with it).
+!
+	remque (rgn[$base], rgn);
+!
+! Cancel all io on the region being deleted.
+!
+	cancel_one_regions_io (rgn[$base]);
+!
+! Finally, now that all aspects of region have been cleaned up,
+! release the memory taken up by the region.
+!
+	if not (s = vs$$acp_free_vm (%ref (rgn$s_rgn_block), rgn, 0))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$rgn_delete_all_regions
+!++
+! Functional description:
+!
+!	Given a vd id, delete all the regions therein.
+!
+! Formal parameters:
+ (
+	vd_id			! Which virtual display's regions to delete.
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    rgn : ref rgn_block,	! Points to region being deleted.
+	    s,			! status
+	    vd : ref vdblock;	! vd database
+
+	! Get database for virtual display regions are being deleted from.
+	!
+	if not (s = vs$$vds_vd_pointer (.vd_id, vd))
+	then return .s;
+
+	! Delete each region.
+	!
+	rgn = .vd[vdb$a_rgn_qfl];
+	until rgn[$base] eql vd[vdb$a_rgn_qfl] do
+	    begin
+
+	    local
+
+		next_rgn;	! needed because back link gets deleted !
+
+	    next_rgn = .rgn[rgn$a_fl];
+
+	    if not inner_delete_region (vd[$base], rgn[$base])
+	    then $return_error (vsta$_cant_del_rgns, integer_type, .vd_id);
+
+	    rgn = .next_rgn
+
+	    end;
+
+	ss$_normal
+
+	end;
+
+routine region_done_io
+!++
+! Functional description:
+!
+!	Finish io for a particular region.  Common times this
+!	is done is if the region is selected so we're announcing selection,
+!	or if vd or region is being deleted, and we're announcing io cancellation.
+!
+! Formal parameter:
+ (
+	rgn : ref rgn_block,		! region whose irp is being completed.
+	status				! status code for iosb.
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    vs$$acp_done_io;		! completes io requests.
+
+	bind
+
+	    ! Get irp being completed.
+	    irp = .rgn[rgn$a_irp] : irp_block;
+
+	vs$$acp_done_io (.status, 0, irp[$base]);
+
+	! Don't let this irp get completed again.
+	!
+	rgn[rgn$a_irp] = 0;
+
+	ss$_normal
+
+	end;
+
+global routine find_region
+!++
+! Functional description:
+!
+!	Given a vd id and region origin, find the vd database and region block.
+!
+! Formal parameters:
+ (
+	vd_id,			! Which vd to look up
+	rgn_x,			! Coordinates of region origin to look up
+	rgn_y,
+	vd_adr,			! Where to write vd database address.
+	rgn_adr			! Where to write region database address.
+ ) =
+!
+! Return value:
+!
+!	True or false according to whether vd and region found or not.
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Establish database:
+	    !
+	    vd = .vd_adr : ref vdblock;
+!
+! Get database for virtual display region is being sought on.
+!
+	if not vs$$vds_vd_pointer (.vd_id, vd)
+	then return $false;
+!
+! Finish with routine that finds a region when vd is already known.
+!
+	find_region_in_vdb (
+	    vd[$base],
+	    .rgn_x,
+	    .rgn_y,
+	    .rgn_adr
+	    )
+
+	end;
+
+global routine find_region_in_vdb
+!++
+! Functional description:
+!
+!	For callers that already know the vdb address, this routine searches
+!	for the specified region and returns its address.
+!
+! Formal parameters:
+ (
+	vd : ref vdblock,	! Which vd region is sought on
+	rgn_x,			! Coordinates of region origin to look up
+	rgn_y,
+	rgn_adr			! Where to write region database address.
+ ) =
+!
+!--
+
+	begin
+
+	bind
+!
+! Establish database:
+!
+	    rgn = .rgn_adr : ref rgn_block;
+!
+! Find the block for the region being deleted.
+!
+	rgn = .vd[vdb$a_rgn_qfl];
+	until rgn[$base] eql vd[vdb$a_rgn_qfl] do
+	if .rgn[rgn$l_x] eql .rgn_x and .rgn[rgn$l_y] eql .rgn_y
+	then return ss$_normal
+	else rgn = .rgn[rgn$a_fl];
+!
+! Region not found.
+!
+	$false
+
+	end;
+
+global routine vsta$$rgn_mouse_squeaked
+!+
+! Functional description:
+!
+!	Given a pb that the mouse is known have moved in, or in which
+!	the mouse button has been pressed,
+!	see if mouse just entered or left a region, in which case
+!	show a visible affect on the screen.  For button press, perform
+!	region selection actions if appropriate.
+!
+! Formal parameters:
+ (
+	ps : ref ps_block,	! physical screen we're dealing with.
+	vs_ms_x,
+	vs_ms_y,		! position of mouse on vs.
+	vp_id,			! viewport mouse is in.
+	bot_pb_id,		! id of bottom pasteboard
+	bot_pb_ms_x,		! location of mouse on bottom pb
+	bot_pb_ms_y,
+	pb : ref pb_block,	! pb mouse is in.
+	button_pressed_flag	! 1 if button pressed, 0 if mouse moved.
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    in_region_flag, was_in_region_flag,
+	    s,
+	    vd : ref vdblock,		! vd mouse is now in
+	    vd_ms_x,			! position of mouse within vd.
+	    vd_ms_y,
+	    old_vd : ref vdblock,	! Virtual display mouse WAS in.
+	    old_rgn : ref rgn_block,	! Region mouse WAS in.
+	    rgn : ref rgn_block;	! Region mouse is now in.
+!
+! See if mouse WAS in a region before, which is indicated by
+! there being an old vd id in the ps database, AND we can find
+! the specified region.
+!
+	was_in_region_flag =
+	    begin
+	    if .ps[vss$l_ps_sel_vd_id] neq 0
+	    then find_region (.ps[vss$l_ps_sel_vd_id], .ps[vss$l_ps_sel_x],
+	        .ps[vss$l_ps_sel_y], old_vd, old_rgn)
+	    else 0
+	    end;
+!
+! Determine whether there's a visible vd coincident with the mouse.
+! Also, if the mouse isn't on a pasteboard, then maybe it was before,
+! in which case that pasteboard may need to be vanished (if it was a
+! popped up one)
+!
+! Regardless of whether old pb is a pop-up one, we clear cell, since mouse
+! is known to no longer be on a pb.
+!
+	if pb[$base] eql 0
+	then
+	    begin
+	    vd = 0;
+	    if .ps[vss$l_ps_mouse_pb_id] neq 0
+	    then
+		if not (s = maybe_vanish_pb_on_region (
+		    .ps[vss$l_ps_mouse_pb_id]))
+		then $log_error_and_return (.s);
+	    ps[vss$l_ps_mouse_pb_id] = 0;
+	    ps[vss$l_ps_mouse_vd_id] = 0
+	    end
+	else
+	    begin
+	    if not (s = find_visible_vd (
+		.bot_pb_id,
+		.bot_pb_ms_x,
+		.bot_pb_ms_y,
+		vd,
+		vd_ms_x,
+		vd_ms_y
+	    ))
+	    then $log_error_and_return (.s);
+	    if vd[$base] neq 0
+	    then ps[vss$l_ps_mouse_vd_id] = .vd[vdb$_vd_id]
+	    else ps[vss$l_ps_mouse_vd_id] = 0
+	    end;
+!
+! See if mouse now within a region.
+!
+	in_region_flag =
+	    begin
+	    if vd[$base] eql 0
+	    then 0
+	    else map_point_to_region (vd[$base], .vd_ms_x, .vd_ms_y, rgn)
+	    end;
+!
+! If mouse was and is in a selectable region, and if old region is
+! different than the one the mouse is in now, erase the selectable
+! attribute from that old region, and remember the new one.
+!
+	if .was_in_region_flag and .in_region_flag
+	then
+	    begin
+	    if .old_vd[vdb$_vd_id] neq .vd[vdb$_vd_id]
+		or .old_rgn[rgn$l_x] neq .rgn[rgn$l_x]
+		or .old_rgn[rgn$l_y] neq .rgn[rgn$l_y]
+	    then
+		begin
+		vdc$$set_region_noshow (
+		    old_vd[$base],
+		    .old_rgn[rgn$l_x],
+		    .old_rgn[rgn$l_y],
+		    .old_rgn[rgn$l_width],
+		    .old_rgn[rgn$l_height]
+		    );
+		show_selectable_region (
+		    ps[$base],
+		    vd[$base],
+		    rgn[$base]
+		    )
+		end
+	    end
+
+	else
+!
+! If mouse was in a selectable region, but isn't now, erase the
+! selectable attribute from the old region, and remember that mouse
+! is no longer in that region.
+!
+	if .was_in_region_flag and not .in_region_flag
+	then
+	    begin
+	    vdc$$set_region_noshow (
+		old_vd[$base],
+		.old_rgn[rgn$l_x],
+		.old_rgn[rgn$l_y],
+		.old_rgn[rgn$l_width],
+		.old_rgn[rgn$l_height]
+		);
+	    ps[vss$l_ps_sel_vd_id] = 0
+	    end
+
+	else
+!
+! If mouse was not in a selectable region but it is now, show
+! the selectable attribute of the region the mouse is now in, and
+! remember 
+!
+	if .in_region_flag and not .was_in_region_flag
+	then show_selectable_region (
+	    ps[$base],
+	    vd[$base],
+	    rgn[$base]
+	    );
+!
+! See if button was pressed (as opposed to mouse having merely moved).
+!
+	if .button_pressed_flag
+	then
+	    if .in_region_flag
+	    then
+!
+! Button was pressed in a region, so go handle it.
+!
+		region_bugged (
+		    ps[$base],
+		    .vs_ms_x,
+		    .vs_ms_y,
+		    .vp_id,
+		    pb[$base],
+		    rgn[$base]
+		    )
+!
+! Button was pressed in a viewport but not in a region.
+! Tell the human interface so the keyboard can be attached to the viewport
+! if appropriate.
+!
+! We QUEUE up the request to set the vp rather than set it directly, lest
+! it happen too soon, which would cause wrong object to get acted upon if
+! user tapped mouse twice fast.
+!
+	    else vs$$post_ast_request (vsta$$srv_vp_selected,
+		    .vp_id,	! which viewport
+		    0		! not in a region.
+		    )
+	else ss$_normal
+
+	end;
+
+routine show_selectable_region
+!++
+! Functional description:
+!
+!	When mouse has just moved into a selectable region different from
+!	the one it's already been in, light up the new region, and remember
+!	what's now lit.
+!
+! Formal parameters:
+ (
+	ps : ref ps_block,		! which ps this mouse is on
+	vd : ref vdblock,		! which vd this mouse is on
+	rgn : ref rgn_block		! which region mouse is now on
+ ) =
+!
+!--
+
+	begin
+
+	local s;
+
+	external routine
+
+	    vdc$$set_region_show;
+!
+! Remember what region the mouse is now in.
+!
+	ps[vss$l_ps_sel_vd_id] = .vd[vdb$_vd_id];
+	ps[vss$l_ps_sel_x] = .rgn[rgn$l_x];
+	ps[vss$l_ps_sel_y] = .rgn[rgn$l_y];
+!
+! Don't really light it up unless it either has a pop-up pasteboard or an
+! action routine associated with it.  (In other words only light up
+! SELECTABLE regions).
+!
+	if .rgn[rgn$a_rtn_adr] eql 0
+		and
+	    .rgn[rgn$l_pb_id] eql 0
+		and
+	    .rgn[rgn$a_irp] eql 0
+	then return ss$_normal;
+!
+! It's selectable, so really light it up.
+!	    
+	if not (s = vdc$$set_region_show (
+	    vd[$base],
+	    .rgn[rgn$l_sel_attribute],
+	    .rgn[rgn$l_x],
+	    .rgn[rgn$l_y],
+	    .rgn[rgn$l_width],
+	    .rgn[rgn$l_height]
+	    ))
+	then vsta$$error_logger (.s);
+
+	ss$_normal
+
+	end;
+
+routine region_bugged
+!+
+! Functional description:
+!
+!	Given a region that the mouse is known to be in when the
+!	button is pressed, pop up a pb or call a service routine if one exists.
+!
+! Formal parameters:
+ (
+	ps : ref ps_block,	! ps mouse is on
+	vs_ms_x,
+	vs_ms_y,		! position of mouse on vs
+	vp_id,			! viewport mouse is on
+	pb : ref pb_block,	! pb mouse is on
+	rgn : ref rgn_block	! region mouse was in when button was pressed
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    popup_win_id,
+	    s;
+
+	bind routine
+
+	    service_rtn = .rgn[rgn$a_rtn_adr];
+!
+! Save popped up window id (or 0) for later checking, since it might
+! go away.
+!
+	popup_win_id = .pb[vs$vds_l_pb_popup_win_id];
+!
+! If pasteboard containing selected region is a popped up one, vanish it.
+!
+	maybe_vanish_pb_on_region (.pb[vs$vds_l_pb_id]);
+!
+! If there is a routine specified for this region, queue it to be
+! called with the specified parameter.
+! Note that we dare not call it directly lest it possibly delete the region
+! and the vd, leaving us with various local "rgn" and "vd" cells pointing
+! at nothingness.
+!
+! If we do have a service routine to call, we arrange for the mouse cursor
+! to have the "busy" attribute during the operation.
+!
+	if service_rtn neq 0
+	then
+	    begin
+	    vs$$post_ast_request (vsta$$srv_cursor_thinking, 0);
+	    vs$$post_ast_request (service_rtn, .rgn[rgn$l_rtn_prm]);
+	    vs$$post_ast_request (vsta$$srv_cursor_normal, 0)
+	    end;
+!
+! Tell human interface a region was selected, but not if this
+! vp is already itself showing a popped-up pb.
+!
+! We QUEUE up the request to set the vp rather than set it directly, lest
+! it happen too soon, which would cause wrong object to get acted upon if
+! user tapped mouse twice fast on menu item.
+!
+	if .popup_win_id eql 0
+	then vs$$post_ast_request (vsta$$srv_vp_selected,
+	    .vp_id,	! say which viewport
+	    1		! announce that it's a region
+	    );
+!
+! If there's a waiting irp for this region, complete it.
+!
+	if .rgn[rgn$a_irp] neq 0
+	then region_done_io (rgn[$base], ss$_normal);
+!
+! If there is a pop up pasteboard, call the routine that pops
+! such things up.  We do this AFTER getting rid of the previous popped up
+! one.  Otherwise, the previous one would point to this one, causing this
+! one to be deleted immediately.
+!
+	if .rgn[rgn$l_pb_id] neq 0
+	then
+	    if not (s = popup_pb_on_region (
+		ps[$base],
+		.vs_ms_x,
+		.vs_ms_y,
+		.vp_id,
+		.rgn[rgn$l_pb_id],
+		.rgn[rgn$l_pb_x],
+		.rgn[rgn$l_pb_y]
+		))
+	    then $log_error_and_return (.s);
+
+	ss$_normal
+
+	end;
+
+routine map_point_to_region
+!++
+! Functional description:
+!
+!	Given a point and a vd, find which region the point is in.
+!
+! Formal parameters:
+ (
+	vd : ref vdblock,	! vd to scan
+	rgn_x,			! Point we're interested in
+	rgn_y,
+	rgn_adr			! Where to write address of region block
+ ) =
+!
+! Return value:
+!
+!	1 if point is within a region, and 0 if not.
+!
+!--
+
+	begin
+
+	bind
+
+	    rgn = .rgn_adr : ref rgn_block;
+
+	! Loop over all existing regions on this vd, and return true
+	! if any of them include the given point.  This is designed to
+	! run FAST because it has to execute every time the mouse moves on
+	! a vd containing regions !
+	!
+	rgn = .vd[vdb$a_rgn_qfl];
+	until rgn[$base] eql vd[vdb$a_rgn_qfl] do
+	begin
+	if .rgn_x geq .rgn[rgn$l_x]
+	then
+	    if .rgn_x lss .rgn[rgn$l_x] + .rgn[rgn$l_width]
+	    then
+		if .rgn_y geq .rgn[rgn$l_y]
+		then
+		    if .rgn_y lss .rgn[rgn$l_y] + .rgn[rgn$l_height]
+		    then return $true;
+	rgn = .rgn[rgn$a_fl]
+	end;
+
+	$false
+
+	end;
+
+global routine vsta$$rgn_cancel_requests
+!++
+! Functional description:
+!
+!	In response to a "cancel" request during image exit, cancel all
+!	appropriate region requests.
+!
+! Formal parameters:
+ (
+	cancel_pid		! pid whose requests are being canceled,
+				! or 0 to cancel requests for ALL processes.
+ ) =
+!
+! Side effects:
+!
+!	For now, ALL region requests for the process are canceled.  This may be
+!	too abrupt.  For instance, if the process's dcl somehow has region
+!	requests, these are currently being canceled by this routine, but
+!	shouldn't really be, since only the image is exiting, not the underlying
+!	dcl.
+!
+!--
+
+	begin
+
+	external
+
+	    vdb_q_head : vector;
+
+	local
+
+	    vd : ref vdblock;
+
+	! Scan all virtual displays, and for each one, if it has outstanding region
+	! requests, cancel them by doing regular io completion but with special
+	! "cancel" status code.
+	!
+	vd = .vdb_q_head[0];
+	while vd[$base] neq vdb_q_head[0] do
+	    begin
+	    cancel_region_asts_for_one_vd (vd[$base], .cancel_pid);
+	    vd = .vd[vdb$a_fl]
+	    end;
+
+	ss$_normal
+	  
+	end;
+
+global routine vsta$$rgn_cancel_1_vds_requests
+!++
+! Functional description:
+!
+!	Same as cancel_region_asts_for_one_vd, but takes vd id instead of
+!	vdb address.  It merely looks up the vdb address and then uses
+!	cancel_region_asts_for_one_vd.
+!
+! Formal parameters:
+ (
+	vd_id,			! which vd's region requests to cancel
+	pid			! which pid
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s,
+	    vd : ref vdblock;
+!
+! Look up the vd.  If failure, assume vd has been deleted by hi already,
+! (as in the case of a vt100 body).
+!
+	if not (s = vs$$vds_vd_pointer (.vd_id, vd))
+	then return ss$_normal;
+!
+! Exit through other routine.
+!
+	cancel_region_asts_for_one_vd (vd[$base], .pid)
+
+	end;
+
+global routine cancel_region_asts_for_one_vd
+!++
+! Functional description:
+!
+!	Whenever any of the objects associated with a pending region ast
+!	are going away, this routine must be called in order to complete
+!	the ast.  For example when the image waiting for region
+!	asts is being deleted, the region requests must be canceled.
+!
+! Formal parameters:
+ (
+	vd : ref vdblock,		! address of vd data
+	cancel_pid			! 0 or particular pid to match
+ ) =
+!
+! Side effects:
+!
+!	The ast is delivered with a status code of ss$_cancel.
+!
+!--
+
+	begin
+
+	local
+
+	    rgn : ref rgn_block;
+
+	! Loop over all existing regions on this vd, and cancel outstanding
+	! ast's if any of them are for the specified pid.
+	!
+	rgn = .vd[vdb$a_rgn_qfl];
+	until rgn[$base] eql vd[vdb$a_rgn_qfl] do
+	    begin
+	    if .cancel_pid eql 0 or .rgn[rgn$l_pid] eql .cancel_pid
+	    then cancel_one_regions_io (rgn[$base]);
+	    rgn = .rgn[rgn$a_fl]
+	    end;
+
+	ss$_normal
+
+	end;
+
+routine cancel_one_regions_io
+!++
+! Functional description:
+!
+!	Cancel io on one particular region.  Two reasons to do this are:
+!	1) region is being deleted, or 2) the image is exiting that's waiting
+!	for the io.
+!
+! Formal parameters:
+ (
+	rgn : ref rgn_block		! which region's io to cancel.
+ ) =
+!
+!--
+
+	begin
+
+	! If there's a waiting irp on this region, cancel its io.
+	!
+	if .rgn[rgn$a_irp] neq 0
+	then region_done_io (rgn[$base], ss$_cancel)
+	else ss$_normal
+
+	end;
+
+end
+eludom

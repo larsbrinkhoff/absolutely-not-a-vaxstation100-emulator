@@ -1,0 +1,1200 @@
+module mousertns (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! VAXstation mouse routines that implement library functions.
+
+forward routine!s . . .
+
+	vsta$$mouse_set_cursor_position,! Set position of mouse on screen.
+	vsta$$load_mouse_from_font,	! Load mouse picture from font.
+	vsta$$load_mouse_from_fim,	! Load mouse picture from font image.
+	vsta$$mouse_initiate_interrupts,! Enable first mouse interrupts.
+	vsta$$mouse_end_session,	! Relinquish all mouse objects.
+	vsta$$mouse_cancel_requests,	! Cancel outstanding requests.
+	mouse_cancel_requests,		! Cancel requests for particular queue.
+	vsta$$mouse_cancel_asts,	! Cancel one pb's outstanding requests.
+	vsta$$mouse_tell_hi,		! Announce whether to tell human interface about mouse events
+	vsta$$mouse_get_info,		! Get location of mouse on pasteboard
+					! and button settings.
+	vsta$$mouse_lib_boundary_ast,	! Library request for boundary crossing ast.
+	vsta$$mouse_set_boundary_ast,	! Internal request for boundary ast.
+	vsta$$mouse_lib_button_ast,	! Library request for button ast.
+	vsta$$mouse_set_button_ast,	! Set ast for buttons pressed or released.
+	vsta$$mouse_lib_move_ast,	! Library request for movement ast
+	vsta$$mouse_set_move_ast,	! Set ast for mouse movement.
+	mouse_cleanup_int_irp,		! cleanup internal irp
+	mouse_readable_pb;		! make sure pb is readable
+
+library 'sys$library:starlet';		! Symbols like ss$_normal
+library 'vsta$library:vstadef';		! Symbols like io$_vb_move
+library 'vsta$library:vsvtb';		! Symbols like rb_block
+library 'vsta$library:vstanativ';	! Symbols like standard_fbmds
+library 'vsta$library:vserrors';	! Symbols like integer_type
+library 'vsta$library:vstagbl';		! Symbols like vsta$k_...
+library 'vsta$library:txtsym';		! Symbols like fib
+library 'vsta$library:libmacros';	! Symbols like $base
+library 'vsta$library:vsvdspb';		! Symbols like vs$vds_l_w_x_coor
+library 'vsta$library:vsvssvs';		! Symbols like vss$w_vp_length
+
+$vsta_psect;				! Define PSECTs
+
+external routine!s . . .
+
+	fibDereference,		! Decrease ref count of a fib
+	findFib,		! Find FiBlk given the font id.
+	vsta$$get_ef, lib$free_ef,
+				! Event flag manipulation routines.
+	mouse_timeout_ast,	! Where to go on mouse timeout.
+	ps_pointer,		! Translate ps id to data address.
+	vp_pointer,		! Translate vp id to data address.
+	vs$$txt_get_font_address,	! Get address of font image (fim)
+	vs$$vds_pb_found,	! Translate pb id to data address.
+	vs_vp_pointer,		! Translate vs with its vp to data address.
+	vsta$$acp_check_read_access,
+				! Make sure caller has read access.
+	vsta$$drive_load_cursor,! Hardware routine for loading cursor.
+	vsta$$error,		! Report errors during qio processing.
+	vsta$$irp_create_int_irp,
+				! Create internal irp.
+	vsta$$mouse_movement,
+	vsta$$mouse_post_vb_ast,
+	vsta$$ptr_build_rb,	! Build request block.
+	vsta$$ptr_done_io,	! Complete pointer io request.
+	vsta$$ptr_insert_request,	! Insert pointer request into queue.
+	vsta$$txt_measure_width;! Measure pixel width of characters.
+
+external literal
+
+	mse_btn_ast_modifiers,	! Bits to be sent to vbdriver
+	n_button_states,	! Number of button states
+	vsta$_bldmrbfail;	! Build mouse request block failed
+
+external
+
+	hardware_press_table : vector,
+	hardware_release_table : vector,
+	mouse_button_event_flags : vector,
+	mse_btn_ast_tab : vector,	! table of ast routines
+	mouse_location_event_flag,
+	mouse_movement_event_flag,
+	pressed_mask_table : vector,
+	released_mask_table : vector,
+	vs$gl_pid,		! pid of current caller
+	vs$gw_vbchan : word,	! Holds channel to vb device.
+	vs$vds_a_pb_lh_ptr : vector,! Pointer to chain of pb's
+	vs$a_irp;		! Holds address of irp for qio.
+
+global routine vsta$$mouse_set_cursor_position
+!++
+! Functional description:
+!
+!	Set the visible mouse cursor to a specific spot on the screen.
+!
+! Formal parameters:
+ (
+	x,			! where to put it
+	y
+ ) =
+!
+!--
+
+	begin
+!
+! Here's a macro that we can use for error returns in order to guarantee
+! that the efn gets freed.
+!
+	macro
+	    $cleanup_and_return (status) =
+	    begin
+	    lib$free_ef (efn);
+	    $log_error_and_return (status)
+	    end % ;
+
+	external
+
+	    ! Database containing hardware channel numbers.
+	    vs$gw_vbchan : word;
+
+	local
+	    efn,
+	    s,
+	    iosb : vector[4, word];
+!
+! Get an event flag to use.
+!
+	if not (S = VSTA$$GET_EF( EFN))
+	then return .S;
+!
+! Tell hardware where to put the cursor.
+!
+	if not (s = $qiow (
+	    efn = .efn,
+	    chan = .vs$gw_vbchan,
+	    func = (io$_setcur + io$m_vb_mouse),
+	    iosb = iosb,
+	    p1 = .x,
+	    p2 = .y
+	    ))
+	then $cleanup_and_return (.s)
+	else
+	    if not .iosb[0]
+	    then $cleanup_and_return (.iosb[0]);
+
+! we must follow this with the
+! following function, in order that the vbdriver know where the hardware
+! put the cursor.
+!
+	if not (s = $qiow (
+	    efn = .efn,
+	    chan = .vs$gw_vbchan,
+	    func = (io$_getcur + io$m_vb_mouse),
+	    iosb = iosb
+	    ))
+	then $cleanup_and_return (.s)
+	else
+	    if not .iosb[0]
+	    then $cleanup_and_return (.iosb[0]);
+!
+! Free up the event flag.
+!
+	LIB$FREE_EF( EFN);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$load_mouse_from_font
+!++
+! Functional description:
+!
+!	Specify how mouse cursor should appear on screen, given standard
+!	VAXstation font description, character index, and offset.
+!
+! Formal parameters:
+ (
+	typeface : ref $string_descriptor,
+	typesize,	! These three parameters are used for selecting
+	rendition,	! which font the mouse cursor picture should be
+			! loaded from.
+			!
+	source_index,	! character index for selecting char from font for
+			! source bitmap.
+	mask_index,	! character index for mask bitmap.
+			! The intent here is for the font to be designed with
+			! the mask character being slightly fatter than source
+			! character.  Hence a white fringe will appear
+			! around the black cursor, allowing the cursor to show
+			! up on most any color background including halftones.
+			!
+	tip_x,		! Considering the mouse cursor as a rectangle with
+	tip_y,		! (0,0) being upper left, the point (tip_x, tip_y)
+			! is assumed to be the actual pointing "tip".  For
+			! instance, if the mouse picture is a centrally
+			! oriented upward arrow with the tip at the top on
+			! a 16 x 16 character cell, then (8,0) would be a
+			! reasonable value for tip_x and tip_y.
+	center_x,	! center of icon.  System restricts center AND tip
+	center_y	! to remain on screen.
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,				! local status
+	    fiBlk : ref fib,		! font image block
+	    fimBlk : ref fim_block;	! font image itself
+!
+! Find the font according to the specified attributes.
+!
+	if not (s = vs$$txt_get_font_address (
+	    0,			! no private fonts to choose from
+	    typeface[$base],
+	    .typesize,
+	    .rendition,
+	    fimBlk,		! receive image address into this address.
+	    fiBlk		! receive font id
+	    ))
+	then $log_error_and_return (.s);
+
+	if not (s = findfib (
+	    .fiBlk,		!font id
+	    fiBlk,		!write actual address here
+	    0			!Don't care about "rank"
+	    ))
+	then $log_error_and_return (.s);
+!
+! Finish the work with an inner routine, since Gidis some day also wants
+! to specify the cursor with an internal bitmap rather than a font
+! descriptor.
+!
+	if not (s = vsta$$load_mouse_from_fim (
+	    fiBlk[base],
+	    fimBlk[base],
+	    .source_index,
+	    .mask_index,
+	    .tip_x,
+	    .tip_y,
+	    .center_x,
+	    .center_y
+	    ))
+	then $log_error_and_return (.s);
+!
+! Dereference the fib, since the hardware has copied the needed bitmaps.
+! (We assume that vs$$txt_get_font_address upped the reference count).
+!
+	if not (s = fibDereference (.fiBlk[fib_fid]))
+	then $log_error_and_return (.s);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$load_mouse_from_fim
+!++
+! Functional description:
+!
+!	Given the address of a font image, a character index, and offsets,
+!	define the mouse cursor.  See comments at vsta$$load_mouse_from_font
+!	for more info (not to mention that you should be USING that routine
+!	instead of this one if you don't know the font image).
+!
+! Formal parameters:
+ (
+	fiBlk : ref fib,		! font image block address
+	fimBlk : ref standard_fbmds,	! font image address
+	source_index,			! character index for source picture
+	mask_index,			! character index for mask picture
+	tip_x,				! x coordinate for tip offset
+	tip_y,				! y " " " "
+	center_x,			! where center of icon is
+	center_y
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    bitmap : modified_bmds,	! bitmap with "locate" cell
+	    sub_bitmap : modified_sbmds,! subbitmap with "refcnt" cell
+	    source_x,			! x pixel for source char index
+	    mask_x,			! x pixel for mask char index
+	    source_width,		! pixels width of source char
+	    mask_width,			! pixels width of mask char
+	    s;				! local status
+!
+! Use vsta$$txt_measure_width to calculate width of the sub-bitmaps for
+! the characters being used as the cursor.  By using the routine instead
+! of diving right into the font, we let vsta$$txt_measure_width be the one
+! to be careful about reporting an error if the characters are out of range.
+!
+	if not (s = vsta$$txt_measure_width (
+	    1,			! only one character
+	    source_index,	! address of single-character string
+	    fiBlk[base],	! base address of font image block
+	    source_width	! write width into here
+	    ))
+	then return (.s);	! error already reported.
+
+	if not (s = vsta$$txt_measure_width (
+	    1,			! only one character
+	    mask_index,		! address of single-character string
+	    fiBlk[base],	! base address of font image block
+	    mask_width		! write width into here
+	    ))
+	then return (.s);	! error already reported.
+!
+! Add up widths of consecutive characters to determine what pixel position
+! each of our two characters starts at.
+!
+	if not (s = $ertn (vsta$$txt_measure_range) (
+	    0, .source_index - 1,
+				! measure this range
+	    fiBlk[base],	! base address of font image block
+	    source_x		! write width into here
+	    ))
+	then return (.s);	! error already reported.
+
+	if not (s = $ertn (vsta$$txt_measure_range) (
+	    0, .mask_index - 1,
+				! measure this range
+	    fiBlk[base],	! base address of font image block
+	    mask_x		! write width into here
+	    ))
+	then return (.s);	! error already reported.
+!
+! Set up "modified" subbitmap (like a real subbitmap but contains ref count
+! word).
+!
+! First, link it to the modified bitmap.
+!
+	sub_bitmap[msbmd$a_mbmd_addr] = bitmap[$base];
+!
+! Specify number of bits from left that mask character starts.
+!
+	sub_bitmap[msbmd$w_off_x] = .mask_x;
+!
+! Specify that mask character starts at top pixel of bitmap.
+!
+	sub_bitmap[msbmd$w_off_y] = 0;
+!
+! Specify width of mask character.
+!
+	sub_bitmap[msbmd$w_ext_x] = .mask_width;
+!
+! Specify that height of mask character is height of font.
+!
+	sub_bitmap[msbmd$w_ext_y] = .fiBlk[fib_height];
+!
+! Copy size values from font bitmap into modified one.
+!
+	bitmap[mbmd$w_size_x] = .fiBlk[fib_width];
+	bitmap[mbmd$w_size_y] = .fiBlk[fib_height];
+	bitmap[mbmd$w_size_z] = .fiBlk[fib_depth];
+!
+! Specify whether our font is in vax or display memory.
+!
+	if .fiBlk[fib_display_adr] neq 0
+	then
+	    begin
+	    bitmap[mbmd$a_addr] = .fiBlk[fib_display_adr] + .fiBlk[fib_bits];
+	    bitmap[mbmd$w_locate] = vsta$k_dispmem
+	    end
+	else
+	    begin
+	    bitmap[mbmd$a_addr] = fimBlk[$base] + .fiBlk[fib_bits];
+	    bitmap[mbmd$w_locate] = vsta$k_vaxmem
+	    end;
+!
+! Talk to the vb driver to do the real work.
+!
+	if not (s = vsta$$drive_load_cursor (
+	    .vs$gw_vbchan,		! channel to hardware
+	    vsta$k_src_bm,		! source is a bitmap
+	    bitmap[$base],		! specify base of modified bitmap
+	    .source_x,			! how far source char is from "left"
+	    0,				! source character begins at "top"
+	    vsta$k_msk_bitmap,		! mask is a bitmap
+	    sub_bitmap[$base],		! specify base of mask subbitmap
+	    vsta$k_map_s_literal,	! we're specifying literal map
+	    %b'10',			! black source, white mask fringe
+	    0,				! don't blink
+	    .tip_x,			! where tip of pointer is
+	    .tip_y,
+	    .center_x,			! where center of icon is
+	    .center_y,
+	    1,				! flag to make this a synchronous op
+	    0,				! no ast routine
+	    0				! no ast parameter
+	    ))
+	then $log_error_and_return (.s);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_initiate_interrupts
+!++
+! Functional description:
+!
+!	Normally, mouse interrupts are enabled as soon as the previous
+!	interrupt occurs.  However, before ANY mouse interrupts have occurred,
+!	this routine must be called to initiate the FIRST interrupts for each
+!	condition.
+!
+! Formal parameters:
+ (
+	ps_id			! Which screeen we're enabling interrupts for.
+ ) =
+!--
+
+	begin
+
+	local s, ef;
+!
+! Get a local event flag.
+!
+	if not (s = vsta$$get_ef (ef))
+	then return .s;
+!
+! Enable vb events.
+!
+	if not (s = vsta$$mouse_post_vb_ast (.ef, .ps_id, io$_setevent, 0, 1))
+	then return .s;
+!
+! Cause mouse to move the cursor.
+!
+	if not (s = vsta$$mouse_post_vb_ast (.ef, .ps_id, io$_attcur, 0, 1))
+	then return .s;
+!
+! Cause interrupt when buttons pressed or released.
+! We queue up an interrupt for each possible button state change.
+!
+	incr i from 0 to n_button_states - 1 do
+	    begin
+!
+! Get an event flag for each button state change.
+!
+	    if not (s = vsta$$get_ef (mouse_button_event_flags[.i]))
+	    then return .s;
+!
+! Now set up button state interrupt itself.
+!
+	    if not (s = vsta$$mouse_post_vb_ast (
+		.mouse_button_event_flags[.i],
+		.i,		! Use different transition code for each ast
+		mse_btn_ast_modifiers,
+		.mse_btn_ast_tab[.i],
+		.hardware_press_table[.i],
+		.hardware_release_table[.i]	! understood by hardware
+		))
+	    then return .s
+
+	    end;
+!
+! Get event flag for mouse movement.
+!
+	if not (s = vsta$$get_ef (mouse_movement_event_flag))
+	then return .s;
+!
+! Cause interrupt when mouse moves.
+!
+	if not (s = vsta$$mouse_post_vb_ast (
+	    .mouse_movement_event_flag,
+	    .ps_id,
+	    io$_vb_move + io$m_vb_mouse + io$m_vb_ret_pos,
+	    vsta$$mouse_movement
+	    ))
+	then return .s;
+!
+! Get event flag for mouse location reporting.
+!
+	if not (s = vsta$$get_ef (mouse_location_event_flag))
+	then return .s;
+!
+! Free up local event flag.
+!
+	lib$free_ef (ef)
+
+	end;
+
+global routine vsta$$mouse_end_session =
+!++
+! Functional description:
+!
+!	This routine is responsible for relinquishing all global
+!	objects associated with the mouse system.
+!
+!--
+	begin
+
+	local
+
+	    s;
+!
+! Free up movement event flag.
+!
+	if not (s = lib$free_ef (mouse_movement_event_flag))
+	then return .s;
+!
+! Free up location event flag.
+!
+	if not (s = lib$free_ef (mouse_location_event_flag))
+	then return .s;
+!
+! Free up button event flags
+!
+	incr i from 0 to n_button_states - 1 do
+	if not (s = lib$free_ef (mouse_button_event_flags[.i]))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_cancel_requests
+!++
+! Functional description:
+!
+!	In response to a "cancel" request during image exit, cancel all
+!	appropriate mouse requests.
+!
+! Formal parameters:
+ (
+	cancel_pid		! pid whose requests are being canceled,
+				! or ZERO to cancel requests for ALL processes
+ ) =
+!
+! Side effects:
+!
+!	For now, ALL mouse requests for the process are canceled.  This may be
+!	too abrupt.  For instance, if the process's dcl somehow has mouse
+!	requests, these are currently being canceled by this routine, but
+!	shouldn't really be, since only the image is exiting, not the underlying
+!	dcl.
+!
+!--
+
+	begin
+
+	local
+
+	    pb : ref pb_block;
+
+	! Scan all pasteboards, and for each one, if it has outstanding mouse
+	! requests, cancel them by doing regular io completion but with special
+	! "cancel" status code.
+	!
+	pb = .vs$vds_a_pb_lh_ptr[0];
+	while .pb neq vs$vds_a_pb_lh_ptr[0] do
+	    begin
+	    vsta$$mouse_cancel_asts (pb[$base], .cancel_pid);
+	    pb = .pb[vs$vds_a_pb_next_ptr]
+	    end;
+
+	ss$_normal
+	  
+	end;
+
+global routine vsta$$mouse_cancel_asts
+!++
+! Functional description:
+!
+!	Whenever any of the objects associated with a pending mouse ast
+!	are going away, this routine must be called in order to complete
+!	the ast.  Two examples are 1) when the pasteboard associated with
+!	the ast is being deleted, and 2) when the image waiting for the
+!	ast is being deleted.
+!	Also, when the ACP is terminated, eg, session_end, or fatal_error.
+!
+! Formal parameters:
+ (
+	pb : ref pb_block,		! address of pasteboard data
+	cancel_pid			! 0 or particular pid to match
+ ) =
+!
+! Side effects:
+!
+!	The ast is delivered with a status code of ss$_cancel.
+!
+!--
+
+	begin
+
+	! Clear outstanding button qio's.
+	!
+	mouse_cancel_requests (pb[vs$vds_a_pb_btn_ptr], .cancel_pid);
+
+	! Clear outstanding movement qio's.
+	!
+	mouse_cancel_requests (pb[vs$vds_a_pb_mov_ptr], .cancel_pid);
+
+	! Clear outstanding boundary qio's.
+	!
+	mouse_cancel_requests (pb[vs$vds_a_pb_bou_ptr], .cancel_pid);
+
+	ss$_normal
+
+	end;
+
+routine mouse_cancel_requests
+!++
+! Functional description:
+!
+!	Given the address of a queue of request blocks, and an owner,
+!	cancel all requests in the queue owned by that owner.  If owner is
+!	given as 0, cancel all requests in the list.
+!
+! Formal parameters:
+ (
+	list_head : ref rb_block,	! Address of head of queue
+	pid			! Owner to match
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    rb : ref rb_block;
+
+	rb = .list_head[vs$rb_a_flink];
+
+	until rb[$base] eql list_head[vs$rb_a_flink] do
+
+	    begin
+
+	    bind
+
+		next_rb = .rb[vs$rb_a_flink] : rb_block;
+
+	    if .pid eql 0 or .pid eql .rb[vs$rb_l_pid]
+	    then vsta$$ptr_done_io (0, rb[$base], ss$_cancel);
+
+	    rb = next_rb[$base]
+
+	    end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_tell_hi
+!++
+! Functional description:
+!
+!	The human interface calls this with 1 or 0 to say whether indeed we
+!	should tell human interface about all mouse events.
+!
+! Formal parameters:
+ (
+	flag		! 1 for yes, 0 for no
+ ) =
+!
+! Side effects:
+!
+!	Subsequent to a call to this routine with flag = 0, pasteboard mouse
+!	ast's can be delivered, and subsequent to a call to this routine with
+!	flag = 1, only your human interface receives mouse event ast's.
+!--
+
+	begin
+
+	global vsta$mouse_tell_hi_flag : initial (0);	! default to no h.i.
+
+	vsta$mouse_tell_hi_flag = .flag;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_get_info
+!++
+! Functional description:
+!
+!	Get current settings of mouse buttons for a particular pasteboard,
+!	and current position.
+!
+! Formal parameters:
+ (
+	pb_id		! Which pasteboard to get mouse buttons for
+ ) =
+!
+!--
+
+	begin
+
+	external literal
+
+	    vsta$_getmos;
+
+	local
+
+	    s,
+	    pb : ref pb_block,
+	    rb : ref rb_block;		! Request block
+!
+! Get database for specified pasteboard.
+!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then
+	    begin
+	    $toperr (vsta$_getmos);
+	    return vsta$$ptr_done_io (0, 0, .s)
+	    end;
+!
+! If the requestor does not have READ access to the pasteboard, don't
+! reveal the info.
+!
+	if not (s = mouse_readable_pb (.pb_id, pb[$base]))
+	then
+	    begin
+	    $toperr (vsta$_getmos);
+	    return vsta$$ptr_done_io (0, 0, .s)
+	    end;
+!
+! Build request block.
+!
+	if not vsta$$ptr_build_rb (rb, 0, 0, 0, 0, 0, .vs$a_irp)
+	then
+	    begin
+	    $toperr (vsta$_getmos);
+	    return vsta$$ptr_done_io (0, 0, vsta$_bldmrbfail)
+	    end;
+!
+! Deliver latest mouse info for this pasteboard, and assume it is
+! up-to-date, since ast-level code keeps it that way.
+!
+	vsta$$ptr_done_io (pb[vs$vds_l_pb_mouse_x_coor], rb[$base], ss$_normal)
+
+	end;
+
+global routine vsta$$mouse_lib_boundary_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	the mouse crosses pasteboard boundary.  This is the LIBRARY REQUEST
+!	routine.  Use vsta$$mouse_set_boundary_ast for an internal acp
+!	request.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect boundary crossing of.
+	timeout			! Optional timeout value
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+!
+! Get pasteboard database.
+!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! If the requestor does not have READ access to the pasteboard, don't
+! allow boundary ast to be set.
+!
+	if not (s = mouse_readable_pb (.pb_id, pb[$base]))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! Build request block.
+!
+	if not vsta$$ptr_build_rb (rb, 0, 0, 0, 0, 0, .vs$a_irp)
+	then return vsta$$ptr_done_io (0, 0, vsta$_bldmrbfail);
+!
+! Insert request into queue and handle possible timeout parameter.
+!
+	if not vsta$$ptr_insert_request (rb[$base], pb[vs$vds_a_pb_bou_ptr],
+	    .timeout, mouse_timeout_ast, .vs$a_irp)
+	then return vsta$$ptr_done_io (0, rb[$base], vsta$_bldmrbfail);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_set_button_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	the mouse buttons reach a particular state.  This is the INTERNAL REQUEST
+!	routine.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect boundary crossing of.
+	buflen,			! Longwords of buffer space available.
+	bufadr,			! Address of buffer to receive info.
+	iosb,			! Address of iosb to fill in.
+	astadr,			! ast routine to call
+	astprm,			! parameter to pass to ast routine
+	timeout,		! Optional timeout value
+	up_mask,		! which buttons, when released should cause ast
+	down_mask		! which ones when pressed should cause ast
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    int_irp : ref irp_block,	! Holds address of internal irp.
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+
+	! Get pasteboard database.
+	!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return .s;
+
+	! Create an internal irp.
+	!
+	if not (s = vsta$$irp_create_int_irp (
+	     int_irp,
+	    .buflen * 4,
+	    .bufadr,
+	    .iosb,
+	    .astadr,
+	    .astprm
+	    ))
+	then return .s;
+
+	! Build request block.
+	!
+	if not (s = vsta$$ptr_build_rb (
+	    rb,
+	    0,
+	    0,
+	    0,
+	    .up_mask,
+	    .down_mask,
+	    int_irp[$base]
+	    ))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	! Insert request into queue and handle possible timeout parameter.
+	!
+	if not (s = vsta$$ptr_insert_request (
+	    rb[$base],
+	    pb[vs$vds_a_pb_btn_ptr],
+	    .timeout,
+	    mouse_timeout_ast,
+	    int_irp[$base]
+	    ))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_set_boundary_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	the mouse crosses a pasteboard boundary.  This is the INTERNAL REQUEST
+!	routine.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect boundary crossing of.
+	buflen,			! Longwords of buffer space available.
+	bufadr,			! Address of buffer to receive info.
+	iosb,			! Address of iosb to fill in.
+	astadr,			! ast routine to call
+	astprm,			! parameter to pass to ast routine
+	timeout			! Optional timeout value
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    int_irp : ref irp_block,	! Holds address of internal irp.
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+
+	! Get pasteboard database.
+	!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return .s;
+
+	! Create an internal irp.
+	!
+	if not (s = vsta$$irp_create_int_irp (
+	    int_irp,
+	    .buflen * 4,
+	    .bufadr,
+	    .iosb,
+	    .astadr,
+	    .astprm
+	    ))
+	then return .s;
+
+	! Build request block.
+	!
+	if not (s = vsta$$ptr_build_rb (rb, 0, 0, 0, 0, 0, int_irp[$base]))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	! Insert request into queue and handle possible timeout parameter.
+	!
+	if not (s = vsta$$ptr_insert_request (
+	    rb[$base],
+	    pb[vs$vds_a_pb_bou_ptr],
+	    .timeout,
+	    mouse_timeout_ast,
+	    int_irp[$base]
+	    ))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_lib_button_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	any mouse buttons are pressed or released.  This is the library
+!	support routine.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect buttons on.
+	up_mask,		! Which buttons should cause interrupt when released
+	down_mask,		! Which buttons should cause interrupt when pressed
+	timeout			! Timeout parameter (how long to wait)
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+!
+! Get pasteboard database.
+!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! If the requestor does not have READ access to the pasteboard, don't
+! allow button ast to be set.
+!
+	if not (s = mouse_readable_pb (.pb_id, pb[$base]))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! If both button up-mask and down-mask are zero, then taken literally, this
+! means the requestor doesn't want to find out about any buttons. Since we
+! don't need IRPs which will never be satisfied hanging around AND WE DO WANT
+! CONSISTENCY with the tablet, we'll redefine this case to mean that any
+! button transition will satisfy the request.
+!
+	if (.up_mask eql 0) and (.down_mask eql 0)
+	then
+	    begin
+	    up_mask = -1;
+	    down_mask = -1;
+	    end;
+!
+! Build request block in which we remember which button actions
+! should cause an ast.
+!
+	if not vsta$$ptr_build_rb (
+	    rb,
+	    0,
+	    0,
+	    0,
+	    .up_mask,
+	    .down_mask,
+	    .vs$a_irp
+	    )
+	then return vsta$$ptr_done_io (0, 0, vsta$_bldmrbfail);
+!
+! Insert request into queue and handle possible timeout parameter.
+!
+	if not vsta$$ptr_insert_request (rb[$base], pb[vs$vds_a_pb_btn_ptr],
+	    .timeout, mouse_timeout_ast, .vs$a_irp)
+	then return vsta$$ptr_done_io (0, rb[$base], vsta$_bldmrbfail);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_lib_move_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	the mouse moves within the pasteboard.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect movement on.
+	timeout			! Optional timeout value.
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+!
+! Get pasteboard database.
+!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! If the requestor does not have READ access to the pasteboard, don't
+! allow movement ast to be set.
+!
+	if not (s = mouse_readable_pb (.pb_id, pb[$base]))
+	then return vsta$$ptr_done_io (0, 0, .s);
+!
+! Build request block.
+!
+	if not vsta$$ptr_build_rb (rb, 0, 0, 0, 0, 0, .vs$a_irp)
+	then return vsta$$ptr_done_io (0, 0, vsta$_bldmrbfail);
+!
+! Insert request into queue and handle possible timeout parameter.
+!
+	if not vsta$$ptr_insert_request (rb[$base], pb[vs$vds_a_pb_mov_ptr],
+	    .timeout, mouse_timeout_ast, .vs$a_irp)
+	then return vsta$$ptr_done_io (0, rb[$base], vsta$_bldmrbfail);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$mouse_set_move_ast
+!++
+! Functional description:
+!
+!	Establish for a pasteboard that an ast should be delivered when
+!	the mouse moves.  This is the INTERNAL REQUEST
+!	routine.
+!
+! Formal parameters:
+ (
+	pb_id,			! Pasteboard to detect boundary crossing of.
+	buflen,			! Longwords of buffer space available.
+	bufadr,			! Address of buffer to receive info.
+	iosb,			! Address of iosb to fill in.
+	astadr,			! ast routine to call
+	astprm,			! parameter to pass to ast routine
+	timeout			! Optional timeout value
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    int_irp : ref irp_block,	! Holds address of internal irp.
+	    s,				! Status
+	    pb : ref pb_block,		! pasteboard database
+	    rb : ref rb_block;		! Request block
+
+	! Get pasteboard database.
+	!
+	if not (s = vs$$vds_pb_found (.pb_id, pb))
+	then return .s;
+
+	! Create an internal irp.
+	!
+	if not (s = vsta$$irp_create_int_irp (
+	    int_irp,
+	    .buflen* 4,
+	    .bufadr,
+	    .iosb,
+	    .astadr,
+	    .astprm
+	    ))
+	then return .s;
+
+	! Build request block.
+	!
+	if not (s = vsta$$ptr_build_rb (rb, 0, 0, 0, 0, 0, int_irp[$base]))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	! Insert request into queue and handle possible timeout parameter.
+	!
+	if not (s = vsta$$ptr_insert_request (
+	    rb[$base],
+	    pb[vs$vds_a_pb_mov_ptr],
+	    .timeout,
+	    mouse_timeout_ast,
+	    int_irp[$base]
+	    ))
+	then return mouse_cleanup_int_irp (.s, int_irp[$base]);
+
+	ss$_normal
+
+	end;
+
+routine mouse_cleanup_int_irp
+!++
+! Functional description:
+!
+!	For routines implementing internal mouse requests (ones from the
+!	acp itself, as opposed to external mouse requests which come via $qio
+!	from other processes), return through here to delete an internal
+!	irp that is not needed because some other setup operation failed.
+!
+! Formal parameters:
+ (
+	status,			! Error status to return
+	int_irp : ref irp_block	! Internal irp to delete.
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    vsta$$irp_delete_int_irp;
+!
+! Delete the internal irp.
+!
+	vsta$$irp_delete_int_irp (int_irp[$base]);
+!
+! Return the specified status.
+!
+	.status
+
+	end;
+
+routine mouse_readable_pb
+!++
+! Functional description:
+!
+!	Return truth iff the specified pasteboard is readable.
+!
+! Formal parameters:
+ (
+	pb_id,			! pasteboard id
+	pb : ref pb_block	! precalculated pb databse address
+ ) =
+!
+! Implicit outputs:
+!
+!	If pb is NOT readable, the error block for the caller is
+!	updated.
+!
+!--
+
+	IF NOT vsta$$acp_check_read_access(
+				.vs$gl_pid,
+				.pb[vs$vds_l_pb_uic],
+				.pb[vs$vds_w_pb_prot])
+	THEN
+	    begin
+!
+! The following error WITH parameters is useful for synchronous error blocks.
+!
+	    $error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! The following error WITHOUT any parameters in it is needed for asynchronous
+! iosb's.
+!
+	    $return_error (vsta$_pb_unavailable)
+	    end
+	else ss$_normal;
+
+end
+eludom

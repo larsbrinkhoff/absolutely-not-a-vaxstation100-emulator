@@ -1,0 +1,517 @@
+MODULE vsta$lib_pack (ADDRESSING_MODE (EXTERNAL=GENERAL,NONEXTERNAL=GENERAL))=
+BEGIN
+!
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This module includes the routines to be used by vsta library routines to
+! send packed buffers to ACP routines
+!
+forward routine!s . . .
+	 
+	 vsta$$create_packed_block
+	,vsta$$delete_packed_block
+	,vsta$$pack_movec3
+	,vsta$$send_generic_block
+	;
+
+external routine!s . . .
+
+	 lib$free_vm			! Release memory.
+	,lib$get_vm			! Allocate memory.
+	,vsta$$get_template_chan	! Get channel to template VD device
+	,vsta$$channel_found		! Interpret channel.
+	;
+
+external
+	vsta$gl_local_error;		! VSTALIB local errors
+
+
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB constant data declarations
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+library 'vsta$library:vstagbl';		! symbols like "vsta$k_none"
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! Library common macros
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+
+
+
+global routine vsta$$create_packed_block
+!++
+! Functional description:
+!
+!	This routine packs the specified data (given in the as dynamic pars) 
+!	into a block of memory that this routine allocates.
+!
+!
+! Formal parameters:
+ (
+	! *** Static parameters.  Be sure to update n_pre_static if you change
+	block_address,		! return the address of the allocated block
+	block_size,		! return the size of the block in bytes
+
+	! *** Dynamic parameters.
+	len1, adr1, len2, adr2,	! Pairs for each parameter, first part of each
+	! . . .			! pair is length in bytes of item, and second
+	lenN, adrN		! is address of item.  The length may be
+				! specified as 0, which means item is ignored.
+				! This allows the acp side to realize that the
+				! item is being defaulted.
+
+		!*** concatenation of dyn fields ***!
+
+				! a negitive item size results in puting the
+				! item into the packed block without the
+				! item size.  This allows for concatenation
+				! of fields into one contiguous block.
+		!*** important ***!
+				! first negative size dyn item must be the size
+				! of the entire concatenated block
+ ) =
+!
+!
+! Completion codes:
+!
+!	If successful, the success status from the qio is given.  Failure codes
+!	from any of the following may occur:  assigning	dummy channel,
+!	allocating dynamic storage for the packed block, the qio itself,
+!	deallocating the dynamic storage.
+!
+!--
+
+	begin
+
+	builtin
+
+	    actualCount, argPtr;
+
+	literal
+
+	    ! Number of static parameters before the dynamic ones.
+	    n_pre_static = 2;
+
+	local
+
+	    n_items, dynamic_items : ref vector, next_item_address,
+	    dynamic_size, total_block_size, status, dummy_flag : initial (0),
+	    packed_block : ref vector;
+
+	! Calculate number of dynamic items.  This is the total number of
+	! parameters passed to us minus the number of static parameters,
+	! divided by 2, since each item includes both a length and an address.
+	!
+	n_items = (actualCount() - n_pre_static) / 2;
+
+	! Calculate base address of the items themselves.  The 1 is added in
+	! to skip over Vax's argument count word.
+	dynamic_items = vector[argPtr(), 1 + n_pre_static];
+
+	! Calculate size needed by dynamic portion of block.  This is
+	! 4 bytes per item for sizes, plus size of each item.
+	!
+	dynamic_size = 4 * .n_items;
+
+	incr i from 0 to .n_items - 1 do 
+	begin
+	   if .dynamic_items[.i*2] lss 0 
+	   !
+	   ! if size of dyn field < 0 then put ABS(size) of dyn into packed
+	   ! block without the 4 byte size field befor it.
+	   !
+	   then
+		dynamic_size = .dynamic_size + ABS(.dynamic_items[.i*2]) - 4
+	   else
+		dynamic_size = .dynamic_size + .dynamic_items[.i*2];
+
+	end;	
+	! Calculate size in bytes of packed block needed.  This includes
+	! 4 bytes for the block's size itself, plus the dynamic size.
+	!
+	total_block_size = 4 + .dynamic_size;
+
+	! Allocate the block.
+	!
+	if not (status = lib$get_vm (total_block_size, packed_block))
+	then return .status;
+
+	! Fill in the lengths and actual items.
+	!
+	packed_block[0] = .total_block_size;
+	next_item_address = packed_block[1];
+	incr i from 0 to .n_items - 1 do
+	    begin
+	    if .dynamic_items[.i*2] geq 0 
+	    !
+	    !  if item size is 0 or positive then move item_size and the dynamic
+	    !  item into the packed block
+	    !
+	    then begin
+	       vsta$$pack_movec3(
+				 4
+				,dynamic_items[.i*2]
+				,.next_item_address
+				);
+	       vsta$$pack_movec3(
+				 .dynamic_items[.i*2]
+				,.dynamic_items[.i*2+1]
+				,.next_item_address+4
+				);
+	       next_item_address = .next_item_address + 
+					.dynamic_items[.i*2] + 4
+	    end
+	    !
+	    !  if item size is negative then don't put the size field into
+	    !  the packed block. just the ABS of item_size of dynamic item
+	    !
+	    else begin
+	       vsta$$pack_movec3(
+				 ABS(.dynamic_items[.i*2])
+				,.dynamic_items[.i*2+1]
+				,.next_item_address
+				);
+	       next_item_address = .next_item_address + 
+					ABS(.dynamic_items[.i*2])
+	    end
+	    end;
+
+!	assign the return parameters
+!	block address
+!	block size (in bytes)
+	
+	.block_address = .packed_block;
+	.block_size = .total_block_size;
+
+	return ss$_normal
+	end;
+
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$delete_packed_block
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine is used to delete the allocated memory used for creating a
+!   packed block.  Basicly just renames the lib$free_vm routine to make it
+!---more documenting
+!  
+!  FORMAL PARAMETERS
+!
+	(
+	 block_address
+	,block_size
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: STATUS IF MEMORY DEALLOCATION FAILED
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: memory is deallocated
+!
+!--
+BEGIN
+
+RETURN lib$free_vm(
+			 block_size
+			,block_address
+		  )
+
+END;
+
+
+
+
+
+GLOBAL ROUTINE vsta$$pack_movec3
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is used to copy buffers that are any size.  Since the
+!   c5move instruction can only move a buffer whose size will fit in a word
+!   We need this routine to move buffers of larger size.  The limit now will
+!---be a buffer size that will fit in a longword.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 length
+	,src
+	,dst
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUT: NONE
+!
+!  ROUTINE VALUE:
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS:
+!
+!---The ch$move built-in bliss function is used
+!
+!--
+BEGIN
+
+LITERAL
+	 K64M1 = (1^16 - 1);
+
+IF .length GEQ K64M1 
+THEN BEGIN
+
+	CH$MOVE(K64M1, .src, .dst);
+	VSTA$$PACK_MOVEC3(.length-K64M1, .src+K64M1 , .dst+K64M1);
+
+     END
+ELSE
+	CH$MOVE(.length,.src,.dst);
+
+
+RETURN ss$_normal
+
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$send_generic_block
+!
+!	It takes care of the following:
+!
+!	o	Validating the channel as given by the user.
+!
+!	o	Setting up the qio parameters, and doing the actual qio.
+!
+! FORMAL PARAMETERS
+!
+	(
+	 vd_chan		!  channel or vsta$k_none, defaults to
+				!  currently selected channel, passed by
+				!  reference
+	,function_code		!  get qio function code
+	,iosb: REF VECTOR [2]	!  return the iosb
+	,p1			!  get p1 block address
+	,p2			!  get p2 block size bytes
+	,p3			!  get p3 number of graphics commands
+	,p4			!  get p4 graphics dispatch indicator
+	,p5			!  unused
+	,p6			!  unused
+	):=
+!
+!  IMPLICIT INPUTS: SELECTED TERMINAL IF vd_chan defaulted
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---generated status
+!   qio status
+!   iosb status
+!---ss$_normal
+!
+!  SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 dummy_flag: INITIAL (0)
+	,status
+	,channel
+	,channel_data: REF BLOCK [,BYTE]
+	;
+
+	if parameter_value (vd_chan) neq vsta$k_none
+	then
+!
+! If the caller did not specify a channel number then use the
+! "selected" terminal as the default device.  If specific channel
+! given, use that one.
+!
+	    begin
+	    IF NOT vsta$$channel_found(.vd_chan,channel_data) THEN
+		lib_ret_err(vsta$_undchan);
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	    IF .channel_data[vsta$ct_b_tty_type] NEQ vsta$k_generic_mode THEN
+		lib_ret_err(vsta$_notnative);	!Not a native display device
+
+	    channel = .channel_data[vsta$ct_l_tty_chan]
+	    end
+!
+! If vsta$k_none passed by reference, specify dummy channel, which for the
+! case of measure-text means "if I created a display, how large would the
+! text be".
+!
+	else 
+	    if not (dummy_flag = vsta$$get_template_chan (
+		channel))
+	    then return .dummy_flag;
+
+
+	! Do the qio, but don't return yet, even if status
+	! indicates failure, since we must release the dummy channel and
+	! packed block.
+	!
+	status = VSTA$QIOW(
+	    chan = .channel,	! Passed or dummy channel.
+	    func = .function_code,
+				! Function always this for now. 
+	    iosb = iosb[0],
+	    p1 = .p1,
+	    p2 = .p2,
+	    p3 = .p3,
+	    p4 = .p4,
+	    p5 = .p5,
+	    p6 = .p6
+	    );
+
+
+	! Tell caller result of qio.  If the qio itself was successful, the
+	! result is returned in the iosb,
+	! but if the qio wasn't successful at all, the result is just the
+	! failure code from the qio.
+	!
+	if .status
+	then .iosb[0]
+	else lib_ret_ierr (.status)
+END;	! vsta$$send_generic_block
+
+
+
+GLOBAL ROUTINE vsta$$send_generic_block_nowait
+!
+!	It takes care of the following:
+!
+!	o	Validating the channel as given by the user.
+!
+!	o	Uses currently selected terminal if channel passed equals 0
+!
+!	o	Assigning a channel on template device if the caller passed -1
+!		as channel.
+!
+!	o	Setting up the qio parameters, and doing the actual qio.
+!
+! FORMAL PARAMETERS
+!
+	(
+	 event_flag		!  get an optional event_flag
+	,vd_chan		! -1: currently selected channel
+				!  0: use dummy channel
+				!  n: use channel n
+	,function_code		!  get qio function code
+	,iosb: VECTOR [4,WORD]	!  return the iosb
+	,astadr			!  get the address of the ast routine
+	,astprm			!  get the value of the param to go to ast rout.
+	,p1			!  get p1 block address
+	,p2			!  get p2 block size bytes
+	,p3			!  get p3 number of graphics commands
+	,p4			!  get p4 graphics dispatch indicator
+	,p5			!  unused
+	,p6			!  unused
+	):=
+!
+!  IMPLICIT INPUTS: SELECTED TERMINAL IF vd_chan = -1
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---generated status
+!   qio status
+!   iosb status
+!---ss$_normal
+!
+!  SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 dummy_flag: INITIAL (0)
+	,status
+	,channel
+	,channel_data: REF BLOCK [,BYTE]
+	;
+
+	if .vd_chan geq 0
+	then
+
+	    begin
+	    !
+	    ! If the caller did not specify a channel number or one equal to zero,
+	    ! then use the "selected" terminal as the default device.
+	    !
+!	    IF NOT vsta$$channel_found(.vd_chan,channel_data) THEN
+!		lib_ret_err(vsta$_undchan);
+	    !
+	    ! Get the terminal characteristics and make sure that its
+	    ! a native display device
+	    !
+!	    IF .channel_data[vsta$ct_b_tty_type] NEQ vsta$k_generic_mode THEN
+!		lib_ret_err(vsta$_notnative);		!Not a native display device
+
+!	    channel = .channel_data[vsta$ct_l_tty_chan]
+	    channel = 1
+	    end
+
+	else 
+	if .vd_chan eql -1 
+	then begin
+	    if not (dummy_flag = vsta$$get_template_chan (
+		channel))
+	    then return .dummy_flag
+	end
+
+	!
+	!  Use currently selected terminal see if it is of generic type
+	!
+	else 
+
+	    channel = 1;
+!	    if not (status = vsta$get_current_native_display(channel))
+!	    then RETURN .status;
+
+	! Do the qio, but don't return yet, even if status
+	! indicates failure, since we must release the packed block.
+	!
+	status = $qio (
+	    efn  = .event_flag, ! Pass the event_flag
+	    chan = .channel,	! Passed or dummy channel.
+	    func = .function_code,
+				! Function always this for now.
+	    iosb = .iosb,
+	    astadr = .astadr,
+	    astprm = .astprm,
+	    p1 = .p1,
+	    p2 = .p2,
+	    p3 = .p3,
+	    p4 = .p4,
+	    p5 = .p5,
+	    p6 = .p6
+	    );
+
+
+	! Tell caller result of qio 
+	RETURN .status
+
+END;	! vsta$$send_generic_block_nowait
+
+
+END                                                            
+ELUDOM

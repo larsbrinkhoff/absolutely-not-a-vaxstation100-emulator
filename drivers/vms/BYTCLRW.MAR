@@ -1,0 +1,17 @@
+
+	.title BYTCLRW
+
+BYTCLRW::
+
+	.WORD	^M<R1,R2,R3>
+
+	MOVW	@4(AP),R2	;Get first operand data
+	MOVL	@8(AP),R3
+	MOVL	#0,R1		;R1 is counter for output...starts at bit 0
+	DECL	R3
+LOOP:	BBCC	R1,R2,1$
+1$:	INCL	R1
+	SOBGEQ	R3,LOOP
+	MOVW	R2,@4(AP)
+	RET
+	.END

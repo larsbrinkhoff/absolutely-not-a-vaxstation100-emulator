@@ -1,0 +1,2016 @@
+MODULE VS$SRV_PROF (
+			IDENT = 'HI SERVER Profile Module'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+!
+!  Handles the profiles
+!
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!	There are two important profiles. At start-up the system profile
+!	(an ASCII file with lines of the form:
+!		ITEMNAME = "string" or ITEMNAME = numeric value )
+!	is read in, and global variables are setup. When the user's
+!	profile is read in, the variables are updated as necessary.
+!	  When the profile form is being manipulated, any change causes
+!	the system to change and update the profile file on the fly.
+!	  There is protection built-in to insure two people with
+!	the same username do not wipe out each other's changes.
+!--
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_prof_sysread,		!Read in the system-site profile.
+    vsta$$srv_prof_userread,		!Read in the user's profile.
+    setup_userprof_filename,		!Set up the filename for the user
+					! profile, based on his username.
+    trans_username,			!Find translation for username
+    read_prof_line,			!Read one line of profile file.
+    prof_do_line,			!Interpret & "execute" one line.
+    inner_do_prof_line,			! More interpreting.
+    get_qst,				!Read quoted string
+    get_number,				!Read number
+    vsta$$srv_prof_modified,		!Profile was modified, write it out.
+    dump_my_profile,			!Dump out my profile
+    report_full,			!Tell notices that disk is full
+    report_prof_conflict;		!Tell notices that profile was
+					! modified by someone else.
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:VSVTEM100';	!VT100 defs (string lengths)
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Terminal type definitions
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!VSTA$K_LK201_CA like definitions 
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+GLOBAL
+    srv$gl_sitename_len,		!Length of sitename string
+    srv$gl_sitename: VECTOR [80,BYTE],	!Site name itself.
+    srv$gl_user_1_name_len,		!Length of user's real name
+    srv$gl_user_1_name: VECTOR [40,BYTE],	!User's name itself.
+    srv$gl_user_2_name_len,		!Length of 2nd line of user name
+    srv$gl_user_2_name: VECTOR [40,BYTE],	!2nd line text.
+    srv$gl_answerback_len,		!Length of VT100 answerback string
+    srv$gl_answerback_str: VECTOR [vt$S_answerback_message,BYTE], !Str itself.
+    srv$gl_language,			!What language to use
+    srv$gl_auto_termtype,		!Type of tty to create at authorization
+    srv$gl_time_format,			!Time format
+    srv$gl_date_format,			!date format
+    srv$gl_keyclick_on,			!=1 means do keyclick
+    srv$gl_autorepeat_on,		!=1 means do autorepeat
+    srv$gl_vt100_dark_bg,		!=1 means VT100 has dark background
+    srv$gl_vt100_ansi,			!=1 means VT100 starts in ANSI mode
+    srv$gl_vt_margin_bell,		!=1 means VT100 has margin bell
+    srv$gl_vt_wrap,			!=1 means VT100 does wrap
+    srv$gl_vt_newline,			!=1 means VT100 NEWLINE is on
+    srv$gl_vt_level,			!"level" of the VT100
+    srv$gl_vt_lines,			! lines of the VT100		
+    srv$gl_vt_columns,			! Rows of the VT100		
+    srv$gl_tek_cr_lf,			!=1 means send CRLF when CR typed
+    srv$gl_tek_lf_cr,			!=1 means send LFCR when LF typed
+    srv$gl_tek_delvalid,		!=1 if DEL is valid for LOY
+    srv$gl_tek_addchars,		!What additional chars are added for
+					! graphics input
+    srv$gl_tek_stopout,			!=1 if output stops when page full
+    srv$gl_tek_bytesize,		!byte size of the TEK terminal
+    srv$gl_utility_area_displayed,	!Should we display utility area? 
+    srv$gl_screen_halftone_pattern,	! Halftone to use.  0-15	 
+    srv$gl_notice_num_lines;		!# of lines in the profile.
+
+GLOBAL
+    ACP_LETTER,				!letter of the current ACP	 
+    srv$gl_kbd_a,			!Kbd for VaxStation-A		 
+    srv$gl_kbd_b,			!Kbd for VaxStation-B		 
+    srv$gl_kbd_c,			!Kbd for VaxStation-C		 
+    srv$gl_kbd_d,			!Kbd for VaxStation-D		 
+    srv$gl_kbd_e,			!Kbd for VaxStation-E		 
+    srv$gl_kbd_f,			!Kbd for VaxStation-F		 
+    srv$gl_kbd_g,			!Kbd for VaxStation-G		 
+    srv$gl_kbd_h,			!Kbd for VaxStation-H		 
+    srv$gl_kbd_i,			!Kbd for VaxStation-I		 
+    srv$gl_kbd_j,			!Kbd for VaxStation-J		 
+    srv$gl_kbd_k,			!Kbd for VaxStation-K		 
+    srv$gl_kbd_l,			!Kbd for VaxStation-L		 
+    srv$gl_kbd_m,			!Kbd for VaxStation-M		 
+    srv$gl_kbd_n,			!Kbd for VaxStation-N		 
+    srv$gl_kbd_o,			!Kbd for VaxStation-O		 
+    srv$gl_kbd_p,			!Kbd for VaxStation-P		 
+    srv$gl_kbd_q,			!Kbd for VaxStation-Q		 
+    srv$gl_kbd_r,			!Kbd for VaxStation-R		 
+    srv$gl_kbd_s,			!Kbd for VaxStation-S		 
+    srv$gl_kbd_t,			!Kbd for VaxStation-T		 
+    srv$gl_kbd_u,			!Kbd for VaxStation-U		 
+    srv$gl_kbd_v,			!Kbd for VaxStation-V		 
+    srv$gl_kbd_w,			!Kbd for VaxStation-W		 
+    srv$gl_kbd_x,			!Kbd for VaxStation-X		 
+    srv$gl_kbd_y,			!Kbd for VaxStation-Y		 
+    srv$gl_kbd_z,			!Kbd for VaxStation-Z		 
+    srv$gl_kbd_set,			!Kbd setting			 
+    srv$gl_vt_legend,			!typewriter/dataprocessing	 
+    vsta$gl_keyboard;			! --> selected kbd & legend type 
+
+GLOBAL LITERAL
+    prof$K_timef_12hr = 0,		!12-hr time format
+    prof$K_timef_24hr = 1,		!24-hr time format
+    prof$K_timef_eur = 2,		!european time format
+
+    prof$K_datef_monthdd19yy = 0,	!March 15, 1983
+    prof$K_datef_mmsddsyy = 1,		!3/15/83
+    prof$K_datef_ddhmonhyy = 2,		!15-Mar-83
+    prof$K_datef_ddmonth19yy = 3,	!15 march 1983
+    prof$K_datef_ddsmmsyy = 4,		!15/3/83
+
+    prof$K_vt_level1 = 0,		!Level 1
+    prof$K_vt_level2 = 1,		!Level 2
+
+    prof$K_tek_addc_none = 0,		!Add no chars
+    prof$K_tek_addc_cr = 1,		!Add "CR"
+    prof$K_tek_addc_creot = 2,		!Add "CR" + "EOT"
+
+    prof$K_tek_marginoff = 0,		!don't stop on any margins full
+    prof$K_tek_margin1 = 2,		!stop  on margin 1 full
+    prof$K_tek_margin2 = 1,		!stop on margin 2 full
+
+    prof$K_tek_7bit = 0,		!7-bit terminal
+    prof$K_tek_8bit = 1;		!8-bit terminal
+
+GLOBAL LITERAL
+    prof$k_kbd_ca=0,			!LK201CA : American		
+    prof$k_kbd_cb=1,			!LK201CB : Flemish		
+    prof$k_kbd_cc=2,			!LK201CC : Canadian (French)	
+    prof$k_kbd_cd=3,			!LK201CD : Danish		
+    prof$k_kbd_ce=4,			!LK201CE : British		
+    prof$k_kbd_cf=5,			!LK201CF : Finnish		
+    prof$k_kbd_cg=6,			!LK201CG : German/Austrian	
+    prof$k_kbd_ch=7,			!LK201CH : Dutch		
+    prof$k_kbd_ci=8,			!LK201CI : Italian		
+    prof$k_kbd_ck=9,			!LK201CK : French/Swiss		
+    prof$k_kbd_cl=10,			!LK201CL : German/Swiss		
+    prof$k_kbd_cm=11,			!LK201CM : Swedish		
+    prof$k_kbd_cn=12,			!LK201CN : Norwegian		
+    prof$k_kbd_cp=13,			!LK201CP : French/Belgian	
+    prof$k_kbd_cs=14,			!LK201CS : Spanish		
+
+    prof$K_7bit_nrc = 2,		!7-bit NRC			
+    prof$k_legend_tw=0,			!Kbd legend - typewriter	
+    prof$k_legend_dp=1;			!Kbd legend - dataprocessing	
+
+
+!
+! Maximum string lengths
+!
+GLOBAL LITERAL
+    prof$K_ml_sitename = 80,	!Site name
+    prof$K_ml_username_1 = 40,	!User name 1
+    prof$K_ml_username_2 = 40;	!User name 2
+
+EXTERNAL ROUTINE
+    vsta$$hi_notice,		!Write a notice to the user.
+    vsta$$srv_notice_number,	!Write the notice with the given number.
+    vsta$$srv_get_message_text,	!Get text of a message
+    vs$$vss_set_vs_char,	! Set Virtual Screen color.	
+    lib$lookup_key,		!Lookup keyword in table.
+!    lib$cvt_dtb,		!Convert string to binary.
+    ots$cvt_ti_l,		!Convert signed integer to longword
+    ots$cvt_to_l,		!Convert octal number to longword
+    ots$cvt_tz_l,		!Convert hex text to longword
+    str$upcase,			!Convert string to uppercase
+    vsta$$error,		!Report an error.
+    vsta$$error_logger;		!The error logger
+
+OWN
+    last_userprof_gen,		!Last generation number of user's profile file.
+    userprof_filename_str_desc: VECTOR [2];
+
+EXTERNAL
+    srv$gl_username_desc: VECTOR [2];	!Descriptor of username
+
+!
+! Keyword tables.
+!
+MACRO
+    $str (text) =
+	UPLIT (%ASCIC text) %,
+    $str_info (max_size, len_var, str_var) =
+	UPLIT (1, max_size, len_var, str_var) %,
+    $key_info (var, table) =
+	UPLIT (2, var, table) %,
+    $val_info (var, min, max) =
+	UPLIT (3, var, min, max) %;
+
+LITERAL
+    num_yes_no_items = 2;
+OWN
+    yes_no_table: VECTOR [(num_yes_no_items * 2) + 1]
+	INITIAL	(num_yes_no_items * 2	!# longwords to follow
+		,$str ('NO')
+		,0
+		,$str ('YES')
+		,1
+		);
+
+LITERAL
+    num_lang_items = 1;			!# of items in language table
+OWN
+    prof_lang_table: VECTOR [(num_lang_items * 2) + 1]
+	INITIAL	(num_lang_items * 2	!# of longwords that follow
+		,$str ('ENGLISH')
+		,0
+! (release 1.1)	,$str ('FRENCH')
+!		,1
+! (release 1.1)	,$str ('GERMAN')
+!		,2
+		);
+OWN
+   auto_termtype_table: VECTOR [(vsta$k_termtype_highest * 2) + 3]
+	!Two longwords per real entry plus the 'NONE' entry plus the count.
+	INITIAL	((vsta$k_termtype_highest + 1) * 2 !# of longwords that follow
+		,$str ('NONE')
+		,0
+		,$str ('VT100')
+		,vsta$k_termtype_vt100
+		,$str ('VT100_SMALL')		
+		,vsta$k_termtype_vt100_small	
+		,$str ('VT100_TALL')		
+		,vsta$k_termtype_vt100_tall	
+		,$str ('VT100_WIDE')		
+		,vsta$k_termtype_vt100_wide	
+		,$str ('TEK4014')
+		,vsta$k_termtype_tek4014
+		);
+
+LITERAL
+    num_time_items = 3;			!# of items in time format
+OWN
+    time_table: VECTOR [(num_time_items * 2) + 1]
+	INITIAL	(num_time_items * 2	!# of longwords that follow
+		,$str ('12HR')
+		,prof$K_timef_12hr
+		,$str ('24HR')
+		,prof$K_timef_24hr
+		,$str ('EUROPEAN')
+		,prof$K_timef_eur
+		);
+LITERAL
+    num_date_items = 5;			!# of items in date format
+OWN
+    date_table: VECTOR [(num_date_items * 2) + 1]
+	INITIAL	(num_date_items * 2	!# of longwords that follow
+		,$str ('DDHMONHYY')	!e.g. 15-Mar-83
+		,prof$K_datef_ddhmonhyy
+		,$str ('DDMONTH19YY')	!e.g. 15 March 1983
+		,prof$K_datef_ddmonth19yy
+		,$str ('DDSMMSYY')	!e.g. 15/3/83
+		,prof$K_datef_ddsmmsyy
+		,$str ('MMSDDSYY')	!e.g. 3/15/83
+		,prof$K_datef_mmsddsyy
+		,$str ('MONTHDD19YY')
+		,prof$K_datef_monthdd19yy
+		);
+
+
+! Insert the definitions for the Keyboard table here and include an	
+! entry in the PROF_KEYWORD_TABLE					
+
+LITERAL
+    num_kbd_items = 15;			!# of items in date format	
+OWN
+    kbd_table: VECTOR [(num_kbd_items * 2) + 1]
+	INITIAL	(num_kbd_items * 2	!# of longwords that follow	
+		,$str ('LK201CA')	!American			
+		,prof$K_kbd_ca		! = 0				
+		,$str ('LK201CB')	! Flemish			
+		,prof$K_kbd_cb		! = 1				
+		,$str ('LK201CC')	!Canadian (French)		
+		,prof$K_kbd_cc		! = 2				
+		,$str ('LK201CD')	!Danish				
+		,prof$K_kbd_cd		! = 3				
+		,$str ('LK201CE')	!British			
+		,prof$K_kbd_ce		! = 4				
+		,$str ('LK201CF')	!Finnish			
+		,prof$K_kbd_cf		! = 5				
+		,$str ('LK201CG')	!German/Austrian		
+		,prof$K_kbd_cg		! = 6				
+		,$str ('LK201CH')	!Dutch				
+		,prof$K_kbd_ch		! = 7				
+		,$str ('LK201CI')	!Italian			
+		,prof$K_kbd_ci		! = 8				
+		,$str ('LK201CK')	!French/Swiss			
+		,prof$K_kbd_ck		! = 9				
+		,$str ('LK201CL')	!German/Swiss			
+		,prof$K_kbd_cl		! = 10				
+		,$str ('LK201CM')	!Swedish			
+		,prof$K_kbd_cm		! = 11				
+		,$str ('LK201CN')	!Norwegian			
+		,prof$K_kbd_cn		! = 12				
+		,$str ('LK201CP')	!French/Belgian			
+		,prof$K_kbd_cp		! = 13				
+		,$str ('LK201CS')	!Spanish			
+		,prof$K_kbd_cs		! = 14				
+		);                                                      
+
+LITERAL
+    num_legend_items = 2;		!# of items in legend table
+OWN
+    legend_table: VECTOR [(num_legend_items * 2) + 1]
+	INITIAL	(num_legend_items * 2	!# of longwords that follow
+		,$str ('TW')
+		,prof$K_legend_tw
+		,$str ('DP')
+		,prof$K_legend_dp
+		);
+
+
+LITERAL
+    num_vlevel_items = 3;		!# of items in VT level table
+OWN
+    vlevel_table: VECTOR [(num_vlevel_items * 2) + 1]
+	INITIAL	(num_vlevel_items * 2	!# of longwords that follow
+		,$str ('LEVEL1')
+		,prof$K_vt_level1
+		,$str ('LEVEL2')
+		,prof$K_vt_level2
+		,$str ('7BITNRC')
+		,prof$k_7bit_nrc
+		);
+
+LITERAL
+    num_addc_items = 3;			!# of items in TEK addc table
+OWN
+    addc_table: VECTOR [(num_addc_items * 2) + 1]
+	INITIAL	(num_addc_items * 2	!# of longwords that follow
+		,$str ('CR')
+		,prof$K_tek_addc_cr
+		,$str ('CREOT')
+		,prof$K_tek_addc_creot
+		,$str ('NONE')
+		,prof$K_tek_addc_none
+		);
+
+LITERAL
+    num_tekbsize_items = 2;		!# of items in TEK bytesize table
+OWN
+    tbsize_table: VECTOR [(num_tekbsize_items * 2) + 1]
+	INITIAL	(num_tekbsize_items * 2	!# of longwords that follow
+		,$str ('7BIT')
+		,prof$K_tek_7bit
+		,$str ('8BIT')
+		,prof$K_tek_8bit
+		);
+
+LITERAL
+    num_tekpagefull_items = 5;		!# of items in TEK pagefull	
+OWN									
+    tpagesize_table: VECTOR [(num_tekpagefull_items * 2) + 1]		
+	INITIAL	(num_tekpagefull_items * 2	!# of longwords that follow 
+		,$str ('MARGIN1')					
+		,prof$K_tek_margin1					
+		,$str ('MARGIN2')					
+		,prof$K_tek_margin2					
+		,$str ('MARGINOFF')					
+		,prof$k_tek_marginoff					
+		,$str ('NO')	!for those old-timers who only speak yes/no 
+		,0		!for those old-timers who only speak yes/no 
+		,$str ('YES')	!for those old-timers who only speak yes/no 
+		,1		!for those old-timers who only speak yes/no 
+		);							
+
+LITERAL
+    num_sysprof_items = 1;		!# of items in the system-only table.
+OWN
+    prof_sys_keyword_table: VECTOR [(num_sysprof_items * 2) + 1]
+	INITIAL	(num_sysprof_items * 2	!# of longwords that follow
+		,$str ('SITE_NAME')
+		,$str_info (80, srv$gl_sitename_len, srv$gl_sitename)
+		);
+
+LITERAL
+    num_prof_items = 51;		!# of items in table. modified:	
+OWN
+    prof_keyword_table: VECTOR [(num_prof_items * 2) + 1]
+	INITIAL	(num_prof_items * 2	!# of longwords that follow
+		,$str ('ANSWERBACK')
+		,$str_info (80, srv$gl_answerback_len, srv$gl_answerback_str)
+		,$str ('AUTOREPEAT')
+		,$key_info (srv$gl_autorepeat_on, yes_no_table)
+		,$str ('AUTO_TERMINAL')
+		,$key_info (srv$gl_auto_termtype, auto_termtype_table)
+		,$str ('DATE_FORMAT')
+		,$key_info (srv$gl_date_format, date_table)
+		,$str ('DEFAULT_KBD_A')	
+		,$key_info (srv$gl_kbd_a, kbd_table)	
+		,$str ('DEFAULT_KBD_B')	
+		,$key_info (srv$gl_kbd_b, kbd_table)			
+		,$str ('DEFAULT_KBD_C')					
+		,$key_info (srv$gl_kbd_c, kbd_table)			
+		,$str ('DEFAULT_KBD_D')					
+		,$key_info (srv$gl_kbd_d, kbd_table)			
+		,$str ('DEFAULT_KBD_E')					
+		,$key_info (srv$gl_kbd_e, kbd_table)			
+		,$str ('DEFAULT_KBD_F')					
+		,$key_info (srv$gl_kbd_f, kbd_table)			
+		,$str ('DEFAULT_KBD_G')					
+		,$key_info (srv$gl_kbd_g, kbd_table)			
+		,$str ('DEFAULT_KBD_H')					
+		,$key_info (srv$gl_kbd_h, kbd_table)			
+		,$str ('DEFAULT_KBD_I')					
+		,$key_info (srv$gl_kbd_i, kbd_table)			
+		,$str ('DEFAULT_KBD_J')					
+		,$key_info (srv$gl_kbd_j, kbd_table)			
+		,$str ('DEFAULT_KBD_K')					
+		,$key_info (srv$gl_kbd_k, kbd_table)			
+		,$str ('DEFAULT_KBD_L')					
+		,$key_info (srv$gl_kbd_l, kbd_table)			
+		,$str ('DEFAULT_KBD_M')					
+		,$key_info (srv$gl_kbd_m, kbd_table)			
+		,$str ('DEFAULT_KBD_N')					
+		,$key_info (srv$gl_kbd_n, kbd_table)			
+		,$str ('DEFAULT_KBD_O')					
+		,$key_info (srv$gl_kbd_o, kbd_table)			
+		,$str ('DEFAULT_KBD_P')					
+		,$key_info (srv$gl_kbd_p, kbd_table)			
+		,$str ('DEFAULT_KBD_Q')					
+		,$key_info (srv$gl_kbd_q, kbd_table)			
+		,$str ('DEFAULT_KBD_R')					
+		,$key_info (srv$gl_kbd_r, kbd_table)			
+		,$str ('DEFAULT_KBD_S')					
+		,$key_info (srv$gl_kbd_s, kbd_table)			
+		,$str ('DEFAULT_KBD_T')					
+		,$key_info (srv$gl_kbd_t, kbd_table)			
+		,$str ('DEFAULT_KBD_U')					
+		,$key_info (srv$gl_kbd_u, kbd_table)			
+		,$str ('DEFAULT_KBD_V')					
+		,$key_info (srv$gl_kbd_v, kbd_table)			
+		,$str ('DEFAULT_KBD_W')					
+		,$key_info (srv$gl_kbd_w, kbd_table)			
+		,$str ('DEFAULT_KBD_X')					
+		,$key_info (srv$gl_kbd_x, kbd_table)			
+		,$str ('DEFAULT_KBD_Y')					
+		,$key_info (srv$gl_kbd_y, kbd_table)			
+		,$str ('DEFAULT_KBD_Z')					
+		,$key_info (srv$gl_kbd_z, kbd_table)			
+		,$str ('KEYLEGEND')					
+		,$key_info (srv$gl_vt_legend, legend_table)		
+		,$str ('KEYCLICK')
+		,$key_info (srv$gl_keyclick_on, yes_no_table)
+		,$str ('LANGUAGE')
+		,$key_info (srv$gl_language, prof_lang_table)
+		,$str ('NOTICE_NUM_LINES')
+		,$val_info (srv$gl_notice_num_lines, 1, 20)  !change limits 
+		,$str ('UTILITY_AREA_DISPLAYED')			
+		,$key_info (srv$gl_utility_area_displayed, yes_no_table)
+		,$str ('SCREEN_HALFTONE_PATTERN')			
+		,$val_info (srv$gl_screen_halftone_pattern, 0, 15)	
+		,$str ('TEK_ADDCHARS')
+		,$key_info (srv$gl_tek_addchars, addc_table)
+		,$str ('TEK_BYTESIZE')
+		,$key_info (srv$gl_tek_bytesize, tbsize_table)
+		,$str ('TEK_CR_LF')
+		,$key_info (srv$gl_tek_cr_lf, yes_no_table)
+		,$str ('TEK_DELVALID')
+		,$key_info (srv$gl_tek_delvalid, yes_no_table)
+		,$str ('TEK_LF_CR')
+		,$key_info (srv$gl_tek_lf_cr, yes_no_table)
+		,$str ('TEK_STOP_OUTPUT')
+		,$key_info (srv$gl_tek_stopout, tpagesize_table)
+		,$str ('TIME_FORMAT')
+		,$key_info (srv$gl_time_format, time_table)
+		,$str ('USER_1_NAME')
+		,$str_info (40, srv$gl_user_1_name_len, srv$gl_user_1_name)
+		,$str ('USER_2_NAME')
+		,$str_info (40, srv$gl_user_2_name_len, srv$gl_user_2_name)
+		,$str ('VT_ANSI_MODE')
+		,$key_info (srv$gl_vt100_ansi, yes_no_table)
+		,$str ('VT_DARK_BACKGROUND')
+		,$key_info (srv$gl_vt100_dark_bg, yes_no_table)
+		,$str ('VT_LEVEL')
+		,$key_info (srv$gl_vt_level, vlevel_table)
+		,$str ('VT_MARGIN_BELL')
+		,$key_info (srv$gl_vt_margin_bell, yes_no_table)
+		,$str ('VT_NEWLINE')
+		,$key_info (srv$gl_vt_newline, yes_no_table)
+		,$str ('VT_WRAP')
+		,$key_info (srv$gl_vt_wrap, yes_no_table)
+		);
+
+OWN
+    sysprof_fab: $FAB
+		(FNM = 'VSTA$HILIB:SYSSITE.PRF'
+		,FAC = <GET>
+		),
+    sysprof_rab: $RAB
+		(FAB = sysprof_fab
+		,USZ = 256
+		),
+    userprof_name: VECTOR [128,BYTE],	!Holds filename for user profile file
+    nam_res_buffer: VECTOR [NAM$C_MAXRSS,BYTE],	!Holds resultant user profile name
+    userprof_namblk: $NAM
+		(RSS = NAM$C_MAXRSS	!Resultant string buffer size
+		,RSA = nam_res_buffer	! and address.
+		),
+    userprof_fab: $FAB
+		(FNA = userprof_name	!Address of filename string
+		,NAM = userprof_namblk	!NAM block address
+					!FAC set when needed.
+		,FOP = <NAM>		!We want to use the name block.
+		,RAT = CR		!Records have implied CR.
+		),
+    userprof_rab: $RAB
+		(FAB = userprof_fab
+		,USZ = 256
+		),
+    trans_key_xab: $XABKEY		!Define the primary index key
+					! (the username field)
+		(DTP = STG		!String data type
+!doesn't compile (???)	,REF = 0		!Primary key
+		,SIZ = 12		!12 bytes
+		,POS = 0		!Key starts in first byte
+		),
+    trans_key_buf: VECTOR [12,BYTE],
+    trans_fab: $FAB
+		(ORG = IDX		! This is an indexed file.
+					! FAC, SHR filled in when needed.
+		,FNM = 'VSTA$HILIB:TRANSPROF.BIN'
+		,XAB = trans_key_xab	!Pointer to XAB
+		,RFM = FIX		!Fixed-length records
+		,MRS = 16		!Maximum (only) record size
+		),
+    trans_rab: $RAB
+		(FAB = trans_fab
+		,USZ = 12 + 4		!Size of record (12 bytes for uname,
+					! 4 bytes for binary integer filename)
+		,RAC = KEY		!Key access
+		,KBF = trans_key_buf
+		,KSZ = 12
+		);
+
+
+GLOBAL ROUTINE vsta$$srv_prof_sysread =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read in the system-site profile.
+!--
+BEGIN
+LOCAL
+    prof_line_len,			!Hold length of profile line
+    prof_line: VECTOR [256,BYTE],	!Holds a profile line
+    syssite_fname_desc: VECTOR [2],
+    status;
+!
+! First default all variables.
+!
+srv$gl_sitename_len = 0;		!No site name
+srv$gl_user_1_name_len = 0;		!No user full name specified.
+srv$gl_user_2_name_len = 0;
+srv$gl_answerback_len = 0;
+srv$gl_language = 0;			!Default language
+srv$gl_auto_termtype = 0;		!Automatic logged-in terminal
+srv$gl_time_format = prof$K_timef_24hr;	!Time format
+srv$gl_date_format = prof$K_datef_ddhmonhyy;	!Date format
+srv$gl_keyclick_on = 0;			!No keyclick
+srv$gl_autorepeat_on = 0;
+srv$gl_vt100_dark_bg = 1;		!VT100 comes up with dark background
+srv$gl_vt100_ansi = 1;			!VT100 comes up in ANSI mode
+srv$gl_vt_margin_bell = 0;
+srv$gl_vt_wrap = 0;
+srv$gl_vt_newline = 0;
+srv$gl_vt_level = prof$K_vt_level1;	!VT100 comes up level 1
+srv$gl_vt_lines = 24;			!Default to the regular size.	
+srv$gl_vt_columns = 80;			!Default to the regular size.
+srv$gl_tek_cr_lf = 0;
+srv$gl_tek_lf_cr = 0;
+srv$gl_tek_delvalid = 0;
+srv$gl_tek_addchars = prof$K_tek_addc_none;	!Default is add no characters
+srv$gl_tek_stopout = 0;
+srv$gl_tek_bytesize = prof$K_tek_7bit;	!TEK4014 is a 7-bit terminal
+srv$gl_notice_num_lines = 10;		!Default # of lines in notices form.
+srv$gl_utility_area_displayed = 1;	!Default is to display it.	
+srv$gl_screen_halftone_pattern = 9;	! The standard 50% gray.	
+srv$gl_kbd_a = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_b = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_c = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_d = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_e = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_f = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_g = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_h = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_i = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_j = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_k = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_l = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_m = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_n = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_o = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_p = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_q = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_r = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_s = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_t = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_u = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_v = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_w = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_x = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_y = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_kbd_z = prof$k_kbd_ca;	! Initialize to American just in case	
+
+srv$gl_kbd_set = prof$k_kbd_ca;	! Initialize to American just in case	
+srv$gl_vt_legend = prof$k_legend_tw;	! Initialize to tw just in case	
+vsta$gl_keyboard = vsta$k_lk201_ca;	! American by default = LK201CA	
+!
+! Attempt to open the system profile file.
+!
+syssite_fname_desc [0] = .sysprof_fab [fab$b_fns];	!In case of error..
+syssite_fname_desc [1] = .sysprof_fab [fab$l_fna];
+
+IF NOT (status =
+    $open	(FAB = sysprof_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report $open error.
+    RETURN $error (vsta$_open_syssite
+		,string_type, syssite_fname_desc
+		);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = sysprof_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report connect error.
+    $close (FAB = sysprof_fab);
+    RETURN $error (vsta$_conn_syssite
+		,string_type, syssite_fname_desc
+		);
+    END;
+!
+! There is a file there. Process each line.
+!
+WHILE 1 DO
+    BEGIN
+  !
+  ! Read next line
+  !
+    IF NOT (status =
+	read_prof_line (sysprof_rab, prof_line_len, prof_line)
+	    )
+      THEN EXITLOOP;
+    prof_do_line (0, .prof_line_len, prof_line);	!0= system profile
+    END;
+!
+! Close the file.
+!
+IF NOT (status =
+    $close	(FAB = sysprof_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_close_syssite
+		,string_type, syssite_fname_desc
+		);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_prof_userread =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads in the user's profile.
+!	Remembers the generation number of the file (if it exists).
+!	If the user has a long name, look in TRANSPROF.BIN for the
+!	record. If not found, open TRANSPROF.BIN for write allowing
+!	read access, and create a record.
+!--
+BEGIN
+LOCAL
+    prof_line_len,			!Hold length of profile line
+    prof_line: VECTOR [256,BYTE],	!Holds a profile line
+    temp_desc: VECTOR [2],		!Because lib$cvt_dtb is
+					! multiply defined!!!
+    uprof_desc: VECTOR [2],		!User profile descriptor
+    status;
+
+last_userprof_gen = 0;			!Assume file can't be found.
+
+!
+! Setup filename
+!
+IF NOT (status =
+    setup_userprof_filename ()
+	)
+  THEN RETURN $error (vsta$_uprof_setup);
+!
+! Set up descriptor for error messages.
+!
+	uprof_desc [0] = .userprof_fab [fab$b_fns];
+	uprof_desc [1] = .userprof_fab [fab$l_fna];
+!
+! Force new filespec to be used instead of one from possibly previous session,
+! by clearing file id field.
+!
+	userprof_namblk[nam$w_fid_num] = 0;
+!
+! Say GET access.
+!
+	userprof_fab [fab$b_fac] = fab$m_get;
+!
+! Open the file.
+!
+	IF NOT (status = $open (FAB = userprof_fab))
+	THEN
+	    BEGIN
+	    IF (.status EQL RMS$_FNF)
+	      THEN RETURN SS$_NORMAL;		!No file--ok
+	    $system_error (.status);		!Report open error.
+	    RETURN $error (vsta$_open_uprof
+		,string_type, uprof_desc
+		);
+	    END;
+!
+! Remember the user profile's version number.
+!
+temp_desc [0] = .userprof_namblk [nam$b_ver] - 1;
+temp_desc [1] = .userprof_namblk [nam$l_ver] + 1;
+IF NOT (status =
+    ots$cvt_ti_l(temp_desc
+		,last_userprof_gen		!Convert to binary number here.
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    $close (FAB = userprof_fab);
+    RETURN $error (vsta$_cvt_ti_l);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = userprof_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    $close (FAB = userprof_fab);
+    RETURN $error (vsta$_conn_uprof
+		,string_type, uprof_desc
+		);
+    END;
+!
+! There is a file there. Process each line.
+!
+WHILE 1 DO
+    BEGIN
+  !
+  ! Read next line
+  !
+    IF NOT (status =
+	read_prof_line (userprof_rab, prof_line_len, prof_line)
+	    )
+      THEN EXITLOOP;
+    prof_do_line (1, .prof_line_len, prof_line);	!1= user profile
+    END;
+!
+! Close the file.
+!
+IF NOT (status =
+    $close	(FAB = userprof_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_close_uprof
+		,string_type, uprof_desc
+		);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_userprof_filename =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Sets up the filename based on the username.
+!
+! IMPLICIT OUTPUTS:
+!	userprof_fab [fab$b_fns] and userprof_filename_desc [0]
+!	userprof_name
+!
+!--
+BEGIN
+LOCAL
+    out_desc: VECTOR [2],
+    out_len: WORD,
+    flk_count,		!# of times we got "file locked" error.
+    status;
+
+!
+! First assume user name is appropriate for a filename, and conjure up
+! the filename.
+! 
+    out_desc [0] = 128;			!Max filename length
+    out_desc [1] = userprof_name;
+    IF NOT (status =
+	$fao	(%ASCID 'VSTA$HILIB:!AS.PRF'	!CTRSTR
+		,out_len
+		,out_desc
+		,srv$gl_username_desc		!P1 - string
+		)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_fao);
+	END;
+!
+! Acknowledged time bomb here: *** When VMS suddenly changes to allow 39
+! characters in filenames instead of only 9, then we'll suddenly start
+! using a real instead of translated filename for users whose names are
+! longer than 9 characters, since the $parse will suddenly succeed.  The
+! effect on such users will be that their profile will suddenly lose
+! all its settings (since we'll automatically allocate such users a
+! standard profile at that time and totally ignore their translated one).
+!
+! Now attempt to parse the filespec.
+!
+	userprof_fab [fab$b_fns] = .out_len;	!Set length in FAB
+	if (status = $parse (fab = userprof_fab))
+!
+! Good syntax, so return a success code.
+!
+	then return ss$_normal;
+!
+! The parse failed.  If the reason is that the username isn't valid as a
+! filename, usually because it contains things like "_" or "$" which aren't
+! valid in filenames, or it is too long, then we'll be use a translation
+! file. For other reaons of failure, we'll return the error to our caller.
+!
+	if .status neq rms$_fnm
+	then return .status;
+!
+! O.K., if we get here, the problem was that the name is not valid as a
+! filespec, so we'll translate the name into some filepsec that will represent
+! the name.
+!
+! Find the translation in TRANSPROF.BIN.   If the username is not found in
+! TRANSPROF.BIN, trans_username will try to open it for updating and will get
+! a "file locked" error if another process (presumably another ACP) has it
+! open for updating. In this case, we will start the translation process again
+! (maybe the other process will have inserted an entry; if not, the translation
+! routine will try to do the $open again.) If we try 100 times and the file is
+! still locked, we will assume the system is messed up and $exit.
+!   Note: This code assumes that the other ACP is running at the same
+! VMS priority as this ACP. A process with a lower priority may never
+! get enough compute time to finish updating the file. 
+!
+flk_count = 100;			!Allow "file locked error" to occur
+					! 100 times before getting upset.
+UNTIL (.flk_count EQL 0) DO
+    BEGIN
+    IF (status = trans_username ())
+      THEN RETURN .status;		!Got it, return good status
+    IF (.status NEQ RMS$_FLK)
+      THEN RETURN .status;		!Got bad status, return it.
+    flk_count = .flk_count - 1;		!The file was locked. Try again
+    END;
+!
+! File was locked too long -- system probably messed up.
+!
+$system_error (.status);		!Report RMS$_FLK
+RETURN $error (vsta$_lock_timout
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+END;
+
+ROUTINE trans_username =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Find translation for long username.
+!	Return filename in FAB.
+! IMPLICIT INPUTS:
+!	srv$gl_username_desc
+! IMPLICIT OUTPUTS:
+!	userprof_fab [fab$b_fns]
+!	userprof_name
+!--
+BEGIN
+OWN
+    out_desc: VECTOR [2]
+		INITIAL (128, userprof_name);	!Descriptor to userprof_name
+LOCAL
+    trans_buf: VECTOR [12 + 4, BYTE],	!TRANSPROF.BIN record buffer
+    out_len: WORD,		!Returned from $fao.
+    att_nnn,
+    status;
+BIND
+    trans_nnn = trans_buf + 12;		!Addr of longword where value is.
+
+!
+! Attempt to open the translation file.
+! Any errors in getting our record in the translation file are fatal
+! errors. We'll return a bad status, and the caller is expected to
+! gracefully die.
+!
+trans_fab [FAB$B_FAC] = fab$M_get;	!Want GET access.
+trans_fab [FAB$B_SHR] = fab$M_get+fab$M_put+fab$M_upd;
+
+IF NOT (status =
+    $open	(FAB = trans_fab)
+	)
+  THEN
+    BEGIN
+    IF (.status NEQ RMS$_FNF)		!If not found, we'll create it.
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_open_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+  !
+  ! TRANSPROF.BIN not found -- create it
+  !
+    IF NOT (status =
+	$create	(FAB = trans_fab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_cre_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+
+    $error (vsta$_crenew_trp);	!%VSTA-S-CRENEW-TRP
+
+    IF NOT (status =
+	$close	(FAB = trans_fab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_close_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    IF NOT (status =
+	$open	(FAB = trans_fab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_open_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    END;	!of initial $open error processing.
+!
+! TRANSPROF.TXT has been successfully $open'd.
+! $connect and see if our record exists.
+!
+IF NOT (status =
+    $connect	(RAB = trans_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report the $connect error
+    RETURN $error (vsta$_conn_trp
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+    END;
+
+trans_rab [rab$l_ubf] = trans_buf;	!Write record here.
+trans_rab [rab$l_rbf] = trans_buf;	! and read from here.
+
+!
+! Setup key to find our username record in the translation file.
+!
+CH$COPY	(.srv$gl_username_desc [0]
+	,.srv$gl_username_Desc [1]
+	,%C' '				!Fill with spaces
+	,12				!Dest length
+	,trans_key_buf			!Dest addr
+	);
+IF (status =
+    $get (RAB = trans_rab)		!Try to read our record.
+    )
+  THEN
+    BEGIN
+  ! Get filename and copy to user's buffer.
+    IF NOT (status =
+	$fao	(%ASCID 'VSTA$HILIB:!UL.PRF'	!CTRSTR
+		,out_len		!Length of filespec
+		,out_desc		!Output fs descriptor.
+		,.trans_nnn		!Longword (in record) that contains #.
+		)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);	!Log the $fao error
+	RETURN $error (vsta$_fao);
+	END;
+
+    userprof_fab [fab$b_fns] = .out_len;	!Return length
+
+    IF NOT (status =
+	$close	(FAB = trans_fab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_close_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    RETURN SS$_NORMAL
+    END;		!End normal processing - record was found.
+
+!
+! Our record was NOT found in TRANSPROF.BIN. We will have to create one.
+! Do this as follows:
+!	1. Open TRANSPROF.BIN for READ/WRITE allowing others READ.
+!	   (if file locked, return and the caller will try again).
+!	2. Get the maximum record. (if not there, write MAXIMUM = 100).
+!	3. Add 1, make sure that nnn.PRF is not present on VSTA$HILIB.
+!	4. Rewrite the "MAXIMUM" record to be my new value.
+!	5. Write a new record <myusername>, <value>.
+!	6. Close TRANSPROF.BIN.
+!
+
+IF NOT (status =
+    $close (FAB = trans_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_close_trp
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+    END;
+
+trans_fab [FAB$B_FAC] = fab$M_get + fab$M_put + fab$M_upd;
+trans_fab [FAB$B_SHR] = fab$M_get;		! Allow others GET
+
+IF NOT (status =
+    $open	(FAB = trans_fab)
+	)
+  THEN
+    BEGIN
+    IF (.status NEQ RMS$_FLK)	!If file not locked, (someone else
+      THEN			! has it open for read/write)..
+	BEGIN
+	$system_error (.status);	!Unexpected error..
+	RETURN $error (vsta$_openrw_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    RETURN .status		!Let the caller deal with this open error.
+    END;
+
+!
+! File is successfully opened for read/write.
+!
+IF NOT (status =
+    $connect (RAB = trans_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_conn_trp
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+    END;
+!
+! Find the maximum record.
+!
+att_nnn = 100;			!Maximum seen so far.
+CH$MOVE	(12
+	,UPLIT ('AAA___MAX___')	!Look for this key
+	,trans_key_buf
+	);
+
+IF NOT (status =
+    $get (RAB = trans_rab)
+	)
+  THEN
+    BEGIN
+    IF (.status NEQ RMS$_RNF)
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_reamax_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+  !
+  ! Get the record ready. Write "MAX = 100"
+  !
+    CH$MOVE	(12
+		,trans_key_buf
+		,trans_buf
+		);
+    trans_nnn = .att_nnn;	!Write this value for now..
+    trans_rab [rab$w_rsz] = 16;	!Record size ($get clobbers it, even if RNF!)
+    IF NOT (status =
+	$put	(RAB = trans_rab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_wrtmax_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    IF NOT (status =
+	$find	(RAB = trans_rab)	!$find before $update works..
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_find_trp	!?Can't find record I just $put !!
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+	END;
+    END		!of "$get failed.."
+  ELSE
+    att_nnn = .trans_nnn;	!Get maximum now.
+
+!
+! Find the first file that isn't there.
+!
+WHILE 1 DO
+    BEGIN
+    att_nnn = .att_nnn + 1;		!Bump "attempted nnn".
+    IF NOT (status =
+	$fao	(%ASCID 'VSTA$HILIB:!UL.PRF'	!CTRSTR
+		,out_len
+		,out_desc
+		,.att_nnn	!p1
+		)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_fao);
+	END;
+    userprof_fab [fab$b_fns] = .out_len;	!Return length
+    userprof_fab [FAB$B_FAC] = fab$M_get;	!Want GET access.
+!
+! Force new filespec to be used, by clearing file id field.
+!
+	userprof_namblk[nam$w_fid_num] = 0;
+
+    IF NOT (status =
+	$open	(FAB = userprof_fab)
+	    )
+      THEN EXITLOOP;
+  ! The file IS there. Try again.
+    IF NOT (status =
+	$close	(FAB = userprof_fab)
+	    )
+      THEN
+	BEGIN
+	LOCAL
+	    uprof_desc: VECTOR [2];
+	uprof_desc [0] = .userprof_fab [fab$b_fns];
+	uprof_desc [1] = .userprof_fab [fab$l_fna];
+	$system_error (.status);		!Bizarre!!
+	RETURN $error (vsta$_close_uprof
+			,string_type, uprof_desc
+			);
+	END;
+    END;	!of loop to find first file not there..
+
+!
+! OK we've found a filename that isn't there. Update the maximum
+! record and write a record for us.
+!
+CH$MOVE	(12
+	,trans_key_buf
+	,trans_buf
+	);
+trans_nnn = .att_nnn;
+IF NOT (status =
+    $update	(RAB = trans_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_updmax_trp
+			,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+			);
+    END;
+!
+! Max record is now updated. Write our record.
+!
+CH$COPY	(.srv$gl_username_desc [0]
+	,.srv$gl_username_Desc [1]
+	,%C' '				!Fill with spaces
+	,12				!Dest length
+	,trans_key_buf			!Dest addr
+	);
+CH$MOVE	(12				!Copy key to real record area.
+	,trans_key_buf
+	,trans_buf
+	);
+trans_nnn = .att_nnn;			!Put the number here.
+trans_rab [rab$w_rsz] = 16;		!Get the correct recordsize.
+IF NOT (status =
+    $put	(RAB = trans_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_put_trp
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+    END;
+
+IF NOT (status =
+    $close	(FAB = trans_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_close_trp
+		,string_type, %ASCID 'VSTA$HILIB:TRANSPROF.BIN'
+		);
+    END;
+!
+! OK, TRANSPROF.BIN is now updated. userprof_fab contains the
+! name string we want.
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE read_prof_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read in next non-blank line of the profile.
+!	if we get EOF, return status = 0.
+!	if other error, log it and return status = <whatever>
+! FORMAL PARAMETERS:
+	(rab_addr: REF BLOCK[,BYTE]
+	,line_len		!Addr of where to return line length
+	,line_addr		!Where to put the line
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Put the buffer address in the rab
+!
+rab_addr [rab$l_ubf] = .line_addr;
+
+IF NOT (status =
+    $get	(RAB = .rab_addr)
+	)
+  THEN
+    BEGIN
+    IF (.status EQL RMS$_EOF)
+      THEN RETURN 0;
+    $system_error (.status);		!Unexpected RMS error
+    RETURN $error (vsta$_rea_prfline);	!?error reading profile line
+    END;
+!
+! Return the line length
+!
+.line_len = .rab_addr [rab$w_rsz];
+RETURN SS$_NORMAL
+END;
+
+ROUTINE prof_do_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Interprets the next profile line. Logs error
+!	if bad syntax.
+! FORMAL PARAMETERS:
+	(userprof_flag		!=1 means user profile, =0 means system profile
+	,line_len
+	,line_addr: REF VECTOR [,BYTE]
+	) =
+!--
+BEGIN
+MACRO
+    $skip_spaces =
+
+	BEGIN
+	num_to_skip = 0;
+	INCR i FROM 0 TO .cur_len - 1 DO
+	    BEGIN
+	    IF ((.cur_str [.i] NEQ %C' ') AND (.cur_str [.i] NEQ %C'	'))
+	      THEN EXITLOOP;		!Found first non-space
+	    num_to_skip = .num_to_skip + 1;
+	    END;
+	cur_len = .cur_len - .num_to_skip;
+	cur_str = .cur_str + .num_to_skip;
+	END %;
+
+LOCAL
+    cur_str: REF VECTOR [,BYTE],
+    cur_len,
+    search_str_desc: VECTOR [2],
+    num_to_skip,		!# spaces to skip
+    status;
+
+IF (.line_len EQL 0)
+  THEN RETURN SS$_NORMAL;	!Ignore blank lines
+IF (.line_addr [0] EQL %C'!')
+  THEN RETURN SS$_NORMAL;	!Ignore comment lines
+!
+! Check syntax - keyword =
+!
+cur_str = .line_addr;
+cur_len = .line_len;
+search_str_desc [0] = 0;
+!
+! Skip leading spaces and tabs.
+!
+$skip_spaces;
+IF (.cur_len EQL 0)
+  THEN RETURN SS$_NORMAL;	!Nothing but blanks on this line.
+
+!
+! First is keyword =
+!
+search_str_desc [1] = .cur_str;	!Point to keyword
+INCR i FROM 0 TO .cur_len - 1 DO
+    BEGIN
+    IF ((.cur_str [.i] EQL %C' ') OR (.cur_str [.i] EQL %C'	'))
+      THEN EXITLOOP;
+    IF (.cur_str [.i] EQL %C'=')
+      THEN EXITLOOP;
+    search_str_desc [0] = .search_str_desc [0] + 1;
+    END;
+
+IF (.search_str_desc [0] EQL 0)
+  THEN
+    BEGIN
+    $error (vsta$_miskwd_prf);	!?Missing keyword in profile
+    RETURN SS$_NORMAL
+    END;
+!
+! Must have an "=" after it.
+!
+cur_len = .cur_len - .search_str_desc [0];
+cur_str = .cur_str + .search_str_desc [0];
+IF (.cur_len EQL 0)
+  THEN
+    BEGIN
+    $error (vsta$_miseql_prf
+	,string_type, search_str_desc	!?Missing "=" after profile keyword
+	);				! !AS
+    RETURN SS$_NORMAL
+    END;
+!
+! Skip spaces
+!
+$skip_spaces;
+IF (.cur_len EQL 0)
+  THEN
+    BEGIN
+    $error (vsta$_miseql_prf
+	,string_type, search_str_desc
+	);
+    RETURN SS$_NORMAL
+    END;
+!
+! Better be an "=" now!
+!
+IF (.cur_str [0] NEQ %C'=')
+  THEN
+    BEGIN
+    $error (vsta$_eqlreq_prf	!?"=" required after keyword !AC in profile
+	,string_type, search_str_desc
+	);
+    RETURN SS$_NORMAL
+    END;
+
+cur_len = .cur_len - 1;		!Skip the "=" sign
+cur_str = .cur_str + 1;
+IF (.cur_len EQL 0)
+  THEN
+    BEGIN
+    $error (vsta$_kwdval_prf
+	,string_type, search_str_desc
+	);
+    RETURN SS$_NORMAL
+    END;
+!
+! Skip spaces until number or string
+!
+$skip_spaces;
+IF (.cur_len EQL 0)
+  THEN
+    BEGIN
+    $error (vsta$_kwdval_prf
+	,string_type, search_str_desc
+	);
+    RETURN SS$_NORMAL
+    END;
+!
+! Call inner routine
+!
+IF NOT (status =
+    inner_do_prof_line (.userprof_flag, search_str_desc, .cur_len, .cur_str)
+	)
+  THEN RETURN SS$_NORMAL;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE inner_do_prof_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Lookup keyword, and parse rest of profile line
+! FORMAL PARAMETERS:
+	(userprof_flag		!0= system profile, 1=user profile
+	,search_str_desc: REF VECTOR [2]
+	,str_len
+	,str_addr
+	) =
+!--
+BEGIN
+!++
+!	By the time we get here, the "raw" ascii line has been refined a little
+! and we have a descriptor to the alleged keyword and the length and address
+! of the rest of the line after the =, starting with the first non-space.
+!	Start by looking up the keyword and determine what kind it is.
+!--
+LOCAL
+    kval: REF VECTOR,
+    kwd_desc: VECTOR [2],
+    kwd_str: VECTOR [128,BYTE],
+    status;
+
+status = lib$lookup_key (.search_str_desc, prof_keyword_table, kval);
+!
+! If we didn't find the item in the user keyword table, and we are
+! reading the system profile, try to find the item in the system profile
+! table.
+!
+IF ((NOT (.status)) AND (NOT (.userprof_flag)))
+  THEN
+    status = lib$lookup_key (.search_str_desc, prof_sys_keyword_table, kval);
+
+IF NOT .status
+  THEN
+    BEGIN
+    $error (vsta$_unkkwd_prf
+	,string_type, .search_str_desc
+	);
+    RETURN SS$_NORMAL
+    END;
+
+(CASE (.kval [0]) FROM 1 TO 3 OF
+    SET
+    [1]:		!str info
+	BEGIN
+      ! [1] = max_size, [2] = length_variable, [3] = str_variable.
+	get_qst (.str_len, .str_addr, .kval [1], .kval [2], .kval [3]);
+	END;
+    [2]:		!keyword info
+	BEGIN
+      ! [1] = value variable, [2] = keyword table
+	kwd_desc [0] = 128;
+	kwd_desc [1] = kwd_str;
+	IF NOT (status =
+	    get_qst (.str_len, .str_addr, 128, kwd_desc [0], kwd_str)
+		)
+	  THEN RETURN SS$_NORMAL;
+	IF NOT (status =
+	    lib$lookup_key (kwd_desc, .kval [2], .kval [1])
+		)
+	  THEN
+	    BEGIN
+	    $error (vsta$_invkwdval_prf	!"?Invalid kwd for value
+		,string_type, .search_str_desc	! of profile item"
+		);
+	    RETURN SS$_NORMAL
+	    END;
+	END;
+    [3]:		!Value info
+	BEGIN
+     ! [1] = var, [2] = min, [3] = max
+	get_number (.str_len, .str_addr, .kval [2], .kval [3], .kval [1]);
+	END;
+
+    TES;
+);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_qst
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read quoted string and put it in the specified place.
+! FORMAL PARAMETERS:
+	(str_len		!Length of string to parse
+	,str_addr: REF VECTOR [,BYTE]	!Addr of string to parse
+	,max_len		!Max length of quoted string
+	,ret_len_addr		!Where to write length of string
+	,ret_str_addr		!Where to put the string itself
+	) =
+!--
+BEGIN
+LOCAL
+    cur_str: REF VECTOR [,BYTE],
+    cur_len,
+    eq_pos,			!Position of the ending quote
+    chars_between,		!# chars in quoted string
+    status;
+!
+! First must be beginning quote.
+!
+IF (.str_addr [0] NEQ %C'"')
+  THEN
+    RETURN $error (vsta$_badquo_prf);	!?Bad quoted string in profile
+
+cur_len = .str_len - 1;
+cur_str = .str_addr + 1;
+!
+! Search for the ending quote.
+!
+eq_pos = CH$FIND_CH	(.cur_len
+			,.cur_str
+			,%C'"'
+			);
+IF (.eq_pos EQL 0)
+  THEN
+    RETURN $error (vsta$_badquo_prf);	!?Bad quoted string in profile
+
+chars_between = .eq_pos - .cur_str;
+IF (.chars_between GTR .max_len)
+  THEN
+    BEGIN
+    $error (vsta$_prfitm_trunc);	!PROFILE item too long, truncated
+    chars_between = .max_len;
+    END;
+
+.ret_len_addr = .chars_between;		!Return length of string
+CH$MOVE	(.chars_between
+	,.cur_str
+	,.ret_str_addr
+	);				!Return the string itself
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_number
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read number and put it in the specified location
+! FORMAL PARAMETERS:
+	(str_len		!Length of string to parse
+	,str_addr: REF VECTOR [,BYTE]	!Addr of string to parse
+	,min			!minimum value allowed.
+	,max			!Maximum value allowed.
+	,place			!Address of place to put number
+	) =
+!--
+BEGIN
+LOCAL
+    base,
+    nnn,
+    cur_len,
+    cur_str: REF VECTOR [,BYTE],
+    parse_str_desc: VECTOR [2],
+    status;
+
+cur_len = .str_len;
+cur_str = .str_addr;
+!
+! The following format for numbers is accepted:
+!	<decimal number>
+!	%D<decimal number>
+!	%O<octal number>
+!	%H<hex number>
+!
+base = 10;		!Default base
+IF (.cur_str [0] EQL %C'%')
+  THEN
+    BEGIN
+    base = (SELECTONE .cur_str [1] OF
+	SET
+	[%C'D']: 10;
+	[%C'O']: 8;
+	[%C'H']: 16;
+	[OTHERWISE]:
+		BEGIN
+		RETURN $error (vsta$_badnum_prf); !Bad number specified
+						! in profile
+		END;
+	TES
+	);
+    cur_str = .cur_str + 2;
+    cur_len = .cur_len - 2;
+    END;
+
+parse_str_desc [0] = .cur_len;
+parse_str_desc [1] = .cur_str;
+
+status = (SELECTONE .base OF
+    SET
+    [10]:		!Decimal number
+	ots$cvt_ti_l (parse_str_desc, nnn);
+    [8]:		!Octal number
+	ots$cvt_to_l (parse_str_desc, nnn);
+    [16]:		!Hex number
+	ots$cvt_tz_l (parse_str_desc, nnn);
+    TES
+);
+IF (NOT (.status))
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_badnum_prf);	!?Bad number specified in profile
+    END;
+!
+! Check to see if within reasonable bounds.
+!
+IF (.min EQL 0) AND (.max EQL 0)
+  THEN
+    BEGIN
+    .place = .nnn;		!No bounds checking - both min and max = 0
+    RETURN SS$_NORMAL
+    END;
+
+IF (.nnn LSS .min)
+  THEN
+    BEGIN		! can't go less than min value	
+    .place = .min;	! force the min value		
+    RETURN $error (vsta$_lssmin_prf	!?Number less than minimum
+		,integer_type, .nnn
+		,integer_type, .min
+		);
+    END;		! *RR*
+
+IF (.nnn GTR .max)
+  THEN
+    BEGIN		! can't go more than max value	
+    .place = .max;	! force the max value		
+    RETURN $error (vsta$_gtrmax_prf	!?Number greater than maximum
+		,integer_type, .nnn
+		,integer_type, .max
+		);
+    END;
+
+.place = .nnn;		!Pass number to the right variable.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_prof_modified =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called whenever any profile variable is modified, to write
+!	the updated profile back out.
+!--
+BEGIN
+LOCAL
+    now_version,		!Version we're creating now.
+    temp_desc: VECTOR [2],
+    uprof_desc: VECTOR [2],
+    status;
+!
+! $create a new file and look at the version number.
+! If it isn't the previous + 1, we have a problem.
+!
+userprof_fab [FAB$B_FAC] = fab$M_put;	!Want PUT access.
+
+uprof_desc [0] = .userprof_fab [fab$b_fns];	!Get desc to filename
+uprof_desc [1] = .userprof_fab [fab$l_fna];	! incase of error
+!
+! Force new generation to be created, by clearing file id field.
+!
+	userprof_namblk[nam$w_fid_num] = 0;
+
+IF NOT (status =
+    $create	(FAB = userprof_fab)
+	)
+  THEN
+    BEGIN
+    IF (.status EQL RMS$_FUL)
+      THEN
+	BEGIN
+	report_full ();		!Tell notices that disk is full
+	RETURN SS$_NORMAL;	!No other cleanup necessary now.
+	END;
+    $system_error (.status);
+    RETURN $error (vsta$_creusrprf);	!?Can't create new copy of
+					! user profile
+    END;
+!
+! Successfully created the file. Set bits in the fab to abort
+! incase we get an error...
+!
+userprof_fab [fab$v_dlt] = 1;	!"delete on close"
+
+temp_desc [0] = .userprof_namblk [nam$b_ver] - 1;
+temp_desc [1] = .userprof_namblk [nam$l_ver] + 1;
+IF NOT (status =
+   ots$cvt_ti_l	(temp_desc
+		,now_version		!Convert to binary number here
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_cvt_ti_l);
+    END;
+
+IF (.now_version NEQ .last_userprof_gen + 1)
+  THEN
+    BEGIN
+    report_prof_conflict ();
+    IF NOT (status =
+	$close	(FAB = userprof_fab)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_close_uprof
+			,string_type, uprof_desc
+			);
+	END;
+    RETURN SS$_NORMAL
+    END;
+
+IF NOT (status =
+    $connect	(RAB = userprof_rab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_conn_uprof
+		,string_type, uprof_desc
+		);
+    END;
+
+!
+! WRITE IT NOW.
+!
+IF NOT (status =
+    dump_my_profile ()		!Write out my new profile...
+	)
+  THEN
+    BEGIN	!Only error that could return is RMS$_FUL.
+    report_full ();		!Tell user the disk is full.
+    IF NOT (status =
+	$close	(FAB = userprof_fab)
+	    )
+      THEN
+	BEGIN
+	$system_Error (.status);
+	RETURN $error (vsta$_close_uprof
+			,string_type, uprof_desc
+			);
+	END;        
+    RETURN SS$_NORMAL;
+    END;
+
+!
+! All done. Close the file, and remember the latest version as our own.
+!
+userprof_fab [fab$v_dlt] = 0;	!Clear "delete on close"
+IF NOT (status =
+    $close	(FAB = userprof_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_close_uprof
+		,string_type, uprof_desc
+		);
+    END;
+
+last_userprof_gen = .now_version;	!Remember new "last version written"
+RETURN SS$_NORMAL
+END;
+
+ROUTINE dump_my_profile =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Build profile records and dump them out to my profile file.
+!	Bomb out the ACP on any errors except "disk is full".
+!--
+BEGIN
+LOCAL
+    rec_size,			!Size of record we are writing out.
+    prof_rec_buf: VECTOR [256, BYTE],
+    str_ascic_addr: REF VECTOR [,BYTE],
+    info_addr: REF VECTOR,
+    info_type,
+    num_chars,
+    out_desc: VECTOR [2],	!Used with $fao
+    out_len: WORD,		! . .
+    keytab_addr: REF VECTOR,	!Address of keyword table
+    place_Holder: REF VECTOR [2],	!$str, value in a keyword table
+    key_value,			! Value to write out.
+    status;
+
+userprof_rab [rab$l_rbf] = prof_rec_buf;	!Records are here.
+
+INCR i FROM 0 TO num_prof_items - 1 DO
+    BEGIN
+    rec_size = 0;		!Size of record (so far).
+  !
+  ! Built the record in prof_rec_buf
+  !
+    str_ascic_addr = .prof_keyword_table [.i * 2 + 1];
+    info_addr = .prof_keyword_table [.i * 2 + 2];
+    info_type = .info_addr [0];	!Get Type of info
+    num_chars = .str_ascic_addr [0];	!Get # chars in item string
+    CH$MOVE	(.num_chars
+		,str_ascic_addr [1]
+		,prof_rec_buf
+		);
+    prof_rec_buf [.num_chars] = %C'=';
+    rec_size = .num_chars + 1;	!Record is now "ITEMNAME="
+    (CASE .info_type FROM 1 TO 3 OF
+	SET
+	[1]:	!Str-info
+	    BEGIN
+	    prof_rec_buf [.rec_size] = %C'"';
+	    rec_size = .rec_size + 1;
+	    num_chars = ..info_addr [2];	!Get length from length var.
+	    CH$MOVE	(.num_chars
+			,.info_addr [3]		!String variable
+			,prof_rec_buf [.rec_size]
+			);
+	    rec_size = .rec_size + .num_chars;
+	    prof_rec_buf [.rec_size] = %C'"';
+	    rec_size = .rec_size + 1;
+	    END;
+	[2]:	!Keyword info
+	    BEGIN
+	    prof_rec_buf [.rec_size] = %C'"';
+	    rec_size = .rec_size + 1;
+	    keytab_addr = .info_addr [2];
+	    key_value = ..info_addr [1];	!Look in variable to get value
+	    place_holder = keytab_addr [1];
+	    INCR j FROM 1 TO (.keytab_addr [0] / 2) DO
+		BEGIN
+		IF (.place_holder [1] EQL .key_value)
+		  THEN
+		    BEGIN
+		    str_ascic_addr = .place_holder [0];
+		    num_chars = .str_ascic_addr [0];	!Get # chars in item string
+		    CH$MOVE	(.num_chars
+				,str_ascic_addr [1]
+				,prof_rec_buf [.rec_size]
+				);
+
+		    rec_size = .rec_size + .num_chars;
+		    EXITLOOP;
+		    END;
+		place_holder = .place_holder + (4 * 2);	!2 longwords
+		END;
+	    prof_rec_buf [.rec_size] = %C'"';
+	    rec_size = .rec_size + 1;
+	    END;
+	[3]:	!Value info
+	    BEGIN
+	    out_desc [0] = 128 - .rec_size;	!Space remaining
+	    out_desc [1] = prof_rec_buf + .rec_size;  !Place to write number
+	    IF NOT (status =
+		$fao	(%ASCID '!UL'
+			,out_len
+			,out_desc
+			,..info_addr [1]
+			)
+		    )
+	      THEN
+		BEGIN
+		$system_error (.status);
+		RETURN $error (vsta$_fao);
+		END;
+	    rec_size = .rec_size + .out_len;
+	    END;
+	TES
+    );
+
+  !
+  ! Record is built.. write it out.
+  !
+    userprof_rab [rab$w_rsz] = .rec_size;
+    IF NOT (status =
+	$put	(RAB = userprof_rab)
+	    )
+      THEN
+	BEGIN
+	IF (.status EQL RMS$_FUL)
+	  THEN RETURN .status;		!Disk full -- recover gracefully
+	$system_error (.status);	!uh-oh, fatal $put error..
+	RETURN $error (vsta$_put_uprof);
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE report_full =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Tell the user we couldn't write out his profile because
+!	the disk is full.
+!--
+BEGIN
+LOCAL
+    status;
+
+vsta$$srv_notice_number (2100);		!"No disk space available"
+RETURN SS$_NORMAL
+END;
+
+ROUTINE report_prof_conflict =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Tell the user we couldn't write out his profile because
+!	it has been modified by someone else during our session.
+!--
+BEGIN
+LOCAL	
+    line1: VECTOR [256,BYTE],	!Four lines, concatenated
+    line_desc: VECTOR [2],
+    msg_len,
+    out_len: WORD,		!Result from $fao
+    line_str: VECTOR [4 * 2],	!Descriptors to the lines
+    res_desc: VECTOR [2],
+    fao_res_string: VECTOR [256,BYTE],
+    status;
+!
+! Read in the four lines
+!
+line_desc [0] = 256;		!To start, have the whole descriptor
+line_desc [1] = line1;		! . .
+
+INCR i FROM 0 TO 4-1 DO
+    BEGIN
+    vsta$$srv_get_message_Text (2101 + .i, line_Desc, msg_len);
+    line_str [(.i * 2)] = .msg_len;
+    line_str [(.i * 2) + 1] = .line_desc [1];
+    line_desc [1] = .line_desc [1] + .msg_len;
+    line_desc [0] = .line_desc [0] - .msg_len;
+    IF (.line_desc [0] LEQ 0)
+      THEN
+	BEGIN
+!	$tell_opr ('%string too short');
+	RETURN SS$_BADPARAM
+	END;
+    END;
+
+res_desc [0] = 256;
+res_desc [1] = fao_res_string;
+!
+! Convert to a string with CRLF's embedded, so when we send to the notices
+! document, we just get one finger.
+!
+IF NOT (status =
+    $fao	(%ASCID '!AS ;-!/!AS -!/!AS -!/!AS'
+		,out_len
+		,res_desc
+		,line_str [0 * 2]	!"PROFILE not updated on disk"
+		,line_str [1 * 2]	!2nd line
+		,line_str [2 * 2]	!3rd line
+		,line_str [3 * 2]	!4th line
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_fao);
+    END;
+
+res_desc [0] = .out_len;	!Get real descriptor to string
+vsta$$hi_notice (res_desc);	!Tell user about this problem
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

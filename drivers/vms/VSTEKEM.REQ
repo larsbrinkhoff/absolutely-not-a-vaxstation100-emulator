@@ -1,0 +1,51 @@
+LITERAL
+
+
+        default =                %B'0000000000',
+
+	del_loy =                %B'1000000000',
+        cr_implies_lf  =         %B'0100000000',
+        lf_implies_cr =          %B'0010000000',
+        cr_gin_term =            %B'0001000000',
+        creot_gin_term =         %B'0001100000',
+        prog_control =           %B'0000010000',
+        alt_set =                %B'0000001000',
+        ascii_set =              %B'0000000000',
+        margin_1 =               %B'0000000100',
+        margin_2 =               %B'0000000110',
+
+        no_del_loy =             0,
+        no_cr_implies_lf =       0,
+        no_lf_auto_cr =          0,
+        no_gin_term =            0,
+        margin_off =             0,
+
+        default_mask =           %B'1111111111',
+
+        del_loy_mask =           %B'1000000000',
+        cr_implies_lf_mask =     %B'0100000000',
+        lf_implies_cr_mask =     %B'0010000000',
+        cr_gin_term_mask=        %B'0001100000',
+        creot_gin_tern_mask =    %B'0001100000',
+        prog_control_mask=       %B'0000011000',
+        ascii_set_mask=          %B'0000011000',
+        alt_set_mask  =          %B'0000011000',
+        margin_1_mask =          %B'0000000110',
+        margin_2_mask =          %B'0000000110',
+
+        no_del_loy_mask =        %B'1000000000',
+        no_cr_implies_lf_mask =  %B'0100000000',
+        no_lf_implies_cr_mask =  %B'0010000000',
+        no_gin_term_mask=        %B'0001000000',
+        margin_off_mask  =       %B'0000000100';
+
+MACRO   
+        $pattern_list(arg)[] = OR arg $pattern_list(%remaining)%,
+
+        $mask_list(arg)[]   =  OR %NAME(arg,'_mask') $mask_list(%remaining)%,
+
+        $tek_config(arg)[]   = arg $pattern_list(%remaining),
+                               %NAME(arg,'_mask') $mask_list(%remaining)%;
+
+                    
+

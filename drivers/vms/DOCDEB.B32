@@ -1,0 +1,306 @@
+MODULE DOC$DEB (
+		IDENT = 'VSTADOC Utility DEBUG routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! ENVIRONMENT:
+!
+! VAX Workstation document file generation utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    p_lin,			!Print lin block
+    p_irb,			!Print irb
+    append_str,			!Append str1 to str2
+    append_dec;			!Append dec number to string
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$type_line;		!Type out a line on TTY
+
+
+GLOBAL ROUTINE p_lin
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Prints out the line block
+! FORMAL PARAMETERS:
+	(addr: REF txt_line_block
+	) =
+!--
+BEGIN
+LOCAL
+    irb_hdr: REF ir_hdr,
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,BYTE],
+    str_len: WORD,
+    line_len,
+    prev_fld_start,
+    field_extent,
+    fld: REF fld_block,
+    fld_format,
+    status;
+
+str_desc [0] = 0;
+str_desc [1] = str_itself;
+append_str (%ASCID 'lm = ',str_desc);
+append_dec (.addr [lin$w_leftmargin], str_desc);
+append_str (%ASCID ', rm = ', str_desc);
+append_dec (.addr [lin$w_rightmargin], str_desc);
+append_str (%ASCID ', lineheight = ', str_desc);
+append_dec (.addr [lin$w_lineheight], str_desc);
+doc$$type_line (str_desc);
+str_desc [0] = 0;
+append_str (%ASCID ' num_words = ', str_desc);
+append_dec (.addr [lin$w_num_words], str_desc);
+append_str (%ASCID ', wrd_actual_num = ', str_desc);
+append_dec (.addr [lin$w_wrd_actual_num], str_desc);
+doc$$type_line (str_desc);
+str_desc [0] = 0;
+append_str (%ASCID ' cidx = ', str_desc);
+append_dec (.addr [lin$w_cidx], str_desc);
+append_str (%ASCID ', space_used= ', str_Desc);
+append_dec (.addr [lin$w_space_used], str_desc);
+append_str (%ASCID ', ovflow= ',str_desc);
+append_dec (.addr [lin$v_ovflow], str_desc);
+doc$$type_line (str_Desc);
+str_desc [0] = 0;
+!
+! Print out field information
+!
+append_str (%ASCID ' Field at ', str_desc);
+append_dec (.addr [lin$w_leftmargin], str_desc);
+prev_fld_start = .addr [lin$w_leftmargin];
+field_extent = .addr [lin$w_rightmargin] - .prev_fld_start;
+fld = .addr [lin$a_fld_block];
+IF (.fld NEQ 0)
+  THEN field_extent = .fld [fld$w_start] - .prev_fld_start;
+append_str (%ASCID ', extent = ',str_desc);
+append_dec (.field_extent, str_desc);
+append_str (%ASCID ', format = ', str_desc);
+fld_format = (CASE .addr [lin$l_fld0_attrib] FROM 0 TO 2 OF
+	SET
+	[0]: %ASCID 'Left-just';
+	[doc$K_ff_rj]: %ASCID 'Right-just';
+	[doc$K_ff_center]: %ASCID 'Centered';
+	[OUTRANGE]: %ASCID '??Unknown??';
+	TES
+	);
+append_str (.fld_format, str_desc);
+doc$$type_line (str_desc);
+IF (.fld NEQ 0)		!There are more fields
+  THEN
+    BEGIN
+    INCR i FROM 1 TO .addr [lin$w_num_extra_flds] DO
+	BEGIN
+	str_desc [0] = 0;		!Start a new line
+	append_str (%ASCID ' Field at ', str_desc);
+	append_dec (.fld [fld$w_start], str_desc);
+	fld_format = (CASE .fld [fld$l_attrib] FROM 0 TO 2 OF
+		SET
+		[0]: %ASCID 'Left-just';
+		[doc$K_ff_rj]: %ASCID 'Right-just';
+		[doc$K_ff_center]: %ASCID 'Centered';
+		[OUTRANGE]: %ASCID '??Unknown??';
+		TES
+		);
+	append_str (%ASCID ', format = ', str_desc);
+	append_str (.fld_format, str_desc);
+	doc$$type_line (str_desc);
+
+	fld = .fld + fld$S_fld_block;	!Go to next field
+	END;
+
+    END;
+
+str_desc [0] = 0;
+
+str_desc [0] = 0;
+irb_hdr = .addr [lin$a_rcal_list];
+IF (.irb_hdr EQL 0)
+  THEN append_str (%ASCID '[No RCALs]', str_desc)
+  ELSE append_str (%ASCID '--RCALS--', str_desc);
+doc$$type_line (str_desc);
+
+WHILE (.irb_hdr NEQ 0) DO
+    BEGIN
+    IF NOT (status =
+	p_irb (.irb_hdr)
+	    )
+      THEN RETURN .status;
+    irb_hdr = .irb_hdr [irb$a_flink];
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE p_irb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Print out an IRB
+! FORMAL PARAMETERS:
+	(irb_hdr: REF ir_hdr
+	) =
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,BYTE],
+    addr,
+    irtf: REF ir_settf,
+    tf_desc: VECTOR [2],		!Descriptor to typeface string
+    irts: REF ir_setts,
+    irr: REF ir_setrend,
+    irsel: REF ir_sel,
+    irmarkf: REF ir_markf;
+
+str_desc [0] = 0;
+str_desc [1] = str_itself;
+addr = .irb_hdr + irb$S_ir_hdr;
+
+(SELECTONE (.irb_hdr [irb$w_type]) OF
+    SET
+    [doc_rcal$K_set_selectable]:
+	BEGIN
+	irsel = .addr;
+	str_desc [0] = 0;
+	append_str (%ASCID '* Set SELECTable, cidx: ', str_desc);
+	append_dec (.irsel [irb$w_sel_cidx], str_desc);
+	append_str (%ASCID ', len: ', str_desc);
+	append_dec (.irsel [irb$w_sel_len], str_desc);
+	append_str (%ASCID ', len_pixels: ', str_desc);
+	append_dec (.irsel [irb$w_sel_len_pixels], str_desc);
+	append_str (%ASCID ', page: ', str_desc);
+	append_dec (.irsel [irb$w_sel_page], str_desc);
+	append_str (%ASCID ', link: ', str_desc);
+	append_dec (.irsel [irb$w_sel_link], str_desc);
+	doc$$type_line (str_desc);
+	END;
+    [doc_rcal$K_set_typeface]:
+	BEGIN
+	irtf = .addr;
+	str_desc [0] = 0;
+	append_str (%ASCID '* Set typeface, cidx = ', str_desc);
+	append_dec (.irtf [irb$w_typeface_cidx], str_desc);
+	append_str (%ASCID ', typeface="', str_desc);
+	tf_desc [0] = .irtf [irb$w_typeface_len];
+	tf_desc [1] = irtf [irb$b_typeface_str];
+	append_str (tf_desc, str_desc);
+	append_str (%ASCID '"', str_desc);
+	doc$$type_line (str_desc);
+	END;
+    [doc_rcal$K_set_typesize]:
+	BEGIN
+	irts = .addr;
+	str_desc [0] = 0;
+	append_str (%ASCID '* Set typesize', str_desc);
+	append_str (%ASCID ', cidx: ', str_desc);
+	append_dec (.irts [irb$w_typesize_cidx], str_desc);
+	append_str (%ASCID ', typesize: ', str_desc);
+	append_dec (.irts [irb$w_typesize], str_desc);
+	doc$$type_line (str_desc);
+	END;
+    [doc_rcal$K_set_rendition]:
+	BEGIN
+	irr = .addr;
+	str_desc [0] = 0;
+	append_str (%ASCID '* Set rendition', str_desc);
+	append_str (%ASCID ', cidx: ', str_desc);
+	append_dec (.irr [irb$w_rend_cidx], str_desc);
+	append_str (%ASCID ', onmask: ', str_desc);
+	append_dec (.irr [irb$l_rend_on], str_desc);
+	append_str (%ASCID ', offmask: ', str_desc);
+	append_dec (.irr [irb$l_rend_off], str_desc);
+	doc$$type_line (str_desc);
+	END;
+    [doc_rcal$K_mark_field]:
+	BEGIN
+	irmarkf = .addr;
+	str_desc [0] = 0;
+	append_str (%ASCID '* Markf', str_desc);
+	append_str (%ASCID ', cidx: ', str_desc);
+	append_dec (.irmarkf [irb$w_markf_cidx], str_desc);
+	doc$$type_line (str_desc);
+	END;
+    [OTHERWISE]:
+	BEGIN
+	str_desc [0] = 0;
+	append_str (%ASCID '% Unknown RCAL type', str_desc);
+	doc$$type_line (str_desc);
+	END;
+    TES
+);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE append_str
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends str1 to str2
+! FORMAL PARAMETERS:
+	(str1: REF VECTOR [2]
+	,str2: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_1_len: WORD,
+    status;
+
+str_1_len = .str1 [0];
+CH$MOVE	(.str_1_len
+	,.str1 [1]
+	,.str2 [0] + .str2 [1]
+	);
+str2 [0] = .str2 [0] + .str_1_len;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE append_dec
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends decimal number to string
+! FORMAL PARAMETERS:
+	(num
+	,str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    fao_desc: VECTOR [2],
+    fao_str_itself: VECTOR [20,byte],
+    num_len: WORD,
+    status;
+
+fao_desc [0] = 20;
+fao_desc [1] = fao_str_itself;
+
+IF NOT (status =
+    $fao	(%ASCID '!SL'	!CTRSTR
+		,num_len	!OUTLEN
+		,fao_desc	!OUTSTR
+		,.num		!P1
+		)
+	)
+  THEN RETURN .status;
+
+fao_desc [0] = .num_len;	!Get real descriptor
+RETURN append_str (fao_desc, .str_desc);
+END;
+
+END
+ELUDOM

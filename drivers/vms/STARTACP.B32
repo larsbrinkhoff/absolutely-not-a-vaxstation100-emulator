@@ -1,0 +1,1621 @@
+module STARTACP (	! Start ACP Process
+		ident = 'VSTA V1.2-01',
+		main = START_ACP
+		) =
+begin
+
+
+!++
+! Facility:
+!
+! Abstract:
+!	Starts ACP as process with specified quotas
+!
+! Environment:
+!	VAXstation 100 VSACP
+!
+!--
+
+!
+! Include files:
+!
+
+    library 'SYS$LIBRARY:LIB.L32';
+    library 'vsta$library:LINKAGE.L32';
+    require 'vsta$library:vsacpdef.R32';
+
+!
+! Machine functions:
+!
+
+builtin
+
+	MTPR;
+
+!
+! Table of contents:
+!
+
+forward routine
+
+    START_ACP: novalue,
+    INCR_VERSION,
+    DETERMINE_FILESPECS,
+    SEND_OPRMSG,
+    KILL_DANGLING_ACP,
+    KERNEL_CALL,
+    CVT_IPID,
+    CVT_EPID,
+    INIT_ACP,
+!
+! Start of high-IPL code (marked by routine: COUNT_STATIONS)
+!
+    COUNT_STATIONS,
+    SET_UIC_GROUP,
+    LINK_ACP,
+    MOUNT_ACP,
+    MOUNT_ACP_K,
+    DELETE_STRUCTS,
+!
+! Routine NAME_STRINGS marks end of high-IPL code
+!
+    NAME_STRINGS,
+!
+    CHECK_TEMPLATE,
+    CHECK_ACP,
+    DATA_STRUCT,
+    START_PROC;
+
+!
+! External references:
+!
+
+external
+
+    VSTA$GL_DISLOG: addressing_mode(general), ! Disable ACP error/output logging
+    VSTA$GL_BASPRI: addressing_mode(general), ! Base priority for VSACP process
+    VSTA$GL_MODES: addressing_mode(general),  ! SSRWAIT, PSWAPM, DISAWS, etc.
+    VSTA$GL_QUOTA: addressing_mode(general),  ! VSACP parameterized quotas
+    IOC$GL_AQBLIST:	addressing_mode(absolute),
+    IOC$GL_DEVLIST:	addressing_mode(absolute),
+    SCH$GL_CURPCB: REF BLOCK[0,BYTE]	addressing_mode(absolute);
+
+external routine
+
+    OTS$CVT_TI_L: addressing_mode(general),
+    OTS$CVT_L_TI: addressing_mode(general),
+    VSTA$$STACP_FILL_PARAMETERS: addressing_mode(general),
+    EXE$ALONONPAGED:	ALONONPAGED addressing_mode(absolute),
+    EXE$DEANONPAGED:	DEANONPAGED novalue addressing_mode(absolute),
+    EXE$EPID_TO_IPID:	EXECVTPID addressing_mode(absolute),
+    EXE$IPID_TO_EPID:	EXECVTPID addressing_mode(absolute),
+    IOC$VERIFYCHAN:	VERIFYCHAN addressing_mode(absolute),
+    SCH$IOLOCKR:	IOLOCKW novalue addressing_mode(absolute),
+    SCH$IOLOCKW:	IOLOCKW novalue addressing_mode(absolute),
+    SCH$IOUNLOCK:	IOUNLOCK novalue addressing_mode(absolute),
+    SYS$BRDCST: addressing_mode(general);
+
+
+!
+! Macros:
+!
+
+macro
+
+    SETIPL(LEVEL) = MTPR(%ref(LEVEL),PR$_IPL) %;
+!
+! Own storage:
+!
+
+own
+    MSG_BUFFER: vector[128,byte],
+    IMAGEBUF: vector [100,byte],
+    IMAGEDESC: vector [2,long] initial (100,IMAGEBUF),
+    TRNDESC: vector [2,long] initial (100,IMAGEBUF),
+    DEV_NAME: vector [6,byte] initial (byte('_VDx0:')), ! Controller name string 
+    dev_name_desc: VECTOR [2]
+		INITIAL (6, dev_name),	!Descriptor of name string
+    PROC_NAME: vector [6,byte] initial (byte('VSxACP')), ! Controller name string
+    proc_name_desc: VECTOR [2]
+		INITIAL (6, proc_name),	!Descriptor of process name string
+    OUTPUT_FILE: vector [NAM$C_MAXRSS,byte],		 ! Output file name
+    OUTPUT_FILE_DESC: VECTOR [2]
+		INITIAL (NAM$C_MAXRSS, OUTPUT_FILE), !Descriptor of output file name string
+    ERROR_FILE: vector [NAM$C_MAXRSS,byte],		! Error file name
+    ERROR_FILE_DESC: VECTOR [2]
+		INITIAL (NAM$C_MAXRSS, ERROR_FILE), !Descriptor of error file name string
+    DEVICE_TYPE,
+    NUM_STATIONS,
+    INDEX,
+    PID,
+    VD_CHAN,
+    CONTROLLER,
+    STATUS,
+    ONLINE: bitvector[32],
+    AQB: ref block[0,byte],
+    CCB: ref block[0,byte],
+    CURAQB: ref block[0,byte],
+    DDB: ref block [0,byte],
+    UCB: ref block[0,byte],
+    VCB: ref block[0,byte];
+
+routine START_ACP :novalue =
+
+!++
+! Functional description:
+!
+!	This is the main routine or image start address. It is responsible for
+! locking down all code which will execute at raised IPL and then invoking the
+! "real" main routine to do all the work.
+!
+! Formal parameters:
+!
+!	none
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+    begin
+
+!
+! Lock down the High-IPL code
+!
+    if not (STATUS = $LKWSET ( inadr=uplit(
+				COUNT_STATIONS,	! First High-IPL routine
+				NAME_STRINGS	! First NON-High-IPL routine
+			     )))
+	then $EXIT(CODE=.STATUS);
+!
+! Now do the kernel mode start-ups
+!
+    if not (STATUS = INIT_ACP ())
+	then $EXIT(CODE=.STATUS)
+
+    end; ! routine START_ACP
+
+
+%SBTTL 'incr_version -- Increment Ascii Version Number on Filespec'
+ROUTINE incr_version(
+		version_desc: REF VECTOR,	!Original version descriptor
+		next_version_desc: REF VECTOR	!Incremented version descriptor
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for taking an ascii descriptor of the
+! original version number on a filespec, incrementing it, and returning an
+! ascii descriptor of the result.
+!
+! FORMAL PARAMETERS:
+!
+!	VERSION_DESC      : Address of original version descriptor
+!				(Input parameter)
+!	NEXT_VERSION_DESC : Address of incremented version descriptor
+!				(Output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status
+!	OTS$_xxx		!RTL error status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+    LOCAL
+	status,				!Return status value
+	version: WORD;			!Integer version number
+!
+! Convert the ascii version number to integer longword
+!
+	IF NOT (status = ots$cvt_ti_l(
+				.version_desc,
+				version,2,1)) THEN
+	  RETURN .status;
+!
+! Increment the version number and convert back to ascii
+!
+	version = .version + 1;
+	RETURN ots$cvt_l_ti(
+			version,
+			.next_version_desc,
+			5,
+			2);
+!
+    END;				!of routine incr_version
+
+
+%SBTTL 'determine_filespecs -- Determine Filespecs for SYS$INPUT,SYS$ERROR'
+ROUTINE determine_filespecs(
+		controller: BYTE,		!Device controller for filename
+		output_desc: REF VECTOR,	!SYS$OUTPUT file desc.
+		error_desc: REF VECTOR		!SYS$ERROR file desc.
+			) =
+
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining the "default" filespecs
+! to be used by the VAXstation ACP for SYS$OUTPUT and SYS$ERROR. The ACP
+! writes designated usage information to SYS$OUTPUT and error log information
+! to SYS$ERROR.
+!	The file name is constructed using the controller letter of the
+! designated template virtual display device for this ACP. In other words, the
+! "x" in VSTA$EXE:VSTAxOUT.LOG and VSTA$EXE:VSTAxERR.LOG will be replaced with
+! an "A" for the VDA0: ACP, "B" for the VDB0: ACP, etc. This routine will also
+! compute the version number for these log files. Each time STARTACP is run,
+! new versions of these log files will be created to prevent the ACP from
+! continuously appending to the same log files.
+!
+! FORMAL PARAMETERS:
+!
+!	CONTROLLER    : Byte value representing the device controller letter
+!				(Input parameter)
+!	OUTPUT_DESC   : Address of SYS$OUTPUT file specification descriptor
+!				(Output parameter)
+!	ERROR_DESC    : Address of SYS$ERROR file specification descriptor
+!				(Output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful return status
+!	OTS$_xxx		!RTL error status codes
+!	RMS$_xxx		!RMS error status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+
+    BEGIN
+
+    LITERAL
+	version_size = 5,
+	exp_nam_len = NAM$C_MAXRSS,
+	max_nodename = 16,
+	nam_len = 40;
+
+    OWN
+	this_version_buffer:			!Version number buffer
+	  VECTOR[version_size,BYTE],
+	next_version_buffer:			!Version number buffer
+	  VECTOR[version_size,BYTE],
+	sysoutput_ename: 			!SYS$OUTPUT expanded name
+	  VECTOR[exp_nam_len,BYTE],
+	syserror_ename: 			!SYS$ERROR expanded name buffer
+	  VECTOR[exp_nam_len,BYTE],
+	sysoutput_name: VECTOR[nam_len,BYTE],	!SYS$OUTPUT name buffer
+	syserror_name: VECTOR[nam_len,BYTE],	!SYS$ERROR name buffer
+	nodename: VECTOR[max_nodename,BYTE],	!Nodename buffer
+	nodename_len,				!Nodename buffer length
+	cluster_member: BYTE,			!Cluster member flag
+	item_list: VECTOR[7] INITIAL(		!$GETSYI item list
+	  (syi$_cluster_member^16)+1,
+	  cluster_member,0,
+	  (syi$_nodename^16)+15,
+	  nodename,nodename_len,0),
+	sysoutput_nam: $NAM(			!SYS$OUTPUT NAM block address
+			ESA = sysoutput_ename,
+			ESS = exp_nam_len),
+	sysoutput_fab: $FAB(			!File access block address
+			NAM = sysoutput_nam,
+			FNS = nam_len,
+			FNA = sysoutput_name),
+	syserror_nam: $NAM(			!SYS$ERROR NAM block address
+			ESA = syserror_ename,
+			ESS = exp_nam_len),
+	syserror_fab: $FAB(			!File access block address
+			NAM = syserror_nam,
+			FNS = nam_len,
+			FNA = syserror_name);
+
+    LOCAL
+	status,					!RMS return status value
+	iosb: VECTOR[4,WORD],			!I/O status block
+	this_version: VECTOR[2],		!Current version descriptor
+	next_version: VECTOR[2]			!Next version descriptor
+	  INITIAL(version_size,next_version_buffer),
+	prefix_desc: VECTOR[2]			!Nodename prefix descriptor
+	  INITIAL(0,nodename),
+	sysoutput_name_desc: VECTOR[2]		!Descriptor for original string
+	  INITIAL(nam_len,sysoutput_name),
+	syserror_name_desc: VECTOR[2]		!Descriptor for original string
+	  INITIAL(nam_len,syserror_name);
+!
+! See if we're running in a VAXcluster and if so, get the nodename to prefix
+! to the logfiles
+!
+	IF $GETSYIW(
+		ITMLST = item_list,
+		IOSB   = iosb) THEN
+	  IF .iosb[0] THEN
+	    IF .cluster_member THEN
+	      BEGIN
+		prefix_desc[0] = 1 + .nodename_len;
+		nodename[.nodename_len] = %C'$';
+	      END;
+!
+! Build the log filenames based on the cluster nodename prefix (if any) and
+! the device controller letter for this VAXstation.
+!
+	IF NOT (status = $FAO(
+			%ASCID 'VSTA$EXE:!ASVSTA!ADOUT.LOG',
+			sysoutput_name_desc[0],
+			sysoutput_name_desc[0],
+			prefix_desc[0],
+			1,controller)) THEN
+	  RETURN .status;
+!
+	IF NOT (status = $FAO(
+			%ASCID 'VSTA$EXE:!ASVSTA!ADERR.LOG',
+			syserror_name_desc[0],
+			syserror_name_desc[0],
+			prefix_desc[0],
+			1,controller)) THEN
+	  RETURN .status;
+!
+! Now try to find the designated SYS$OUTPUT file
+!
+	IF (NOT (status = $PARSE( FAB = sysoutput_fab ))) THEN
+	  RETURN .status;
+!
+	sysoutput_nam[NAM$B_RSS] = .output_desc[0];
+	sysoutput_nam[NAM$L_RSA] = .output_desc[1];
+	IF NOT $SEARCH( FAB = sysoutput_fab ) THEN
+!
+! Couldn't find this log file for some reason. Create filespec for version
+! one of this file.
+!
+	  BEGIN
+	    output_desc[0] = 1 + .sysoutput_nam[NAM$B_ESL];
+	    CH$MOVE(
+		.sysoutput_nam[NAM$B_ESL],
+		.sysoutput_nam[NAM$L_ESA],
+		.output_desc[1]);
+	    CH$MOVE(
+		1,
+		UPLIT(BYTE('1')),
+		.output_desc[1] + .sysoutput_nam[NAM$B_ESL]);
+	  END
+	ELSE
+!
+! Found the latest version of this log file. Bump the version of this filespec
+! by one.
+!
+	  BEGIN
+	    this_version[1] = 1 + CH$FIND_CH(
+					.sysoutput_nam[NAM$B_RSL],
+					.output_desc[1],
+					%C';');
+	    this_version[0] = (.sysoutput_nam[NAM$B_RSL] + .output_desc[1])
+					- .this_version[1];
+	    IF NOT (status = incr_version(
+				this_version,
+				next_version)) THEN
+	      RETURN .status;
+!
+	    CH$MOVE(
+		.next_version[0],
+		.next_version[1],
+		.this_version[1]);
+	    output_desc[0] = .sysoutput_nam[NAM$B_RSL] +
+				(.next_version[0] - .this_version[0]);
+	  END;
+!
+! Now try to find the designated SYS$ERROR file
+!
+	IF (NOT (status = $PARSE( FAB = syserror_fab ))) THEN
+	  RETURN .status;
+!
+	syserror_nam[NAM$B_RSS] = .error_desc[0];
+	syserror_nam[NAM$L_RSA] = .error_desc[1];
+	IF NOT $SEARCH( FAB = syserror_fab ) THEN
+!
+! Couldn't find this log file for some reason. Create filespec for version
+! one of this file.
+!
+	  BEGIN
+	    error_desc[0] = 1 + .syserror_nam[NAM$B_ESL];
+	    CH$MOVE(
+		.syserror_nam[NAM$B_ESL],
+		.syserror_nam[NAM$L_ESA],
+		.error_desc[1]);
+	    CH$MOVE(
+		1,
+		UPLIT(BYTE('1')),
+		.error_desc[1] + .syserror_nam[NAM$B_ESL]);
+	  END
+	ELSE
+!
+! Found the latest version of this log file. Bump the version of this filespec
+! by one.
+!
+	  BEGIN
+	    this_version[1] = 1 + CH$FIND_CH(
+					.syserror_nam[NAM$B_RSL],
+					.error_desc[1],
+					%C';');
+	    this_version[0] = (.syserror_nam[NAM$B_RSL] + .error_desc[1])
+					- .this_version[1];
+	    IF NOT (status = incr_version(
+				this_version,
+				next_version)) THEN
+	      RETURN .status;
+!
+	    CH$MOVE(
+		.next_version[0],
+		.next_version[1],
+		.this_version[1]);
+	    error_desc[0] = .syserror_nam[NAM$B_RSL] +
+				(.next_version[0] - .this_version[0]);
+	  END;
+!
+	RETURN SS$_NORMAL;
+    END;			! Of routine determine_filespecs
+
+
+%SBTTL 'send_oprmsg -- Inform VMS Operator About Error Condition'
+ROUTINE send_oprmsg(
+			msg_desc: REF VECTOR,	   !Buffer desc.
+			status_code		   !Error status code
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for informing the VMS operator of a
+! VAXstation software startup error. This routine takes the error message
+! specified in the call, adds it to the canned text associated with
+! internally detected startup errors, and does a $SNDOPR with the resulting
+! message (i.e. sends it to designated central operators via OPCOM).
+!	NOTE: If the format and/or size of OPCOM messages changes, this routine
+! should be changed.
+!
+! FORMAL PARAMETERS:
+!
+!	MSG_DESC    : Address of output message descriptor
+!			(input parameter)
+!	STATUS_CODE : Longword status code to be recorded
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successful completion
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    MACRO vsta_errmsg =
+      %STRING(' VSTA software start-up error - ')%;
+
+    LITERAL
+	vsta_errmsg_length = 2 + %CHARCOUNT(vsta_errmsg),
+	max_opmsg_size = 120 - vsta_errmsg_length;
+
+    OWN
+	msg_buffer: VECTOR[256,BYTE],		 !Status message buffer
+	oprmsg: VECTOR[2 + (max_opmsg_size / 4)] !Error logger message
+	  INITIAL(OPC$M_NM_CENTRL^8+OPC$_RQ_RQST,0,vsta_errmsg,BYTE(13,10)),
+	space: VECTOR [20];
+
+    LOCAL
+	error_size,				!Error message size
+	buffer_ptr,				!Ptr into message buffer
+	status_len: WORD,			!Length of status message
+	status_desc: VECTOR[2]			!Status message desc.
+	  INITIAL(256,msg_buffer[0]),
+	oprmsg_desc: VECTOR[2]			!OPCOM message desc.
+	  INITIAL(8 + vsta_errmsg_length,oprmsg[0]);
+!
+! Compute how much of the error message we can send to $SNDOPR
+! and copy it into the output buffer
+!
+	error_size = MIN(
+			(.msg_desc[0] AND %X'FFFF'),
+			max_opmsg_size);
+!
+	buffer_ptr = 8 + oprmsg[0] + vsta_errmsg_length;
+	CH$MOVE(
+		.error_size,
+		.msg_desc[1],
+		.buffer_ptr);
+!
+! If we still have room and the status code indicates an error condition,
+! then get the status text and include it in the buffer
+!
+	oprmsg_desc[0] = .oprmsg_desc[0] + .error_size;
+!
+	IF NOT .status_code THEN
+	  IF max_opmsg_size GTR (5 + .error_size) THEN
+	    BEGIN
+	      buffer_ptr = .buffer_ptr + .error_size;
+	      CH$MOVE(
+		5,
+		UPLIT(BYTE(' -',13,10,32)),
+		.buffer_ptr);
+!
+	      IF $GETMSG(
+			MSGID  = .status_code,
+			MSGLEN = status_len,
+			BUFADR = status_desc,
+			FLAGS  = 1) THEN
+		BEGIN
+		  error_size = MIN(.status_len,
+				   max_opmsg_size - (5 + .error_size));
+		  oprmsg_desc[0] = .oprmsg_desc[0] + .error_size + 5;
+		  CH$MOVE(
+			.error_size,
+			msg_buffer,
+			5 + .buffer_ptr);
+		END;
+	    END;
+!
+! Send the canned VAXstation error message to the central operator designated
+! terminals along with as much of the specified error message as possible.
+!
+	IF NOT $SNDOPR( MSGBUF = oprmsg_desc[0] ) THEN
+	  BEGIN
+!
+! Oops. If that failed we've got to at least broadcast this info to the
+! operator console terminal.
+!
+	    oprmsg_desc[0] = .oprmsg_desc[0] - 8;
+	    oprmsg_desc[1] = .oprmsg_desc[1] + 8;
+	    $BRDCST(
+		msgbuf = oprmsg_desc[0],
+		devnam = %ASCID '_OPA0:',
+		carcon = 32 );
+	  END;
+!
+	RETURN SS$_NORMAL;	! Return success indication
+END;				! of routine send_oprmsg
+
+
+%SBTTL 'kill_dangling_acp -- Kill Dangling ACP and restart new one'
+ROUTINE kill_dangling_acp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for destroying the process which is
+! currently running with the process name we require for this VAXstation ACP.
+! It is assumed that this is really one of our ACPs which has run amuck as
+! we've already determined that the template device which is a path to this
+! ACP is in a state which prevents any communication with that ACP. Since the
+! state of its data base are unknown, it will be deleted (forced to exit) and
+! a new ACP will be started in its place. A message will be printed on the
+! operator console to indicate that we are responsible for killing this process
+! just in case somebody was foolish enough to use it as their process name.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+literal
+	VSTA_ACP_UIC_GROUP = 1;
+local
+	STAT,
+	PREV_GROUP: WORD,
+	MSG_LEN,
+	MSG_DESC: vector[2] initial(128,MSG_BUFFER);
+!
+! Try to force what we think is a dangling ACP to exit normally
+!
+    PREV_GROUP = KERNEL_CALL(
+			SET_UIC_GROUP,
+			VSTA_ACP_UIC_GROUP );
+    STAT = $FORCEX( PRCNAM = proc_name_desc );
+    KERNEL_CALL( SET_UIC_GROUP,.PREV_GROUP );
+    if not .STAT
+    then return .STAT;
+!
+! Inform the system operator about what we just did
+!
+    $fao(
+	%ASCID ' Dangling ACP => !AS aborted for restart',
+	msg_len,
+	msg_desc,
+	proc_name_desc);
+    msg_desc[0] = .msg_len;
+    send_oprmsg (
+	msg_desc,
+	SS$_NORMAL );
+!
+! Wait for a few seconds (5) to give process time to really go away
+!
+    if (not (STATUS=$SETIMR(
+		EFN=1,
+		DAYTIM=uplit(-10*1000*1000*5,-1)))) then 
+	return .STATUS;
+!
+    if (not (STATUS=$WAITFR(
+		EFN=1 ))) then
+	return .STATUS;
+!
+! Attempt to create the process again and return with its status
+!
+    return $CREPRC(
+		PIDADR=PID,
+		IMAGE=%ASCID 'VSTA$EXE:VSACP.EXE',
+		INPUT= DEV_NAME_DESC,
+		OUTPUT= OUTPUT_FILE_DESC,
+		ERROR= ERROR_FILE_DESC,
+		QUOTA= VSTA$GL_QUOTA,
+		BASPRI= .VSTA$GL_BASPRI,
+		PRCNAM= proc_name_desc,
+		STSFLG=	.VSTA$GL_MODES, 
+		UIC=%x'10004');
+!
+END;				! of routine kill_dangling_acp
+
+
+routine kernel_call
+!++
+! Functional description:
+!
+!	General utility routine to call a routine in kernel mode.
+!
+!	Pass the desired routine as the first parameter, and its params
+!	as the rest of the parameters.
+!
+! Formal parameters:
+ (
+	rtn,			! routine to be called in kernel mode
+	param1, param2 !, . . .	! parameters for the routine
+ ) =
+!
+! Returned value:
+!
+!	Whatever $cmkrnl returns.
+!
+!--
+
+	begin
+
+	builtin ap;		! get access to parameters.
+
+	map ap : ref vector;
+
+	bind routine
+
+	    ! Get routine being called.  This binding serves two purposes:
+	    ! it establishes the routine as a routine, and saves it since
+	    ! we're about to clobber it in OUR param list with the param
+	    ! count of the params being passed TO it.
+	    !
+	    kernel_routine = .ap[1];
+
+	bind
+
+	    ! establish base of arglst for routine being called.
+	    !
+	    arglst = ap[1] : vector;
+
+	! Put number of parameters in beginning of list.  Number of parameters
+	! is merely one less than parameters passed to us, because we were
+	! passed the routine as our first parameter.
+	!
+	arglst[0] = .ap[0] - 1;
+
+	! Call the routine in kernel mode.
+	!
+	$cmkrnl (routin = kernel_routine, arglst = arglst[0])
+
+	end;
+
+
+ROUTINE CVT_EPID (PID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Convert a PID to EPID form (External PID) form.  If it does not
+!	convert, then return the input parameter.
+!
+! FORMAL PARAMETERS:
+!
+!	PID passed by value
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	PID in EPID form or zero
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	EPID
+	;
+
+    BUILTIN AP;
+    ROUTINE IPID_TO_EPID (IPID) = EXE$IPID_TO_EPID(.IPID);
+
+    IF (EPID = $CMKRNL (ROUTIN = IPID_TO_EPID, ARGLST = .AP) ) NEQ 0
+    THEN
+	RETURN .EPID
+    ELSE
+	RETURN .PID
+
+    END;
+
+ROUTINE CVT_IPID (PID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Convert a PID to IPID form (internal form) and if the PID
+!	does not convert, return the input argument.
+!
+! FORMAL PARAMETERS:
+!
+!	PID passed by value
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	PID in EPID form or zero
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	IPID
+	;
+
+    BUILTIN AP;
+    ROUTINE EPID_TO_IPID (EPID) = EXE$EPID_TO_IPID(.EPID);
+
+    IF (IPID = $CMKRNL (ROUTIN = EPID_TO_IPID, ARGLST = .AP) ) NEQ 0
+    THEN
+	RETURN .IPID
+    ELSE
+	RETURN .PID
+
+    END;
+
+
+routine INIT_ACP =
+
+!++
+! Functional description:
+!
+!	This routine is invoked to do all the real work of starting up the
+! VAXstation ACPs. It performs the following operations and records errors
+! via OPCOM messages:
+!	1. Counts up the number of VAXstation devices on the system
+!	2. Determines ACP parameters for process creation
+!	3. For each VAXstation device which is online:
+!		a. Determines names for ACP process, template device, log files
+!		b. Makes sure we can get a channel to the template device
+!		c. Sees if there is already an ACP operating for this template
+!		d. Initializes system data structures for ACP (VCB, AQB)
+!		e. Starts the ACP process for this template device
+!		f. Links driver/template device to this ACP
+!
+! Formal parameters:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+begin
+local
+	MSG_LEN,
+	MSG_DESC: vector[2] initial(128,MSG_BUFFER);
+
+!
+! Find out how many VAXstation devices are out there
+!
+    if (not (STATUS=KERNEL_CALL( COUNT_STATIONS )))  then return .STATUS;
+!
+! Initialize all ACP parameters for process creation
+!
+    VSTA$$STACP_FILL_PARAMETERS();
+!
+! Create an ACP for each VAXStation on the system.  If any of the creations
+! fail, fall through to the next one.
+!    
+    incr CONTROLLER from 1 to .NUM_STATIONS do
+	begin
+	 if .ONLINE [.CONTROLLER] then		! Only work on on-line units
+	 if STATUS=NAME_STRINGS ( .CONTROLLER )	then 
+	 if not (STATUS=KERNEL_CALL( CHECK_TEMPLATE )) 	then 
+	  begin
+	    $fao(
+		%ASCID ' Unable to access template device => !AS',
+		msg_len,
+		msg_desc,
+		dev_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end
+	else
+	 if not (STATUS=KERNEL_CALL( CHECK_ACP )) 	then 
+	  begin
+	    $fao(
+		%ASCID ' !AS already exists - Left alone',
+		msg_len,
+		msg_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end
+	else
+	 if not (STATUS=KERNEL_CALL( DATA_STRUCT ))	then 
+	  begin
+	    $fao(
+		%ASCID ' Insufficient non-paged pool to start !AS',
+		msg_len,
+		msg_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end
+	else
+	 if not (STATUS=START_PROC ())	then 
+	  begin
+	    $fao(
+		%ASCID ' Unable to start process => !AS',
+		msg_len,
+		msg_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end
+	else
+	begin
+
+	 if not (STATUS=KERNEL_CALL( LINK_ACP )) then
+	  begin
+	    $fao(
+		%ASCID ' Unable to link template => !AS to ACP => !AS',
+		msg_len,
+		msg_desc,
+		dev_name_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end;
+	 if not (STATUS=MOUNT_ACP()) then
+	  begin
+	    $fao(
+		%ASCID ' Unable to link template => !AS to ACP => !AS',
+		msg_len,
+		msg_desc,
+		dev_name_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end;
+
+	 if not (STATUS=KERNEL_CALL( MOUNT_ACP_K )) then
+	  begin
+	    $fao(
+		%ASCID ' Unable to link template => !AS to ACP => !AS',
+		msg_len,
+		msg_desc,
+		dev_name_desc,
+		proc_name_desc);
+	    msg_desc[0] = .msg_len;
+	    send_oprmsg (
+		msg_desc,
+		.STATUS );
+	  end;
+
+	end;
+
+	$DASSGN( CHAN = .VD_CHAN );
+	end;	!For each VAXstation device out there
+
+    return SS$_NORMAL;
+    end; ! routine INIT_ACP
+
+
+routine COUNT_STATIONS =
+begin
+own
+	NAM: vector [16,byte];		! Local copy of device name
+!
+! Search through the DDBs on the system to find all the VAXStations.
+! Count them.
+! If the VAXstation is online, set the bit corresponding to its controller
+! number (A=1, etc.) in the summary bitvector ONLINE.
+!
+	NUM_STATIONS = 0;
+	DDB = .IOC$GL_DEVLIST;
+	SCH$IOLOCKR ( .SCH$GL_CURPCB );	! Get mutex to data base
+	MTPR (%ref (IPL$_SYNCH), PR$_IPL );	! Raise IPL to synch database
+
+	until ( .DDB eql 0 ) do
+	    begin
+		CH$MOVE ( 16,DDB [DDB$T_NAME], NAM );	! Copy name string
+		if (  (.NAM[1] eql %C'V') and
+			((.NAM[2] eql %C'B') or (.NAM[2] eql %C'C'))  )
+				then begin	! Valid VAXstation device
+				    NUM_STATIONS = .NUM_STATIONS + 1;
+				    UCB = .DDB [DDB$L_UCB];
+				    ONLINE [.NUM_STATIONS] =
+					.UCB [UCB$V_ONLINE];
+				end;		! Valid VAXstation device
+		DDB = .DDB [DDB$L_LINK];		! Get the next one
+	    end;	! Do loop
+
+	MTPR (%ref (IPL$_ASTDEL), PR$_IPL );	! Lower IPL to normal
+	SCH$IOUNLOCK ( .SCH$GL_CURPCB );! Return mutex to data base
+	MTPR (%ref(0), PR$_IPL);	! Drop IPL to zero
+return SS$_NORMAL;
+end;	! Routine COUNT_STATIONS
+
+
+routine SET_UIC_GROUP( NEW_GROUP: WORD ): =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the group portion of the
+! current process' UIC to be the specified group number. The previous contents
+! of that field are returned as the value of this routine to allow it to be
+! reset.
+!	This routine must be called in kernel mode and raises IPL to
+! IPL$_SYNCH. It always lowers IPL back to 0 before returning.
+!
+begin
+local
+	OLD_UIC_GROUP: word,
+	NEW_UIC_GROUP: word;
+!
+	NEW_UIC_GROUP = .NEW_GROUP;
+	SCH$IOLOCKR ( .SCH$GL_CURPCB );		! Get mutex to data base
+	MTPR (%ref (IPL$_SYNCH), PR$_IPL );	! Raise IPL to synch database
+
+	OLD_UIC_GROUP = .SCH$GL_CURPCB[PCB$W_GRP];
+	SCH$GL_CURPCB[PCB$W_GRP] = .NEW_UIC_GROUP;
+
+	MTPR (%ref (IPL$_ASTDEL), PR$_IPL );	! Lower IPL to normal
+	SCH$IOUNLOCK ( .SCH$GL_CURPCB );	! Return mutex to data base
+	MTPR (%ref(0), PR$_IPL);		! Drop IPL to zero
+return .OLD_UIC_GROUP;
+end;	! Routine SET_UIC_GROUP
+
+
+routine LINK_ACP =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is called as the last step of an ACP startup procedure.
+! The AQB for this ACP is linked into the system list and the first I/O request
+! to this ACP is attempted. This request is the mount request which causes the
+! ACP to wake up for the first time, perform all initialization, and then enter
+! a normal command mode.
+!
+begin
+    local COUNT;
+
+!
+! Link the AQB into the AQB list, now that the process exists
+!
+    AQB[AQB$L_ACPPID] = CVT_IPID(.PID);	! Note PID of ACP in the AQB
+    SCH$IOLOCKW(.SCH$GL_CURPCB);	! Get the required mutex
+    MTPR (%ref (IPL$_SYNCH), PR$_IPL );	! Raise IPL to synch database
+    AQB[AQB$L_LINK] = .IOC$GL_AQBLIST;
+    IOC$GL_AQBLIST = .AQB;
+    MTPR (%ref (IPL$_ASTDEL), PR$_IPL );! Lower IPL to normal
+    SCH$IOUNLOCK(.SCH$GL_CURPCB);	! Return the mutex
+    SETIPL(0);
+
+        
+!
+    return SS$_NORMAL;
+
+end;	! Routine LINK_ACP
+
+
+
+routine MOUNT_ACP =
+begin
+
+own EFN1: initial(1), EFN2: initial(2);
+
+local COUNT,B30SEC: vector [2,long], EFNMSK;
+
+    if (not ($BINTIM(
+		TIMBUF= %ASCID '0 00:00:30.00',
+		TIMADR= B30SEC))) then
+	begin
+	    KERNEL_CALL(DELETE_STRUCTS (1));	! Get rid of this linked AQB and its VCB
+	    return .STATUS;
+	end;	! Bad $QIO
+
+
+    COUNT = 0;
+
+    do
+    begin				! Loop to retry on moun request
+
+!
+! Increment event flags
+!
+    EFN1 = .EFN1 + 2;
+    EFN2 = .EFN2 + 2;
+    EFNMSK = (1 ^ .EFN1) or (1 ^ .EFN2);
+!
+! Send a MOUNT request to the ACP and wait for it to complete
+!
+    if (not (STATUS=$SETIMR(
+		EFN=.EFN2,
+		DAYTIM=B30SEC,
+		REQIDT=2))) then 
+	begin
+	    return .STATUS;
+	end;
+!
+
+    if (not (STATUS=$QIO(
+		EFN = .EFN1,
+		CHAN=.VD_CHAN,
+		FUNC=IO$_MOUNT))) then
+	begin
+	    return .STATUS;
+	end;	! Bad $QIO
+
+    if (not (STATUS=$WFLOR(
+		EFN=.EFN1,
+		MASK=.EFNMSK
+			  ))) then
+	begin
+	    return .STATUS;
+	end;	! Bad $QIO
+
+
+    if (not (STATUS=$CLREF(
+		EFN = .EFN1))) then
+	begin
+	    return .STATUS;
+	end;	! Bad $QIO
+
+    if .STATUS eql SS$_WASCLR
+	then begin
+		COUNT = .COUNT + 1;
+
+		if .COUNT gtr 3
+		then begin
+			send_oprmsg (
+				%ascid ' VSTA ACP Mount failure - operation aborted',
+				SS$_DEVNOTMOUNT);
+		        return SS$_DEVNOTMOUNT;	! ACP should have cleaned up at $EXIT
+	   	     end;
+
+		send_oprmsg (
+				%ascid ' VSTA ACP Mount failure - operation retry',
+				SS$_DEVNOTMOUNT);
+		
+	     end;
+
+    end					! End mount retry loop
+    until .STATUS eql SS$_WASSET;
+
+!
+! Cancel timer
+!
+    if (not (STATUS=$CANTIM(
+			REQIDT=2
+			  ))) then
+    begin
+	return .STATUS;
+    end;
+
+return SS$_NORMAL;
+
+end;
+
+
+routine MOUNT_ACP_K =
+begin
+
+    if (.UCB[UCB$L_DEVCHAR] and DEV$M_MNT) neq 0 then
+      if ((.AQB[AQB$B_STATUS] and AQB$M_CREATING) eql 0) and
+	 ((.UCB[UCB$W_STS] and UCB$M_MOUNTING) eql 0)
+	then return SS$_NORMAL;
+
+!***    DELETE_STRUCTS (1);	! Get rid of this linked AQB and its VCB
+    return SS$_DEVNOTMOUNT;	! ACP should have cleaned up at $EXIT
+
+end;
+
+
+routine DELETE_STRUCTS ( LINKED_FLAG ): =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is called as a result of an ACP startup failure AFTER
+! the system data structures have been initialized and possibly after they
+! have been linked. Its also possible that there is some strange, mutant ACP
+! out there which must destroyed (phaser set to kill). This routine "un-links"
+! anything which needs to be and deallocates the system resources taken.
+!
+begin
+!
+! ACP process did not start correctly so clean up the AQB and VCB
+!
+    AQB[AQB$B_STATUS] = .AQB[AQB$B_STATUS] and (not AQB$M_CREATING);
+    UCB[UCB$W_STS] = .UCB[UCB$W_STS] and (not UCB$M_MOUNTING);
+    UCB[UCB$L_DEVCHAR] = .UCB[UCB$L_DEVCHAR] and
+				(not (DEV$M_MNT or DEV$M_DMT));
+!
+! Beam the mutant ACP into deep space at a wide angle of dispersion
+!
+    if .PID neq 0
+    then $FORCEX( PIDADR=PID );
+!
+! If we need to "un-link" the AQB then it shall be done
+!
+    if .LINKED_FLAG 
+    then begin
+      SCH$IOLOCKW(.SCH$GL_CURPCB);		! Get the mutex
+      MTPR (%ref (IPL$_SYNCH), PR$_IPL );	! Raise IPL to synch database
+      if .IOC$GL_AQBLIST neq 0
+      then begin
+        CURAQB = .IOC$GL_AQBLIST;
+        if .CURAQB eql .AQB				! Un-link the AQB
+	  then IOC$GL_AQBLIST = .AQB[AQB$L_LINK]
+	  else
+	    begin  ! Search for the AQB loop
+	    while (.CURAQB[AQB$L_LINK] neq .AQB) and
+		  (.CURAQB[AQB$L_LINK] neq 0)
+		do CURAQB = .CURAQB[AQB$L_LINK];
+	    if .CURAQB[AQB$L_LINK] neq 0 then
+	      CURAQB[AQB$L_LINK] = .AQB[AQB$L_LINK]
+	    end;  ! Search for the AQB loop
+      end;
+      MTPR (%ref (IPL$_ASTDEL), PR$_IPL );	! Lower the IPL to normal
+      SCH$IOUNLOCK(.SCH$GL_CURPCB);		! Return the Mutex
+      SETIPL(0);
+    end;
+!
+! Deallocate the AQB and VCB (if the ACP didn't already get rid of them)
+!
+    if .UCB[UCB$L_VCB] neq 0 then
+      begin
+	UCB[UCB$L_VCB] = 0;
+	EXE$DEANONPAGED(.VCB);
+	EXE$DEANONPAGED(.AQB);
+      end;
+
+    return SS$_NORMAL;
+end;	! Routine DELETE_STRUCTS
+
+
+routine NAME_STRINGS ( ID ) =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for naming various objects for this
+! particular ACP. Those objects are the ACP process name, template VD device,
+! and possibly the default output/error file names for the ACP.
+!	This routine also displays a message (via OPCOM) if the VAXstation
+! device for this ACP happens to be off-line.
+!
+begin
+local
+	STATUS,
+	CONTROLLER: byte,
+	TIME_BUFFER: vector[7,word],
+	MSG_LEN,
+	MSG_DESC: vector[2] initial(128,MSG_BUFFER);
+!
+! Construct the name strings '_VDX0:' and 'VSXACP', where 'X' is the 
+!  controller name, a letter between A and H inclusive.
+!
+	CONTROLLER = %X'40' + .ID;	! I=1 gives 'A', I=8 gives 'H', etc.
+!
+	DEV_NAME [3] = .CONTROLLER;
+	PROC_NAME [2] = .CONTROLLER;
+!
+! See if ACP supposed to direct output/error to somewhere other than defaults.
+!
+	if .VSTA$GL_DISLOG then
+	  begin
+	    ERROR_FILE_DESC[0] = OUTPUT_FILE_DESC[0] = 3;
+	    ERROR_FILE_DESC[1] = OUTPUT_FILE_DESC[1] = uplit(byte('NL:'));
+	  end
+!
+! Set up default ACP output/error log files
+!
+	else
+	  begin
+	    ERROR_FILE_DESC[0] = OUTPUT_FILE_DESC[0] = NAM$C_MAXRSS;
+	    ERROR_FILE_DESC[1] = ERROR_FILE;
+	    OUTPUT_FILE_DESC[1] = OUTPUT_FILE;
+	    if not (STATUS = DETERMINE_FILESPECS(
+					.CONTROLLER,
+					OUTPUT_FILE_DESC,
+					ERROR_FILE_DESC)) THEN
+	      return .STATUS;
+	  end;
+!
+! If this VAXstation device is off-line, let the operator know
+!
+
+	if not (.ONLINE [.ID])
+	  then begin
+	    $fao(
+		%ASCID ' VAXstation Device (_VB!AD0:) is OFFLINE',
+		msg_len,
+		msg_desc,
+		1,
+		CONTROLLER);
+	    msg_desc[0] = .msg_len;
+            send_oprmsg (
+		msg_desc,
+		SS$_DEVOFFLINE );
+	  end;
+
+	return SS$_NORMAL;
+end;	! Routine NAME_STRINGS
+
+
+routine CHECK_TEMPLATE = 
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine attempts to get a channel to the constructed template
+! device and the address of its UCB. If successful, the template device is
+! turned on-line (just in case it wasn't on-line for some reason).
+!
+begin
+!
+! Get the UCB of this VDx0
+!
+    if not (STATUS = $ASSIGN(
+			DEVNAM= dev_name_desc,
+			CHAN=VD_CHAN,
+			ACMODE=PSL$C_USER))
+	then return .STATUS;
+
+    if not (STATUS = IOC$VERIFYCHAN(.VD_CHAN;CCB))
+	then return .STATUS;
+
+    UCB = .CCB[CCB$L_UCB];
+!
+! If the template device is off-line, then turn it back on-line and continue
+!
+    UCB [UCB$W_STS] = .UCB [UCB$W_STS] or UCB$M_ONLINE;
+
+return SS$_NORMAL;
+end;		!Of routine check_template
+
+
+routine CHECK_ACP = 
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine checks to see if an ACP already exists for this template
+! device. If the template device is mounted and/or dismounted, then we assume
+! that there is a normal, executing ACP here which we will leave alone.
+!
+begin
+own
+	STSFLG;
+local
+	IOSB: vector[4,word],
+	EPID,
+	PREV_GROUP: WORD,
+	ITEM_LIST: vector[4] initial(jpi$_sts^16+4,stsflg,0,0);
+!
+! If all is well (template device online and not mounted) then return success
+!
+    if (.UCB[UCB$L_DEVCHAR] and (DEV$M_MNT or DEV$M_DMT)) eql 0
+	then return SS$_NORMAL;
+!
+! There may or may not be an ACP out there at this point. If its really there,
+! then return the indication that we don't need to create a new one.
+!
+! First, confirm that the VCB is there.
+!
+    VCB = .UCB[UCB$L_VCB];
+    if .VCB eql 0 then
+      begin
+	UCB[UCB$L_DEVCHAR] = .UCB[UCB$L_DEVCHAR] and
+				(not (DEV$M_MNT or DEV$M_DMT));
+	return SS$_NORMAL;
+      end;
+!
+! Confirm that the AQB is there as well.
+!
+    AQB = .VCB[VCB$L_AQB];
+    if .AQB eql 0 then
+      begin
+	UCB[UCB$L_DEVCHAR] = .UCB[UCB$L_DEVCHAR] and
+				(not (DEV$M_MNT or DEV$M_DMT));
+	UCB[UCB$L_VCB] = 0;
+	EXE$DEANONPAGED(.VCB);
+	return SS$_NORMAL;
+      end;
+!
+! See if the ACP process itself is really there.
+!
+    EPID = CVT_EPID(.AQB[AQB$L_ACPPID]);
+    if $GETJPI(
+		EFN    = 1,
+		PIDADR = EPID,
+		ITMLST = ITEM_LIST[0],
+		IOSB   = IOSB) then
+	begin
+	    $WAITFR( EFN = 1 );
+	    if .IOSB[0] then
+	      return SS$_DEVMOUNT;
+	end;
+!
+! If its NOT there (and it really should be at this point barring foul play),
+! then we've got some cleaning up to do before we indicate that we need an
+! ACP created here.
+!
+    PID = 0;
+    DELETE_STRUCTS(1);
+
+return SS$_NORMAL;
+end;	! Routine CHECK_ACP
+
+
+routine DATA_STRUCT =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for allocating and initializing the system
+! data structures required for the driver/template device <=> ACP linkage.
+! These structures are the AQB (ACP control block) and VCB (volume control
+! block).
+!
+begin
+local
+	SIZE;
+!
+! Allocate and initialize the AQB (ACP control block)
+!
+    if not (STATUS = EXE$ALONONPAGED(AQB$C_LENGTH;SIZE,AQB))
+	then return .STATUS;
+!
+    AQB[AQB$W_SIZE] = AQB$C_LENGTH;
+    AQB[AQB$B_TYPE] = DYN$C_AQB;
+    AQB[AQB$L_ACPQFL] = .AQB;
+    AQB[AQB$L_ACPQBL] = .AQB;
+    AQB[AQB$B_MNTCNT] = 1;
+    AQB[AQB$B_ACPTYPE] = VS$K_ACP_TYPE;
+    AQB[AQB$B_STATUS] = .AQB[AQB$B_STATUS] or (AQB$M_CREATING or 
+						AQB$M_UNIQUE);
+!
+! Allocate and initialize the VCB (Volume Control Block)
+!
+    if not (STATUS=EXE$ALONONPAGED(VCB$C_LENGTH;SIZE,VCB))
+	then begin
+	    EXE$DEANONPAGED(.AQB);
+	    return .STATUS;
+	end;  ! Allocation failure
+!
+    CH$FILL ( 0, .SIZE, CH$PTR(.VCB) );		! Initialize VCB to all zero
+    VCB[VCB$W_SIZE] = VCB$C_LENGTH;
+    VCB[VCB$B_TYPE] = DYN$C_VCB;
+    VCB[VCB$W_TRANS] = 1;
+    VCB[VCB$L_AQB] = .AQB;
+    UCB[UCB$L_VCB] = .VCB;
+    UCB[UCB$W_STS] = .UCB[UCB$W_STS] or UCB$M_MOUNTING;
+    return SS$_NORMAL;
+end;	! Routine DATA_STRUCT
+
+
+routine START_PROC  =
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for the ACP process creation. If it
+! fails because there is already a process out there with our ACP process name,
+! then we assume its a mutant ACP which must be destroyed. We then try to
+! create the process again. If the $CREPRC indicates that all is well, we
+! wait for several seconds and then verify that the process is really out
+! there (it should be just sitting there hibernating and waiting for the magic
+! word).
+!
+begin
+own
+	STSFLG;
+local
+	IOSB: vector[4,word],
+	ITEM_LIST: vector[4] initial(jpi$_sts^16+4,stsflg,0,0);
+!
+! Start the ACP process
+!
+    PID = 0;
+    if not (STATUS = $CREPRC(
+			PIDADR=PID,
+			IMAGE=%ASCID 'VSTA$EXE:VSACP.EXE',
+			INPUT= DEV_NAME_DESC,
+			OUTPUT= OUTPUT_FILE_DESC,
+			ERROR= ERROR_FILE_DESC,
+			QUOTA= VSTA$GL_QUOTA,
+			BASPRI= .VSTA$GL_BASPRI,
+			PRCNAM= proc_name_desc,
+			STSFLG=	.VSTA$GL_MODES,
+			UIC=%x'10004'))
+	then
+!
+! If it failed because there's a process out there with this ACP process name,
+! then assume its one of our mutant ACPs and try to destroy it.
+!
+	  if (.STATUS neq SS$_DUPLNAM) or
+	    ((.STATUS eql SS$_DUPLNAM) and (not kill_dangling_acp ())) then
+	  begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .STATUS;
+	    end; ! if not $CREPRC() and not because of duplicate process name
+!
+! Wait for 4 seconds and see if its really there. If not then cleanup.
+!
+    if (not (STATUS=$SETIMR(
+		EFN=1,
+		DAYTIM=uplit(-10*1000*1000*4,-1)))) then 
+	begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .STATUS;
+	end;	! Bad $SETIMR
+    if (not (STATUS=$WAITFR(
+		EFN=1 ))) then
+	begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .STATUS;
+	end;	! Bad $WAITFR
+
+    if (not (STATUS=$GETJPI(
+		EFN    = 1,
+		PIDADR = PID,
+		ITMLST = ITEM_LIST[0],
+		IOSB   = IOSB))) then
+	begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .STATUS;
+	end;	! Bad $GETJPI
+    if not .IOSB[0] then
+	begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .IOSB[0];
+	end;	! Bad $GETJPI
+
+    if (not (STATUS=$WAITFR(
+		EFN=1 ))) then
+	begin
+	    KERNEL_CALL( DELETE_STRUCTS,0 );
+	    return .STATUS;
+	end;	! Bad $WAITFR
+!
+! Indicate success.
+!
+    return SS$_NORMAL;
+end;	! Routine START_PROC
+
+
+end ! module STARTACP
+eludom
+

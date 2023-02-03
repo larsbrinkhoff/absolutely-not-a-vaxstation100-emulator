@@ -1,0 +1,2651 @@
+module txtfont (
+		IDENT = 'txtfont'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL,
+				NONEXTERNAL = GENERAL) ) =
+begin
+
+! This module has routines for manipulating fonts, and typefaces.
+
+library 'sys$library:lib.l32';		! Get ss$_normal symbol.
+library 'vsta$library:vserrors';	! things like "string_type"
+library 'vsta$library:libmacros';	! Symbols like $parameter_or_0
+library 'vsta$library:txtsym';
+library 'vsta$library:vsacpdef';	! Symbols like "font_weight"
+library 'vsta$library:termio';
+library 'vsta$library:vstadef';		! Only needed for VSTA$K_vaxmem.
+
+! PSECT definitions
+
+$vsta_psect;
+
+forward routine!s . . .
+
+	read_in_font_file,	! read font file from disk
+	assignFontId,		! generate unique code for font image
+	cache_from_fib_to_font,	! copy data for quicker access
+	cache_from_fim_to_fib,	! copy data so fim can be released
+	vsta$$txt_measure_width,! measure width of string
+	vsta$$txt_measure_range,! measure width of range of characters
+	generate_font_width_info,
+				! Analyze widths of characters in font.
+	font_already_chosen,	! See if cached font is valid
+	cache_vd_font_data,	! Cache new font data for vd
+	vs$$txt_measure_text,	! measure room taken up by string
+	vs$$txt_defineFont,	! define a font with filename, typeface, size, rendition
+	vs$$txt_defineSystemwideFont,
+				! define a global font
+	innerDefineFont,	! worker routine used for defining fonts
+	vs$$txt_deleteFont,	! forget font definition
+	vs$$txt_get_font_address,
+				! get address for font
+	vs$$txt_deleteSystemwideFont,
+				! called from vs$$txt_deleteFont
+	vs$$txt_delete_all_sw_fonts,
+				!Called at end session to delete
+				! all the system-wide fonts.
+	delete_sw_rank,		!Given an index into swfonts, delete the font.
+	releaseFontsBetween,	! release consecutive fonts from list
+	chooseFont,		! find font that best fits current settings
+	tallyScore,		! compute score for font
+	findFont,
+	deallocateFont,		! release space used by font block
+	fibReference,		! count up fib
+	fibDereference,		! dereference fib, and deallocate if no refs left
+	findFib,		! find fib, given id
+	find_font_image,	! given string block, find font image address
+	deallocateFib;
+
+macro
+!
+! Use the following macro to calculate number of bytes needed to store a
+! bitmap of given proportions.
+!
+	$bytes_for_bitmap (width, height) =
+	((width) + 15) / 16 * 2 * (height) % ,
+!
+! This one calculates the number of bytes needed for a font width table,
+! given the address of the font image.  The "+ 2" is 1 for calculating
+! number of characters, and 1 because fonts contain one more entry in xtable
+! than number of characters so last character's width can be calculated.
+!
+! if the font is of fix pitch, the macro returns 0.
+!
+	$bytes_for_xtable (fim) =
+	    begin
+	      bind fimBlk69 = (fim) : fim_block;
+	      if .fimBlk69 [fim_char_width] eql 0
+	       then
+		  2 * (.fimBlk69[fim_last] - .fimBlk69[fim_first] + 2)
+	       else 0
+	    end % ,
+!
+! This macro calculates number of bytes needed for a font image.
+!
+	$bytes_for_font_image (fim, bitmap_width, bitmap_height) =
+	    begin
+	    4 * fim_block_length	! fixed portion
+	    + $bytes_for_xtable (fim)	! room for width table
+	    + $bytes_for_bitmap ((bitmap_width), (bitmap_height))
+					! room for the bits
+	    end % ;
+
+global literal
+!
+! Set of rendition bits we can implement algorithmically and hence
+! needn't be defined as part of a font's renditions.
+!
+	algorithmic_renditions =
+	    rend_underscore_bit +	! We implement underscoring ourself.
+!	    rend_blink_bit +		! We don't implement blink ourself.
+	    rend_reverse_bit,		! We implement reversal ourself.
+!
+! Largest possible positive number, obtained by shifting a 1 into the
+! leftmost bit, and then complementing all the bits, yielding all bits
+! on except the sign.
+!
+	positive_infinity = not 1^(%bpval-1);
+
+external routine!s
+
+	appendElement,
+	alcful,			! allocate fullwords
+	clone_upcased_string,	! make copy of string
+	deallocateBytes,
+	deallocateFullwords,
+	deleteElements,		! delete elements from list
+	forgetString,		! deallocate a string
+	map_file,		! map entire file into memory
+	unmap_file,		! release a file that was mapped into memory
+	vsta$$dmm_get_mem,	! Get display memory
+	vsta$$dmm_free_mem,	! Release display memory
+	vsta$$drive_move_object,! Move object (to display memory in our case)
+	vsta$$error_logger;	! Report UNEXPECTED error
+
+external
+
+	vs$gw_vbchan : word,    ! Database containing hardware channel numbers.
+	vs$a_irp:ref block [0,byte], ! global pointer to current IRP
+	nswfonts,		! number of system-wide fonts
+	swfonts:ref vector;	! pointer to list of system-wide fonts
+
+global
+
+	fib_head : vector [2] preset (
+	    [0] = fib_head[0],	! Linked list queue header for font index blks
+	    [1] = fib_head[0]
+	    );
+
+own
+
+	counter : initial (1);	! global counter for generating unique values
+
+global
+!
+! Cell that remembers how many systemwide font transactions have occured.
+! This is used when a vd is being written to in order to determine if
+! any system fonts have changed since the last time the vd was written to.
+!
+	n_system_font_transactions : initial (0);
+
+builtin
+
+	remque, insque;		! Queue operations
+
+routine read_in_font_file
+!++
+! Functional description:
+!
+!	When a fonts contents is actually needed, and font hasn't yet been
+!	read in, call this routine to read it in.
+!
+! Formal parameters:
+ (
+	fntBlk : ref font_block	! font block representing file to be read in
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s,
+	    fiBlk : ref fib;
+!
+! If an identical buffer
+! already exists, as in multiple virtual displays having the same
+! fonts defined for them, this buffer can be released, and
+! we'll use an old fid (font id).  If no identical buffer is found, we'll
+! create a new fib (font image block) which will have a new fid and our
+! buffer as its image.
+!
+	if not (s = assignFontId(fntBlk[$base]))
+	then
+	    begin
+	    $return_error (vsta$_bad_fnt, string_type, fntBlk[fnt_namLen])
+	    end;
+!
+! Get address of font image block.
+!
+	findFib (.fntBlk[fnt_id], fiBlk);
+!
+! Remember whether this is a cell font of not.  It IS a cell font if the width
+! cell contains some specific NON-0 value.
+!
+	fntBlk[fnt_cell_flag] = .fiBlk[fib_char_width] neq 0;
+!
+! If font was successfully loaded into display memory, and we were able
+! to cache width information about it, then unmap the font from vax
+! memory, since mapping takes up quotaed resources.  This also allows
+! users to use the dcl command "SHOW DEVICE/FILE" to determine if their
+! favorite font managed to get loaded into display memory (and will hence
+! be faster to print with).
+!
+	if .fiBlk[fib_display_adr] neq 0
+	    and (.fntBlk[fnt_cell_flag] or .fiBlk[fib_chrwth_adr] neq 0)
+	    and .fiBlk[fib_file_chan] neq 0
+	then
+	    begin
+	    unmap_file (.fiBlk[fib_file_len], .fiBlk[fib_file_buf],
+	    .fiBlk[fib_file_chan]);
+!
+! Since file is unmapped, clear iamge address, lest someone try to use it.
+!
+	    fiBlk[fib_imageAdr] = 0;
+!
+! Mark that channel is no longer in use.
+!
+	    fiBlk[fib_file_chan] = 0
+
+	    end;
+
+	ss$_normal
+
+	end;
+
+routine assignFontId
+!++
+! Functional description:
+!
+!	Get font id for a font image.  If the fim
+!	has an identical copy in some existing fib, the passed
+!	one is expunged, and the id of the existing one is given.  If no
+!	identical buffer is found, The passed buffer is connected to a new
+!	fib, given an id, and the id is returned.
+!
+! Formal parameters:
+ (
+	fntBlk : ref font_block		! font whose file is being read in
+ ) =
+!
+! Side effects:
+!
+!	If we decide to keep this fim, we attempt to load the font into
+!	display memory also, for faster access.
+!
+!++
+
+	begin
+
+	local
+
+	    file_len,
+	    file_buf,
+	    file_chan,
+	    fab : $fab (),
+	    namblk : volatile $nam (),
+	    resstr : vector [nam$c_maxrss, byte],
+	    expstr : vector [nam$c_maxrss, byte],
+	    fimAdr : ref fim_block,
+	    fimLen,
+	    fiBlk : ref fib,
+	    s;
+!
+! Get information about the file involved.
+!
+	if not (s = $ertn (vsta$$search_for_file) (.fntBlk[fnt_namLen],
+	    .fntBlk[fnt_namPtr],
+	    fab[$base], namblk[$base], expstr[0], resstr[0]))
+	then return .s;
+!
+! Get address of first block in chain.
+!
+	fiBlk = .fib_head[0];
+!
+! Scan all fibs.
+!
+	until fiBlk[base] eql fib_head[0] do
+!
+! If we've found a match, return id of old.
+! We reference the old to remember it is being pointed to by yet
+! another source.
+!
+	    if ch$eql (nam$s_dvi, fiBlk[fib_rmsdvi], nam$s_dvi,
+		namblk[nam$t_dvi]) and
+		ch$eql (nam$s_did, fiBlk[fib_rmsdid], nam$s_did,
+		namblk[nam$w_did]) and
+		ch$eql (nam$s_fid, fiBlk[fib_rmsfid], nam$s_fid,
+		namblk[nam$w_fid])
+	    then
+		begin
+		fiBlk[fib_ref] = .fiBlk[fib_ref] + 1;
+!
+! Cache needed data for quicker access.
+!
+		cache_from_fib_to_font(fntBlk[$base], fiBlk[$base]);
+		return true
+		end
+	    else
+		fiBlk = .fiBlk[fib_flink];
+!
+! Open the file and map it in, since it isn't already mapped in.
+!
+	if not (s = map_file (fntBlk[fnt_namLen], file_len, file_buf,
+	    file_chan))
+!
+! Tell caller WHY we couldn't map file in (usually file not found).
+!
+	then return $ertn (vsta$$error) (.s);
+!
+! Figure out address in which file actually got mapped.
+!
+	fimAdr = (.file_buf + 511) and not %o'777';
+!
+! Calculate number of bytes the font actually takes up.
+!
+	fimLen = $bytes_for_font_image (
+	    !.fimAdr[fim_last] - .fimAdr[fim_first] + 1,
+	    .fimAdr,
+	    .fimAdr[fim_width],
+	    .fimAdr[fim_height]
+	    );
+!
+! In case user passed a bad format font file, don't get fooled into trying
+! to use any more space than is actually taken up by the file itself.
+!
+	if fimAdr[$base] + .fimLen gtr .file_buf + .file_len
+	then fimLen = .file_buf + .file_len - fimAdr[$base];
+!
+! Perform some consistency checks to try to ward off crashes later
+! when font is being used
+!
+  	if ((.fimAdr [fim_char_width] eql 0) and 	! variable pitch font
+  		(.fimAdr [fim_xtable] geq .fimLen)) 
+  	 then
+	    begin
+	    unmap_file (.file_len, .file_buf, .file_chan);
+	    $return_error (vsta$_bad_xtbl, string_type, fntBlk[fnt_namLen])
+	    end;
+!
+! Create new fib.  We leave room for xtable at end.
+!
+	if not (s = alcful (fib_length + $bytes_for_xtable (fimAdr[$base]),
+	    fiBlk))
+	then return .s;
+!
+! Insert new block into queue of fibs.
+!
+	insque (fiBlk[base], fib_head[0]);
+!
+! Store length and address of font image in fib
+!
+	fiBlk[fib_imageLen] = .fimLen;
+	fiBlk[fib_imageAdr] = fimAdr[$base];
+!
+! Remember info about file for later releasing.
+!
+	fiBlk[fib_file_len] = .file_len;
+	fiBlk[fib_file_buf] = .file_buf;
+	fiBlk[fib_file_chan] = .file_chan;
+!
+! Remember identifier about which file this is.  We don't merely use the
+! file NAME string, since if someone defines a font, then deletes the file
+! and creates one with exactly the same name, we want to detect that as
+! a different file.
+!
+	ch$move (nam$s_dvi, namblk[nam$t_dvi], fiBlk[fib_rmsdvi]);
+	ch$move (nam$s_did,  namblk[nam$w_did], fiBlk[fib_rmsdid]);
+	ch$move (nam$s_fid,  namblk[nam$w_fid], fiBlk[fib_rmsfid]);
+!
+! Start its reference count at 1
+!
+	fiBlk[fib_ref] = 1;
+!
+! Give this fib an id
+!
+	fiBlk[fib_fid] = .counter;
+!
+! Generate next id to be used
+!
+	counter = .counter + 1;
+!
+! Remember the id of the new fib
+!
+	fntBlk[fnt_id] = .fiBlk[fib_fid];
+!
+! Remember data needed about font so that if we release vax memory, the data
+! is still available.
+!
+	cache_from_fim_to_fib (fiBlk[$base], fimAdr[$base]);
+!
+! Attempt to allocate space for this font in display memory.  If successful,
+! move the font into display memory.
+!
+!
+	if vsta$$dmm_get_mem (
+	    fiBlk[fib_imageLen],	! We need this many bytes.
+	    fiBlk[fib_display_adr]	! Store address here.
+	    )
+	then
+	    if not (s = vsta$$drive_move_object (
+		.vs$gw_vbchan,		! Channel to move object to
+		0,			! src_type is unformatted data
+		fimAdr[$base],		! Move data from our font image . . .
+		.fiBlk[fib_display_adr],! . . . to this addr in display mem
+		.fiBlk[fib_imageLen],	! This many bytes
+		0,			! No special event flag
+		0,			! No ast address
+		0			! No ast parameter
+		))
+	    then
+!
+! Couldn't move the object, so release the memory we just allocated in
+! display memory, note that it's been released, and complain.
+!
+		begin
+		vsta$$error_logger (.s);
+		vsta$$dmm_free_mem (
+		    fiBlk[fib_imageLen],
+		    fiBlk[fib_display_adr]
+		    );
+		fiBlk[fib_display_adr] = 0
+		end;
+!
+! All done.
+!
+	true
+
+	end;
+
+routine cache_from_fib_to_font
+!++
+! Functional description:
+!
+!	When a new font is associated with a fib, copy some data from
+!	fib to font so fib needn't be looked up each time data is needed.
+!
+! Formal parameters:
+ (
+	fntBlk : ref font_block,
+	fiBlk : ref fib
+ ) =
+!
+!--
+	begin
+!
+! Remember which fib this font points at.
+!
+	fntBlk[fnt_id] = .fiBlk[fib_fid];
+!
+! Copy dimensions of the font bitmap.
+!
+	fntBlk[fnt_height] = .fiBlk[fib_height];
+
+	ss$_normal
+
+	end;
+
+routine cache_from_fim_to_fib
+!++
+! Functional description:
+!
+!	When a font file has been read in, cache data from it to a fib,
+!	so font file may be removed from vax memory, particularly if it
+!	has been loaded into display memory.
+!
+! Formal parameters:
+ (
+	fiBlk : ref fib,
+	fimBlk : ref fim_block
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    cached_fim : ref fim_block,
+	    cached_xtable : ref vector [,word];
+!
+! Establish address of cached font image.
+!
+	cached_fim = fiBlk[fib_fim];
+!
+! Get width info about the font.  If all characters are the same width,
+! remember the width for quick computations later. 
+!
+	generate_font_width_info (fiBlk[base]);
+!
+! Copy dimensions of the font bitmap.
+!
+	fiBlk[fib_width] = .fimBlk[fim_width];
+	fiBlk[fib_height] = .fimBlk[fim_height];
+	fiBlk[fib_depth] = .fimBlk[fim_z];
+!
+! Copy baseline.
+!
+	fiBlk[fib_base] = .fimBlk[fim_base];
+!
+! Copy distance of font bits from header.
+!
+	fiBlk[fib_bits] = .fimBlk[fim_bits];
+!
+! Copy entire font header from font image into fib.  This is for Gidis,
+! which uses all sorts of fields therein.
+!
+	ch$move (4 * fim_block_length, fimBlk[$base], fiBlk[fib_fim]);
+!
+! Establish address of cached xtable.
+!
+	cached_xtable = fiBlk[fib_fim] + 4 * fim_block_length;
+!
+! Copy entire xtable.  Gidis peeks at xtable to calculate character
+! widths.  Someday someone might want to get rid of this extravaganza of a
+! copy, which could be done if gid$$al_char_width were passed the fib
+! address so it could use the cached width table.
+!
+	ch$move ($bytes_for_xtable (fimBlk[$base]),
+	    .fimBlk[fim_xtable] + fimBlk[$base],
+	    cached_xtable[0]
+	    );
+!
+! Make sure the copied font image header points at the copied xtable.
+!
+	cached_fim[fim_xtable] = cached_xtable[0] - cached_fim[$base];
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$txt_measure_width
+!++
+! Functional description:
+!
+!	Measure how much width a particular string takes up when printed with
+!	a particular font.
+!
+! Formal parameters:
+ (
+    len,			! number of characters in string
+    ptr : ref vector[,byte],	! address of bytes of string
+    fiBlk:ref fib,		! address of font image block
+    result_adr			! where to write width.
+	      ) =
+!
+! Implicit inputs:
+!
+!	If fiBlk[fib_char_width] contains something other than 0, the font
+!	is assumed to be cell text, and hence the string's width is quickly
+!	calculated as len*.fiBlk[fib_char_width].  Otherwise . . .
+!
+!	. . . If fiBlk[fib_chrwth_adr] contains non-0, it is assumed to be the
+!	address of a character width table which allows character widths
+!	to be obtained more quickly than going to the font itself.
+!--
+
+!
+! If this font has all character the same width, merely multiply the number
+! of characters in the string by the width.
+!
+	if .fiBlk[fib_char_width] neq 0
+	then
+	    begin
+	    .result_adr = .len*.fiBlk[fib_char_width];
+	    return ss$_normal
+	    end
+	else
+
+	begin
+
+	local totalWidth : initial (0);
+!
+! If a width table has been established, do the faster calculation using the
+! table and return.
+!
+	if .fiBlk[fib_chrwth_adr] neq 0
+	then
+	    begin
+
+	    bind
+!
+! Establish base of width table.
+!
+		width_table = .fiBlk[fib_chrwth_adr] : vector[,byte];
+!
+! Loop over each character, and if legal, accumulate its width.  If not
+! legal, give an error.
+!
+	    incr i from 0 to .len-1 do
+	    if .ptr[.i] lss .fiBlk[fib_chrwth_len]
+	    then totalWidth = .totalWidth + .width_table[.ptr[.i]]
+	    else $return_error (
+		vsta$_bad_character,
+		integer_type, .ptr[.i],
+		integer_type, 0,
+		integer_type, .fiBlk[fib_chrwth_len] - 1
+		);
+!
+! Return resultant width.
+!
+	    .result_adr = .totalWidth;
+
+	    return ss$_normal
+
+	    end;
+!
+! No cached help, so we need to do it the slower way . . .
+!
+	$please_bind
+
+	    ! Get address of font image.
+	    fimBlk = .fiBlk[fib_imageAdr] : fim_block,
+
+	    ! Get first and last legal index for this font
+	    first = .fimBlk[fim_first],
+	    last = .fimBlk[fim_last],
+
+	    ! Get table of horizontal positions
+	    xTable = fimBlk[base] + .fimBlk[fim_xTable]:vector[,word];
+
+	! loop over all characters of string
+	!
+	incr i from 0 to .len-1 do
+	    begin
+
+	    bind
+		! Pick up next character to be measured
+		char = .ptr[.i],
+
+		! Get index for this character in xTable
+		index = char - first;
+
+	    ! Instead of getting an access violation when callers supply
+	    ! characters out of range for this font, return an error.
+	    !
+	    if char lss first or char gtr last
+	    then $return_error (
+		vsta$_bad_character,
+		integer_type, char,
+		integer_type, first,
+		integer_type, last
+		);
+
+	    ! Accumulate total width of string
+	    !
+	    totalWidth = .totalWidth +
+
+		! Get width of this character by subtracting its horizontal
+		! position from that of the adjacent character
+		!
+		.xTable[1+index] - .xTable[index];
+
+	    end;
+
+	! Return total width
+	.result_adr = .totalWidth;
+
+	ss$_normal
+
+	$please_end
+
+	end;
+
+global routine vsta$$txt_measure_range
+!++
+! Functional description:
+!
+!	Measure how much width a particular range of characters takes up when
+!	printed with a particular font.
+!
+! Formal parameters:
+ (
+    first_char,			! first character in range
+    last_char,			! last character in range
+    fiBlk:ref fib,		! address of font image block
+    result_adr			! where to write width.
+	      ) =
+!
+! Implicit inputs:
+!
+!	If fiBlk[fib_char_width] contains something other than 0, the font
+!	is assumed to be cell text, and hence the string's width is quickly
+!	calculated as len*.fiBlk[fib_char_width].  Otherwise . . .
+!
+!	. . . If fiBlk[fib_chrwth_adr] contains non-0, it is assumed to be the
+!	address of a character width table which allows character widths
+!	to be obtained more quickly than going to the font itself.
+!--
+
+!
+! If this font has all character the same width, merely multiply the number
+! of characters in the range by the width.
+!
+	if .fiBlk[fib_char_width] neq 0
+	then
+	    begin
+	    .result_adr = (.last_char - .first_char + 1) *
+		.fiBlk[fib_char_width];
+	    return ss$_normal
+	    end
+	else
+
+	begin
+
+	local totalWidth : initial (0);
+!
+! If a width table has been established, do the faster calculation using the
+! table and return.
+!
+	if .fiBlk[fib_chrwth_adr] neq 0
+	then
+	    begin
+
+	    bind
+!
+! Establish base of width table.
+!
+		width_table = .fiBlk[fib_chrwth_adr] : vector[,byte];
+!
+! Loop over each character and accumulate its width.
+!
+	    incr i from .first_char to .last_char do
+	    if .i lss .fiBlk[fib_chrwth_len]
+	    then totalWidth = .totalWidth + .width_table[.i]
+	    else $return_error (
+		vsta$_bad_character,
+		integer_type, .i,
+		integer_type, 0,
+		integer_type, .fiBlk[fib_chrwth_len] - 1
+		);
+!
+! Return resultant width.
+!
+	    .result_adr = .totalWidth;
+
+	    return ss$_normal
+
+	    end;
+!
+! No cached help, so we need to do it the slower way . . .
+!
+	$please_bind
+
+	    ! Get address of font image.
+	    fimBlk = .fiBlk[fib_imageAdr] : fim_block,
+
+	    ! Get first and last legal index for this font
+	    first = .fimBlk[fim_first],
+	    last = .fimBlk[fim_last],
+
+	    ! Get table of horizontal positions
+	    xTable = fimBlk[base] + .fimBlk[fim_xTable]:vector[,word];
+
+	! loop over all characters of string
+	!
+	incr i from .first_char to .last_char do
+	    begin
+
+	    bind
+		! Pick up next character to be measured
+		char = .i,
+
+		! Get index for this character in xTable
+		index = char - first;
+
+	    ! Instead of getting an access violation when callers supply
+	    ! characters out of range for this font, return an error.
+	    !
+	    if char lss first or char gtr last
+	    then $return_error (
+		vsta$_bad_character,
+		integer_type, char,
+		integer_type, first,
+		integer_type, last
+		);
+
+	    ! Accumulate total width of string
+	    !
+	    totalWidth = .totalWidth +
+
+		! Get width of this character by subtracting its horizontal
+		! position from that of the adjacent character
+		!
+		.xTable[1+index] - .xTable[index];
+
+	    end;
+
+	! Return total width
+	.result_adr = .totalWidth;
+
+	ss$_normal
+
+	$please_end
+
+	end;
+
+routine generate_font_width_info
+!++
+! Functional description:
+!
+!	When a new font is being defined from a file, this routine determines
+!	if all the characters have the same width.  If so, that width
+!	is returned as an output value, which allows subsequent calculations
+!	to quickly determine the width of character strings.
+!
+!	If the characters are NOT the same size, and it's convenient,
+!	a width table is set up, allowing sort of quick width calculations to
+!	be done.  ("inconvenient" here means too many characters, or some
+!	widths too large to fit in a table entry).
+!
+! Formal parameters:
+ (
+	fiBlk : ref fib		! database for font being set up
+ ) =
+!
+! Side effects:
+!
+!	Width table may be allocated, and
+!	fiBlk[fib_wthtab_len] and fiBlk[fib_wthtab_adr] will contain
+!	the length (in bytes) and address of this table.
+!
+!	Internally, the table is often INITIALLY created, but will be
+!	deleted before this routine returns, if all the characters are the
+!	same width, OR if some character's width doesn't fit in the table.
+!
+!--
+
+	begin
+
+	literal
+!
+! Specify largest width we can store in the table.  This is eight bits worth,
+! because we're allocating a byte array.
+!
+	    largest_cachable_width = %b'11111111',
+!
+! Specify how many entries we're willing to store in the table.  If more
+! than this number of characters are in the font, we won't use a table,
+! which means text-measuring operations will be a bit slower.
+! Guidelines for picking this number is that it should be large enough
+! for the number of characters in a popular font, and small enough so that
+! we don't mind allocating up to this many entries.
+!
+	    max_table_size = 1000;
+
+	local
+!
+! Status cell:
+!
+	    s,
+!
+! Allocate cell which will point at the table.
+!
+	    width_table : ref vector [,byte],
+!
+! Define flag which initially is set to indicate that table needed was small
+! enough so we created it.  This flag is cleared, (and no table created) if the
+! font being created has more characters than we're willing to create a
+! table for.
+!
+	    table_in_use_flag : initial (1),
+!
+! Define flag initially 0 that gets set if some character's width turns
+! out to be too large to fit in the table, in which case the table gets
+! thrown away.
+!
+	    some_width_too_large_flag : initial (0),
+!
+! Define a flag initially 0, that gets set if characters are not all
+! the same width.
+!
+	    var_width_flag : initial (0);
+
+	bind
+!
+! Get image of font.
+!
+	    image_adr = .fiBlk[fib_imageAdr] : fim_block,
+
+!
+! Get first and last legal character index.  Rather than slow us down later
+! by having to subtract, we'll base our character width table on 0, regardless
+! of what the first legal index is.
+!
+	    first_index = .image_adr[fim_first],
+	    last_index = .image_adr[fim_last],
+!
+! Get table of horizontal positions
+!
+	    xTable = image_adr[base] + .image_adr[fim_xTable] : vector[,word],
+!
+! Get width of first character, which if others are equal to,
+! will be taken to be width of each character of cell text.
+!
+	    sample_width = .xTable[1] - .xTable[0],
+!
+! Calculate number of characters in font.
+!
+	    n_chars = last_index + 1;
+!
+! set char width if a fix pitch font
+!
+  	    if .image_adr [fim_char_width] neq 0
+	     then
+	      begin
+	        fiBlk [fib_char_width] = .image_adr [fim_char_width];
+		return SS$_NORMAL
+	      end;
+!
+! If the number of entries we need is of reasonable value, allocate a
+! table.  If not, remember that we didn't allocate a table, but proceed
+! since without the table we still want to figure out if all characters have
+! the same width..
+!
+! Note that we don't write the table address into the fib yet, since we
+! don't want the table to be used by vsta$$txt_measure_width until we're
+! done with it (we use vsta$$txt_measure_width !)
+!
+	if n_chars leq max_table_size and n_chars gtr 0
+	then
+	    begin
+	    width_table = allocateBytes (n_chars);
+	    ch$fill (0, n_chars, width_table[0]);
+	    fiBlk[fib_chrwth_len] = n_chars;
+	    fiBlk[fib_chrwth_adr] = width_table[0]
+	    end
+	else table_in_use_flag = 0;
+!
+! Loop, filling table and comparing widths.
+!
+	incr i from first_index to last_index do
+	    begin
+
+	    bind next_width = .xTable[1 + .i - first_index]
+		- .xTable[.i - first_index];
+!
+! If character deviates from sample width, remember that we have a variable
+! width font.
+!
+	    if sample_width neq next_width
+	    then var_width_flag = 1;
+!
+! If table small enough to use at all (i.e. not too many characters in this
+! font) and if this width is too large to fit in the table, remember that fact.
+! Otherwise, put it in table.
+!
+	    if .table_in_use_flag
+	    then
+		if not .some_width_too_large_flag
+		then
+		    if next_width leq largest_cachable_width
+		    then width_table[.i] = next_width
+		    else some_width_too_large_flag = 1
+
+	    end;
+!
+! If table was small enough originally, and
+! if characters were all the same size OR some character's width was
+! too large to fit in the table, get rid of the table.
+!
+	if .table_in_use_flag and (.some_width_too_large_flag
+	    or not .var_width_flag)
+	then
+	    begin
+	    deallocateBytes (
+		.fiBlk[fib_chrwth_len],
+		width_table[0]
+		);
+	    fiBlk[fib_chrwth_adr] = 0
+	    end;
+!
+! If font turned out to be constant width, set cell to remember width.
+!
+	if not .var_width_flag
+	then fiBlk[fib_char_width] = sample_width;
+!
+! All done.  We now have fiBlk[fib_char_width] as the width if every character
+! is the same width.
+!
+! If characters are NOT the same width, and there aren't too many characters,
+! and no characters width is too large, we now have a table indexable by
+! character index which reveals the character's width.  fiBlk[fib_chrwth_adr]
+! is either 0 or the base of this table.  fiBlk[fib_chrwth_len] contains the
+! length of this table (which is used for deallocating the table when the fib
+! is deleted.)
+!
+	ss$_normal
+
+	end;
+
+global routine font_already_chosen
+!++
+! Functional description:
+!
+!	When printing new text onto a vd, before performing the computation
+!	of which font to use, call this routine to see if perhaps we can just
+!	use the same font as last time, since nothing that affects the decision
+!	has changed.
+!
+! Formal parameters:
+ (
+	txtBlk : ref text_block,	! vd's text data structure
+	fid_adr,			! where to write font id
+	font_rend,			! where to write font's rendition bits
+	cell_flag			! where to write cell flag
+ ) =
+!
+! Returned values:
+!
+!	The routine will return a success code if fid_adr, font_rend, and
+!	cell flag (whether font is cell text or not)
+!	for the vd were current and hence applicable.  The routine will return
+!	a failure code if the data were NOT current and hence need to be
+!	recomputed (by calling chooseFont).
+!
+! Side effects:
+!
+!	If we decide to use the cached font, its fib is up-counted to
+!	prevent it from going away (just as chooseFont does).
+!--
+
+	begin
+
+	if
+!
+! In order for the cached font data to be current, the number of system-wide
+! font transactions must equal the number that had transpired the last time
+! we checked.
+!
+	    .n_system_font_transactions eql .txtBlk[txt_n_sys] and
+!
+! Also, the stab_att flag must be set, which means attributes are stable,
+! which means no attributes for the vd have changed recently that would
+! affect the choice of font.  For instance, setting typeface, typesize, or
+! rendition, or defining or deleting a private font, would all be things that
+! would cause stab_att to be cleared.
+!
+	    .txtBlk[txt_stab_att]
+	then
+!
+! Cached font data is current, so give caller the cached data, and prevent
+! chosen font from going away, which we do by calling fibReference.
+!
+	    begin
+	    local s;
+	    .fid_adr = .txtBlk[txt_fid];
+	    .font_rend = .txtBlk[txt_font_rend];
+	    .cell_flag = .txtBlk[txt_cell_flag];
+	    if not (s = fibReference (.txtBlk[txt_fid]))
+	    then vsta$$error_logger (.s);
+	    return ss$_normal
+	    end;
+!
+! Cached data is NOT current, so don't give any info except to announce that
+! data isn't current.
+!
+	$false
+
+	end;
+
+global routine cache_vd_font_data
+!++
+! Functional description:
+!
+!	Whenever a font has been successfully chosen, this routine should
+!	be called to cache the info such that subsequent writes to the vd
+!	can use the cached data rather than have to recalculate the choice
+!	of font.
+!
+! Formal parameters:
+ (
+	txtBlk : ref text_block,	! vd's text database
+	fid,				! font id to be cached
+	font_rend,			! font's rendition bits
+	cell_flag			! set if font is a cell font
+ ) =
+!
+!--
+
+	begin
+!
+! Remember the new info.
+!
+	txtBlk[txt_fid] = .fid;
+	txtBlk[txt_font_rend] = .font_rend;
+	txtBlk[txt_cell_flag] = .cell_flag;
+!
+! Remember number of system-wide font transactions transpired so we'll know
+! when they change again.
+!
+	txtBlk[txt_n_sys] = .n_system_font_transactions;
+!
+! Mark that until further notice, this vd's attributes are stable.
+!
+	txtBlk[txt_stab_att] = 1;
+
+	ss$_normal
+
+	end;
+
+global routine vs$$txt_measure_text
+!++
+! Functional description:
+!
+!	Calculate how high and wide a specified string would be if printed
+!	in a particular font whose description is either specified or defaulted.
+!
+! Formal parameters:
+ (
+	id,		! virtual display id for particular virtual display,
+			! or 0 for measuring with system fonts.
+	string_len, string_adr,
+			! String being measured.
+	typeface_len, typeface_adr,
+			! Typeface to measure with, may be defaulted to measure
+			! in current typeface for specified virtual display.
+	typesize_len, typesize_adr,
+			! Address of typesize to measure with, may be defaulted
+			! by supplying a length of 0.
+	rendition_len, rendition_adr,
+			! Address of rendition to measure with, may be
+			! defaulted by supplying a length of 0.
+	returned_text_width,returned_text_height
+			! Addresses to put the measured size of the text
+ ) =
+!
+!--
+
+	begin
+
+	local s, fid, fiBlk : ref fib, txtBlk : ref text_block,
+	    typeface_desc : string_descriptor initial (0),
+	    use_typesize : initial (0), use_rendition : initial (0),
+	    iosb_arg : vector [3] initial (2,0,0),
+
+	    ! Descriptor for upcased typeface
+	    !
+	    up_typ_desc : string_descriptor preset ([sd_len] = 0);
+
+	macro $cleanup_and_return (status) =
+
+	    begin
+
+	    ! Release space taken up by up-cased version of typeface string.
+	    !
+	    if .up_typ_desc[sd_len] neq 0
+	    then forgetString (up_typ_desc[sd_len]);
+
+	    return status
+
+	    end % ;
+
+	! If a specific virtual display was specified, get its text block.
+	!
+	if .id neq 0
+	then txtBlk = getTextBlock (.id);
+
+	! Calculate which attributes for font to use.  If the caller supplied
+	! an attribute, use it.  If not, use the one from the virtual display,
+	! and if no virtual was supplied, use 0.  This causes our choice to
+	! be the same as though the caller creating a virtual display and wrote
+	! to it without specifying any private fonts.
+	!
+	if .id neq 0
+	then
+
+	    ! Handle case of virtual display supplied.
+	    !
+	    begin
+
+	    ! If non-0 typeface length, use supplied typeface, else use
+	    ! virtual display's current typeface.
+	    !
+	    if .typeface_len neq 0
+	    then
+		begin
+		if not (s = clone_upcased_string (
+		    typeface_len,
+		    up_typ_desc[sd_len]))
+		then $cleanup_and_return (.s);
+		typeface_desc[sd_len] = .up_typ_desc[sd_len];
+		typeface_desc[sd_adr] = .up_typ_desc[sd_adr]
+		end
+	    else
+		begin
+		typeface_desc[sd_len] = .txtBlk[txt_curTypefaceLen];
+		typeface_desc[sd_adr] = .txtBlk[txt_curTypefaceAdr]
+		end;
+
+	    ! If non-0 typesize length, use given typesize, else use current
+	    ! size as specified for virtual display.  Note that the typesize
+	    ! address is passed to us instead of the typesize itself.  This
+	    ! allows a 0 typesize to be conveyed by passing the address of a 0
+	    ! and for the typeface to be defaulted to the current display's
+	    ! size by passing a length of 0.
+	    !
+	    if .typesize_len neq 0
+	    then use_typesize = ..typesize_adr
+	    else use_typesize = .txtBlk[txt_curSize];
+
+	    ! Use specified rendition or current rendition for virtual display.
+	    !
+	    if .rendition_len neq 0
+	    then use_rendition = ..rendition_adr
+	    else use_rendition = .txtBlk[txt_curRend]
+
+	    end
+
+	else
+
+	    ! No virtual display given, so if values given, use them, otherwise
+	    ! use real 0's, except for typeface for which we use the default
+	    ! one.
+	    !
+	    begin
+
+	    if .typeface_len neq 0
+	    then
+		begin
+		if not (s = clone_upcased_string (
+		    typeface_len,
+		    up_typ_desc[sd_len]))
+		then $cleanup_and_return (.s);
+		typeface_desc[sd_len] = .up_typ_desc[sd_len];
+		typeface_desc[sd_adr] = .up_typ_desc[sd_adr]
+		end
+	    else
+		ch$move (
+		    8,
+		    %ascid 'VSTA$STANDARD_TYPEFACE',
+		    typeface_desc[sd_len]
+		    );
+
+	    if .typesize_len neq 0
+	    then use_typesize = ..typesize_adr;
+
+	    if .rendition_len neq 0
+	    then use_rendition = ..rendition_adr
+
+	    end;
+
+	! Figure out which font to measure with.
+	!
+	if not (s = chooseFont (
+
+	    ! For a virtual display given, tell chooseFont the length and
+	    ! address of the list of private fonts, else say no private
+	    ! fonts.
+	    !
+	    if .id neq 0
+	    then .txtBlk[txt_nFonts]
+	    else 0,
+
+	    if .id neq 0
+	    then .txtBlk[txt_fonts]
+	    else 0,
+
+	    ! Give large positive number for line height, so that all fonts
+	    ! will appear to fit in chooseFont.
+	    !
+	    positive_infinity,
+
+	    typeface_desc[sd_len], .use_typesize, .use_rendition, 0, fid))
+	then $cleanup_and_return (.s);
+!
+! Get the fib for the font.
+!
+	if not (s = findFib (.fid, fiBlk))
+	then $cleanup_and_return (.s);
+!
+! Get font height for chosen font.
+!
+	.returned_text_height = .fiBlk[fib_height];
+!
+! Get width taken up by string with chosen font.
+!
+	if not (s = vsta$$txt_measure_width (
+	    .string_len,
+	    .string_adr,
+	    fiBlk[$base],
+	    .returned_text_width))
+	then $cleanup_and_return (.s);
+!
+! Dereference the font, which chooseFont referenced.
+!
+	fibDereference (.fid);
+
+	$cleanup_and_return (ss$_normal)
+
+	end;
+
+global routine vs$$txt_defineFont
+!++
+! Functional description:
+!
+!	Define a font for a virtual display by creating a binding between a
+!	font file and a typface, size, and set of renditions.
+!
+! Formal parameters:
+ (
+    id,			! which virtual display font is being defined for
+    desc:ref string_descriptor,	! descriptor pointing at filespec holding font
+    typefaceDesc:ref string_descriptor,	! descriptor of typeface name
+    size,		! point size of font
+    rend:rend_word	! rendition bits
+		) =
+!--
+
+	innerDefineFont (.id, .desc, .typefaceDesc, .size, .rend,
+	    0		! specify not system-wide definition
+	    );
+
+global routine vs$$txt_defineSystemwideFont
+!++
+! Functional description:
+!
+!	Define a system-wide font by creating a binding between a
+!	font file and a typface, size, and set of renditions.
+!	System-wide fonts are available to all virtual displays.
+!	This routine should require privileges, since one user's calling
+!	it can affect another
+!
+! Formal parameters:
+ (
+     desc:ref string_descriptor,	! descriptor pointing at filespec holding font
+    typefaceDesc:ref string_descriptor,	! descriptor of typeface name
+    size,		! point size of font
+    rend:rend_word	! rendition bits
+		) =
+!--
+
+	innerDefineFont (0, .desc, .typefaceDesc, .size, .rend,
+	    1		! specify system-wide definition
+	    );
+
+routine innerDefineFont
+!++
+! Functional description:
+!
+!	Inner routine that does the work for global routines vs$$txt_defineFont
+!	and vs$$txt_defineSystemwideFont.
+!
+! Formal parameters:
+ (
+	id,					! 0 for system-wide, or id
+	desc:ref string_descriptor,		! font filespec
+	typefaceDesc:ref string_descriptor,	! name of typeface
+	size,					! size of type
+	rend:rend_word,				! rendition bits
+	swFlag					! 1 for system-wide, 0 for local
+ ) =
+!--
+
+	begin
+
+	local fntBlk:ref font_block, status, rank, coptyp : vector[2];
+!
+! Define macro which returns an error when a failure during font
+! definition is detected.  This macro is responsible for releasing
+! all blocks allocated during the partial definition.
+!
+	macro
+	    defFontError =
+	    begin
+	    cleanUpFont;
+	    $return_error (vsta$_bad_fnt, string_type, desc[sd_len])
+	    end
+	    % ,
+
+	    cleanUpFont =
+		if .swFlag
+		then vs$$txt_deleteSystemwideFont (.typefaceDesc, .size, .rend)
+		else vs$$txt_deleteFont (.id, .typefaceDesc, .size, .rend)
+	    % ;
+
+	bind
+	    ! Get text block address, only needed if local font definition.
+	    txtBlk =
+		if .swflag
+		then 0
+		else getTextBlock(.id):text_block,
+
+	    ! Get address of word holding address of list of defined fonts.
+	    !
+	    fntLstPtr =
+		if .swflag
+		then swfonts
+
+		! Local definition, get address from text block
+		else txtBlk[txt_fonts],
+
+	    ! Get address of word holding number of fonts defined
+	    nFonts =
+		if .swflag
+		then nswfonts
+		else txtBlk[txt_nFonts],
+
+	    ! Get length of filename of this new font
+	    namLen = .desc[sd_adr],
+
+	    ! Get length of typeface string
+	    typeFaceLen = .typefaceDesc[sd_adr];
+
+	! If this font already has a font file associated with it, give
+	! an error.
+	!
+	if findFont(.nFonts, .fntLstPtr, .typefaceDesc, .size, .rend, rank)
+	then
+	    $return_error (vsta$_mltpl_fnt);
+
+	! copy typeface into new buffer, so caller can release old.
+	! Upcase the typeface.
+	!
+	if not (status = clone_upcased_string (
+	    typeFaceDesc[sd_len],
+	    coptyp[0]
+	    ))
+	then return .status;
+!
+! allocate a font block and identify it as such.
+!
+	fntBlk = allocateFullwords(font_block_length);
+	fntBlk[block_id] = font_block_id;
+	fntBlk[fnt_size] = .size;
+	fntBlk[fnt_rend] = .rend;
+	fntBlk[fnt_typefaceLen] = .coptyp[0];
+	fntBlk[fnt_typefaceAdr] = .coptyp[1];
+!
+! Until font is read in, have its id point at the font block so we know
+! where it is.
+!
+	fntBlk[fnt_id] = fntBlk[base];
+!
+! Remember block representing font in list
+!
+	if not (status = appendElement(.nFonts, fntLstPtr, fntBlk[base]))
+	then
+	    begin
+	    deallocateFont (fntBlk[base]);
+	    $return_error (vsta$_fnt_mem)
+	    end;
+
+	nFonts = .nFonts + 1;
+
+	! copy filespec into new buffer so caller can have old
+	!
+	if not (status = clone_upcased_string(
+	    desc[sd_len],
+	    fntBlk[fnt_namLen]
+	    ))
+	then defFontError;
+!
+! If this is a local font definition, mark that this vd's attributes are
+! no longer stable.  If it's a global font definition, remember that
+! we've got another global font transaction.
+!
+	if .swflag
+	then n_system_font_transactions = .n_system_font_transactions + 1
+	else txtBlk[txt_stab_att] = 0;
+!
+! Return true to indicate success
+!
+	true
+	end;
+
+global routine vs$$txt_deleteFont
+!++
+! Functional description:
+!
+!	Delete a font definition for a virtual display, given its description.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id
+    typefaceDesc:ref string_descriptor,	! typeface whose font is being deleted
+    size,			! point size of font being deleted
+    rend:rend_word		! rendition bits of font being deleted
+		   ) =
+!--
+
+	begin
+
+	bind
+	    ! Get text block for virtual display whose font is being deleted
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get list of defined fonts for this virtual display
+	    fntLst = .txtBlk[txt_fonts]:vector,
+
+	    ! Get address of word holding number of defined fonts
+	    nFonts = txtBlk[txt_nFonts];
+
+	local s, rank;
+
+	if not findFont (.nFonts, fntLst[0], .typefaceDesc, .size, .rend, rank)
+	then $return_error (vsta$_nonx_fnt);
+
+	! The font exists.  Deallocate it.
+	deallocateFont (.fntLst[.rank]);
+
+	! Remove it from list
+	if not (s = deleteElements (.nFonts, txtBlk[txt_fonts], .rank, .rank))
+	then return .s;
+
+	! Decrease number of defined fonts
+	nFonts = .nFonts - 1;
+!
+! Mark that this vd's attributes are no longer stable.
+!
+	txtBlk[txt_stab_att] = 0;
+!
+! Give success return
+!
+	true
+
+	end;
+
+global routine releaseFontsBetween
+!++
+! Functional description:
+!
+!	Release fonts from a text block, such as when text block is deleted.
+!
+! Formal parameters:
+ (
+    txtBlk:ref text_block,	! text block to delete fonts from
+    left,			! rank to left of first being deleted
+    right			! rank of one to right of last being deleted
+		      ) =
+!--
+
+	begin
+
+	local s;
+
+	bind
+
+	    ! Get address of list of fonts
+	    fntLst = .txtBlk[txt_fonts]:vector,
+
+	    first = .left + 1,	! get rank of first and last involved
+	    last = .right - 1,
+
+	    ! Get number of fonts in list before reduction
+	    oldCount = .txtBlk[txt_nFonts],
+
+	    ! Calculate how many will be left after deletion
+	    newCount = oldCount + last - first - 1;
+
+	! release space allocated for each block
+	incr i from first to last do 
+	    if not (s = deallocateFont(.fntLst[.i]))
+	    then return .s;
+
+	! Update number of fonts in block to reflect decrease
+	txtBlk[txt_nFonts] = newCount;
+
+	! Move items in list to close gap.
+	! Bug here !  We're in trouble if deleteElements fails even though
+	! we've already called deallocateFont.
+	!
+	if not (s = deleteElements(oldCount, txtBlk[txt_fonts], first, last))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine chooseFont
+!++
+! Functional description:
+!
+!	Given list of custom fonts, a line height, and font description (
+!	consisting of typeface, typesize, and rendition), choose the best font
+!	amongst the custom list and the system font list.
+!
+! Formal parameters:
+ (
+	n_fonts,		! Number of fonts in custom list
+	fntLst : ref vector,	! List of custom fonts
+	lin_hit,		! Height of line to be printed on.
+	typeface : ref string_descriptor,	! typeface requested.
+	typesize,		! typesize requested.
+	rendition,		! rendition requested.
+	baseline,		! units to raise character from normal line.
+	fidAdr,			! where to write fid of chosen font
+	font_rend_adr,		! optional address to rcv font rendition bits
+	cell_flag		! optional address to rcv 1 if cell font
+ ) =
+!
+! Completion codes:
+!
+!	Error if no fonts defined at all, or if the best one found is too high
+!	for the line.
+!
+! Side effects:
+!
+!	The reference count for the chosen fib is increased.
+!--
+
+	begin
+
+	local
+
+	    privateScore,
+	    publicScore,
+	    best_score : font_weight,
+	    bestFont:ref font_block,
+!
+! Initialize these to 0 so we know if we've found anything.
+!
+	    privateFont:ref font_block initial (0),
+	    publicFont:ref font_block initial (0),
+
+	    s, best_height;
+
+	! Scan all the private fonts for the virtual display
+	!
+	privateScore = 0;
+	incr i from 1 to .n_fonts do
+	    begin
+
+	    bind
+
+		score = tallyScore (.fntLst[.i], .typeface, .typesize,
+		    .rendition, .lin_hit, .baseline);
+
+	    if score geq .privateScore
+	    then
+		begin
+		privateScore = score;
+		privateFont = .fntLst[.i]
+		end
+	    end;
+
+	! Scan public fonts, and find best fit from them.
+	!
+	publicScore = 0;
+	incr i from 1 to .nswfonts do
+	    begin
+
+	    bind
+
+		score = tallyScore (.swfonts[.i], .typeface, .typesize,
+		    .rendition, .lin_hit, .baseline);
+
+	    if score geq .publicScore
+	    then
+		begin
+		publicScore = score;
+		publicFont = .swfonts[.i]
+		end
+	    end;
+
+	! Choose whichever font is better, but if a tie, private one wins out.
+	!
+	if .publicScore gtr .privateScore
+	then bestFont = .publicFont
+	else bestFont = .privateFont;
+	best_score = max (.privateScore, .publicScore);
+
+	! See if anything found at all.
+	!
+	if .bestFont eql 0
+	then $return_error (vsta$_no_fonts);
+
+	! Make sure at least the typeface matched.  This prevents surprises
+	! such as having the "vt100 top half" get selected as the "best" font.
+	!
+	if not .best_score[fw$v_typeface]
+	then $return_error (
+	    vsta$_no_such_typfac,
+	    string_type,
+	    typeface[sd_len]);
+!
+! Make sure height of this font is less than or equal to height of
+! line on which text is being printed.
+!
+	best_height = .bestFont[fnt_height];
+	if .best_height + .baseline gtr .lin_hit
+	then $return_error (vsta$_fnt_hite
+			,integer_type, .best_height + .baseline
+			,integer_type, .lin_hit
+			);
+!
+! store fid in address given
+! by caller, count up fib and give a true return.
+!
+	if not (s = fibReference (.bestFont[fnt_id]))
+	then return .s;
+	.fidAdr = .bestFont[fnt_id];
+!
+! If caller wants font's rendition bits, return them.
+!
+	if $parameter_or_0 (font_rend_adr) neq 0
+	then .font_rend_adr = .bestFont[fnt_rend];
+!
+! If caller wants to know whether this is a cell font, return the info.
+!
+	if $parameter_or_0 (cell_flag) neq 0
+	then .cell_flag = .bestFont[fnt_cell_flag];
+
+	true
+
+	end;
+
+routine tallyScore
+!++
+! Functional description:
+!
+!	Routine for tallying score for comparing which font is
+!	best fit.
+!
+! Formal parameters:
+ (
+	font:ref font_block,		! which font to score
+	typeface : ref $string_descriptor,
+	typesize,
+	rendition,			! description to compare font with
+	lin_hit,			! height of text line area.
+	baseline			! amount to raise characters above norm
+ ) =
+!
+! Value:
+!
+!	Score for given font.
+!--
+
+	begin
+
+	local
+	
+	    score : font_weight;
+!
+! Start with weight of 0.
+!
+	score = 0;
+!
+! Give some weight if typeface matches.
+!
+	score[fw$v_typeface] = ch$eql(
+		.typeface[sd$w_len],
+		.typeface[sd$a_adr],
+		.font[fnt_typefaceLen],
+		.font[fnt_typefaceAdr]
+		);
+!
+! Give more weighting for fonts whose defined size is closer to the
+! requested size.  We take the absolute difference, and subtract it
+! from a bias of 100.  Hence results closer to 100 are better.
+!
+	score[fw$v_typesize] = 100 - abs (.font[fnt_size] - .typesize);
+!
+! Perhaps the typesize difference was so gross that field overflowed.
+! In that case, leave field as 0.
+!
+	if .score[fw$v_typesize] neq 100 - abs (.font[fnt_size] - .typesize)
+	then score[fw$v_typesize] = 0;
+!
+! Give appropriate weight if rendition matches.
+!
+	score[fw$v_rend] = .rendition eql .font[fnt_rend];
+!
+! Give some weight if the only non-matching renditions are those we can
+! algorithmically support.
+!
+	score[fw$v_alg_rend] = (.rendition and not algorithmic_renditions)
+	    eql .font[fnt_rend];
+!
+! Give some more weight if this font physically will fit as specified on the
+! line.  *** This is currently commented out, because since we don't read in
+! font files until they are used, we don't necessaryily know how tall this
+! font really is.
+!
+!	score[fw$v_fits] = .lin_hit geq .font[fnt_height] + .baseline;
+!
+! Return the calculated score.
+!
+	.score
+
+	end;
+
+global routine vs$$txt_get_font_address
+!++
+! Functional description:
+!
+!	Given a virtual display and font description, calculate
+!	the address of the font image.  This address is useful for passing to
+!	the display hardware when telling it to print text into a graphics
+!	database.  (Presumably, if printing text into a text database, some
+!	higher level text routine such as vs$$txt_writeText would be called.
+!
+! Side effects:
+!	Warning: this routine will up the reference count for the font.  Hence
+!	the caller must call fibDereference on the provided fib after
+!	using the font.
+!
+!
+! Formal parameters:
+ (
+	id,			! Virtual display id, or 0 for none
+
+	typeface : ref string_descriptor,
+	typesize,		! description of font to look up
+	rendition,
+
+	image_adr,		! Receives address of font image.
+	fid_adr			! Receives font index block id.
+ ) =
+!
+! Completion codes:
+!
+!	An error will result if no fonts have been defined prior to this
+!	call.
+!--
+
+	begin
+
+	local
+
+	    txtBlk : ref text_block,	! text block for virtual display
+	    n_fonts,			! number of custom fonts
+	    fntLst : ref vector,	! vector of font block addresses
+	    s,				! status code.
+	    fiBlk : ref fib,		! points to fib for font.
+	    fnt_id;			! holds font id.
+!
+! Establish number of custom fonts and address of list.  These we establish
+! as 0's if no vd id is supplied.
+!
+	if .id neq 0
+	then
+	    begin
+	    txtBlk = getTextBlock (.id);
+	    n_fonts = .txtBlk[txt_nFonts];
+	    fntLst = .txtBlk[txt_fonts]
+	    end
+	else n_fonts = fntLst = txtBlk = 0;
+!
+! Choose which font is involved.
+!
+	if not (s = chooseFont (.n_fonts, fntLst[0],
+
+	    ! Give large positive number for line height, so that all fonts
+	    ! will appear to fit in chooseFont.
+	    !
+	    positive_infinity,
+
+	     .typeface, .typesize, .rendition, 0, fnt_id))
+	then return .s;
+
+	! Find fib for the font.
+	!
+	if not (s = findFib (.fnt_id, fiBlk))
+	then return .s;
+!
+! Tell caller the address of the font image.
+!
+	.image_adr = .fiBlk[fib_imageAdr];
+!
+! Tell caller fib id.
+!
+	.fid_adr = .fnt_id;
+
+	ss$_normal
+
+	end;
+
+global routine vs$$txt_deleteSystemWideFont
+!++
+! Functional description:
+!
+!	This is a privileged routine to delete a system-wide font
+!	definition.
+!
+! Formal parameters:
+!
+ (
+    typefaceDesc:ref vector,	! typeface whose font is being deleted
+    size,			! point size of font being deleted
+    rend:rend_word		! rendition bits of font being deleted
+		   ) =
+!--
+
+	begin
+
+	local s, rank;
+
+	if not
+	    findFont (.nswfonts, swfonts[0], .typefaceDesc, .size, .rend, rank)
+	then $return_error (vsta$_nonx_sfnt);
+
+	return delete_sw_rank (.rank);
+	end;
+
+global routine vs$$txt_delete_all_sw_fonts =
+!++
+! Functional description:
+!	Delete all the defined system-wide fonts.
+!--
+	begin
+	local
+	    s;
+
+	while .nswfonts GTR 0 do
+	    begin
+	    if not (s = delete_sw_rank (1))
+	      then return .s;
+	    end;
+
+	true
+	end;
+
+
+routine delete_sw_rank
+!++
+! Functional description:
+!	Given a rank number for a system-wide font, undefine it.
+! Formal parameters:
+	(rank
+	) =
+!--
+	begin
+	local
+	    s;
+
+	! The font exists.  Deallocate it.
+	deallocateFont (.swfonts[.rank]);
+
+	! Remove it from list
+	if not (s = deleteElements
+	    (.nSwFonts, swfonts, .rank, .rank))
+	then return .s;
+
+	! Decrease number of defined system-wide fonts
+	nswfonts = .nswfonts - 1;
+!
+! Count this deletion as a systemwide font transaction.
+!
+	n_system_font_transactions = .n_system_font_transactions + 1;
+!
+! Give success return
+!
+	true
+
+	end;
+
+global routine findFont
+!++
+! Functional description:
+!
+!	Find font block for particular typeface, size, and rendition.
+!
+! Formal parameters:
+ (
+    nFonts,			! how many fonts in list
+    fntList:ref vector,		! vector of font blocks to peruse
+    typeDesc:ref $string_descriptor,	! typeface of font being sought
+    size,			! size of sought font
+    rend:rend_word,		! rendition of sought font
+    rank			! address into which to write rank if set found
+	    ) =
+!
+! Value:
+!
+!	True or false according to whether font is found.
+!
+! Implicit outputs:
+!
+!	Rank of font is written into specified address in "rank".
+!--
+
+	begin
+
+	local
+
+	    result : initial (false),
+	    s,
+	    up_desc : $string_descriptor;
+!
+! We don't want case to matter, so get a capitalized version of the caller's
+! typeface, and assume the typefaces stored in our database are already
+! capitalized.
+!
+	if not (s = clone_upcased_string (typeDesc[$base], up_desc[$base]))
+	then $log_error_and_return (.s);
+
+	incr i from 1 to .nFonts do
+	    begin
+	    bind fntBlk = .fntList[.i]:font_block;
+
+	    ! See if font matches description given by caller
+	    if
+		.fntBlk[fnt_size] eql .size
+			and
+		ch$eql (
+		    .up_desc[sd$w_len],
+		    .up_desc[sd$a_adr],
+		    .fntBlk[fnt_typefaceLen],
+		    .fntBlk[fnt_typefaceAdr]
+		    )
+			and
+		.fntBlk[fnt_rend] eql .rend
+	    then
+		begin
+
+		! Tell caller the rank
+		.rank = .i;
+
+		exitLoop result = true
+
+		end
+	    end;
+!
+! Release storage used for capitalized version of typeface.
+!
+	if not (s = forgetString (up_desc[$base]))
+	then $log_error_and_return (.s);
+!
+! Tell caller the verdict.
+!
+	.result
+
+	end;
+
+global routine deallocateFont
+!++
+! Functional description:
+!
+!	Deallocate a font block and everything it points to, except possibly
+!	the font buffer, which may still be in use to print some string.
+!
+!	This routine carefully checks for zeroes, avoiding attempting deallocation
+!	of parts which are zero.  This allows the routine to be called with
+!	partially-created font block which is being deallocated as part
+!	of cleanup in preparation for returning an error.
+!
+! Formal parameters:
+ (
+    fntBlk:ref font_block
+		       ) =
+!
+! Completion codes:
+!
+!	True, unless block isn't a font block
+!
+!--
+
+	begin
+
+	! Make sure we're dealing with a font block.
+	!
+	if .fntBlk[block_id] neq font_block_id
+	then $return_error (vsta$_not_a_fnt, integer_type, fntBlk[base]);
+	
+	! Dereference the fib (font image block) so that if no strings are using
+	! it anymore, it can be released.
+	!
+	if .fntBlk[fnt_id] neq fntBlk[base]
+	then fibDereference (.fntBlk[fnt_id]);
+
+	! Deallocate space holding filename
+	if .fntBlk[fnt_namLen] neq 0
+	then deallocateBytes (.fntBlk[fnt_namLen], .fntBlk[fnt_namPtr]);
+
+	! Deallocate space holding typeface
+	if .fntBlk[fnt_typefaceLen] neq 0
+	then deallocateBytes (.fntBlk[fnt_typefaceLen],
+	    .fntBlk[fnt_typefaceAdr]);
+
+	! Deallocate the font block itself
+	deallocateFullwords (font_block_length, fntBlk[base]);
+
+	! Give success return
+	true
+
+	end;
+
+global routine fibReference
+!++
+! Functional description:
+!
+!	Count up references for a fib, to prevent fib from being deallocated
+!	while strings or font definitions still need the fib.
+!
+! Formal parameters:
+ (
+	id		! id of fib to count up
+ ) =
+!
+! Completion codes:
+!
+!	True unless fib can't be found
+!--
+
+	begin
+	local fiBlk:ref fib, s;
+	if not (s = findFib(.id, fiBlk))
+	then return .s;
+	fiBlk[fib_ref] = .fiBlk[fib_ref] + 1;
+
+	true
+
+	end;
+
+global routine fibDereference
+!++
+! Functional description:
+!
+!	Decrease reference count for specified fib.  If the count reaches
+!	0, deallocate the fib
+!
+! Formal parameters:
+ (
+	id		! id for getting a hold on fib
+ ) =
+!--
+
+	begin
+
+	local fiBlk:ref fib, s;
+
+	! Search list of fibs for one whose id matches
+	!
+	if not (s = findFib(.id, fiBlk))
+	then $return_bug (vsta$_nonx_fib, .id);
+
+	if .fiBlk[fib_ref] leq 0
+	then $return_bug (vsta$_ref_0, fiBlk[base]);
+
+	fiBlk[fib_ref] = .fiBlk[fib_ref] - 1;
+
+	if .fiBlk[fib_ref] eql 0
+	then deallocateFib(fiBlk[base]);
+
+	return true
+
+	end;
+
+global routine findFib
+!++
+! Functional description:
+!
+!	Return address of fib, given its id.
+!	Return 0 if can't find it.
+!
+!	If font hasn't been read in yet, we read it in.
+!
+! Formal parameters:
+ (
+    id,			! id of sought fib
+    fib_adr		! where to write address of fib
+	     ) =
+!--
+
+	begin
+
+	bind
+!
+! Establish address whose contents will be the base of a fib.
+!
+	    fiBlk = .fib_adr : ref fib,
+!
+! Establish address of font block, which id only represents if font hasn't
+! been read in yet.
+!
+	    fntBlk = .id : font_block;
+!
+! Get address of first block in chain.
+!
+	fiBlk = .fib_head[0];
+!
+! Scan until either the sought one is found, or we don't find it.
+!
+	until fiBlk[base] eql fib_head[0] do
+	if .fiBlk[fib_fid] eql .id
+	then
+!
+! Found the block.  If it's not the first one on the chain, make it so,
+! in order that it be found more quickly in the case of looking up the
+! same one hundreds of times in a row.
+!
+	    if .fiBlk[fib_blink] eql fib_head[0]
+	    then return ss$_normal
+	    else
+		begin
+		remque (fiBlk[base], fiBlk);
+		insque (fiBlk[base], fib_head[0]);
+		return ss$_normal
+		end
+	else
+!
+! Didn't find it yet, proceed to next block.
+!
+	    fiBlk = .fiBlk[fib_flink];
+!
+! We couldn't find the fib, so assume the font hasn't been read in yet,
+! and that the id handed to us is actually the address of the font block
+! representing which font needs to be read in.
+!
+	if not read_in_font_file (fntBlk[base])
+	then return 0;
+!
+! Return through ourself to get the fib.
+!
+	findFib (.fntBlk[fnt_id], .fib_adr)
+
+	end;
+
+global routine find_font_image
+!++
+! Functional description:
+!
+!	Given string block, get image of font string was printed with.
+!	Also, possibly get font image block.
+!
+! Formal parameter:
+ (
+	strBlk : ref string_block,	! string block to find font of
+	result,				! where to write result
+	fib_adr				! where to write address of fib if
+					! non-0.
+ ) =
+!
+! Implicit outputs:
+!
+!	Result contains the address into which to write the address of the font.
+!	fib_adr gives address into which to write address of font image block.
+!
+! Completion codes:
+!
+!	If the font index block can't be found, that failure is returned from
+!	this routine.
+!--
+
+	begin
+
+	bind
+
+	    ! Get the id for the font for this string
+	    fntid = .strBlk[str_fid],
+
+	    ! Get fib for this string
+	    !
+	    fiBlk =
+		begin
+		local temp, s;
+		if not (s = findFib(fntid, temp))
+		then return .s
+		else .temp
+		end : fib;
+
+	! Fill in result with sought font image.
+	.result = .fiBlk[fib_imageAdr];
+
+	! Fill in address of fib if wanted.
+	!
+	if .fib_adr neq 0
+	then .fib_adr = fiBlk[base];
+
+	true
+
+	end;
+
+global routine deallocateFib
+!++
+! Functional description:
+!
+!	Get rid of fib whose reference count reached 0 and hence isn't needed
+!	anymore.
+!
+! Formal parameters:
+ (
+	fiBlk : ref fib			! which fib to deallocate
+ ) =
+!
+! Completion codes:
+!
+!	Failure code if memory allocation failure, or if internal failure
+!	due to item being deleted not really a fib
+!
+!--
+
+	begin
+
+	local s;
+!
+! Release display memory used for font if it was allocated.
+!
+	if .fiBlk[fib_display_adr] neq 0
+	then
+	    if not (s = vsta$$dmm_free_mem (
+		fiBlk[fib_imageLen],
+		fiBlk[fib_display_adr]
+		))
+	    then vsta$$error_logger (.s)
+	    else fiBlk[fib_display_adr] = 0;
+!
+! Get rid of font image and file resources if they are still mapped.
+!
+	if .fiBlk[fib_file_chan] neq 0
+	then unmap_file (.fiBlk[fib_file_len], .fiBlk[fib_file_buf],
+	    .fiBlk[fib_file_chan]);
+!
+! Get rid of character width table if there was one.
+!
+	if .fiBlk[fib_chrwth_adr] neq 0
+	then deallocateBytes (.fiBlk[fib_chrwth_len], .fiBlk[fib_chrwth_adr]);
+!
+! Remove this block from the queue.
+!
+	remque (fiBlk[fib_flink], fiBlk[fib_flink]);
+
+	! Get rid of fib
+	deallocateFullwords (fib_length + $bytes_for_xtable (fiBlk[fib_fim]),
+	    fiBlk[base]);
+
+	! Give success return
+	true
+
+	end;
+
+
+!+
+ROUTINE compute_font_area(
+    font: REF font_block,		! Font block to get information for
+    width,			! width to fit inside
+    height,			! height to fit inside
+    fits_inside,		! Address returned as TRUE iff this font fits
+    area			! Address returned as area of ' ' character in
+				! pixels, used for compairing font sizes.
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	Font tables
+! Implicit outputs:
+! Function:
+!	Compute if a font fits inside a particular rectangle, and also
+!	return the area.
+! Algorithm:
+!	Fetch the image address.
+!	Look up height and width.
+!	Compute the area.
+!	Compute the fits flag
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	font_width,		! Width of font in question
+	font_height,		! Height of font in question
+	fiBlk: REF fib,			! Font Fib
+	fimBlk: REF fim_block,		! Font image
+	status;
+
+!	Get the font image that has height and width in it
+
+    IF NOT( status = findFib( .font[ fnt_id], fiBlk))
+    THEN RETURN .status;
+    fimBlk = fiBlk[ fib_fim];
+
+!	Compute the font width, and height.
+
+    IF .fiBlk[ fib_char_width] NEQ 0
+    THEN ! This is a fixed width font
+	BEGIN
+	font_width = .fiBlk[ fib_char_width];
+	END
+    ELSE ! This is not a fixed width font, use the space character.
+	BEGIN
+	if not (status = vsta$$txt_measure_width (
+	    1,			! one character
+	    fimBlk[fim_space],
+	    fiBlk[$base],
+	    font_width))
+	then return .status
+	END;
+    font_height = .fiBlk[ fib_height];
+
+!	Return the font area
+
+    .area = .font_height * .font_width;
+
+!	Return the fits inside boolean
+
+    .fits_inside =
+	( .font_height LEQ .height)
+	AND
+	( .font_width LEQ .width);
+    
+    .status
+    END;
+!+
+ROUTINE try_graphics_font(
+    best_address,		! Address of the font block which is the best
+				! fit so far.  This is updated to be .try_this
+				! if the tried font is a better fit.
+    try_this: REF font_block,	! Font block of font to try against best_so_far
+    typeface: REF string_descriptor,! Typeface front to search with
+    rendition,			! Rendition bits to match
+    width,			! Maximum width in pixels
+    height			! Maximum height in pixels
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Inner routine to choose_graphics_font.
+! Algorithm:
+!	See choose_graphics_font
+! Side effects:
+!-
+    BEGIN
+
+    MACRO take =
+	BEGIN
+	.best_address = .try_this;
+	RETURN .status
+	END%;
+
+    MACRO keep =
+	BEGIN
+	RETURN .status
+	END%;
+
+    LOCAL
+	best_so_far: REF font_block,
+	best_area,
+	best_fits_inside,
+	try_area,
+	try_fits_inside,
+	status;
+
+    LABEL
+	complicated_stuff;
+
+    status = 1;
+    best_so_far = ..best_address;	! Indirect all the way back to the data
+
+!	Check the typeface of try_this to see if it qualifies.
+
+    IF .try_this[ fnt_typefaceLen] LSS .typeface[ sd_len]
+    THEN keep;		! Length makes front equality impossible
+
+    IF NOT ch$eql(	! Check front for inequality
+	.typeface[ sd_len],
+	.typeface[ sd_adr],
+	.typeface[ sd_len],
+	.try_this[ fnt_typefaceAdr])
+    THEN ! Typeface does not qualify, keep this one
+	keep;
+
+!	Check if we have a best_so_far to compare against.
+
+    IF .best_so_far EQL 0
+    THEN ! There is nothing to compare to, so take this font
+	take;
+
+!	Compute the area and fits_inside flags for both fonts
+
+    status = compute_font_area( .best_so_far, .width, .height,
+	best_fits_inside, best_area);
+    IF NOT .status THEN RETURN .status;
+    status = compute_font_area( .try_this, .width, .height,
+	try_fits_inside, try_area);
+    IF NOT .status THEN RETURN .status;
+
+complicated_stuff:
+
+!	To understand this, draw a flowchart.  It does the following:
+!	If one fits inside the desired rectangle, and the other one doesn't,
+!		take the one that fits.
+!	If both fonts fit inside the desired rectangle, take the larger.
+!	If both fonts are larger than the desired rectangle, take the smaller.
+!	If in either of the above two cases, the fonts are the same size,
+!	then take the one that has more matching rendition bits.
+
+    BEGIN
+    IF .try_fits_inside
+    THEN
+	IF .best_fits_inside
+	THEN	! Both fit inside
+	    BEGIN
+	    IF .best_area EQL .try_area
+	    THEN LEAVE complicated_stuff;
+	    IF .best_area GTR .try_area
+	    THEN keep ! Best is a better fit, because its larger
+	    ELSE take ! try is a better fit, because its larger
+	    END
+	ELSE take	! Best doesn't fit inside, try does.
+    ELSE ! Try_this does not fit inside...
+	IF .best_fits_inside
+	THEN keep	! Try is too large, best is okay
+	ELSE	! Both are too big
+	    BEGIN
+	    IF .best_area EQL .try_area
+	    THEN LEAVE complicated_stuff;
+	    IF .best_area GTR .try_area
+	    THEN take	! Try is better, because its smaller
+	    ELSE keep	! Best is better, because its smaller
+	    END;
+    END; ! of complicated stuff
+
+!	If we get here, it is because the sizes of the two fonts in
+!	question are the same.  We choose to "TAKE" or "KEEP" based
+!	on the matching rendition bits.
+
+    IF .rendition EQL .try_this[ FNT_Rend] THEN take;
+    IF .rendition EQL .best_so_far[ FNT_Rend] THEN keep;
+!	If there is no exact match, try to be sure that you get
+!	"some rendition" or "no rendition" as needed.
+    IF (.rendition NEQ 0) AND (.best_so_far[ FNT_Rend] EQL 0) THEN take;
+    keep;
+
+    END;
+
+!+
+GLOBAL ROUTINE VSTA$$TXT_choose_graphics_font(
+    vdtag,		! Virtual display ID, or 0 for none
+    typeface : REF string_descriptor,	! Typeface that will qualify fonts.
+			! Any font whose typeface begins with this string
+			! will qualify.
+    rendition,		! Rendition bits to match
+    width,		! Maximum width in pixels
+    height,		! Maximum height in pixels
+    fid_adr,		! Receives font ID for fibreference & fibdereference
+    font_header_address,! Receives address of font image in VAX memory
+    font_address,	! Receives address of font
+    font_location	! Receives whether font in display or vax
+    ) =
+! Routine value:
+!	Return status code of SUCCESS if a font is found, VSTA$_no_sucn_typfac
+!	if no matching font is found.
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Search the local and global font tables for a font the meets the
+!	requirements specified in the typeface, rendition, height, and width.
+!	If a qualifying font is found, fibreference it, and return enough
+!	information to use it, namely:
+!	    - Address of the font image in VAX memory for doing calculations
+!			using the font database.
+!	    - The font ID for doing fibreferences and fibdereferences.
+!	    - The font descriptor used by the native graphics print text
+!		routine.  This will be either the VAX memory address and
+!		VSTA$K_VAXMEM, or it will be the 68000 memory address of
+!		a cashed font and the location code VSTA$K_????.
+!	NOTE: This version does not yet return 68000 memory fonts.
+! Algorithm:
+!	The best fit occurs as follows:
+!     -	To be eligible, the front of a defined font's typeface must match
+!	the requested typeface.  If "KILTER" is requested, "KILTER" and
+!	"KILTER_DOUBLE_WIDTH" are both eligible.
+!     -	The font height and width of the space character must be within
+!	the values given.  If no font qualifies, a taller font is chosen.
+!	If still none qualifies, a taller and wider one is chosen.
+!     -	From fonts of the same height and width, the one with the greatest
+!	number of matching rendition bits is chosen.  A better size match
+!	is preferred over a rendition match.
+!
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	txtBlk: REF text_block,		! Text block for virtual display
+	n_fonts,		! Number of local fonts
+	fntLst: REF VECTOR,		! List of local fonts
+					! (font block addresses.)
+	fiBlk : REF fib,		! points to fib for font.
+	best_so_far: REF font_block,	! Best font so far
+	status;				! Status code to return
+
+    status = 1;
+    best_so_far = 0;
+
+!	Get the font list for the given virtual display.
+
+    n_fonts = 0;
+    IF .vdtag NEQ 0
+    THEN
+	BEGIN
+	txtBlk = getTextBlock (.vdtag);
+	n_fonts = .txtBlk[txt_nFonts];
+	fntLst = .txtBlk[txt_fonts];
+	END;
+
+    INCR lcl FROM 1 TO .n_fonts
+    DO
+	BEGIN
+	status = try_graphics_font(
+	best_so_far,		! Updated if tried font is better
+	.fntLst[ .lcl],		! font to try
+	.typeface,		! Typeface front to search with
+	.rendition,		! Rendition bits to match
+	.width,			! Maximum width in pixels
+	.height);		! Maximum height in pixels
+	IF NOT .status THEN RETURN .status;
+	END;
+
+    INCR public FROM 1 TO .nswfonts
+    DO
+	BEGIN
+	status = try_graphics_font(
+	best_so_far,		! Updated if tried font is better
+	.swfonts[ .public],	! font to try
+	.typeface,		! Typeface front to search with
+	.rendition,		! Rendition bits to match
+	.width,			! Maximum width in pixels
+	.height);		! Maximum height in pixels
+	IF NOT .status THEN RETURN .status;
+	END;
+
+!	Return error if no fonts qualified
+
+    IF .best_so_far EQL 0
+    THEN $return_error( VSTA$_no_such_typfac, string_type, typeface[ sd_len]);
+
+!	Reference the font
+
+    status = fibReference( .best_so_far[ fnt_id]);
+    IF NOT .status THEN RETURN .status;
+
+!	Extract appropriate parameters to return
+
+    .fid_Adr = .best_so_far[ fnt_id];
+    IF NOT( status = findFib( .best_so_far[ fnt_id], fiBlk))
+    THEN RETURN .status;
+!
+! Announce address of header in vax memory.
+!
+    .font_header_address = fiBlk[ fib_fim];
+!
+! Give address and location of font.
+!
+	if .fiBlk[fib_display_adr] neq 0
+	then
+	    begin
+	    .font_address = .fiBlk[fib_display_adr];
+	    .font_location = vsta$k_dispmem
+	    end
+	else
+	    begin
+	    .font_address = .fiBlk[fib_imageAdr];
+	    .font_location = vsta$k_vaxmem
+	    end;
+
+    .status	
+    END;
+
+end
+eludom

@@ -1,0 +1,747 @@
+ 
+	.MACRO	$VSACPDEF,..EQU=<=>,..COL=<:>
+; +++
+;  Facility:
+; .
+; 	VAX Workstation ACPcontrol and VDDRIVER routines
+; .
+;  Abstract:
+; .
+; 	This file contains all the Workstation ACP control and the VDDRIVER
+; 	( pseudo-device driver) data structures.  Various constants are also 
+; 	defined. The data
+; 	definitions are defined to be language independent.
+; .
+;  Environment:
+; .
+; 	VSACP process.
+; .
+; .
+; ---
+; .
+;  Internal Constants
+; .
+; .
+;  Data Block Types
+; .
+VS$K_RX_TYPE'..equ'123
+VS$K_VB_DEVICE'..equ'124
+VS$K_VC_DEVICE'..equ'125
+VS$K_ACP_TYPE'..equ'126
+VS$K_VSX_TYPE'..equ'127
+; .
+;  Device Types 
+; ***************	Remove these when VMS defines them in $DCDEF	****
+; .
+; 	constant VS100	equals 40
+; 		prefix DT$	tag "";
+; 	constant VS125	equals 41
+; 		prefix DT$	tag "";
+; 	constant VS300	equals 42
+; 		prefix DT$	tag "";
+DT$_TEK4014'..equ'42
+; .
+;  Sizes
+; .
+VS$K_TTY_WB_DATA'..equ'48               ;  Size of Write block header
+VS$K_TTY_RB_DATA'..equ'80               ;  Size of Read block header
+VS$K_TTY_DATA'..equ'12                  ;  Size of data block header
+; .
+;   Numbers of things
+; .
+VS$K_VD_MAX'..equ'128                   ;  Maximum no. of VDs on the system
+VS$K_VB_MAX'..equ'50                    ;  Maximum no. of VBs on the system
+VS$K_VC_MAX'..equ'50                    ;  Maximum no. of VCs on the system
+VS$K_VD_DUMMY_FDTS'..equ'10             ;  No. of dummy VD FDT rtns for padding
+; .
+;   Random things
+; .
+VS$K_VD_UIC'..equ'65543                 ;  Default virtual display/ACP owner
+VS$K_VD_PROT'..equ'0                    ;  Default virtual display protection
+VS$K_SMALL_VTEM_BUF'..equ'4             ;  Max. small packet size for VTEM data
+VS$K_VTEM_HEAD_SIZE'..equ'12            ;  VTEM packet header size for VTEM data
+; .
+;  Keyboard things
+; .
+CTRL_KEY'..equ'175
+CPSLCK_KEY'..equ'176
+SHIFT_KEY'..equ'174
+ALL_UPS_KEY'..equ'179
+METRONOME_KEY'..equ'180
+TOTAL_KEYS'..equ'256
+UNUSED_KEYS'..equ'86
+KEY_ENTRIES'..equ'170
+; 
+KB_LEVEL_1'..equ'1
+KB_LEVEL_2'..equ'2
+; 
+VS$K_HELP_KEY'..equ'124
+VS$K_MENU_KEY'..equ'125
+VS$K_CR'..equ'13
+VS$K_CRLF'..equ'2573
+VS$K_ESC'..equ'27
+VS$K_BS'..equ'8
+VS$K_LF'..equ'10
+VS$K_DELETE'..equ'127
+VS$K_CTRL_Q'..equ'17
+VS$K_CTRL_S'..equ'19
+VS$K_ESC_LB'..equ'23323
+VS$K_CSI'..equ'155
+VS$K_SS3'..equ'143
+VS$K_F11'..equ'23
+VS$K_F12'..equ'24
+VS$K_F13'..equ'25
+; 
+VS$K_MODE_TABLE_SIZE'..equ'334
+VS$K_MAX_MODE_TABLES'..equ'17
+VS$K_TABLE_LIST_SIZE'..equ'68
+VS$K_ALL_MODE_SIZE'..equ'5678
+VS$K_SYMBOL_TABLE_SIZE'..equ'1310
+VS$K_SYMBOL_LIST_SIZE'..equ'68
+VS$K_ALL_SYMBOL_SIZE'..equ'20960
+VS$K_NRC_SIZE'..equ'256
+VS$K_DEAD_INDEX'..equ'16
+; 
+KB$M_UP_DOWN'..equ'256
+KB$M_CAPS_LOCK'..equ'512
+KB$M_SHIFT'..equ'1024
+KB$M_CONTROL'..equ'2048
+KB$M_COMPOSE'..equ'4096
+KB$M_DELETE'..equ'8192
+KB$M_TRANSLATED'..equ'16384
+KB$S_UNENCODED_FLAGS'..equ'2
+UNENCODED_FLAGS'..equ'0
+KB$S_KEYCODE'..equ'8
+KB$V_KEYCODE'..equ'0                    ;  Actual LK201 keycode
+KB$V_UP_DOWN'..equ'8                    ;  Up/down indicator
+KB$V_CAPS_LOCK'..equ'9                  ;  CAPS lock pressed
+KB$V_SHIFT'..equ'10                     ;  Shift key pressed
+KB$V_CONTROL'..equ'11                   ;  Ctrl key pressed
+KB$V_COMPOSE'..equ'12                   ;  Compose key pressed
+KB$V_DELETE'..equ'13                    ;  Marked for delete
+KB$V_TRANSLATED'..equ'14                ;  Already translated
+; 
+KBT$M_IGNORE'..equ'4096
+KBT$M_SYMBOL'..equ'8192
+KBT$M_DEAD'..equ'16384
+KBT$M_SPECIAL'..equ'32768
+KBT$S_ENCODED_FLAGS'..equ'2
+ENCODED_FLAGS'..equ'0
+KBT$S_KEYCODE'..equ'8
+KBT$V_KEYCODE'..equ'0                   ;  Translated keycode
+KBT$S_UNUSED'..equ'4
+KBT$V_UNUSED'..equ'8                    ;  Unused bits
+KBT$V_IGNORE'..equ'12                   ;  Ignore indicator
+KBT$V_SYMBOL'..equ'13                   ;  Symbol indicator
+KBT$V_DEAD'..equ'14                     ;  Dead diacritical key
+KBT$V_SPECIAL'..equ'15                  ;  Requires expansion
+; .
+;  Unsolicited Input Types
+; .
+VSX$K_UNSOLIC_DATA'..equ'0
+VSX$K_CTRLC'..equ'1
+VSX$K_CTRLY'..equ'2
+VSX$K_MESS_UNSOL'..equ'2                ;  Number of UIO types
+; .
+;  SDA object manipulation
+; .
+VS$K_NORMAL'..equ'0
+VS$K_SLIDE'..equ'1
+VS$K_POP_TO_TOP'..equ'2
+; 
+;  The PBFLAGS in vsacpdef are used interchangably with the PB_CHARS ones in
+;  vsvdspb.  It would be nice if one set were eliminated, but until then,
+;  make sure that you keep symbols the same value that have the same meaning.
+;  For instance, PERM_PB must be the same value as PB_PERM etc.
+; 
+VS$M_PERM_PB'..equ'1
+VS$M_VKB'..equ'2
+VS$M_VTB'..equ'4
+VS$M_TERM'..equ'8
+VS$S_PBFLAGS'..equ'1
+PBFLAGS'..equ'0                         ;  In VSX$W_PB_FLAGS
+VS$V_PERM_PB'..equ'0
+VS$V_VKB'..equ'1
+VS$V_VTB'..equ'2
+VS$V_TERM'..equ'3
+VS$M_PERM_VD'..equ'1
+VS$M_SHARE_VD'..equ'2
+VS$S_VDCHARS'..equ'1
+VDCHARS'..equ'0                         ;  In VSX$W_VD_CHARS
+VS$V_PERM_VD'..equ'0
+VS$V_SHARE_VD'..equ'1
+; 		.
+;  IO codes.  When defining new ones, the strategy for picking values is
+;  to avoid overlapping existing functions that already mean something for
+;  virtual displays.  For instance, don't use 48 since that means WRITEVBLK,
+;  whose meaning we can't change.  (See STARLET.REQ for list of codes.)
+; 		.
+;  The following codes are privileged (require PHY_IO, DIAGNOSE)
+; 
+IO$_BROADCAST'..equ'16                  ;  16 overlaps READTRACKD
+IO$_ACTIVATE'..equ'17                   ;  17 overlaps AVAILABLE
+IO$_DEACTIVATE'..equ'18                 ;  18
+IO$_VTEMDATA'..equ'19                   ;  19
+IO$_VSTAHI'..equ'20                     ;  20
+; 
+;  The following codes are non-privileged and do NOT conflict with any VMS
+;  or VSTA function codes (IO$_LOGICAL < code <= IO$_VIRTUAL).
+; 
+IO$_VSTAPTR'..equ'52                    ;  
+IO$_READ_VKB'..equ'60                   ;  
+IO$_WRITE_GRAPHICS'..equ'61             ;  
+IO$_WRITE_VD'..equ'62                   ;  
+IO$_CREATE_MENU'..equ'63                ;  
+; 
+;  Define VSTA function code modifiers
+; 
+IO$M_TEXT'..equ'64
+IO$M_SW'..equ'256
+IO$M_GRAPHICS'..equ'512
+IO$M_VD'..equ'1024
+IO$M_PB'..equ'2048
+IO$M_W'..equ'4096
+IO$M_VP'..equ'8192
+IO$M_VS'..equ'16384
+IO$M_PS'..equ'32768
+IO$S_IOCODES'..equ'2
+IOCODES'..equ'0
+IO$S_reserved'..equ'6
+IO$v_reserved'..equ'0                   ;  Function code
+IO$V_TEXT'..equ'6
+IO$v_skip'..equ'7
+IO$V_SW'..equ'8
+IO$V_GRAPHICS'..equ'9
+IO$V_VD'..equ'10
+IO$V_PB'..equ'11
+IO$V_W'..equ'12
+IO$V_VP'..equ'13
+IO$V_VS'..equ'14
+IO$V_PS'..equ'15
+IO$M_VKB'..equ'64
+IO$M_VTB'..equ'128
+IO$M_TRANS_TABLE'..equ'256
+IO$M_VKB_CHAR'..equ'4096
+IO$M_VD_CANCEL'..equ'8192
+IO$S_IOCODES2'..equ'2
+IOCODES2'..equ'0
+IO$S_reserv2'..equ'6
+IO$v_reserv2'..equ'0                    ;  Function code
+IO$V_VKB'..equ'6
+IO$V_VTB'..equ'7
+IO$V_TRANS_TABLE'..equ'8
+IO$S_SPARE_MODS2'..equ'3
+IO$V_SPARE_MODS2'..equ'9
+IO$V_VKB_CHAR'..equ'12
+IO$V_VD_CANCEL'..equ'13
+IO$M_MOUSE'..equ'64
+IO$M_TABLET'..equ'128
+IO$M_MOVE_AST'..equ'256
+IO$M_BUTTON_AST'..equ'512
+IO$M_BOUNDARY_AST'..equ'1024
+IO$M_PTR_INFO'..equ'2048
+IO$S_IOCODES3'..equ'2
+IOCODES3'..equ'0
+IO$S_reserv3'..equ'6
+IO$v_reserv3'..equ'0                    ;  Function code
+IO$V_MOUSE'..equ'6
+IO$V_TABLET'..equ'7
+IO$V_MOVE_AST'..equ'8
+IO$V_BUTTON_AST'..equ'9
+IO$V_BOUNDARY_AST'..equ'10
+IO$V_PTR_INFO'..equ'11
+IO$S_SPARE_MODS3'..equ'4
+IO$V_SPARE_MODS3'..equ'12
+IO$M_VD_INTERNAL'..equ'64
+IO$M_VD_NEWSYM'..equ'128
+IO$M_VD_SPKEY'..equ'256
+IO$M_VD_HOLD'..equ'512
+IO$M_VD_OEM'..equ'1024
+IO$M_VD_NOTICE'..equ'2048
+IO$M_VD_TRANS_TABLE'..equ'4096
+IO$M_VD_SYMBOL_TABLE'..equ'8192
+IO$M_VD_NRC_TABLE'..equ'16384
+IO$M_VD_GIN'..equ'32768
+IO$S_IOCODES4'..equ'2
+IOCODES4'..equ'0
+IO$S_reserv4'..equ'6
+IO$v_reserv4'..equ'0                    ;  Function code
+IO$V_VD_INTERNAL'..equ'6
+IO$V_VD_NEWSYM'..equ'7
+IO$V_VD_SPKEY'..equ'8
+IO$V_VD_HOLD'..equ'9
+IO$V_VD_OEM'..equ'10
+IO$V_VD_NOTICE'..equ'11
+IO$V_VD_TRANS_TABLE'..equ'12
+IO$V_VD_SYMBOL_TABLE'..equ'13
+IO$V_VD_NRC_TABLE'..equ'14
+IO$V_VD_GIN'..equ'15
+VS$M_ST_VKB'..equ'1
+VS$M_ST_DEL'..equ'2
+VS$M_ST_POINTER'..equ'4
+VS$M_ST_CONTROL'..equ'8
+VS$M_ST_ERRBLOCK'..equ'16
+VS$M_ST_MODIFY'..equ'32
+VS$M_ST_WRITE'..equ'64
+VS$M_ST_BRDCST'..equ'128
+VS$M_ST_VD'..equ'512
+VS$M_ST_READ'..equ'1024
+VS$M_ST_PB'..equ'2048
+VS$M_ST_W'..equ'4096
+VS$M_ST_VP'..equ'8192
+VS$M_ST_VS'..equ'16384
+VS$M_ST_PS'..equ'32768
+VS$S_TTYSTATE'..equ'2
+TTYSTATE'..equ'0
+VS$V_ST_VKB'..equ'0
+VS$V_ST_DEL'..equ'1
+VS$V_ST_POINTER'..equ'2                 ;  Matches TTY...CURSOR
+VS$V_ST_CONTROL'..equ'3                 ;  Matches TTY...CH_LOWER
+VS$V_ST_ERRBLOCK'..equ'4
+VS$V_ST_MODIFY'..equ'5                  ;  Matches TTY...DMA
+VS$V_ST_WRITE'..equ'6
+VS$V_ST_BRDCST'..equ'7
+VS$v_res3'..equ'8
+VS$V_ST_VD'..equ'9
+VS$V_ST_READ'..equ'10                   ;  Matches TTY...READ
+VS$V_ST_PB'..equ'11
+VS$V_ST_W'..equ'12
+VS$V_ST_VP'..equ'13
+VS$V_ST_VS'..equ'14
+VS$V_ST_PS'..equ'15
+; .
+;  TMBU PID list structure
+; .
+TMBU$K_LEN'..equ'6
+TMBU$S_PID_TMBU'..equ'6
+PID_TMBU'..equ'0
+TMBU$L_EPID'..equ'0                     ; Internal PID
+TMBU$W_MBX_UNIT'..equ'4                 ; Term. mbx unit no.
+; .
+;  VD Controller fields
+; .
+CTRL$M_OEM'..equ'1
+CTRL$M_EXTRA'..equ'254
+CTRL$K_LEN'..equ'158
+CTRL$S_VD_CTRL_BLOCK'..equ'158
+VD_CTRL_BLOCK'..equ'0
+CTRL$A_ACTIVE_UCB'..equ'0               ; Active UCB on ctrl
+CTRL$L_TTABLE'..equ'4                   ; Translation table ID
+CTRL$A_TTABLE'..equ'8                   ; Translation table adr.
+CTRL$S_TTABLE_LIST'..equ'68
+CTRL$B_TTABLE_LIST'..equ'12
+CTRL$A_SYMBOL_TABLE'..equ'80            ; Symbol table adr.
+CTRL$S_SYMBOL_LIST'..equ'68
+CTRL$B_SYMBOL_LIST'..equ'84
+CTRL$A_NRC_TABLE'..equ'152              ; NRC table adr.
+CTRL$S_STATUS_FIELD'..equ'2
+CTRL$R_STATUS_FIELD'..equ'156
+CTRL$W_STATUS'..equ'156                 ; VD controller state
+CTRL$S_STATUS_BITS'..equ'1
+CTRL$R_STATUS_BITS'..equ'156
+CTRL$V_OEM'..equ'0                      ; OEM mode in effect
+CTRL$S_EXTRA'..equ'7
+CTRL$V_EXTRA'..equ'1                    ; For future DEC abuse
+; .
+;  VD UCB extension fields
+; .
+UCB$K_VD_MAX_TYPAHD'..equ'64            ; 32 16-bit entries
+UCB$K_VD_MAX_TYPIDX'..equ'29
+UCB$K_VD_MAX_OUTDAT'..equ'24            ; Output data buffer
+VS$K_MAX_IRP_CNT'..equ'10               ; Max. outstanding IRPs
+UCB$M_VD_ABORT'..equ'1
+UCB$M_VD_XOFF'..equ'2
+UCB$M_VD_FORK_ACT'..equ'4
+UCB$M_VD_LOADTT_IP'..equ'8
+UCB$M_VD_DATA_AVAIL'..equ'16
+UCB$M_VD_INPUT_IP'..equ'32
+UCB$M_VD_LEVEL'..equ'960
+UCB$M_VD_EIGHTBIT'..equ'1024
+UCB$M_VD_KEYPAD'..equ'2048
+UCB$M_VD_CURSOR_KEY'..equ'4096
+UCB$M_VD_VT52'..equ'8192
+UCB$M_VD_NEW_LINE'..equ'16384
+UCB$M_VD_GIN'..equ'32768
+UCB$K_VD_LEN'..equ'427
+UCB$S_VD_UCB_BLOCK'..equ'427
+VD_UCB_BLOCK'..equ'0
+UCB$S_VD_SYS_DEFINED'..equ'308
+UCB$B_VD_SYS_DEFINED'..equ'0
+UCB$L_VD_ID'..equ'308
+UCB$L_VD_EMULATOR'..equ'312
+UCB$A_VD_CTRL'..equ'316
+UCB$S_VD_TYPAHD'..equ'64
+UCB$B_VD_TYPAHD'..equ'320
+UCB$L_VD_OUT_CNT'..equ'384
+UCB$S_VD_OUTDAT'..equ'24
+UCB$B_VD_OUTDAT'..equ'388
+UCB$L_VD_SYMBOL_SHIFT'..equ'412
+UCB$L_VD_SYMBOL_LOWER'..equ'416
+UCB$B_VD_DEAD'..equ'420
+UCB$S_VD_STATUS_FIELD'..equ'2
+UCB$R_VD_STATUS_FIELD'..equ'421
+UCB$W_VD_STATUS'..equ'421               ; Virtual device state
+UCB$S_VD_STATUS_BITS'..equ'2
+UCB$R_VD_STATUS_BITS'..equ'421
+UCB$V_VD_ABORT'..equ'0                  ; Abort output bit
+UCB$V_VD_XOFF'..equ'1                   ; XOFF state bit
+UCB$V_VD_FORK_ACT'..equ'2               ; Fork active bit
+UCB$V_VD_LOADTT_IP'..equ'3              ; Load in progress bit
+UCB$V_VD_DATA_AVAIL'..equ'4             ; Data available bit
+UCB$V_VD_INPUT_IP'..equ'5               ; Input scan in progress
+; 
+;  NOTE: The following bits are position dependent. Do not modify the number of
+; 	 bits above. Also, do not modify the order below or introduce any new
+; 	 bits in between the existing ones.
+; 
+UCB$S_VD_LEVEL'..equ'4
+UCB$V_VD_LEVEL'..equ'6                  ; Level 1/2 conformance
+UCB$V_VD_EIGHTBIT'..equ'10              ; Native eight-bit/seven-bit
+UCB$V_VD_KEYPAD'..equ'11                ; Keypad application mode
+UCB$V_VD_CURSOR_KEY'..equ'12            ; Cursor key mode
+UCB$V_VD_VT52'..equ'13                  ; VT52 mode
+UCB$V_VD_NEW_LINE'..equ'14              ; New-line mode
+; 
+UCB$V_VD_GIN'..equ'15                   ; TEK GIN mode
+UCB$L_VD_IRP_CNT'..equ'423
+; 					.
+;  Vax Station Transport Buffer  --  VSX
+; 					.
+VSX$K_HDR_LEN'..equ'12
+VSX$K_W_NAME_POS'..equ'26
+VSX$K_DATA_LEN'..equ'40
+;  This symbol will be used during the
+VSX$S_VSXBLOCK'..equ'40
+VSXBLOCK'..equ'0
+VSX$L_UIC'..equ'0
+VSX$W_ID'..equ'4
+VSX$w_spare1'..equ'6
+VSX$W_SIZE'..equ'8
+VSX$B_TYPE'..equ'10
+VSX$b_spare2'..equ'11
+VSX$S_VSXDEPENDENT'..equ'28
+VSX$R_VSXDEPENDENT'..equ'12
+VSX$S_VSXVD'..equ'28
+VSX$R_VSXVD'..equ'12
+VSX$W_VD_MODE'..equ'12
+VSX$W_VD_CHARS'..equ'14
+VSX$W_VD_BACKGROUND'..equ'16
+VSX$W_VD_FOREGROUND'..equ'18
+VSX$W_VD_HEIGHT'..equ'20
+VSX$W_VD_WIDTH'..equ'22
+VSX$W_VD_DEPTH'..equ'24
+VSX$W_VD_BIT_PLANES'..equ'26
+VSX$W_VD_LINE_HITE'..equ'28
+VSX$W_VD_COLS_NORM'..equ'30
+VSX$W_VD_COLS_WIDE'..equ'32
+VSX$W_VD_ROWS'..equ'34
+VSX$W_VD_TEXT_CODE'..equ'36
+VSX$W_VD_PROTECTION'..equ'38
+VSX$S_VSXPB'..equ'28
+VSX$R_VSXPB'..equ'12
+VSX$W_PB_COLOR_SPEC'..equ'12
+VSX$W_PB_COLOR'..equ'14
+VSX$W_PB_WIDTH'..equ'16
+VSX$W_PB_HEIGHT'..equ'18
+VSX$L_PB_FLAGS'..equ'20
+VSX$W_PB_PROTECTION'..equ'24
+VSX$w_spare8'..equ'26
+VSX$l_spare9'..equ'28
+VSX$l_spare10'..equ'32
+VSX$l_spare11'..equ'36
+VSX$S_VSXW'..equ'28
+VSX$R_VSXW'..equ'12
+VSX$W_W_X0'..equ'12
+VSX$W_W_Y0'..equ'14
+VSX$W_W_DX'..equ'16
+VSX$W_W_DY'..equ'18
+VSX$W_W_PB_ID'..equ'20
+VSX$W_W_VP_ID'..equ'22
+VSX$W_W_NAME_LEN'..equ'24
+VSX$B_W_NAME'..equ'26
+VSX$b_w_spare3'..equ'27
+VSX$l_w_spare5'..equ'28
+VSX$l_w_spare6'..equ'32
+VSX$l_w_spare7'..equ'36
+VSX$S_VSXVP'..equ'28
+VSX$R_VSXVP'..equ'12
+VSX$W_VP_X0'..equ'12
+VSX$W_VP_Y0'..equ'14
+VSX$W_VP_DX'..equ'16
+VSX$W_VP_DY'..equ'18
+VSX$W_VP_W_ID'..equ'20
+VSX$W_VP_VS_ID'..equ'22
+VSX$W_VP_BASE'..equ'24
+VSX$w_vp_spare3'..equ'26
+VSX$l_vp_spare4'..equ'28
+VSX$l_vp_spare5'..equ'32
+VSX$l_vp_spare6'..equ'36
+VSX$S_VSXVS'..equ'28
+VSX$R_VSXVS'..equ'12
+VSX$W_VS_COLOR'..equ'12
+VSX$w_vs_spare1'..equ'14
+VSX$l_vs_spare2'..equ'16
+VSX$l_vs_spare3'..equ'20
+VSX$l_vs_spare4'..equ'24
+VSX$l_vs_spare5'..equ'28
+VSX$l_vs_spare6'..equ'32
+VSX$l_vs_spare7'..equ'36
+VSX$S_VSXPS'..equ'28
+VSX$R_VSXPS'..equ'12
+VSX$W_PS_DEV_TYPE'..equ'12
+VSX$W_PS_UNIT'..equ'14
+VSX$W_PS_X0'..equ'16
+VSX$W_PS_Y0'..equ'18
+VSX$W_PS_VS_ID'..equ'20
+VSX$w_ps_spare2'..equ'22
+VSX$W_PS_DX'..equ'24
+VSX$W_PS_DY'..equ'26
+VSX$l_ps_spare4'..equ'28
+VSX$l_ps_spare5'..equ'32
+VSX$l_ps_spare6'..equ'36
+VSX$S_VSXVKB'..equ'28
+VSX$R_VSXVKB'..equ'12
+VSX$L_VKB_STATE_BITS'..equ'12
+VSX$L_VKB_TRANS_TABLE'..equ'16
+VSX$L_VKB_DEVDEPEND'..equ'20
+VSX$L_VKB_MOD_STATES'..equ'24
+VSX$l_vkb_spare1'..equ'28
+VSX$l_vkb_spare2'..equ'32
+VSX$l_vkb_spare3'..equ'36
+VSX$S_VSXCHARS'..equ'28
+VSX$R_VSXCHARS'..equ'12
+VSX$S_VD_CHAR'..equ'8
+VSX$Q_VD_CHAR'..equ'12
+VSX$L_VD_CHAR2'..equ'20
+VSX$S_ch_spare2'..equ'8
+VSX$q_ch_spare2'..equ'24
+VSX$S_ch_spare3'..equ'8
+VSX$q_ch_spare3'..equ'32
+VSX$S_VSXCTRL'..equ'10
+VSX$R_VSXCTRL'..equ'12
+VSX$W_CTRL_SUBJECT_ID'..equ'12
+VSX$W_CTRL_OBJECT_ID'..equ'14
+VSX$W_CTRL_X0'..equ'16
+VSX$W_CTRL_Y0'..equ'18
+VSX$W_CTRL_STACKING'..equ'20
+VSX$S_VSXPTR'..equ'28
+VSX$R_VSXPTR'..equ'12
+VSX$L_PTR_X0'..equ'12
+VSX$L_PTR_Y0'..equ'16
+VSX$L_PTR_DX'..equ'20
+VSX$L_PTR_DT'..equ'24
+VSX$L_PTR_UP_MASK'..equ'28
+VSX$L_PTR_DOWN_MASK'..equ'32
+VSX$L_PTR_PB_ID'..equ'36
+;  compilation of vddriver.mar to
+;  guarantee that the longest block
+;  defined up above does not hit
+;  the data used by the system.
+; 					.
+;  VAX Station User Buffer structures  --  VSU
+; 					.
+VSU$K_W_NAME_POS'..equ'14
+VSU$S_VSUBLOCK'..equ'28
+VSUBLOCK'..equ'0
+VSU$S_VSUDEPENDENT'..equ'28
+VSU$R_VSUDEPENDENT'..equ'0
+VSU$S_VSUVD'..equ'28
+VSU$R_VSUVD'..equ'0
+VSU$W_VD_MODE'..equ'0
+VSU$W_VD_CHARS'..equ'2
+VSU$W_VD_BACKGROUND'..equ'4
+VSU$W_VD_FOREGROUND'..equ'6
+VSU$W_VD_HEIGHT'..equ'8
+VSU$W_VD_WIDTH'..equ'10
+VSU$W_VD_DEPTH'..equ'12
+VSU$W_VD_BIT_PLANES'..equ'14
+VSU$W_VD_LINE_HITE'..equ'16
+VSU$W_VD_COLS_NORM'..equ'18
+VSU$W_VD_COLS_WIDE'..equ'20
+VSU$W_VD_ROWS'..equ'22
+VSU$W_VD_TEXT_CODE'..equ'24
+VSU$W_VD_PROTECTION'..equ'26
+VSU$S_VSUPB'..equ'28
+VSU$R_VSUPB'..equ'0
+VSU$W_PB_COLOR_SPEC'..equ'0
+VSU$W_PB_COLOR'..equ'2
+VSU$W_PB_WIDTH'..equ'4
+VSU$W_PB_HEIGHT'..equ'6
+VSU$L_PB_FLAGS'..equ'8
+VSU$W_PB_PROTECTION'..equ'12
+VSU$w_spare8'..equ'14
+VSU$l_spare9'..equ'16
+VSU$l_spare10'..equ'20
+VSU$l_spare11'..equ'24
+VSU$S_VSUW'..equ'28
+VSU$R_VSUW'..equ'0
+VSU$W_W_X0'..equ'0
+VSU$W_W_Y0'..equ'2
+VSU$W_W_DX'..equ'4
+VSU$W_W_DY'..equ'6
+VSU$W_W_PB_ID'..equ'8
+VSU$W_W_VP_ID'..equ'10
+VSU$W_W_NAME_LEN'..equ'12
+VSU$B_W_NAME'..equ'14
+VSU$b_w_spare3'..equ'15
+VSU$l_w_spare5'..equ'16
+VSU$l_w_spare6'..equ'20
+VSU$l_w_spare7'..equ'24
+VSU$S_VSUVP'..equ'28
+VSU$R_VSUVP'..equ'0
+VSU$W_VP_X0'..equ'0
+VSU$W_VP_Y0'..equ'2
+VSU$W_VP_DX'..equ'4
+VSU$W_VP_DY'..equ'6
+VSU$W_VP_W_ID'..equ'8
+VSU$W_VP_VS_ID'..equ'10
+VSU$W_VP_BASE'..equ'12
+VSU$w_vp_spare3'..equ'14
+VSU$l_vp_spare4'..equ'16
+VSU$l_vp_spare5'..equ'20
+VSU$l_vp_spare6'..equ'24
+VSU$S_VSUVS'..equ'28
+VSU$R_VSUVS'..equ'0
+VSU$W_VS_COLOR'..equ'0
+VSU$w_vs_spare1'..equ'2
+VSU$l_vs_spare2'..equ'4
+VSU$l_vs_spare3'..equ'8
+VSU$l_vs_spare4'..equ'12
+VSU$l_vs_spare5'..equ'16
+VSU$l_vs_spare6'..equ'20
+VSU$l_vs_spare7'..equ'24
+VSU$S_VSUPS'..equ'28
+VSU$R_VSUPS'..equ'0
+VSU$W_PS_DEV_TYPE'..equ'0
+VSU$W_PS_UNIT'..equ'2
+VSU$W_PS_X0'..equ'4
+VSU$W_PS_Y0'..equ'6
+VSU$W_PS_VS_ID'..equ'8
+VSU$w_ps_spare2'..equ'10
+VSU$W_PS_DX'..equ'12
+VSU$W_PS_DY'..equ'14
+VSU$l_ps_spare4'..equ'16
+VSU$l_ps_spare5'..equ'20
+VSU$l_ps_spare6'..equ'24
+VSU$S_VSUVKB'..equ'28
+VSU$R_VSUVKB'..equ'0
+VSU$L_VKB_STATE_BITS'..equ'0
+VSU$L_VKB_TRANS_TABLE'..equ'4
+VSU$L_VKB_DEVDEPEND'..equ'8
+VSU$L_VKB_MOD_STATES'..equ'12
+VSU$l_vkb_spare1'..equ'16
+VSU$l_vkb_spare2'..equ'20
+VSU$l_vkb_spare3'..equ'24
+VSU$S_VSUCHARS'..equ'28
+VSU$R_VSUCHARS'..equ'0
+VSU$S_VD_CHAR'..equ'8
+VSU$Q_VD_CHAR'..equ'0
+VSU$L_VD_CHAR2'..equ'8
+VSU$S_ch_spare2'..equ'8
+VSU$q_ch_spare2'..equ'12
+VSU$S_ch_spare3'..equ'8
+VSU$q_ch_spare3'..equ'20
+VSU$S_VSUCTRL'..equ'10
+VSU$R_VSUCTRL'..equ'0
+VSU$W_CTRL_SUBJECT_ID'..equ'0
+VSU$W_CTRL_OBJECT_ID'..equ'2
+VSU$W_CTRL_X0'..equ'4
+VSU$W_CTRL_Y0'..equ'6
+VSU$W_CTRL_STACKING'..equ'8
+VSU$S_VSUPTR'..equ'28
+VSU$R_VSUPTR'..equ'0
+VSU$L_PTR_X0'..equ'0
+VSU$L_PTR_Y0'..equ'4
+VSU$L_PTR_DX'..equ'8
+VSU$L_PTR_DT'..equ'12
+VSU$L_PTR_UP_MASK'..equ'16
+VSU$L_PTR_DOWN_MASK'..equ'20
+VSU$L_PTR_PB_ID'..equ'24
+; 					.
+;  Read Extension Block -- RX
+; 					.
+RX$S_RXBLOCK'..equ'57
+RXBLOCK'..equ'0
+RX$A_NXT'..equ'0
+RX$A_PROMPT_UVA'..equ'4
+RX$W_SIZE'..equ'8
+RX$B_TYPE'..equ'10
+RX$b_rx_spare1'..equ'11
+RX$L_BREAK_TABLE'..equ'12
+RX$L_BT2'..equ'16
+RX$L_BT3'..equ'20
+RX$L_BT4'..equ'24
+RX$L_BT5'..equ'28
+RX$L_BT6'..equ'32
+RX$L_BT7'..equ'36
+RX$L_BT8'..equ'40
+RX$L_REGION'..equ'44
+RX$W_LINE'..equ'48
+RX$W_FIELD'..equ'50
+RX$W_PROMPT_SIZE'..equ'52
+RX$W_PB_ID'..equ'54
+RX$B_PROMPT'..equ'56
+; 
+;  Define font weight structure.  The code assumes that this structure
+;  completely fits in the low 31 bits of a longword, such that two of them
+;  can be quickly compared with simple arithmetic, so be careful not to
+;  expand this too much !
+; 
+;  For the same reason, the code also assumes that the more important
+;  weightings are in the more significant bits, so be careful about order.
+; 
+fw$S_font_weight'..equ'2
+font_weight'..equ'0
+fw$v_fits'..equ'0                       ;  On if font fits on line
+fw$v_alg_rend'..equ'1                   ;  On if only mismatched rendition bits
+;  are algorithmically generatable
+;  renditions
+fw$v_rend'..equ'2                       ;  On if all renditions match
+fw$S_typesize'..equ'8
+fw$v_typesize'..equ'3
+;  100 - difference in type size
+fw$v_typeface'..equ'11                  ;  On if typeface matches exactly
+; 
+;  Define virtual memory block.  The block contains bookkeeping as well
+;  as actual memory for caller usage.
+; 
+;  The bookkeeping allows us to determine:
+; 
+; 	1)  whether callers clobber memory before or after their allocated
+; 	    portion.
+; 	2)  whether callers neglect to free memory (checked at end of session)
+; 
+vm$k_first_adr'..equ'28                 ;  Caller's usable portion
+;  --- Caution ! ---
+vm$S_vm_block'..equ'32
+vm_block'..equ'0
+;  --- Caution ! ---
+;  "first_adr" MUST end up with a value
+;  divisible by 4, due to some usages
+;  which depend on their memory buffers
+;  aligned on words or longwords.
+vm$a_flink'..equ'0                      ;  Forward link to another memory blk
+vm$a_blink'..equ'4                      ;  Backward link to another memory blk
+vm$a_caller_pc'..equ'8                  ;  PC of requestor for this memory
+vm$a_callr_callr_pc'..equ'12            ;  PC of caller of requestor for memory
+vm$a_clr_clr_clr_pc'..equ'16            ;  PC of caller of caller of requestor
+vm$a_cl_cl_cl_cl_pc'..equ'20            ;  Hopefully four is enough for
+;  diagnosis
+vm$l_hdr_len'..equ'24                   ;  Number of bytes of mem requested.
+;  "first_adr" MUST end up with a value
+;  divisible by 4, due to some usages
+;  which depend on their memory buffers
+;  aligned on words or longwords.
+; 
+;  The following fields are prefixed with "end_" to remind programmers
+;  that these must be accessed by adding the caller's buffer size.
+;  They float beyond that buffer.
+; 
+vm$l_end_tlr_len'..equ'28               ;  Number of bytes of mem requested.
+;  This item floats just after usable
+;  portion to catch callers that write
+;  beyond their usable portion
+; 					.
+;  End of module $VSDEF
+; 					.
+	.ENDM

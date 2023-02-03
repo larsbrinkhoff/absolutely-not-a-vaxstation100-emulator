@@ -1,0 +1,93 @@
+!----------------------------------------------------------------------------
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This file contains the macro definitions used in the acp.
+!
+!---
+
+
+!
+! TABLE OF CONTENTS:
+!
+
+
+keywordmacro!s
+	 $RETERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 RETURN (VSTA$$ERROR(STATUS)))%
+	,$RETLOG(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR_LOGGER(STATUS);
+		 RETURN STATUS)%
+	,$LOGERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR_LOGGER(STATUS))%
+
+	;
+
+macro!s
+	 $EXTSYM(SYMBOL) =
+		(EXTERNAL LITERAL SYMBOL;
+		 SYMBOL)%
+
+	,$GETDSC(dsc) =
+	
+		(
+		builtin remque;
+		external vsta$q_dsc_base: vector [,long];
+		external vsta$l_dsc_size;
+		external vsta$l_dsc_count;
+		external routine VS$$ACP_GET_VM;
+
+		IF remque(.vsta$q_dsc_base [1],dsc)
+		THEN BEGIN
+			vsta$l_dsc_count = .vsta$l_dsc_count + 1;
+			VS$$ACP_GET_VM(
+				 vsta$l_dsc_size
+				,dsc
+				,0	   )
+		     END
+		ELSE ss$_normal
+		     			)
+		%
+
+	,$FREEDSC(dsc) =
+		(
+		builtin insque;
+		external vsta$q_dsc_base: vector [,LONG];
+		insque(dsc,.vsta$q_dsc_base [1])
+		)
+		%
+	,$GETVDC(vdc) =
+	
+		(
+		builtin remque;
+		external vsta$q_vdc_base: vector [,long];
+		external vsta$l_vdc_size;
+		external vsta$l_vdc_count;
+		external routine VS$$ACP_GET_VM;
+
+		IF remque(.vsta$q_vdc_base [1],vdc)
+		THEN BEGIN
+			vsta$l_vdc_count = .vsta$l_vdc_count + 1;
+			VS$$ACP_GET_VM(
+				 vsta$l_vdc_size
+				,vdc
+				,0	   )
+		     END
+		ELSE ss$_normal
+		     			)
+		%
+
+	,$FREEVDC(vdc) =
+		(
+		builtin insque;
+		external vsta$q_vdc_base: vector [,LONG];
+		insque(vdc,.vsta$q_vdc_base [1])
+		)
+		%
+	;

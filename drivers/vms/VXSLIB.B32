@@ -1,0 +1,6386 @@
+%TITLE 'vxs$lib -- VAX STATION USER LIBRARY'
+MODULE vxs$lib (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the sharable library routines and data relevent to
+!   dealing with the VAXstation entities in the context of a VAX workstation
+!   running the associated workstation display software; an implementation of
+!   the System Display Architecture.
+!
+!   Operations have been provided to allow the manipulation of paste_boards,
+!   which in turn provide the basic application mechanism for specifying
+!   spatial relationships between virtual displays and virtual terminals
+!   and provide a mechanism for the application to specify what parts of those
+!   virtual displays and terminals can be made visible through the use of
+!   windows. The number of allowable objects is limited only by the machine's
+!   memory capacity.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one
+!   ONYX/AGATE/OPAL graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! General setup procedures and error handlers
+!
+	vsta$set_error_messages,		!Enable/disable error msg broadcasting
+	vsta$get_error_block,			!Get error block for process
+	vsta$set_default_protection,		!Set default SDA object protection
+	vsta$get_default_protection,		!Get default SDA object protection
+!
+!		Public routines
+!
+! Return information about screen
+!
+	vsta$get_conversion_units,
+!
+! Pasteboard manipulation procedures
+!
+	vsta$create_pasteboard,			!Create a pasteboard
+	vsta$read_virtual_keyboard,		!Read from a virtual keyboard
+	vsta$cancel_read,			!Cancel read on virtual keyboard
+	vsta$set_virtual_keyboard_mode,		!Set VKB mode
+	vsta$set_virtual_keyboard_tran,		!Set VKB translation table
+	vsta$set_virtual_keyboard_char,		!Set VKB characteristics
+	vsta$get_virtual_keyboard_mode,		!Get VKB mode + trans. table
+	vsta$set_pasteboard_colornumber,	!Set the color number of a pb
+	vsta$set_pasteboard_protection,		!Set the protection of a pb
+	vsta$get_pasteboard_char,		!Get pb information
+	vsta$delete_pasteboard,			!Delete a pasteboard
+!
+! Color lookup table procedures
+!
+	vsta$set_color_specification,	!Set the color specification
+	vsta$set_colors,		!Set up color lookup table
+	vsta$get_colors,		!Get the color lookup table of a PB
+	vsta$set_single_color,		!Change a color number in table
+	vsta$get_single_color,	!Get a color for a given color number
+!
+! Window manipulation procedures
+!
+	vsta$create_window,		!Create a window in a pasteboard
+	vsta$create_native_window,	!Create a system window on a pasteboard
+	vsta$set_window_char,		!Set the characteristics of a window
+	vsta$get_window_char,		!Get the characteristics of a window
+	vsta$move_window,		!Move a window within a pasteboard
+	vsta$delete_window,		!Delete a window
+
+!
+! Terminal/virtual-display initialization procedures
+!
+	vsta$create_vt100,		!Create a VT100 terminal
+	vsta$create_dec_terminal,	!Create a variable sized terminal
+	vsta$create_tek4014,		!Create a TEK4014 terminal
+	vsta$set_tek4014_char,		!Set characteristics of TEK4014 terminal
+	vsta$get_tek4014_char,		!Get characteristics of TEK4014 terminal
+	vsta$create_display,		!Create a virtual display device
+	vsta$delete_vt100,		!Delete a VT100 terminal
+	vsta$delete_dec_terminal,	!Delete a variable sized terminal
+	vsta$delete_tek4014,		!Delete a TEK4014 terminal
+	vsta$delete_display,		!Delete a device virtual display
+	vsta$paste_display,		!Paste a virtual display on pasteboard
+	vsta$remove_display,		!Unpaste a virtual display from PB
+	vsta$move_display,		!Move a virtual display in pasteboard
+	vsta$move_display_to_top, 	!Move virtual display to top of a PB
+	vsta$select_display,		!Select a terminal to be "current" TTY
+	vsta$get_selected_display,	!Get the "current" terminal
+	vsta$set_display_protection,	!Set the protection of a virtual display
+	vsta$set_display_colornumber,	!Set a display's color number
+	vsta$get_display_char,		!Get a display's characteristics
+	vsta$push_display_state,	!Save "current" terminal context
+	vsta$pop_display_state,		!Pop last terminal context off stack
+!
+! Procedures for reading/writing graphics to a virtual display terminal
+!
+	vsta$read_graphics,		!Read back graphics report (GIDIS)
+	vsta$write_graphics,		!Write graphics to terminal
+!
+! Procedures for creating and deleting vss objects
+!
+	vsta$create_native_viewport,	!Create system vp on window
+	vsta$delete_viewport,		!Delete any vp
+
+!
+! Procedures for activating and deactivating vkb's
+!
+	vsta$attach_virtual_keyboard,
+	vsta$detach_virtual_keyboard;
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+!
+!		Private routines
+!
+	vsta$$register_vd,		! Register newly created vd.
+	vsta$$qiow,			!SYS$QIOW jacket routine
+	vsta$$translate_file_spec,	!Translate file spec to actual file spec.
+	vsta$$terminal_found,		!Search know TTY list for info block
+	vsta$$channel_found,		!Find a TTY info block by channel no.
+	vsta$$assign_existing_tty,	!Assign channel to existing terminal
+	vsta$$build_device_name,	!Build a virtual device name
+	vsta$$get_template_chan,	!Get channel to template VD device
+	vsta$$logical_assigned,		!Get channel to logical name's template
+	vsta$$build_local_msgvec,	!Local Error message vector builder
+	vsta$$unbuild_msgvec,		!Err block relocatable => $PUTMSG format
+	vsta$$delete_local_error,	!Delete local error block
+	vsta$$add_terminal,		!Add a terminal information block
+	vsta$$delete_terminal,		!Delete a terminal information block
+	vsta$$convert_color_from_user,	!convert user color input 
+	vsta$$convert_color_to_user,	!convert color code for output 
+!
+	ots$cvt_ti_l,			!Convert text integer to longword
+	lib$get_symbol,			!Get value of CLI symbol
+	lib$set_symbol,			!Set value of CLI symbol
+	lib$get_ef,			!RTL event flag allocation
+	lib$free_ef,			!RTL event flag deallocation
+	lib$get_vm,			!RTL memory allocation routine
+	lib$free_vm;			!RTL memory deallocation routine
+
+EXTERNAL LITERAL
+
+	max_acp_error_block_len;	!Maximum number of bytes in errblk
+
+EXTERNAL
+	fixed_acp_error_block : VECTOR [, BYTE],
+	acp_error_block : VECTOR [, BYTE];
+					!Block for latest error
+!
+! INCLUDE FILES:
+!
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB constant data declarations
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	! Human interface constants
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';		! Color lookup table data declarations
+LIBRARY 'VSTA$LIBRARY:VSVDSVD';		! Virtual terminal definitions
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+LIBRARY 'VSTA$LIBRARY:TXTCODES';	! TEXT specific $QIO codes
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error code symbols
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		! Common symbols
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! BLISS-32 built-in machine instructions
+!
+BUILTIN
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+!
+! Module-wide macros
+!
+MACRO
+	vsta_prot_sym_name = %STRING('VSTA$GW_DEFAULT_PROTECTION')%,
+	vd_device = %STRING('VD')%;
+
+LITERAL
+	prot_sym_len = %CHARCOUNT(vsta_prot_sym_name),
+	vd_device_len = %CHARCOUNT(vd_device);
+
+GLOBAL
+	vsta$gl_local_error: INITIAL($false),  !"Boolean" local error on flag
+	vd_chan: WORD INITIAL(WORD(0)),	  !Channel to template
+	vsta$gb_prot_symbol: VECTOR[prot_sym_len,BYTE]
+	  INITIAL(BYTE(vsta_prot_sym_name)),
+	vsta$gq_prot_desc:		  !Default protection symbol name desc.
+	  VECTOR[2] INITIAL(prot_sym_len,0),
+	local_msgvec: REF VECTOR,	  !Local error message vector
+	local_msgvec_size: INITIAL(0),	  !Local error message vector size
+	errors_on: INITIAL($false),	  !"Boolean" error display on flag
+	impure_area: BLOCK[vsta$k_pp_length,BYTE];	!Per-process info
+
+OWN
+	vsta_device: VECTOR[vd_device_len,BYTE]
+	  INITIAL(BYTE(vd_device));
+
+
+%SBTTL 'vsta$set_error_messages -- Set up Error Message Handling'
+GLOBAL ROUTINE vsta$set_error_messages(
+			on_off,		!"Boolean" on/off switch
+			severity	!Severity of errors to be effected
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting up the error message handling
+! for the entire vaxstation environment. Error messages may be enabled or
+! disabled at each severity level. When disabled, an error return status is
+! returned to the calling routine instead of the automatic output of the
+! error message itself.
+!
+! FORMAL PARAMETERS:
+!
+!	ON_OFF : "Boolean" on/off switch (0 => off and 1 => on)
+!		 	(input parameter)
+!	SEVERITY : Longword error severity level to be effected
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETERR		!Failed to set error messages
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status;				!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Set system service failure exception mode to either on or off depending
+! on ON_OFF switch passed as a parameter (for now all severity errors are
+! effected)
+!
+	errors_on = parameter_value(on_off) AND 1;
+!
+!	IF (NOT (status = $SETSFM(
+!				ENBFLG = .errors_on
+!				))) THEN
+!	  BEGIN
+!	    lib_add_err(.status);
+!	    lib_ret_err(vsta$_seterr);
+!	  END;
+!
+! Set up the appropriate exception handler if error messages are being turned
+! on for the secondary exception vector
+!
+!	IF .errors_on EQL $true THEN
+!	  IF (NOT (status = $SETEXV(
+!				VECTOR = 1,
+!				ADDRES = vsta$$exception_handler
+!				))) THEN
+!	    BEGIN
+!	      lib_add_err(.status);
+!	      lib_ret_err(vsta$_seterr);
+!	    END;
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! end of routine vsta$set_error_messages
+
+
+%sbttl 'vsta$get_error_reason -- Get info about particular reason for failure'
+global routine vsta$get_error_reason
+!++
+! Functional description:
+!
+!	Given a reason rank (0, 1, 2, 3 . . .), return the
+!	nth reason code for the most recent VAXstation error.
+!
+! Formal parameters:
+ (
+	status_adr,		! where to write nth status code from block,
+				! OPTIONAL
+
+	reason_rank_adr,	! address containing n, OPTIONAL, defaults
+				! to 1 (1 hopefully reveals REASON for failure,
+				! while 0 reveals WHAT routine failed)
+
+	reason_offset_adr	! OPTIONAL address into which longword offset
+				! is written, indicating WHERE in error block
+				! the reason is detailed.  Caller can obtain
+				! specific parameters for reason from the block
+				! using this offset.
+ ) =
+!
+!--
+	begin
+
+	local
+	    status,		! nth status code
+	    s,			! local status code
+	    local_reason_offset;! error block offset returned by unbuild rtn
+
+	bind
+!
+! Establish length of raw error block.
+!
+	    err_blk_len =
+		begin
+		if .vsta$gl_local_error
+		then .local_msgvec_size
+		else max_acp_error_block_len
+		end,
+!
+! Establish address or raw error block.
+!
+	    err_blk =
+		begin
+		if .vsta$gl_local_error
+		then local_msgvec[0]
+		else acp_error_block[0]
+		end : vector,
+!
+! Establish address into which block offset will be written.  If caller
+! wants it, we can use caller's.  Otherwise we use our own.
+!
+	    err_blk_offset =
+		begin
+		if parameter_address (reason_offset_adr) neq 0
+		then .reason_offset_adr
+		else local_reason_offset
+		end,
+!
+! Establish address into which status code will be written.  If caller
+! wants it, we can use caller's.  Otherwise we use our own.
+!
+	    err_blk_status =
+		begin
+		if parameter_address (status_adr) neq 0
+		then .status_adr
+		else status
+		end,
+!
+! Establish which reason rank to look for.  If caller gave one, use it,
+! otherwise default to 1.
+!
+	    reason_rank =
+		begin
+		if parameter_value (reason_rank_adr) neq 0
+		then parameter_value (reason_rank_adr)
+		else 1
+		end;
+!
+! Scan the error block to locate the portion requested.
+!
+	if not (s = vsta$$unbuild_msgvec (
+	    err_blk[0],		! address of block to scan
+	    err_blk_len,	! length of block
+	    1,			! say we want only to scan
+	    reason_rank,	! which reason rank we seek
+	    err_blk_offset	! where to write offset
+	    ))
+	then
+!
+! If we can't scan to the specified reason code, assume there isn't one as
+! high as the requested rank, so merely return a success code both in
+! the output variable and as the status of this routine.
+!
+	    return err_blk_status = ss$_normal;
+!
+! Now that we know where in error block the reason is "discussed", obtain
+! the sought status code.
+!
+	err_blk_status = .err_blk[.err_blk_offset];
+
+	ss$_normal
+
+	end;
+
+%SBTTL 'vsta$get_error_block -- Get Process Error Block'
+GLOBAL ROUTINE vsta$get_error_block(
+			buffer_adr,		!Error block buffer address
+			buffer_size		!Error block buffer size
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the error block associated
+! with the previous operation if unsuccessful. In other words, if the previous
+! VAXstation library operation was unsuccessful (i.e. a bad status was
+! returned), then this routine must be called immediately to retrieve the
+! error block. If any other VAXstation library routine is called after
+! receiving a bad status but before calling this routine, the error block
+! will not exist for that first call.
+!
+! If the caller merely wants the error messages to be printed, and she
+! doesn't need the $putmsg block, a block address of 0, or no parameters
+! at all, may be specified.
+!
+! Or, if the caller wishes to have the error messages output as well, the
+! VSTA$SET_ERROR_MESSAGES routine may be used to set up this mode. Otherwise,
+! the block is merely copied into the caller's address space, and it is the
+! responsibility of the caller to deal with the block.
+!	For a description of the format of this block, refer to the description
+! of $PUTMSG in the System Services Manual. Note that the data for any
+! parameters to the error messages is stored in the block as well.
+!
+! FORMAL PARAMETERS:
+!
+!	BUFFER_ADR  : Address of the buffer into which the block will be copied
+!		  	(input parameter)
+!	BUFFER_SIZE : Address of longword error block size
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETERR		!Get error block failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+	external
+
+	    acp_error_exists;	! 1 if we have any error available from acp
+
+    LOCAL
+	status;			!Return status value
+!
+! If no buffer address has been supplied, then merely print the block.
+! Note that we do this by saving away the global errors_on indicator,
+! calling ourself recursively, then restoring the indicator !
+!
+	IF parameter_address(buffer_adr) EQL 0 THEN
+	    BEGIN
+	    bind saved_indicator = .errors_on;
+	    errors_on = 1;
+	    status = vsta$get_error_block (
+		fixed_acp_error_block[0],
+		%ref (max_acp_error_block_len)
+		);
+	    errors_on = saved_indicator;
+	    RETURN .status
+	    END;
+!
+!
+! If the size specified is zero, then the caller
+! isn't serious
+!
+	IF parameter_value(buffer_size) LEQ 0 THEN
+	  BEGIN
+	    vsta$$delete_local_error();
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(buffer_size));
+	    lib_ret_err(vsta$_geterr);
+	  END;
+!
+! If the error status was generated locally, get the local error message
+! vector.
+!
+	IF .vsta$gl_local_error THEN
+	  BEGIN
+	    CH$MOVE(
+		MIN(..buffer_size,.local_msgvec_size),
+		.local_msgvec,
+		.buffer_adr);
+	    vsta$$delete_local_error();
+	  END
+	ELSE
+!
+! There's no local error.  If there's one available from the acp, we'll
+! use it.  If there's none from the acp yet, the caller is calling us
+! before any error has occurred, so give an error.
+!
+	    if .acp_error_exists
+	    then
+		ch$move (
+		    min (..buffer_size, max_acp_error_block_len),
+		    acp_error_block[0],
+		    .buffer_adr)
+	    else
+		BEGIN
+		external our_pid;
+		vstacall_init ();
+		lib_add_eerr (vsta$_nosucheb, integer_type, .our_pid);
+		lib_ret_err (vsta$_geterr)
+		END;
+!
+! Convert the block into a format readable by $PUTMSG from the relocatable
+! format
+!
+	IF (NOT (status = vsta$$unbuild_msgvec(
+					.buffer_adr,
+					..buffer_size))) THEN
+	  BEGIN
+	    vsta$$delete_local_error();
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_geterr);
+	  END;
+!
+! If error messages are turned on for this process, use $PUTMSG to display
+! the block.
+!
+	IF .errors_on THEN
+	  $PUTMSG( MSGVEC = .buffer_adr );
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! end of routine vsta$get_error_block
+
+
+%SBTTL 'vsta$set_default_protection -- Set Default SDA Object Protection'
+GLOBAL ROUTINE vsta$set_default_protection(
+			protection	!New default protection
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting up the new default SDA
+! object protection. This will override the current default protection
+! value and will remain in effect for this process until this routine is
+! explicitly called again with a different protection. Hence, it is
+! "process permenant."
+!
+! FORMAL PARAMETERS:
+!
+!	PROTECTION : Longword new default SDA object protection mask
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	prot_mask,				!Temp. storage for prot. mask
+	prot_desc: BLOCK[DSC$K_S_BLN,BYTE];	!Protection descriptor
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the parameter was defaulted in any way, shape, or color, then just
+! return (as setting the default to the default is already done).
+!
+	prot_mask = parameter_value(protection);
+	IF .prot_mask EQL 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! O.K. Its different. What does the user "really" want to set the protection
+! to?
+!
+	IF .prot_mask EQL vsta$k_unprotected THEN
+	  prot_mask = 0
+	ELSE
+	  prot_mask = .prot_mask AND %X'ffff';
+!
+! Change the value of our CLI symbol for default SDA object protection
+!
+	prot_desc[dsc$w_length] = 2;
+	prot_desc[dsc$b_dtype] = dsc$k_dtype_wu;
+	prot_desc[dsc$b_class] = dsc$k_class_sd;
+	prot_desc[dsc$a_pointer] = prot_mask;
+!
+	RETURN lib$set_symbol(
+			vsta$gq_prot_desc,
+			prot_desc,
+			%REF(lib$k_cli_global_sym));
+!
+    END;			! end of routine vsta$set_default_protection
+
+
+%SBTTL 'vsta$get_default_protection -- Get Default SDA Object Protection'
+GLOBAL ROUTINE vsta$get_default_protection(
+			protection	!Get default protection mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the default SDA
+! object protection mask and returning it to the caller. This will remain
+! in effect for this process until VSTA$SET_DEFAULT_PROTECTION is
+! explicitly called again with a different protection. Hence, it is
+! "process permenant."
+!
+! FORMAL PARAMETERS:
+!
+!	PROTECTION : Address for default SDA object protection mask
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LITERAL
+	sym_value_size = 2;			!Symbol value size
+
+    LOCAL
+	prot_len,				!Length of value return
+	prot_desc: BLOCK[dsc$k_s_bln,BYTE];	!Protection descriptor
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the parameter was defaulted in any way, shape, or color, then just
+! return. Otherwise, fill in with the default protection mask.
+!
+	IF parameter_address(protection) EQL 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! If we can get the symbol value, return that to caller
+!
+	prot_desc[dsc$w_length] = sym_value_size;
+	prot_desc[dsc$b_dtype] = dsc$k_dtype_wu;
+	prot_desc[dsc$b_class] = dsc$k_class_sd;
+	prot_desc[dsc$a_pointer] = .protection;
+
+!
+	IF lib$get_symbol(
+			vsta$gq_prot_desc,
+			prot_desc,
+			prot_len) THEN
+	  IF ..protection LEQ %X'ffff' THEN
+	    RETURN SS$_NORMAL;
+!
+! Something went wrong. Reestablish the default default protection and return
+! IT to the caller.
+!
+	.protection = vsta$k_default_protection;
+	vsta$set_default_protection(
+				%REF(vsta$k_default_protection));
+!
+	RETURN SS$_NORMAL;	! Return success indication
+    END;			! end of routine vsta$get_default_protection
+
+
+%SBTTL 'vsta$get_conversion_units -- Get number of pixels per centimeter'
+GLOBAL ROUTINE vsta$get_conversion_units(
+				MaxDevCoord_X,
+				MaxDevCoord_Y,
+				NumberOfDevCoord,
+				NumberOfCentimeters
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!
+!	     The   procedure   VSTA$GET_CONVERSION_UNITS   provides
+!	device-dependent  information  about the coordinates of the
+!	physical  screen  so  that program can convert centimeters,
+!	inches, points, or other device-independent units to device
+!	coordinates.
+!
+! FORMAL PARAMETERS:
+!
+!	     The  procedure  returns  two maximum device coordinate
+!	values  and  two  conversion values. The two maximum values
+!	specify  the horizontal device coordinates and the vertical
+!	device coordinates. One conversion value is in centimeters,
+!	the  other  in  device coordinates. The centimeter value is
+!	the smallest number of centimeters that is equivalent to an
+!	integral  number  of  device  coordinate  units. The device
+!	coordinate  value  is the value is the corresponding number
+!	of device coordinates
+!	
+!	Where          
+!	
+!	      MaxDevCoord-X    is the address of an integer variable in  which
+!	                       the  maximum  horizontal  device  coordinate is
+!	                       returned.
+!	
+!	      MaxDevCoord-Y    is the address of an integer variable in  which
+!	                       the   maximum  vertical  device  coordinate  is
+!	                       returned.
+!	
+!	      NumberOfDevCoord is the address of an integer variable in  which
+!	                       the  device  coordinate  conversion  factor  is
+!	                       returned.
+!	
+!	      NumberOfCentimeters
+!	                       is the address of an integer variable in  which
+!	                       the centimeter conversion factor is returned.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		! Successful return
+!	VSTA$_GETCNV		! Get conversion units failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+
+! These values are estimates and are hard coded for Onyx
+
+IF parameter_address(MaxDevCoord_X) NEQ 0 THEN
+	.MaxDevCoord_X = 1088;
+IF parameter_address(MaxDevCoord_Y) NEQ 0 THEN
+	.MaxDevCoord_Y = 1088;
+IF parameter_address(NumberOfDevCoord) NEQ 0 THEN
+	.NumberOfDevCoord = 3070;
+IF parameter_address(NumberOfCentimeters) NEQ 0 THEN
+	.NumberOfCentimeters = 307;
+
+	RETURN SS$_NORMAL;
+    END;			! end of routine vsta$get_conversion_units
+
+
+%SBTTL 'vsta$create_pasteboard -- Create Pasteboard'
+GLOBAL ROUTINE vsta$create_pasteboard(
+			width,		!Width of pasteboard
+			height,		!Height of pasteboard
+			pb_id,		!Returned pasteboard ID
+			vkb_flag,	!Create virtual keyboard?
+			vtb_flag,	!Create virtual tablet?
+			perm_flag,	!Permenant PB?
+			protection	!Pasteboard protection
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating pasteboards, the entity
+! which provides the mechanism for spatially relating virtual displays and
+! windows. They are an abstract entity which appear limitless in size to the
+! application program, but must exist to provide a universe for the virtual
+! displays and windows.
+!	This routine creates the pasteboard and returns an identifying number
+! that is unique across the system. The procedure also sets the following
+! standards (which can later be altered):
+!		1. The color lookup table
+!		2. Color number 1 is used as the standard pasteboard color
+!		   number.
+!		3. The standard for defining colors is set to the
+!		   Hue/Lightness/Saturation (HLS) method.
+!
+! FORMAL PARAMETERS:
+!
+!	WIDTH	 : Address of word width of pasteboard
+!		 	(input parameter)
+!	HEIGHT	 : Address of word height of pasteboard
+!		 	(input parameter)
+!	PB_ID	 : Address to contain unique pasteboard ID
+!		 	(output parameter)
+!	VKB_FLAG : Address of create virtual keyboard flag
+!		 	(input parameter)
+!	VTB_FLAG : Address of create virtual tablet flag
+!		 	(input parameter)
+!	PERM_FLAG : Address of permenance flag
+!		 	(input parameter)
+!	PROTECTION : Address of longword pasteboard protection mask
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREPBD		!Pasteboard create failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	prot_mask,			!Temp. storage for prot. mask
+	pb_flags: INITIAL(0),		!Longword of pb flag bits
+	pb_iosb: VECTOR[2,LONG],	!I/O status block for $QIO
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crepbd);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate create_pasteboard
+! function codes and wait for response
+!
+	IF (parameter_value(vkb_flag) AND 1) NEQ 0 THEN
+	  pb_flags = .pb_flags OR vs$m_vkb;
+!
+	IF (parameter_value(vtb_flag) AND 1) NEQ 0 THEN
+	  pb_flags = .pb_flags OR vs$m_vtb;
+!
+	IF (parameter_value(perm_flag) AND 1) NEQ 0 THEN
+	  pb_flags = .pb_flags OR vs$m_perm_pb;
+!
+	prot_mask = parameter_value(protection);
+	IF .prot_mask EQL 0 THEN
+	  vsta$get_default_protection(prot_mask)
+	ELSE
+	  IF .prot_mask EQL vsta$k_unprotected THEN
+	    prot_mask  = 0;
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_PB,
+			IOSB = pb_iosb,
+			P2   = .pb_flags,
+			P3   = vsta$k_default_pb_color,
+			P4   = parameter_value(width),
+			P5   = parameter_value(height),
+			P6   = .prot_mask
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crepbd);
+	  END;
+!
+! Return pasteboard ID to calling routine
+!
+	IF parameter_address(pb_id) NEQ 0 THEN
+	  .pb_id = .pb_iosb[1];
+!
+	RETURN .pb_iosb[0];
+    END;			! end of routine vsta$create_pasteboard
+
+
+%SBTTL 'vsta$read_virtual_keyboard -- Read from a Pasteboard'
+GLOBAL ROUTINE vsta$read_virtual_keyboard(
+			pb_id,		!Pasteboard ID
+			buffer_size,	!Input buffer size (in bytes)
+			buffer,		!Input buffer address
+			wait_flag,	!Read with wait or not
+			efn,		!Event flag number (0 default)
+			iosb,		!I/O status block address
+			astadr,		!AST routine address
+			astprm,		!AST routine parameter
+			timeout,	!Read timeout (seconds)
+			modifiers,	!Read function modifiers
+			terminator	!Read terminator code
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for reading from pasteboards, the entity
+! which provides the mechanism for spatially relating virtual displays and
+! windows. They are an abstract entity which appear limitless in size to the
+! application program, but must exist to provide a universe for the virtual
+! displays and windows and to be their virtual input device.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID	    : Address of unique pasteboard ID
+!		 	(input parameter)
+!	BUFFER_SIZE : Address of input buffer size
+!		 	(input parameter)
+!	BUFFER	    : Address of input buffer
+!		 	(input parameter)
+!	WAIT_FLAG   : Address of wait indicator (0 => No wait, 1 => Wait)
+!		 	(input parameter)
+!	EFN	    : Address of event flag number to set on completion of I/O
+!		 	(input parameter)
+!	IOSB	    : Address of I/O status block
+!		 	(input parameter)
+!	ASTADR	    : Address of AST routine to invoke on completion of I/O
+!		 	(input parameter)
+!	ASTPRM	    : Address of AST parameter to pass on completion of I/O
+!		 	(input parameter)
+!	TIMEOUT	    : Address of read timeout in seconds
+!		 	(input parameter)
+!	MODIFIERS   : Address of read function modifiers
+!		 	(input parameter)
+!	TERMINATOR  : Address of read termination code
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_REAKEY		!Read virtual keyboard failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	event_flag,			!Temp. storage for event flag
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_reakey);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate read_pasteboard
+! function codes
+!
+	IF NOT (status = $QIO(
+			EFN    = (event_flag = parameter_value(efn)),
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_READ_VKB + 
+				 parameter_value(modifiers),
+			ASTADR = parameter_address(astadr),
+			ASTPRM = parameter_value(astprm),
+			IOSB   = parameter_address(iosb),
+			P1     = parameter_address(buffer),
+			P2     = parameter_value(buffer_size),
+			P3     = parameter_value(timeout),
+			P4     = parameter_address(terminator),
+			P5     = parameter_value(pb_id))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_reakey);
+	  END;
+!
+! If we are supposed to wait, then wait
+!
+	IF (parameter_value(wait_flag) AND 1) NEQ 0 THEN
+	  $WAITFR( EFN = .event_flag );
+!
+	RETURN SS$_NORMAL;
+    END;			! end of routine vsta$read_virtual_keyboard
+
+
+%SBTTL 'vsta$cancel_read -- Cancel Read on a Pasteboard'
+GLOBAL ROUTINE vsta$cancel_read(
+			pb_id		!Pasteboard ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cancelling reads on pasteboards, the
+! entity which provides the mechanism for spatially relating virtual displays
+! and windows. They are an abstract entity which appear limited in size to the
+! application program, but must exist to provide a universe for the virtual
+! displays and windows and to be their virtual input device.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID	    : Address of unique pasteboard ID
+!		 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CANREA		!Read cancellation failure
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	iosb: VECTOR[2],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_canrea);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate cancel read_pasteboard
+! function codes
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_READ_VKB + IO$M_VD_CANCEL,
+			IOSB   = iosb,
+			P5     = parameter_value(pb_id)))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_canrea);
+	  END;
+!
+	RETURN .iosb[0];	! Return status from ACP
+    END;			! end of routine vsta$cancel_read
+
+
+%SBTTL 'vsta$set_virtual_keyboard_mode -- Set VKB Mode'
+GLOBAL ROUTINE vsta$set_virtual_keyboard_mode(
+			pb_id,			!Pasteboard ID
+			mod_states_mask,	!Mask of states to modify
+			new_states_mask		!Mask of new states settings
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting certain characteristics of
+! virtual keyboards. Since you cannot send an escape sequence to a virtual
+! keyboard (but only to an emulated terminal), this routine allows the
+! caller to change these modes for the virtual keyboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of unique pasteboard ID
+!			 	(input parameter)
+!	MOD_STATES_MASK   : Address of longword mask of settings to be altered
+!			 	(input parameter)
+!	NEW_STATES_MASK   : Address of longword mask of new bit settings
+!			 	(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETKEM		!Set keyboard mode failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	iosb: VECTOR[2,LONG],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setkem);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate modify_virtual_keyboard
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_MODIFY + IO$M_VKB,
+			IOSB   = iosb,
+			P3     = parameter_value(pb_id),
+			P5     = parameter_value(mod_states_mask),
+			P6     = parameter_value(new_states_mask)))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setkem);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$set_virtual_keyboard_mode
+
+
+%SBTTL 'vsta$set_virtual_keyboard_tran -- Set VKB Translation Table'
+GLOBAL ROUTINE vsta$set_virtual_keyboard_tran(
+			pb_id,			!Pasteboard ID
+			translation_table	!New translation table
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting certain characteristics of
+! virtual keyboards. This is the only mechanism for changing the translation
+! table currently being used to translate Up-down unencoded to ascii for this
+! virtual keyboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of unique pasteboard ID
+!			 	(input parameter)
+!	TRANSLATION_TABLE : Address of longword translation table identifier
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETKET		!Set keyboard translation table failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	iosb: VECTOR[2,LONG],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setket);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate modify_virtual_keyboard
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_MODIFY + IO$M_VKB + IO$M_TRANS_TABLE,
+			IOSB   = iosb,
+			P3     = parameter_value(pb_id),
+			P4     = parameter_value(translation_table)))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setket);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$set_virtual_keyboard_tran
+
+
+%SBTTL 'vsta$set_virtual_keyboard_char -- Set VKB Characteristics'
+GLOBAL ROUTINE vsta$set_virtual_keyboard_char(
+			pb_id,			!Pasteboard ID
+			new_char		!Terminal-type characteristics
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting certain characteristics of
+! virtual keyboards. This is the only mechanism for changing the terminal-type
+! settings for a native keyboard as defined by $TTDEF.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of unique pasteboard ID
+!			 	(input parameter)
+!	NEW_CHAR	  : Address of longword characteristics
+!		 		(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETKEY		!Set keyboard characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	iosb: VECTOR[2,LONG],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setkey);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate modify_virtual_keyboard
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_MODIFY + IO$M_VKB + IO$M_VKB_CHAR,
+			IOSB   = iosb,
+			P2     = parameter_value(new_char),
+			P3     = parameter_value(pb_id)))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setkey);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$set_virtual_keyboard_char
+
+
+%SBTTL 'vsta$get_virtual_keyboard_mode -- Get VKB Mode'
+GLOBAL ROUTINE vsta$get_virtual_keyboard_mode(
+			pb_id,			!Pasteboard ID
+			states_mask,		!Mask of states settings
+			trans_table,		!Current translation table
+			char_mask		!Current characteristics
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting current characteristics of
+! virtual keyboards. Since you cannot send an escape sequence to a virtual
+! keyboard (but only to an emulated terminal), this routine allows the
+! caller to inquire these modes for the virtual keyboard.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID		  : Address of unique pasteboard ID
+!			 	(input parameter)
+!	STATES_MASK       : Address for longword mask of bit settings
+!			 	(output parameter)
+!	TRANS_TABLE	  : Address for longword translation table indicator
+!			 	(output parameter)
+!	CHAR_MASK	  : Address for longword characteristic bit settings
+!			 	(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETKEY		!Get keyboard mode failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	vkb_char: BLOCK[vsu$s_vsudependent,BYTE],
+					!VKB characteristics buffer
+	iosb: VECTOR[2,LONG],		!I/O status block
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getkey);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate modify_virtual_keyboard
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN   = .dummy_chan,
+			FUNC   = IO$_ACCESS + IO$M_VKB,
+			IOSB   = iosb,
+			P1     = vkb_char,
+			P2     = vsu$s_vsudependent,
+			P3     = parameter_value(pb_id)))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getkey);
+	  END;
+!
+	IF parameter_address(states_mask) NEQ 0 THEN
+	  .states_mask = .vkb_char[vsu$l_vkb_state_bits];
+	IF parameter_address(trans_table) NEQ 0 THEN
+	  .trans_table = .vkb_char[vsu$l_vkb_trans_table];
+	IF parameter_address(char_mask) NEQ 0 THEN
+	  .char_mask = .vkb_char[vsu$l_vkb_devdepend];
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$get_virtual_keyboard_mode
+
+
+
+%SBTTL 'vsta$set_pasteboard_colornumber -- Set Pasteboard Colornumber'
+GLOBAL ROUTINE vsta$set_pasteboard_colornumber(
+			pb_id,		!Pasteboard ID
+			pb_colornumber	!Paseboard colornumber longword
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting pasteboard colornumber
+! the entity which provides the mechanism for spatially relating virtual
+! displays and windows. They are an abstract entity which appear limitless in
+! size to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or sets the colornumber of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID           : Longword unique pasteboard ID
+!				(input parameter)
+!	PB_COLORNUMBER  : Longword pasteboard colornumber
+!				(input parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETPBC		!Set pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	pb_info: BLOCK[vsu$s_vsudependent,BYTE],!Pasteboard characteristics
+	pb_iosb: VECTOR[2,LONG],		!I/O status block for $QIO
+	color_in,				!convert user color input 
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACCESS+IO$M_PB,
+			IOSB = pb_iosb,
+			P1   = pb_info,
+			P2   = vsu$s_vsudependent,
+			P3   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+	IF NOT .pb_iosb[0] THEN
+	  RETURN .pb_iosb[0];
+!
+! Change the current pasteboard color and send it back
+!
+!	convert the user input color code 
+	VSTA$$CONVERT_COLOR_FROM_USER(
+			parameter_value(pb_colornumber), color_in); 
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_MODIFY+IO$M_PB,
+			IOSB = pb_iosb,
+			P3   = parameter_value(pb_id),
+			P5   = .color_in,
+			P6   = .pb_info[vsu$w_pb_protection]
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Pasteboard color has been modified
+!
+	RETURN .pb_iosb[0];
+    END;			! End of routine vsta$set_pasteboard_colornumber
+
+
+%SBTTL 'vsta$set_pasteboard_protection -- Set Pasteboard Protection'
+GLOBAL ROUTINE vsta$set_pasteboard_protection(
+			pb_id,		!Pasteboard ID
+			protection	!Paseboard protection mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting pasteboard protection,
+! the entity which provides the mechanism for spatially relating virtual
+! displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or sets the protection of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID           : Longword unique pasteboard ID
+!				(input parameter)
+!	PROTECTION	: Longword pasteboard protection mask
+!				(input parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETPBP		!Set pasteboard protection failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	pb_info: BLOCK[vsu$s_vsudependent,BYTE],!Pasteboard characteristics
+	pb_iosb: VECTOR[2,LONG],		!I/O status block for $QIO
+	prot_mask,				!Temp. storage for prot. mask
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbp);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACCESS+IO$M_PB,
+			IOSB = pb_iosb,
+			P1   = pb_info,
+			P2   = vsu$s_vsudependent,
+			P3   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbp);
+	  END;
+!
+	IF NOT .pb_iosb[0] THEN
+	  RETURN .pb_iosb[0];
+!
+! Compute the protection the caller really wants to use and if its the same
+! as the current pasteboard protection anyway, we're done
+!
+	prot_mask = parameter_value(protection);
+	IF .prot_mask EQL 0 THEN
+	  vsta$get_default_protection(prot_mask)
+	ELSE
+	  IF .prot_mask EQL vsta$k_unprotected THEN
+	    prot_mask = 0;
+!
+	IF .prot_mask EQL .pb_info[vsu$w_pb_protection] THEN
+	  RETURN SS$_NORMAL;
+!
+! Change the current pasteboard protection and send it back
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_MODIFY+IO$M_PB,
+			IOSB = pb_iosb,
+			P3   = parameter_value(pb_id),
+			P5   = .pb_info[vsu$w_pb_color],
+			P6   = .prot_mask
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbp);
+	  END;
+!
+! Pasteboard protection has been modified
+!
+	RETURN .pb_iosb[0];
+    END;			! End of routine vsta$set_pasteboard_protection
+
+
+%SBTTL 'vsta$get_pasteboard_char -- Get Pasteboard Information'
+GLOBAL ROUTINE vsta$get_pasteboard_char(
+		pb_id,				!Pasteboard ID
+		width,				!Pasteboard width
+		height,				!Pasteboard height
+		pb_colornumber,			!Paseboard colornumber longword
+		vkb_flag,			!Virtual keyboard?
+		vtb_flag,			!Virtual tablet?
+		perm_flag,			!Permenant PB?
+		protection			!Pasteboard protection mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the pasteboard color and size,
+! the entity which provides the mechanism for spatially relating virtual
+! displays and windows. They are an abstract entity which appear limitless in
+! size to the application program but must exist to provide a universe for
+! virtual displays and windows.
+!	This routine searches for this pasteboard ID and either returns an
+! error or gets the colornumber and size of the pasteboard located.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID           : Longword unique pasteboard ID
+!				(input parameter)
+!	WIDTH		: Address to contain pasteboard width
+!				(output parameter)
+!	HEIGHT		: Address to contain pasteboard height
+!				(output parameter)
+!	PB_COLORNUMBER  : Address to contain pasteboard colornumber
+!				(output parameter)
+!	VKB_FLAG 	: Address for create virtual keyboard flag
+!		 		(output parameter)
+!	VTB_FLAG 	: Address for create virtual tablet flag
+!		 		(output parameter)
+!	PERM_FLAG 	: Address for permenance flag
+!		 		(output parameter)
+!	PROTECTION	: Address to contain pasteboard protection mask
+!				(output parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETPBD		!Get pasteboard characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	pb_info: BLOCK[vsu$s_vsudependent,BYTE],!PB information block
+	pb_iosb: VECTOR[2,LONG],		!I/O status block for $QIO
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes and wait for response
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACCESS+IO$M_PB,
+			IOSB = pb_iosb,
+			P1   = pb_info,
+			P2   = vsu$s_vsudependent,
+			P3   = parameter_value(pb_id)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Pass pasteboard data back to caller
+!
+	IF parameter_address(pb_colornumber) NEQ 0 THEN
+	  VSTA$$CONVERT_COLOR_TO_USER(
+	   .pb_info[vsu$w_pb_color], .pb_colornumber);
+	IF parameter_address(width) NEQ 0 THEN
+	  .width = .pb_info[vsu$w_pb_width];
+	IF parameter_address(height) NEQ 0 THEN
+	  .height = .pb_info[vsu$w_pb_height];
+	IF parameter_address(vkb_flag) NEQ 0 THEN
+	  .vkb_flag = .pb_info[vsu$l_pb_flags] AND vs$m_vkb;
+	IF parameter_address(vtb_flag) NEQ 0 THEN
+	  .vtb_flag = .pb_info[vsu$l_pb_flags] AND vs$m_vtb;
+	IF parameter_address(perm_flag) NEQ 0 THEN
+	  .perm_flag = .pb_info[vsu$l_pb_flags] AND vs$m_perm_pb;
+	IF parameter_address(protection) NEQ 0 THEN
+	  .protection = .pb_info[vsu$w_pb_protection];
+!
+! Pasteboard color has been retrieved
+!
+	RETURN .pb_iosb[0];
+    END;		! End of routine vsta$get_pasteboard_char
+
+
+%SBTTL 'vsta$paste_pasteboard -- Paste Pasteboard to a Pasteboard'
+GLOBAL ROUTINE vsta$paste_pasteboard(
+			top_pb_id,		!Pasteboard to be pasted
+			bottom_pb_id,		!Pasteboard to be pasted to
+			x_coor,			!X-coordinate on pasteboard
+			y_coor			!Y-coordinate on pasteboard
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "paste" or associate a pasteboard to another
+! previously created pasteboard. The pasteboard being pasted must be the
+! same size or smaller than the pasteboard being pasted to. The same
+! pasteboard cannot appear more than once in the stacking order, but a
+! pasteboard may be pasted on any number of other pasteboards, making what
+! is visible on it potentially visible on the pasteboard being pasted to.
+!
+! FORMAL PARAMETERS:
+!
+!	TOP_PB_ID	: Longword pasteboard ID of pasteboard being pasted
+!				(input parameter)
+!	BOTTOM_PB_ID    : Longword ID of the pasteboard to be attached to
+!				(input parameter)
+!	X_COOR          : Longword X-coordinate on BOTTOM_PB_ID
+!				(input parameter)
+!	Y_COOR          : Longword Y-coordinate on BOTTOM_PB_ID
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_PASPBD		!Paste pasteboard failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display since this pasteboard
+! will occlude anything beneath it which was previously visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	dummy_chan,			 !Dummy channel for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_paspbd);
+	  END;
+!
+! Paste the pasteboard. Use this channel number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACPCONTROL+IO$M_CREATE+IO$M_PB,
+		IOSB = iosb,
+		P2   = VS$K_NORMAL,
+		P3   = parameter_value(top_pb_id),
+		P4   = parameter_value(bottom_pb_id),
+		P5   = parameter_value(x_coor),
+		P6   = parameter_value(y_coor)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_paspbd);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$paste_pasteboard
+
+
+
+%SBTTL 'vsta$remove_pasteboard -- Remove a Pasteboard from a Pasteboard'
+GLOBAL ROUTINE vsta$remove_pasteboard(
+			top_pb_id,	!Pasteboard ID being unpasted
+			bottom_pb_id	!Unique pasteboard ID to unpaste from
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "unpaste" or disassociate a pasteboard from another
+! pasteboard. Windows on BOTTOM_PB_ID will no longer reflect changes to
+! TOP_PB_ID and anything previously occluded by TOP_PB_ID will be potentially
+! visible.
+!
+! FORMAL PARAMETERS:
+!
+!	TOP_PB_ID    : Longword pasteboard ID to be unpasted
+!				(input parameter)
+!	BOTTOM_PB_ID : Longword unique ID of the pasteboard to be unpasted from
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_REMPBD		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen if any part of this
+! top pasteboard was previously visible in windows on the bottom pasteboard.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	dummy_chan,			 !Dummy channel for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_rempbd);
+	  END;
+!
+! Remove the pasteboard using this dummy channel
+! number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACPCONTROL+IO$M_DELETE+IO$M_PB,
+		IOSB = iosb,
+		P3   = parameter_value(top_pb_id),
+		P4   = parameter_value(bottom_pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_rempbd);
+	  END;
+!
+	RETURN .iosb[0];	! Return status value
+    END;			! end of routine vsta$remove_pasteboard
+
+
+%SBTTL 'vsta$delete_pasteboard -- Delete Pasteboard'
+GLOBAL ROUTINE vsta$delete_pasteboard(
+			pb_id		!Unique pasteboard ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting pasteboards, the entity
+! which provides the mechanism for spatially relating virtual displays and
+! windows. They are an abstract entity which appear limitless in size to the
+! application program, but must exist to provide a universe for the virtual
+! displays and windows.
+!	This routine detaches all terminals, deletes all virtual displays and
+! windows associated with a pasteboard, and deletes the pasteboard.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be deleted
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELPBD		!Delete pasteboard failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen and to the spatial
+! relationship between any existing virtual displays previously pasted to
+! this pasteboard and other virtual displays.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delpbd);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes and wait for response
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_PB,
+			IOSB = pb_iosb,
+			P3   = parameter_value(pb_id)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delpbd);
+	  END;
+!
+! Pasteboard has been deleted
+!
+	RETURN .pb_iosb[0];
+    END;			! end of routine vsta$delete_pasteboard
+
+
+%SBTTL 'vsta$set_color_specification -- Set Pasteboard Color Specification'
+GLOBAL ROUTINE vsta$set_color_specification(
+			colorspec		!Color specification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the standard pasteboard
+! color specification for ALL pasteboards. This procedure allows the
+! selection of either RGB or HLS for color standard, but HLS is the default
+! if this routine is never called.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	COLORSPEC : Longword standard color specification for pasteboards
+!		    where 0 => RBG and 1 => HSL.
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETPBC		!Set pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen depending on its
+! previous standard color specification and if any part of a pasteboard is
+! visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	color_spec,			 !Temporary storage for color spec.
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes and wait for response
+!
+	color_spec = parameter_value(colorspec);
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_MODIFY+IO$M_PB,
+		IOSB = pb_iosb,
+		P4   = .color_spec
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+	IF .pb_iosb[0] THEN
+	  impure_area[vsta$l_color_spec] = .color_spec;
+!
+! Standard pasteboard color specification has been modified
+!
+	RETURN .pb_iosb[0];
+    END;			! end of routine vsta$set_color_specification
+
+
+%SBTTL 'vsta$set_colors -- Set Pasteboard Colors'
+ROUTINE vsta$set_colors(
+			pb_id,			!Unique pasteboard ID
+			first_color_no,		!First color number
+			last_color_no,		!Last color number
+			colors: REF VECTOR
+						!Color specification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting up this pasteboard's color
+! lookup table.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID	       : Longword unique pasteboard ID
+!				(input parameter)
+!	FIRST_COLOR_NO : Longword starting color number to be set
+!				(input parameter)
+!	LAST_COLOR_NO  : Longword ending color number to be set
+!				(input parameter)
+!	COLORS	       : Address of block containing portion of color
+!			 lookup table
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETPBC		!Set pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen depending on the
+! pasteboard's previous color lookup table and if any part of a pasteboard is
+! visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_color_info: VECTOR[vs$vds_k_color_table_size + 1],
+					 !Temporary storage for PB info block
+	dummy_chan,			 !Temporary storage for channel no.
+	my_pb_id,			 !Temporary storage for PB_ID
+	first_color,			 !Temporary storage for first color
+	last_color,			 !Temporary storage for last color
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+	IF parameter_address(colors) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(colors));
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to get the current pasteboard color lookup table (with
+! some other information that we're not interested in).
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACCESS+IO$M_PB,
+		IOSB = pb_iosb,
+		P1   = pb_color_info,
+		P2   = (vs$vds_k_color_table_size + 1) * 4,
+		P3   = (my_pb_id = parameter_value(pb_id))
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+	IF NOT .pb_iosb[0] THEN
+	  RETURN .pb_iosb[0];
+!
+! Modify the color lookup table portion of the pasteboard data received
+! according to portion of new table supplied by the caller.
+!
+	first_color = parameter_value(first_color_no);
+	last_color  = parameter_value(last_color_no);
+	CH$MOVE(
+		((.last_color - .first_color) + 1) * 4,
+		colors[.first_color],
+		pb_color_info[.first_color + 1]);
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to modify the pasteboard color info and wait for response.
+!
+	IF (NOT (status = VSTA$QIOW(
+				CHAN = .dummy_chan,
+				FUNC = IO$_MODIFY+IO$M_PB,
+				IOSB = pb_iosb,
+				P1   = pb_color_info[1],
+				P2   = (vs$vds_k_color_table_size) * 4,
+				P3   = .my_pb_id,
+				P4   = .impure_area[vsta$l_color_spec],
+				P5   = .pb_color_info[0]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Pasteboard color lookup table has been modified
+!
+	RETURN .pb_iosb[0];
+    END;			! end of routine vsta$set_colors
+
+
+%SBTTL 'vsta$get_colors -- Inquire Pasteboard Colors'
+ROUTINE vsta$get_colors(
+			pb_id,			!Unique pasteboard ID
+			first_color_no,		!First color number
+			last_color_no,		!Last color number
+			colors: REF VECTOR
+						!Color specification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting this pasteboard's color
+! lookup table and returning it to the calling routine.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID	       : Longword unique pasteboard ID
+!				(input parameter)
+!	FIRST_COLOR_NO : Longword starting color number to get
+!				(input parameter)
+!	LAST_COLOR_NO  : Longword ending color number to get
+!				(input parameter)
+!	COLORS	       : Address of block to contain portion of color
+!			 lookup table
+!				(output parameter)
+!   NOTE: This routine copies the desired entries from the pasteboard's color
+!	  lookup table into the caller's space starting at
+!	  COLORS + (FIRST_COLOR_NO*4) and NOT at COLORS. This is to facsilitate
+!	  the copying of poritons of one pasteboard's color lookup table into
+!	  anothers.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETPBD		!Get pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_color_info: VECTOR[vs$vds_k_color_table_size + 1],
+					 !Temporary storage for PB info block
+	dummy_chan,			 !Temporary storage for channel no.
+	first_color,			 !Temporary storage for first color
+	last_color,			 !Temporary storage for last color
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+	IF parameter_address(colors) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(colors));
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to get the current pasteboard color lookup table (with
+! some other information that we're not interested in).
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACCESS+IO$M_PB,
+		IOSB = pb_iosb,
+		P1   = pb_color_info,
+		P2   = (vs$vds_k_color_table_size + 1) * 4,
+		P3   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Copy the color lookup table portion of the pasteboard data received
+! according to portion of table requested by the caller.
+!
+	IF .pb_iosb[0] THEN
+	  BEGIN
+	    first_color = parameter_value(first_color_no);
+	    last_color  = parameter_value(last_color_no);
+	    CH$MOVE(
+		((.last_color - .first_color) + 1) * 4,
+		pb_color_info[.first_color + 1],
+		colors[.first_color]);
+	  END;
+!
+! Pasteboard color lookup table has been retrieved
+!
+        RETURN .pb_iosb[0];
+    END;			! end of routine vsta$get_colors
+
+
+
+%SBTTL 'vsta$set_single_color -- Set Single Pasteboard Color'
+ROUTINE vsta$set_single_color(
+			pb_id,			!Unique pasteboard ID
+			color_no,		!Color number
+			color_spec		!Color specification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting a single color entry in
+! this pasteboard's color lookup table.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID      : Longword unique pasteboard ID
+!			(input parameter)
+!	COLOR_NO   : Longword color number to be set
+!			(input parameter)
+!	COLOR_SPEC : Longword containing color specification table entry
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETPBC		!Set pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen depending on the
+! pasteboard's previous color lookup table and if any part of a pasteboard is
+! visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_color_info: VECTOR[vs$vds_k_color_table_size + 1],
+					 !Temporary storage for PB info block
+	dummy_chan,			 !Temporary storage for channel no.
+	my_pb_id,			 !Temporary storage for PB_ID
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to get the current pasteboard color lookup table (with
+! some other information that we're not interested in).
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACCESS+IO$M_PB,
+		IOSB = pb_iosb,
+		P1   = pb_color_info,
+		P2   = (vs$vds_k_color_table_size + 1) * 4,
+		P3   = (my_pb_id = parameter_value(pb_id))
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+	IF NOT .pb_iosb[0] THEN
+	  RETURN .pb_iosb[0];
+!
+! Modify the color lookup table entry of the pasteboard data received
+! according to the new entry supplied by the caller.
+!
+	pb_color_info[parameter_value(color_no) + 1]
+			= parameter_value(color_spec);
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to modify the pasteboard color info and wait for response.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_MODIFY+IO$M_PB,
+			IOSB = pb_iosb,
+			P1   = pb_color_info[1],
+			P2   = vs$vds_k_color_table_size*4,
+			P3   = .my_pb_id,
+			P4   = .impure_area[vsta$l_color_spec],
+			P5   = .pb_color_info[0]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setpbc);
+	  END;
+!
+! Pasteboard color lookup table has been modified
+!
+	RETURN .pb_iosb[0];
+    END;			! end of routine vsta$set_single_color
+
+
+%SBTTL 'vsta$get_single_color -- Inquire Single Pasteboard Color'
+ROUTINE vsta$get_single_color(
+			pb_id,			!Unique pasteboard ID
+			color_no,		!Color number
+			color_spec		!Color specification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting a single color entry in
+! this pasteboard's color lookup table.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID      : Longword unique pasteboard ID
+!			(input parameter)
+!	COLOR_NO   : Longword color number to be set
+!			(input parameter)
+!	COLOR_SPEC : Address to contain color specification entry
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETPBD		!Get pasteboard color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pb_color_info: VECTOR[vs$vds_k_color_table_size + 1],
+					 !Temporary storage for PB info block
+	dummy_chan,			 !Temporary storage for channel no.
+	pb_iosb: VECTOR[2,LONG],	 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+	IF parameter_address(color_spec) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(color_spec));
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate pasteboard modifier
+! function codes to get the current pasteboard color lookup table (with
+! some other information that we're not interested in).
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACCESS+IO$M_PB,
+			IOSB = pb_iosb,
+			P1   = pb_color_info,
+			P2   = (vs$vds_k_color_table_size + 1) * 4,
+			P3   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getpbd);
+	  END;
+!
+! Copy the color lookup table entry of the pasteboard data received
+! according to the entry in the table requested by the caller.
+!
+	IF .pb_iosb[0] THEN
+	  .color_spec = .pb_color_info[parameter_value(color_no) + 1];
+!
+! Pasteboard color lookup table has been retrieved
+!
+        RETURN .pb_iosb[0];
+    END;			! end of routine vsta$get_single_color
+
+
+%SBTTL 'vsta$create_window -- Create Window'
+GLOBAL ROUTINE vsta$create_window(
+			length,		!Length of window
+			height,		!Height of window
+			pb_id,		!Pasteboard ID
+			x_coor,		!X coordinate,
+			y_coor,		!Y coordinate,
+			w_id,		!Window ID returned
+			name_desc	!Window name ascii descriptor addr.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating windows, the entity
+! which provides the mechanism for viewing virtual displays and terminals
+! on a pasteboard. They are an abstract entity with coordinates and size with
+! respect to the pasteboard, and must exist to provide the mapping to
+! viewports on the virtual screen which are potentially visible to the user
+! through a physical screen.
+!	This routine creates the window in the specified location and returns
+! an ID which is unique across the entire system. The window name is intended
+! to be descriptive in nature to enable the user at the human interface to
+! choose which windows are to be mapped onto his/her display.
+!
+! FORMAL PARAMETERS:
+!
+!	LENGTH    : Length of window in PB
+!			(input parameter)
+!	HEIGHT    : Height of window in PB
+!			(input parameter)
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	X_COOR    : X coordinate of window in PB
+!			(input parameter)
+!	Y_COOR    : Y coordinate of window in PB
+!			(input parameter)
+!	W_ID      : Address to contain unique Window ID
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREWIN		!Create window failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	temp_width,			!Temporary storage for width
+	temp_height,			!Temporary storage for height
+	w_iosb: VECTOR[2,LONG],		!I/O status block for $QIO
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crewin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate create_window
+! function codes and wait for response
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_W,
+			IOSB = w_iosb,
+			P1   = parameter_address(name_desc),
+			P2   = parameter_value(pb_id),
+			P3   = parameter_value(x_coor),
+			P4   = parameter_value(y_coor),
+			P5   = parameter_value(length),
+			P6   = parameter_value(height)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crewin);
+	  END;
+!
+! Window has been created. Return window ID to calling routine
+!
+	IF parameter_address(w_id) NEQ 0 THEN
+	  .w_id = .w_iosb[1];
+!
+	RETURN .w_iosb[0];		 !Status return value
+    END;			! End of routine vsta$create_window
+
+
+
+
+
+%SBTTL 'vsta$create_native_window -- Create Window'
+GLOBAL ROUTINE vsta$create_native_window(
+			length,		!Length of window
+			height,		!Height of window
+			pb_id,		!Pasteboard ID
+			x_coor,		!X coordinate,
+			y_coor,		!Y coordinate,
+			w_id,		!Window ID returned
+			name_desc	!Window name ascii descriptor addr.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating windows, the entity
+! which provides the mechanism for viewing virtual displays and terminals
+! on a pasteboard. They are an abstract entity with coordinates and size with
+! respect to the pasteboard, and must exist to provide the mapping to
+! viewports on the virtual screen which are potentially visible to the user
+! through a physical screen.
+!	This routine creates the window in the specified location and returns
+! an ID which is unique across the entire system. The window name is intended
+! to be descriptive in nature to enable the user at the human interface to
+! choose which windows are to be mapped onto his/her display.
+!
+! FORMAL PARAMETERS:
+!
+!	LENGTH    : Length of window in PB
+!			(input parameter)
+!	HEIGHT    : Height of window in PB
+!			(input parameter)
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	X_COOR    : X coordinate of window in PB
+!			(input parameter)
+!	Y_COOR    : Y coordinate of window in PB
+!			(input parameter)
+!	W_ID      : Address to contain unique Window ID
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREWIN		!Create window failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			!Temporary storage for channel number
+	temp_width,			!Temporary storage for width
+	temp_height,			!Temporary storage for height
+	w_iosb: VECTOR[2,LONG],		!I/O status block for $QIO
+	status;				!To hold return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crewin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate create_window
+! function codes and wait for response
+!
+	IF NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_SW,
+			IOSB = w_iosb,
+			P1   = parameter_address(name_desc),
+			P2   = parameter_value(pb_id),
+			P3   = parameter_value(x_coor),
+			P4   = parameter_value(y_coor),
+			P5   = parameter_value(length),
+			P6   = parameter_value(height)
+				)) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crewin);
+	  END;
+!
+! Window has been created. Return window ID to calling routine
+!
+	IF parameter_address(w_id) NEQ 0 THEN
+	  .w_id = .w_iosb[1];
+!
+	RETURN .w_iosb[0];		 !Status return value
+    END;			! End of routine vsta$create_sys_window
+
+
+
+
+
+%SBTTL 'vsta$set_window_char -- Set Window Characteristics'
+GLOBAL ROUTINE vsta$set_window_char(
+			w_id,		!Window ID
+			name_desc: REF BLOCK[0,BYTE],
+					!New window name ascii descriptor
+			length,		!New length of window
+			height		!New height of window
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting window characteristics,
+! the entity which provides the mechanism for viewing virtual displays and
+! terminals on a pasteboard. They are an abstract entity with coordinates and
+! size with respect to the pasteboard, and must exist to provide the mapping to
+! viewports on the virtual screen which are potentially visible to the user
+! through a physical screen.
+!	This routine searches for this window ID, and either returns an error
+! or sets the characteristics of the window located.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID      : Longword unique Window ID
+!			(input parameter)
+!	NAME_DESC : New window name ascii descriptor (zero length implies
+!		    no change)
+!			(input parameter)
+!	LENGTH    : Longword new window length in pasteboard
+!			(input parameter)
+!	HEIGHT    : Longword new window height in pasteboard
+!			(input parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_SETWIN		!Set window characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	temp_width,				!Temporary storage for width
+	temp_height,				!Temporary storage for height
+	w_iosb: VECTOR[2,LONG],			!I/O status block for $QIO
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setwin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate window modifier
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_MODIFY+IO$M_W,
+			IOSB = w_iosb,
+			P1   = parameter_address(name_desc),
+			P3   = parameter_value(w_id),
+			P4   = parameter_value(length),
+			P5   = parameter_value(height)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setwin);
+	  END;
+!
+! Window has been modified
+!
+	RETURN .w_iosb[0];
+    END;			! End of routine vsta$set_window_char
+
+
+%SBTTL 'vsta$get_window_char -- Inquire Window Characteristics'
+GLOBAL ROUTINE vsta$get_window_char(
+			w_id,		!Window ID
+			name_len,	!Actual window name length
+			name_desc: REF BLOCK[0,BYTE],
+					!Window name ascii descriptor
+			length,		!Length of window
+			height,		!Height of window
+			pb_id,		!Pasteboard ID (attached to)
+			x_coor,		!X-coordinate of window
+			y_coor,		!Y-coordinate of window
+			vp_id		!Viewport ID (mapped to)
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning window characteristics,
+! the entity which provides the mechanism for viewing virtual displays and
+! terminals on a pasteboard. They are an abstract entity with coordinates and
+! size with respect to the pasteboard, and must exist to provide the mapping to
+! viewports on the virtual screen which are potentially visible to the user
+! through a physical screen.
+!	This routine searches for this window ID, and either returns an error
+! or the characteristics of the window located.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID      : Longword unique Window ID
+!			(input parameter)
+!	NAME_LEN  : Address to contain actual window name length written
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(output parameter)
+!	LENGTH    : Address to contain window length in pasteboard
+!			(output parameter)
+!	HEIGHT    : Address to contain longword window height in pasteboard
+!			(output parameter)
+!	PB_ID     : Address to contain longword unique pasteboard ID
+!		    which window is attached to
+!			(output parameter)
+!	X_COOR    : Address to contain longword window X-coordinate
+!		    in pasteboard
+!			(output parameter)
+!	Y_COOR    : Address to contain window Y-coordinate in pasteboard
+!			(output parameter)
+!	VP_ID     : Address to contain longword unique viewport ID
+!		    which window is mapped to
+!			(output parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_GETWIN		!Get window characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LITERAL
+	w_char_block_size = 13 + vsta$k_max_chars_wname;
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	characteristics: BLOCK[w_char_block_size,BYTE],
+						!Temp. storage for character.
+	w_iosb: VECTOR[2,LONG],			!I/O status block for $QIO
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getwin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate window modifier
+! function codes and wait for response
+!
+	IF parameter_address(name_desc) EQL 0 THEN
+	  characteristics[vsu$w_w_name_len] = 0
+	ELSE
+	  characteristics[vsu$w_w_name_len] = .name_desc[vsta$ad_w_size];
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .dummy_chan,
+		FUNC = IO$_ACCESS+IO$M_W,
+		IOSB = w_iosb,
+		P1   = characteristics,
+		P2   = w_char_block_size,
+		P3   = parameter_value(w_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getwin);
+	  END;
+!
+! Window characteristics have been retrieved -- Fill window name ascii
+! descriptor address provided by caller and rest of characteristics
+!
+	IF .w_iosb[0] THEN
+	  BEGIN
+	    IF parameter_address(x_coor) NEQ 0 THEN
+		.x_coor = .characteristics[vsu$w_w_x0];
+	    IF parameter_address(y_coor) NEQ 0 THEN
+		.y_coor = .characteristics[vsu$w_w_y0];
+	    IF parameter_address(length) NEQ 0 THEN
+		.length = .characteristics[vsu$w_w_dx];
+	    IF parameter_address(height) NEQ 0 THEN
+		.height = .characteristics[vsu$w_w_dy];
+	    IF parameter_address(pb_id)  NEQ 0 THEN
+		.pb_id  = .characteristics[vsu$w_w_pb_id];
+	    IF parameter_address(vp_id)  NEQ 0 THEN
+		.vp_id  = .characteristics[vsu$w_w_vp_id];
+!
+	    IF parameter_address(name_desc) NEQ 0 THEN
+	      IF .name_desc[vsta$ad_w_size] GTR 0 THEN
+		BEGIN
+		  IF parameter_address(name_len) NEQ 0 THEN
+		    .name_len = MIN(.name_desc[vsta$ad_w_size],
+				    .characteristics[vsu$w_w_name_len]);
+	          CH$MOVE(
+		    MIN(.name_desc[vsta$ad_w_size],
+			.characteristics[vsu$w_w_name_len]),
+							!Window name length
+		     characteristics[vsu$b_w_name],	!Source address
+		    .name_desc[vsta$ad_a_string]);	!Destination address
+		END;
+	  END;
+!
+      RETURN .w_iosb[0];
+    END;			! End of routine vsta$get_window_char
+
+
+
+%SBTTL 'vsta$move_window -- Move Window in Pasteboard'
+GLOBAL ROUTINE vsta$move_window(
+			w_id,			!Unique window ID
+			x_coor,			!X coordinate
+			y_coor			!Y coordinate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for moving windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine moves the window to the new coordinates in the pasteboard
+! and thereby changes what is visible to any associated viewports.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique Window ID
+!			(input parameter)
+!	X_COOR  : Longword new X-coordinate for window
+!			(input parameter)
+!	Y_COOR  : Longword new Y-coordinate for window
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_MOVWIN		!Move window failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the contents of a user's viewport if mapped to
+! this window being moved and if contained within a physical screen mapped
+! to the user's display device. (Not only that, but things may look different).
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,				!Temporary storage for channel
+	w_iosb: VECTOR[2,LONG],			!I/O status block for $QIO
+	status;					!Return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_movwin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate window modifier
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACPCONTROL+IO$M_CREATE+IO$M_W+IO$M_PB,
+			IOSB = w_iosb,
+			P3   = parameter_value(w_id),
+			P5   = parameter_value(x_coor),
+			P6   = parameter_value(y_coor)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_movwin);
+	  END;
+!
+! Window has been successfully moved
+!
+	RETURN .w_iosb[0];
+    END;			! end of routine vsta$move_window
+
+
+%SBTTL 'vsta$delete_window -- Delete Window'
+GLOBAL ROUTINE vsta$delete_window(
+			w_id		!Window ID to be deleted
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine removes this window from the pasteboard and any portion
+! of it that was previously visible on a physical screen will be erased since
+! any corresponding viewports must also be deleted.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique Window ID
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELWIN		!Delete window failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to what is visible on any physical screens that
+! contained all or portions of this window.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	w_iosb: VECTOR[2,LONG],		 !I/O status block for $QIO
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delwin);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate window modifier
+! function codes and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_W,
+			IOSB = w_iosb,
+			P3   = parameter_value(w_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delwin);
+	  END;
+!
+! Window has been successfully deleted
+!
+	RETURN .w_iosb[0];
+    END;			! End of routine vsta$delete_window
+
+
+%SBTTL 'vsta$create_vt100 -- Create a VT100 Terminal'
+GLOBAL ROUTINE vsta$create_vt100(
+			tty_chan,		 !Channel no. to terminal
+			lognam_desc: REF BLOCK[0,BYTE],
+						 !Terminal logical name desc.
+			vt100_name: REF BLOCK[0,BYTE],
+						 !Terminal name descriptor
+			perm_flag		 !Permenant device?
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating VT100 virtual terminals.
+! It does a number of things for the user: creates a pasteboard, a virtual
+! display of the proper dimensions, colors, and fonts, a window of the same
+! size, and selects the virtual device to be used. Only terminal operations
+! may be performed on this pseudo-device once it has been created until it
+! is destroyed.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Address for channel no. to terminal for I/O operations
+!			(output parameter)
+!	LOGNAM_DESC  : Address of terminal logical name ascii descriptor
+!			(input parameter)
+!	VT100_NAME   : Address of VT100 name ascii descriptor for window name
+!			(input parameter)
+!	PERM_FLAG    : Address of longword terminal permenance indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREVT1		!Create VT100 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	vt100_chan: WORD,		 !Temporary storage for channel no.
+	ndb: REF BLOCK[0,BYTE],		 !For heap storage of VD_ID
+	vd_iosb: VECTOR[2,LONG],	 !I/O status block for VD $QIO
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !VD characteristics for VT100
+	wname_adr: INITIAL(0),		 !Window name address
+	wname_len: INITIAL(0),		 !Window name length
+	device_desc: VECTOR[2],		 !Virtual device name descriptor
+	device_name: VECTOR[9,BYTE],	 !Virtual device name string
+	device_name_length,		 !Virtual device name string length
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+	device_desc[0] = 9;
+	device_desc[1] = device_name;
+!
+! First see if logical name passed as a parameter is an existing virtual
+! terminal
+!
+	IF parameter_address(lognam_desc) EQL 0 THEN
+	  status = SS$_NOTRAN
+	ELSE
+	  IF .lognam_desc[vsta$ad_w_size] GTR 0 THEN
+	    status = $TRNLOG(
+			LOGNAM = .lognam_desc,
+			RSLLEN = device_name_length,
+			RSLBUF = device_desc)
+	  ELSE
+	    status = SS$_NOTRAN;
+!
+! If the lognam_desc is an existing virtual terminal device, then just
+! assign a channel to it, save what it is, and return
+!
+	IF .status EQL SS$_NORMAL THEN
+	  BEGIN
+!
+! First make sure that its a VD device
+!
+	    IF (device_desc[1] = CH$FIND_SUB(.device_name_length,
+					  device_name,
+					  vd_device_len,
+					  vsta_device)) NEQ 0 THEN
+	      BEGIN
+!
+! Get channel number for and update process context for existing device
+!
+		IF parameter_address(tty_chan) EQL 0 THEN
+		  BEGIN
+		    lib_add_eerr(vsta$_badparam,
+			integer_type,parameter_rank(tty_chan));
+		    lib_ret_err(vsta$_crevt1);
+		  END
+		ELSE
+		  BEGIN
+		    device_desc[0] = .device_name_length -
+					(.device_desc[1] - device_name);
+		    IF vsta$$assign_existing_tty(
+				.tty_chan,
+				device_desc,
+				vs$k_vtem_vt100) THEN
+		      RETURN SS$_NORMAL;
+		  END;
+	      END;
+	  END;
+!
+! Device does not already exist and must be created here.
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+! See if a window name (or terminal name) has been specified
+!
+	IF parameter_address(vt100_name) NEQ 0 THEN
+	  BEGIN
+	    wname_len = MIN(vsta$k_max_chars_wname,
+			    .vt100_name[vsta$ad_w_size]);
+	    wname_adr = .vt100_name[vsta$ad_a_string];
+	  END;
+!
+! $QIO to get to VDDRIVER with appropriate virtual display modifier
+! function codes to create the virtual display and wait for response.
+! Most of the characteristics below will be ignored and established within
+! the ACP.
+!
+	vd_char[vsu$w_vd_chars] = 0;
+	IF (parameter_value(perm_flag) AND 1) NEQ 0 THEN
+	  vd_char[vsu$w_vd_chars] = vs$m_perm_vd;
+!
+	vd_char[vsu$w_vd_mode] = vs$k_vtem_vt100;
+	vd_char[vsu$w_vd_background] = vsta$k_vt100_background;
+	vd_char[vsu$w_vd_foreground] = vsta$k_vt100_foreground;
+	vd_char[vsu$w_vd_height] = vsta$k_vt100_height;
+	vd_char[vsu$w_vd_width] = vsta$k_vt100_length;
+	vd_char[vsu$w_vd_depth] = vsta$k_vt100_bitplanes;
+	vd_char[vsu$w_vd_line_hite] = vsta$k_vt100_line_height;
+	vd_char[vsu$w_vd_cols_norm] = vsta$k_vt100_cols_norm;
+	vd_char[vsu$w_vd_cols_wide] = vsta$k_vt100_cols_wide;
+	vd_char[vsu$w_vd_rows] = vsta$k_vt100_rows;
+	vd_char[vsu$w_vd_protection] = %X'ff0f';
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_VD,
+			IOSB = vd_iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .wname_adr,
+			P4   = .wname_len
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+	IF NOT .vd_iosb[0] THEN
+	  RETURN .vd_iosb[0];
+!
+! We've got new vd.  Get a channel on it and, if requested, define a logical
+! name.
+!
+	if not (status = vsta$$register_vd (
+	    .vd_iosb[1],	! vd unit number
+	    vs$k_vtem_vt100,	! vd type (vt100)
+	    parameter_value(perm_flag),		! Permenance indicator
+	    parameter_address (lognam_desc),	! possible address of
+						! logical name descriptor
+	    parameter_address (tty_chan)	! probably address into which
+						! to write channel
+	    )) then
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+! VT100 has been successfully created
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$create_vt100
+
+
+%SBTTL 'vsta$create_dec_terminal -- Create a VT100 Terminal of various sizes'
+GLOBAL ROUTINE vsta$create_dec_terminal(
+			tty_chan,		 !Channel no. to terminal
+			rows,			 !Terminal height
+			columns,		 !Terminal width
+			lognam_desc: REF BLOCK[0,BYTE],
+						 !Terminal logical name desc.
+			vt100_name: REF BLOCK[0,BYTE],
+						 !Terminal name descriptor
+			perm_flag		 !Permenant device?
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating VT100 virtual terminals.
+! It does a number of things for the user: creates a pasteboard, a virtual
+! display of the proper dimensions, colors, and fonts, a window of the same
+! size, and selects the virtual device to be used. Only terminal operations
+! may be performed on this pseudo-device once it has been created until it
+! is destroyed.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Address for channel no. to terminal for I/O operations
+!			(output parameter)
+!	ROWS	     : Address for number of text lines to exist in terminal
+!			(input parameter)
+!	COLUMNS	     : Address for number of characters wide terminal is
+!			(input parameter)
+!	LOGNAM_DESC  : Address of terminal logical name ascii descriptor
+!			(input parameter)
+!	VT100_NAME   : Address of VT100 name ascii descriptor for window name
+!			(input parameter)
+!	PERM_FLAG    : Address of longword terminal permenance indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREVT1		!Create VT100 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	vt100_chan: WORD,		 !Temporary storage for channel no.
+	vt100_rows,			 !Temporary storage for terminal height
+	vt100_columns,			 !Temporary storage for width
+	ndb: REF BLOCK[0,BYTE],		 !For heap storage of VD_ID
+	vd_iosb: VECTOR[2,LONG],	 !I/O status block for VD $QIO
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !VD characteristics for VT100
+	wname_adr: INITIAL(0),		 !Window name address
+	wname_len: INITIAL(0),		 !Window name length
+	device_desc: VECTOR[2],		 !Virtual device name descriptor
+	device_name: VECTOR[9,BYTE],	 !Virtual device name string
+	device_name_length,		 !Virtual device name string length
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+	device_desc[0] = 9;
+	device_desc[1] = device_name;
+!
+! Check boundries on terminal size and make more reasonable if necessary.
+!
+	IF (vt100_rows = parameter_value(rows)) EQL 0 THEN
+	  vt100_rows = vsta$k_vt100_rows
+	ELSE
+	  BEGIN
+	     IF .vt100_rows GTR vsta$k_vt100_rows_max THEN
+		vt100_rows = vsta$k_vt100_rows_max 
+	     ELSE IF .vt100_rows LEQ 0 THEN
+		vt100_rows = vsta$k_vt100_rows_min;
+	  END;
+
+	IF (vt100_columns = parameter_value(columns)) EQL 0 THEN
+	  vt100_columns = vsta$k_vt100_cols_norm
+	ELSE
+	  BEGIN
+	     IF .vt100_columns GTR vsta$k_vt100_cols_max THEN
+		vt100_columns = vsta$k_vt100_cols_max 
+	     ELSE IF .vt100_columns LEQ 0 THEN
+		vt100_columns = vsta$k_vt100_cols_min;
+	  END;
+!
+! See if logical name passed as a parameter is an existing virtual terminal
+!
+	IF parameter_address(lognam_desc) EQL 0 THEN
+	  status = SS$_NOTRAN
+	ELSE
+	  IF .lognam_desc[vsta$ad_w_size] GTR 0 THEN
+	    status = $TRNLOG(
+			LOGNAM = .lognam_desc,
+			RSLLEN = device_name_length,
+			RSLBUF = device_desc)
+	  ELSE
+	    status = SS$_NOTRAN;
+!
+! If the lognam_desc is an existing virtual terminal device, then just
+! assign a channel to it, save what it is, and return
+!
+	IF .status EQL SS$_NORMAL THEN
+	  BEGIN
+!
+! First make sure that its a VD device
+!
+	    IF (device_desc[1] = CH$FIND_SUB(.device_name_length,
+					  device_name,
+					  vd_device_len,
+					  vsta_device)) NEQ 0 THEN
+	      BEGIN
+!
+! Get channel number for and update process context for existing device
+!
+		IF parameter_address(tty_chan) EQL 0 THEN
+		  BEGIN
+		    lib_add_eerr(vsta$_badparam,
+			integer_type,parameter_rank(tty_chan));
+		    lib_ret_err(vsta$_crevt1);
+		  END
+		ELSE
+		  BEGIN
+		    device_desc[0] = .device_name_length -
+					(.device_desc[1] - device_name);
+		    IF vsta$$assign_existing_tty(
+				.tty_chan,
+				device_desc,
+				vs$k_vtem_vt100) THEN
+		      RETURN SS$_NORMAL;
+		  END;
+	      END;
+	  END;
+!
+! Device does not already exist and must be created here.
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+! See if a window name (or terminal name) has been specified
+!
+	IF parameter_address(vt100_name) NEQ 0 THEN
+	  BEGIN
+	    wname_len = MIN(vsta$k_max_chars_wname,
+			    .vt100_name[vsta$ad_w_size]);
+	    wname_adr = .vt100_name[vsta$ad_a_string];
+	  END;
+!
+! $QIO to get to VDDRIVER with appropriate virtual display modifier
+! function codes to create the virtual display and wait for response.
+! Most of the characteristics below will be ignored and established within
+! the ACP.
+!
+	vd_char[vsu$w_vd_chars] = 0;
+	IF (parameter_value(perm_flag) AND 1) NEQ 0 THEN
+	  vd_char[vsu$w_vd_chars] = vs$m_perm_vd;
+!
+	vd_char[vsu$w_vd_mode] = vs$k_vtem_vt100;
+	vd_char[vsu$w_vd_background] = vsta$k_vt100_background;
+	vd_char[vsu$w_vd_foreground] = vsta$k_vt100_foreground;
+	vd_char[vsu$w_vd_height] = vsta$k_vt100_height;
+	vd_char[vsu$w_vd_width] = vsta$k_vt100_length;
+	vd_char[vsu$w_vd_depth] = vsta$k_vt100_bitplanes;
+	vd_char[vsu$w_vd_line_hite] = vsta$k_vt100_line_height;
+	vd_char[vsu$w_vd_cols_norm] = .vt100_columns;
+	vd_char[vsu$w_vd_cols_wide] = vsta$k_vt100_cols_wide;
+	vd_char[vsu$w_vd_rows] = .vt100_rows;
+	vd_char[vsu$w_vd_protection] = %X'ff0f';
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_VD,
+			IOSB = vd_iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .wname_adr,
+			P4   = .wname_len
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+	IF NOT .vd_iosb[0] THEN
+	  RETURN .vd_iosb[0];
+!
+! We've got new vd.  Get a channel on it and, if requested, define a logical
+! name.
+!
+	if not (status = vsta$$register_vd (
+	    .vd_iosb[1],	! vd unit number
+	    vs$k_vtem_vt100,	! vd type (vt100)
+	    parameter_value(perm_flag),		! Permenance indicator
+	    parameter_address (lognam_desc),	! possible address of
+						! logical name descriptor
+	    parameter_address (tty_chan)	! probably address into which
+						! to write channel
+	    )) then
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevt1);
+	  END;
+!
+! VT100 has been successfully created
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$create_dec_terminal
+
+
+%SBTTL 'vsta$create_tek4014 -- Create a TEK4014 Terminal'
+GLOBAL ROUTINE vsta$create_tek4014(
+			tty_chan,		 !Returned TTY channel no.
+			lognam_desc: REF BLOCK[0,BYTE],
+						 !Terminal logical name desc.
+			tek4014_name: REF BLOCK[0,BYTE],
+						 !Process name descriptor
+			perm_flag		 !Permenant device?
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating TEK4014 virtual terminals.
+! It does a number of things for the user: creates a pasteboard, a virtual
+! display of the proper dimensions, colors, and fonts, a window of the same
+! size, and selects the virtual device to be used. Only terminal operations
+! may be performed on this pseudo-device once it has been created until it
+! is destroyed.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Address to contain channel number to device on return
+!			(output parameter)
+!	LOGNAM_DESC  : Address of descriptor of logical name for terminal
+!			(input parameter)
+!	TEK4014_NAME : Address of descriptor for TEK4014 name string to
+!		       be used for window name
+!			(input parameter)
+!	PERM_FLAG    : Address of longword terminal permenance indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CRETEK		!Create TEK4014 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	tek_chan: WORD,			 !Temporary storage for channel no.
+	ndb: REF BLOCK[0,BYTE],		 !For heap storage of VD_ID,PB_ID,W_ID
+	vd_iosb: VECTOR[2,LONG],	 !I/O status block for VD $QIO
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !VD characteristics for TEK4014
+	wname_adr: INITIAL(0),		 !Window name address
+	wname_len: INITIAL(0),		 !Window name length
+	device_desc: VECTOR[2],		 !Virtual device name descriptor
+	device_name: VECTOR[9,BYTE],	 !Virtual device name string
+	device_name_length,		 !Virtual device name string length
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+	device_desc[0] = 9;
+	device_desc[1] = device_name;
+!
+! First see if logical name passed as a parameter is an existing virtual
+! terminal
+!
+	IF parameter_address(lognam_desc) EQL 0 THEN
+	  status = SS$_NOTRAN
+	ELSE
+	  IF .lognam_desc[vsta$ad_w_size] GTR 0 THEN
+	    status = $TRNLOG(
+			LOGNAM = .lognam_desc,
+			RSLLEN = device_name_length,
+			RSLBUF = device_desc)
+	  ELSE
+	    status = SS$_NOTRAN;
+!
+! If the lognam_desc is an existing virtual terminal device, then just
+! assign a channel to it and return
+!
+	IF .status EQL SS$_NORMAL THEN
+	  BEGIN
+!
+! First make sure that its a VD device
+!
+	    IF (device_desc[1] = CH$FIND_SUB(.device_name_length,
+					  device_name,
+					  vd_device_len,
+					  vsta_device)) NEQ 0 THEN
+	      BEGIN
+!
+! Get channel number for and update process context for existing device
+!
+		IF parameter_address(tty_chan) EQL 0 THEN
+		  BEGIN
+		    lib_add_eerr(vsta$_badparam,
+			integer_type,parameter_rank(tty_chan));
+		    lib_ret_err(vsta$_cretek);
+		  END
+		ELSE
+		  BEGIN
+		    device_desc[0] = .device_name_length -
+					(.device_desc[1] - device_name);
+		    IF vsta$$assign_existing_tty(
+				.tty_chan,
+				device_desc,
+				vs$k_vtem_4014) THEN
+		      RETURN SS$_NORMAL;
+		  END;
+	      END;
+	  END;
+!
+! Device does not already exist and must be created here.
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_cretek);
+	  END;
+!
+! See if a window name (or terminal name) has been specified
+!
+	IF parameter_address(tek4014_name) NEQ 0 THEN
+	  BEGIN
+	    wname_len = MIN(vsta$k_max_chars_wname,
+			    .tek4014_name[vsta$ad_w_size]);
+	    wname_adr = .tek4014_name[vsta$ad_a_string];
+	  END;
+!
+! $QIO to get to VDDRIVER with appropriate virtual display modifier
+! function codes to create the virtual display and wait for response.
+! Note that several of the characteristics below will be ignored and
+! defaulted within the ACP.
+!
+	vd_char[vsu$w_vd_chars] = 0;
+	IF (parameter_value(perm_flag) AND 1) NEQ 0 THEN
+	  vd_char[vsu$w_vd_chars] = vs$m_perm_vd;
+!
+	vd_char[vsu$w_vd_mode] = vs$k_vtem_4014;
+	vd_char[vsu$w_vd_background] = vsta$k_tek4014_background;
+	vd_char[vsu$w_vd_foreground] = vsta$k_tek4014_foreground;
+	vd_char[vsu$w_vd_height] = vsta$k_tek4014_height;
+	vd_char[vsu$w_vd_width] = vsta$k_tek4014_length;
+	vd_char[vsu$w_vd_depth] = vsta$k_tek4014_bitplanes;
+	vd_char[vsu$w_vd_line_hite] = vsta$k_tek4014_line_height;
+	vd_char[vsu$w_vd_cols_norm] = vsta$k_tek4014_char_bits;
+	vd_char[vsu$w_vd_cols_wide] = vsta$k_tek4014_char_mask;
+	vd_char[vsu$w_vd_rows] = 0;
+	vd_char[vsu$w_vd_protection] = %X'ff0f';
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_VD,
+			IOSB = vd_iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .wname_adr,
+			P4   = .wname_len
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_cretek);
+	  END;
+!
+	IF NOT .vd_iosb[0] THEN
+	  RETURN .vd_iosb[0];
+!
+! We've got new vd.  Get a channel on it and, if requested, define a logical
+! name.
+!
+	if not (status = vsta$$register_vd (
+	    .vd_iosb[1],	! vd unit number
+	    vs$k_vtem_4014,	! vd type (tek 4014)
+	    parameter_value(perm_flag),		! Permenance indicator
+	    parameter_address (lognam_desc),	! possible address of
+						! logical name descriptor
+	    parameter_address (tty_chan)	! probably address into which
+						! to write channel
+	    )) then
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_cretek);
+	  END;
+!
+! TEK4014 has been successfully created
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$create_tek4014
+
+
+%SBTTL 'vsta$set_tek4014_char -- Set Characteristics of TEK4014 Terminal'
+GLOBAL ROUTINE vsta$set_tek4014_char(
+			tty_chan,		!Terminal channel number
+			char_bits,		!Characteristics to alter
+			settings		!New settings
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the characteristics of
+! tek4014 virtual terminals.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword terminal channel number
+!				(input parameter)
+!	CHAR_BITS    : Longword characteristics to be altered
+!				(input parameter)
+!	SETTINGS     : Longword new characteristics settings
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTEK		!Setting TEK4014 characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	device_adr: REF BLOCK[0,BYTE],	 !To contain device block
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !TEK4014 characteristic block
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_settek);
+	  END;
+!
+! Confirm that this device is a virtual tek4014
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_4014 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_nottek4014);	!Device not a TEK4014
+	    lib_ret_err(vsta$_settek);
+	  END;
+!
+! Get the device characteristics
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_ACCESS+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settek);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Now change the characteristics and send it back
+!
+	vd_char[vsu$w_vd_cols_norm] = parameter_value(char_bits);
+	vd_char[vsu$w_vd_cols_wide] = parameter_value(settings);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_MODIFY+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settek);
+	  END;
+!
+	RETURN .iosb[0];	! Return status from ACP
+!
+    END;			! End of routine vsta$set_tek4014_char
+
+
+%SBTTL 'vsta$get_tek4014_char -- Get Characteristics of TEK4014 Terminal'
+GLOBAL ROUTINE vsta$get_tek4014_char(
+			tty_chan,		!Terminal channel number
+			char_bits		!Characteristics of TEK4014
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the characteristics of
+! tek4014 virtual terminals and returning them to the caller.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword terminal channel number
+!				(input parameter)
+!	CHAR_BITS    : Longword current characteristics settings
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETTEK		!Failed to get TEK4014 characteristics
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	device_adr: REF BLOCK[0,BYTE],	 !To contain device block
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !TEK4014 characteristics
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_gettek);
+	  END;
+!
+! Confirm that this device is a virtual tek4014
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_4014 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_nottek4014);	!Device not a TEK4014
+	    lib_ret_err(vsta$_gettek);
+	  END;
+!
+! Get the device characteristics
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_ACCESS+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_gettek);
+	  END;
+!
+! Now return those characteristics
+!
+	IF parameter_address(char_bits) NEQ 0 THEN
+	  .char_bits = .vd_char[vsu$w_vd_cols_norm];
+!
+	RETURN .iosb[0];	! Return status from ACP
+!
+    END;			! End of routine vsta$get_tek4014_char
+
+
+%SBTTL 'vsta$create_display -- Create a virtual Display Device'
+GLOBAL ROUTINE vsta$create_display(
+			length,			!Length of virtual display
+			height,			!Height of virtual display
+			depth,			!Depth of virtual display
+			background_color,	!Color of virtual display
+			writing_color,		!Color of virtual display text
+			text_lines,		!Number of lines of text
+			line_height,		!Height of text lines
+			tty_chan,		!Channel no. returned for I/O
+			device_id: REF BLOCK[0,BYTE],
+						!Device ID (logical name)
+			perm_flag,		!Permenant device?
+			protection		!Device protection
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating virtual display terminals.
+! It does a number of things for the user: establishes colors, fonts, and
+! selects the virtual device to be used. Only native device operations
+! may be performed on this pseudo-device once it has been created until it
+! is destroyed. This means that in order to get information from this display
+! to a user's display device, the application program must first create a
+! pasteboard, paste this virtual display to the pasteboard, and create a
+! window or move one to where it will make all or portions of this new virtual
+! display potentially visible. Many virtual displays may be on a pasteboard at
+! the same time and these may overlap in many ways. This must be managed by
+! the application program.
+!
+! FORMAL PARAMETERS:
+!
+!	LENGTH	     : Longword length of virtual display
+!			(input parameter)
+!	HEIGHT	     : Longword height of virtual display
+!			(input parameter)
+!	DEPTH	     : Longword depth of virtual display (Z-dimension is the
+!		       number of bitplanes for the device).
+!			(input parameter)
+!	BACKGROUND_COLOR : Longword background color of virtual display
+!			(input parameter)
+!	WRITING_COLOR : Longword writing color for virtual display
+!			(input parameter)
+!	TEXT_LINES   : Word number of text lines in virtual display
+!			(input parameter)
+!	LINE_HEIGHT  : Word text line height in virtual display
+!			(input parameter)
+!	TTY_CHAN     : Address to contain channel no. to device for I/O
+!			(output parameter)
+!	DEVICE_ID    : Address of logical name descriptor to be mapped to
+!		       new generic device
+!			(input parameter)
+!	PERM_FLAG    : Address of longword terminal permenance indicator
+!			(input parameter)
+!	PROTECTION   : Address of longword terminal protection mask
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CREDIS		!Create display failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	native_chan: WORD,		 !Temporary storage for channel no.
+	ndb: REF BLOCK[0,BYTE],		 !For heap storage of VD_ID, TTY_CHAN
+	vd_iosb: VECTOR[2,LONG],	 !I/O status block for VD $QIO
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !VD characteristics for virtual display
+	device_desc: VECTOR[2],		 !Virtual device name descriptor
+	device_name: VECTOR[9,BYTE],	 !Virtual device name string
+	device_name_length,		 !Virtual device name string length
+	color_in,			 !convert user color input
+	prot_mask,			 !Temp. storage for prot. mask
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+	device_desc[0] = 9;
+	device_desc[1] = device_name;
+!
+! First see if logical name passed as a parameter is an existing virtual
+! terminal
+!
+	IF parameter_address(device_id) EQL 0 THEN
+	  status = SS$_NOTRAN
+	ELSE
+	  IF .device_id[vsta$ad_w_size] GTR 0 THEN
+	    status = $TRNLOG(
+			LOGNAM = .device_id,
+			RSLLEN = device_name_length,
+			RSLBUF = device_desc)
+	  ELSE
+	    status = SS$_NOTRAN;
+!
+! If the device_desc is an existing virtual terminal device, then just
+! assign a channel to it and return
+!
+	IF .status EQL SS$_NORMAL THEN
+	  BEGIN
+!
+! First make sure that this is a VD device
+!
+	    IF (device_desc[1] = CH$FIND_SUB(.device_name_length,
+					  device_name,
+					  vd_device_len,
+					  vsta_device)) NEQ 0 THEN
+	      BEGIN
+!
+! Get channel number for and update process context for existing device
+!
+		IF parameter_address(tty_chan) EQL 0 THEN
+		  BEGIN
+		    lib_add_eerr(vsta$_badparam,
+			integer_type,parameter_rank(tty_chan));
+		    lib_ret_err(vsta$_credis);
+		  END
+		ELSE
+		  BEGIN
+		    device_desc[0] = .device_name_length -
+					(.device_desc[1] - device_name);
+		    IF vsta$$assign_existing_tty(
+				.tty_chan,
+				device_desc,
+				vs$k_vtem_generic) THEN
+		      RETURN SS$_NORMAL;
+		  END;
+	      END;
+	  END;
+!
+	status = SS$_NORMAL;
+!
+! Device does not already exist and must be created here.
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_credis);
+	  END;
+!
+! Use $QIO to get to VDDRIVER with appropriate virtual display modifier
+! function codes to create the virtual display and wait for response.
+!
+	vd_char[vsu$w_vd_chars] = 0;
+	IF (parameter_value(perm_flag) AND 1) NEQ 0 THEN
+	  vd_char[vsu$w_vd_chars] = vs$m_perm_vd;
+!
+	prot_mask = parameter_value(protection);
+	IF .prot_mask EQL 0 THEN
+	  vsta$get_default_protection(prot_mask)
+	ELSE
+	  IF .prot_mask EQL vsta$k_unprotected THEN
+	    prot_mask = 0;
+!
+	IF ((NOT .prot_mask) AND %X'ff0f') NEQ 0 THEN
+	  vd_char[vsu$w_vd_chars] = .vd_char[vsu$w_vd_chars] OR vs$m_share_vd;
+!
+	vd_char[vsu$w_vd_mode] = vs$k_vtem_generic;
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(background_color), color_in);	
+	vd_char[vsu$w_vd_background] = .color_in;	
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(writing_color), color_in);
+	vd_char[vsu$w_vd_foreground] = .color_in;	  
+	vd_char[vsu$w_vd_height] = parameter_value(height);
+	vd_char[vsu$w_vd_width] = parameter_value(length);
+	vd_char[vsu$w_vd_depth] = parameter_value(depth);
+	vd_char[vsu$w_vd_line_hite] = parameter_value(line_height);
+	vd_char[vsu$w_vd_cols_norm] = vsta$k_generic_cols_norm;
+	vd_char[vsu$w_vd_cols_wide] = vsta$k_generic_cols_wide;
+	vd_char[vsu$w_vd_rows] = parameter_value(text_lines);
+	vd_char[vsu$w_vd_protection] = .prot_mask;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_VD,
+			IOSB = vd_iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_credis);
+	  END;
+!
+	IF NOT .vd_iosb[0] THEN
+	  RETURN .vd_iosb[0];
+!
+! We've got new vd.  Get a channel on it and, if requested, define a logical
+! name.
+!
+	if not (status = vsta$$register_vd (
+	    .vd_iosb[1],	! vd unit number
+	    vs$k_vtem_generic,	! vd type (generic)
+	    parameter_value(perm_flag),		! Permenance indicator
+	    parameter_address (device_id),	! possible address of
+						! logical name descriptor
+	    parameter_address (tty_chan)	! probably address into which
+						! to write channel
+	    )) then
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_credis);
+	  END;
+!
+! Virtual display has been successfully created
+!
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$create_display
+
+
+%SBTTL 'vsta$delete_vt100 -- Delete a VT100 Terminal'
+GLOBAL ROUTINE vsta$delete_vt100(
+			tty_chan		!Terminal channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting VT100 virtual terminals.
+! It does a number of things for the user: deletes the pasteboard, the native
+! display of the proper dimensions, colors, and fonts, the window of the same
+! size, and the virtual terminal itself.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword terminal channel number
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELVT1		!Delete VT100 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel number
+	device_adr: REF BLOCK[0,BYTE],	 !To contain device block
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delvt1);
+	  END;
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_delvt1);
+	  END;
+!
+! Confirm that this device is a virtual terminal
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_vt100 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notvt100);		!Device not a VT100
+	    lib_ret_err(vsta$_delvt1);
+	  END;
+!
+! Delete the virtual display
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_VD,
+			IOSB = iosb,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delvt1);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Now that we have deleted the objects associated with the virtual terminal,
+! remove all evidence of this virtual terminal from the impure area.
+!
+	IF (NOT (status = vsta$$delete_terminal(
+					.device_adr))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delvt1);
+	  END;
+!
+! Deassign this channel number from the device
+!
+	$DASSGN(CHAN = ..tty_chan);
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$delete_vt100
+
+
+%SBTTL 'vsta$delete_dec_terminal -- Delete a VT100 Terminal'
+GLOBAL ROUTINE vsta$delete_dec_terminal(
+			tty_chan		!Terminal channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine deletes dec_terminals.  It calls delete_vt100.
+! The goal was to have create and delete dec_terminal as well as vt100
+! routines.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword terminal channel number
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELVT1		!Delete VT100 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+	vsta$delete_vt100(.tty_chan)
+
+    END;			! End of routine vsta$delete_dec_terminal
+
+
+%SBTTL 'vsta$delete_tek4014 -- Delete a TEK4014 Terminal'
+GLOBAL ROUTINE vsta$delete_tek4014(
+			tty_chan		!Terminal channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting tek4014 virtual terminals.
+! It does a number of things for the user: deletes the pasteboard, the native
+! display of the proper dimensions, colors, and fonts, the window of the same
+! size, and the virtual terminal itself.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword terminal channel number
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELTEK		!Delete TEK4014 failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel number
+	device_adr: REF BLOCK[0,BYTE],	 !To contain device block
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deltek);
+	  END;
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_deltek);
+	  END;
+!
+! Confirm that this device is a virtual terminal
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_4014 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_nottek4014);	!Device not a TEK4014
+	    lib_ret_err(vsta$_deltek);
+	  END;
+!
+! Delete the virtual display which is now dangling aimlessly
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_VD,
+			IOSB = iosb,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deltek);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Now that we have deleted the objects associated with the virtual terminal,
+! remove all evidence of this virtual terminal from the impure area.
+!
+	IF (NOT (status = vsta$$delete_terminal(
+					.device_adr))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deltek);
+	  END;
+!
+! Deassign this channel number from the device
+!
+	$DASSGN(CHAN = ..tty_chan);
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$delete_tek4014
+
+
+%SBTTL 'vsta$delete_display -- Delete a virtual Display'
+GLOBAL ROUTINE vsta$delete_display(
+			tty_chan		!Device channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting virtual displays.
+! It does a number of things for the user: removes the virtual display from
+! the pasteboard (making anything beneath it potentially visible) and deletes
+! the virtual display itself.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword channel number to virtual display device
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELDIS		!Delete display failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !To contain device block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deldis);
+	  END;
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_deldis);
+	  END;
+!
+! Confirm that this device is a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Device not a native display
+	    lib_ret_err(vsta$_deldis);
+	  END;
+!
+! Delete the virtual display which is the native display. Use this channel
+! number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_VD,
+			IOSB = iosb,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deldis);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Now that we have the virtual display's ID, remove all evidence of this
+! virtual display from the impure area.
+!
+	IF (NOT (status = vsta$$delete_terminal(
+					.device_adr))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deldis);
+	  END;
+!
+! Deassign this channel number from the device
+!
+	$DASSGN(CHAN = ..tty_chan);
+	RETURN SS$_NORMAL;
+!
+    END;			! End of routine vsta$delete_display
+
+
+%SBTTL 'vsta$paste_display -- Paste virtual Display to Pasteboard'
+GLOBAL ROUTINE vsta$paste_display(
+			tty_chan,		!Channel number to device
+			pb_id,			!Pasteboard ID
+			x_coor,			!X-coordinate on pasteboard
+			y_coor			!Y-coordinate on pasteboard
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "paste" or associate a virtual display to a
+! previously created pasteboard. Virtual displays provide a device
+! with which application programs may do I/O. Data which is written to a
+! virtual display may or may not be visible on the display of the user, but is
+! potentially visible. Virtual displays may overlap and may also be moved once
+! pasted to a pasteboard. The combination of vd_id and pb_id will uniquely
+! identify this virtual display while it is on the pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number of the virtual display being
+!			  pasted to the PB
+!				(input parameter)
+!	PB_ID           : Longword unique ID of the pasteboard to be attached
+!				(input parameter)
+!	X_COOR          : Longword X-coordinate of the ND being pasted
+!				(input parameter)
+!	Y_COOR          : Longword Y-coordinate of the ND being pasted
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_PASDIS		!Paste display failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display since this virtual display
+! will occlude anything beneath it which was previously visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !To contain virtual device info block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_pasdis);
+	  END;
+!
+! Confirm that this device is a virtual/native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Device not a native display
+	    lib_ret_err(vsta$_pasdis);
+	  END;
+!
+! Paste the virtual display which is the native display. Use this channel
+! number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = ..tty_chan,
+			FUNC = IO$_ACPCONTROL+IO$M_CREATE+IO$M_VD+IO$M_PB,
+			IOSB = iosb,
+			P2   = VS$K_NORMAL,
+			P3   = .device_adr[vsta$ct_l_vd_id],
+			P4   = parameter_value(pb_id),
+			P5   = parameter_value(x_coor),
+			P6   = parameter_value(y_coor)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_pasdis);
+	  END;
+!
+	RETURN .iosb[0];
+    END;			! end of routine vsta$paste_native_display
+
+
+
+%SBTTL 'vsta$remove_display -- Remove Virtual Display from Pasteboard'
+GLOBAL ROUTINE vsta$remove_display(
+			tty_chan,	!Native display channel number
+			pb_id		!Unique pasteboard ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "unpaste" or disassociate a virtual display from a
+! pasteboard. Virtual displays provide a device with which
+! application programs may do I/O. Data which is written to a virtual display
+! may or may not be visible on the display of the user, but is potentially
+! visible. Application programs may continue to do I/O with this
+! virtual display regardless of whether or not it is currently pasted
+! to a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number of the native display being
+!		          removed from the PB
+!				(input parameter)
+!	PB_ID           : Longword unique ID of the pasteboard to be
+!			  detached from
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_REMDIS		!Remove display failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen if any part of this
+! virtual display was previously visible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !To contain virtual device block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_remdis);
+	  END;
+!
+! Confirm that this device is a virtual/native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Device not a native display
+	    lib_ret_err(vsta$_remdis);
+	  END;
+!
+! Remove the virtual display which is the native display. Use this channel
+! number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = ..tty_chan,
+			FUNC = IO$_ACPCONTROL+IO$M_DELETE+IO$M_VD+IO$M_PB,
+			IOSB = iosb,
+			P3   = .device_adr[vsta$ct_l_vd_id],
+			P4   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_remdis);
+	  END;
+!
+	RETURN .iosb[0];	! Return status value
+    END;			! end of routine vsta$remove_display
+
+
+%SBTTL 'vsta$move_display -- Move virtual Display in Pasteboard'
+GLOBAL ROUTINE vsta$move_display(
+			tty_chan,	!virtual display channel number
+			pb_id,		!Unique pasteboard ID
+			x_coor,		!New X-coordinate
+			y_coor		!New Y-coordinate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will move a virtual display within a previously created
+! and attached pasteboard. Virtual displays provide a device
+! with which application programs may do I/O. Data which is written to a
+! virtual display may or may not be visible on the display of the user, but is
+! potentially visible.
+!	This routine effectively moves the virtual display to a new origin
+! without altering its stacking position with respect to other virtual displays.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number of the virtual display being
+!		          moved within the PB
+!				(input parameter)
+!	PB_ID           : Longword unique ID of the pasteboard
+!				(input parameter)
+!	X_COOR          : Longword new value of the X-coordinate
+!		          within the pasteboard
+!				(input parameter)
+!	Y_COOR          : Longword new value of the Y-coordinate
+!		          within the pasteboard
+!				(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_MOVDIS		!Move display failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !To contain virtual device block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_movdis);
+	  END;
+!
+! Confirm that this device is a virtual/native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Device not a native display
+	    lib_ret_err(vsta$_movdis);
+	  END;
+!
+! Move the virtual display which is the native display. Use this channel
+! number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = ..tty_chan,
+			FUNC = IO$_ACPCONTROL+IO$M_CREATE+IO$M_VD+IO$M_PB,
+			IOSB = iosb,
+			P2   = VS$K_SLIDE,
+			P3   = .device_adr[vsta$ct_l_vd_id],
+			P4   = parameter_value(pb_id),
+			P5   = parameter_value(x_coor),
+			P6   = parameter_value(y_coor)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_movdis);
+	  END;
+!
+        RETURN .iosb[0];
+    END;		! end of routine vsta$move_display
+
+
+%SBTTL 'vsta$move_display_to_top -- Move Display to top of PB'
+GLOBAL ROUTINE vsta$move_display_to_top(
+			tty_chan,	!Native display channel number
+			pb_id		!Unique pasteboard ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will move a virtual display to the top of its
+! attached pasteboard by pulling it out from wherever it is in the stack of
+! virtual displays (on a given pasteboard) and overlaying it on top, making the
+! entire virtual display potentially visible. Data which is written to a
+! virtual display may or may not be visible on the display of the user,
+! but is potentially visible.
+!
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number of the virtual display being
+!		          moved to the top of the pasteboard
+!				(input parameter)
+!	PB_ID           : Longword unique ID of the pasteboard
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_MOVTOP		!Move display to top of pasteboard failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !To contain virtual device block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Get the terminal information block which corresponds to the channel
+! number passed as a parameter
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_movtop);
+	  END;
+!
+! Confirm that this device is a virtual/native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Device not a native display
+	    lib_ret_err(vsta$_movtop);
+	  END;
+!
+! Move the virtual display which is the native display to the top of the
+! pasteboard. Use this channel number to get past $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = ..tty_chan,
+			FUNC = IO$_ACPCONTROL+IO$M_CREATE+IO$M_VD+IO$M_PB,
+			IOSB = iosb,
+			P2   = VS$K_POP_TO_TOP,
+			P3   = .device_adr[vsta$ct_l_vd_id],
+			P4   = parameter_value(pb_id)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_movtop);
+	  END;
+!
+        RETURN .iosb[0];
+    END;	! end of routine vsta$move_display_to_top
+
+
+%SBTTL 'vsta$select_display -- Select a Native Display as current'
+GLOBAL ROUTINE vsta$select_display(
+			tty_chan		!Terminal channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for selecting a terminal to be the
+! the "current" terminal. This terminal is used by any procedure that does not
+! take the terminal ID as an argument. The terminal specified in the routine
+! call remains the selected terminal until the next time this routine is
+! called.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword terminal channel number
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	IMPURE_AREA     : Address of VAXstation per-process work area
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SELDIS		!Select display failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	ct_ptr: REF BLOCK[0,BYTE],	 !Ptr to arbitrary CT block
+	stb: REF BLOCK[0,BYTE],		 !New selected terminal block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Find this channel number in the terminal information list
+!
+	IF NOT vsta$$terminal_found(
+			parameter_value(tty_chan),
+			ct_ptr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_seldis);
+	  END;
+!
+! Get a "selected" terminal information block address
+!
+	IF (stb = .impure_area[vsta$a_curr_tty_ptr]) EQL 
+		   impure_area[vsta$a_curr_tty_ptr] THEN
+	  BEGIN
+!
+! No address implies that there have been no vsta$SELECT_DISPLAY's or too many
+! vsta$POP_DISPLAY_STATE's. Allocate heap storage for an empty selected 
+! terminal information block and place it at the head of the selected
+! terminal information block list.
+!
+	    IF (NOT (status = lib$get_vm (%REF(vsta$st_k_st_length),stb)))
+	      THEN
+		BEGIN
+		  lib_add_err(.status);
+		  lib_ret_err(vsta$_seldis);
+		END;
+!
+	    stb[vsta$st_w_size] = vsta$st_k_st_length;
+	    stb[vsta$st_w_type] = 0;
+	    INSQUE(.stb,impure_area[vsta$a_curr_tty_ptr]);
+	  END;
+!
+! Place the desired terminal information block's address at the
+! head of the selected terminal list
+!
+	stb[vsta$st_a_curr_tty] = .ct_ptr;
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vsta$select_display
+
+
+%SBTTL 'vsta$get_selected_display -- Inquire Current Terminal'
+GLOBAL ROUTINE vsta$get_selected_display(
+			tty_chan		!Terminal channel number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the selected terminal which is
+! the "current" terminal and returning its ID. This terminal is used by any
+! procedure that does not take the terminal ID as an argument. The terminal
+! returned by this routine call remains the selected terminal until the next
+! time vsta$select_display is called.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Address to contain the terminal's channel number
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA     : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETSEL		!Get selected display failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	stb: REF BLOCK[0,BYTE],		 !Selected terminal block
+	device_adr: REF BLOCK[0,BYTE],	 !Device information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Validate input parameter address
+!
+	IF parameter_address(tty_chan) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(tty_chan));
+	    lib_ret_err(vsta$_getsel);
+	  END;
+!
+! Either return an indication that no terminal has been selected or the
+! channel number to the terminal that IS the "selected" terminal
+!
+	IF .impure_area[vsta$a_curr_tty_ptr] EQL impure_area[vsta$a_curr_tty_ptr]
+	  THEN
+	    BEGIN
+	      lib_add_eerr(vsta$_noselect);	!No terminal has been selected
+	      lib_ret_err(vsta$_getsel);
+	    END;
+!
+	stb = .impure_area[vsta$a_curr_tty_ptr];
+	device_adr = .stb[vsta$st_a_curr_tty];
+	.tty_chan = .device_adr[vsta$ct_l_tty_chan];
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vsta$get_selected_display
+
+
+%SBTTL 'vsta$set_display_colornumber -- Set Display Color Number'
+GLOBAL ROUTINE vsta$set_display_colornumber(
+			tty_chan,		!Device channel number
+			color_num		!New color number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the color number of the
+! specified terminal. 
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword channel number to device
+!				(input parameter)
+!	COLOR_NUM    : Longword color number for "selected" terminal
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETDSC		!Set display color failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the color of the selected terminal.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !Virtual display characteristics
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	color_in,			 !convert user color input 
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_setdsc);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_setdsc);
+	  END;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_ACCESS+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setdsc);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Now change the background color number and send it back
+!
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(color_num), color_in);	
+	vd_char[vsu$w_vd_background] = .color_in;	
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_MODIFY+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setdsc);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$set_display_colornumber
+
+
+%SBTTL 'vsta$set_display_protection -- Set Virtual Display Protection'
+GLOBAL ROUTINE vsta$set_display_protection(
+			tty_chan,		!Device channel number
+			protection		!New protection
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the protection of the
+! specified terminal. Changing the protection effects who can access the
+! device, but has no effect on the device shareability. In other words, if
+! the device was created as shareable, people will still be able to get
+! channel numbers to the device if the protection is changed to make it
+! inaccessable, but they will not be able to do anything with the device.
+! If the device was originally created as non-shareable, changing the
+! protection will have no effect.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword channel number to device
+!				(input parameter)
+!	PROTECTION   : Word protection mask for terminal
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETDSP		!Set display protection failed
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the color of the selected terminal.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	prot_mask,			 !Temp. storage for prot. mask
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !Virtual display characteristics
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_setdsp);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_setdsp);
+	  END;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_ACCESS+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setdsp);
+	  END;
+!
+	IF NOT .iosb[0] THEN
+	  RETURN .iosb[0];
+!
+! Compute the protection the user really wants and if different from the
+! current display protection, go modify it
+!
+	prot_mask = parameter_value(protection);
+	IF .prot_mask EQL 0 THEN
+	  vsta$get_default_protection(prot_mask)
+	ELSE
+	  IF .prot_mask EQL vsta$k_unprotected THEN
+	    prot_mask = 0;
+!
+	IF .prot_mask EQL .vd_char[vsu$w_vd_protection] THEN
+	  RETURN SS$_NORMAL;
+!
+! Now change the protection and send it back
+!
+	vd_char[vsu$w_vd_protection] = .prot_mask;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_MODIFY+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setdsp);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$set_display_protection
+
+
+%SBTTL 'vsta$get_display_char -- Inquire Display Characteristics'
+GLOBAL ROUTINE vsta$get_display_char(
+			tty_chan,		!Device channel number
+			width,			!Display width
+			height,			!Display height
+			bitplanes,		!Number of bitplanes
+			color_num,		!Current color number
+			perm_flag,		!Permenant or temporary
+			protection		!Protection mask
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the characteristics of the
+! specified display device.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	WIDTH	  : Longword display width
+!				(output parameter)
+!	HEIGHT	  : Longword display height
+!				(output parameter)
+!	BITPLANES : Longword number of bitplanes
+!				(output parameter)
+!	COLOR_NUM : Address to contain longword color number
+!				(output parameter)
+!	PERM_FLAG : Longword permenant or temporary
+!				(output parameter)
+!	PROTECTION : Longword protection mask
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_GETDIS		!Get display characteristics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	vd_char: BLOCK[vsu$s_vsudependent,BYTE],
+					 !Virtual display characteristics
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_getdis);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_getdis);
+	  END;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_ACCESS+IO$M_VD,
+			IOSB = iosb,
+			P1   = vd_char,
+			P2   = vsu$s_vsudependent,
+			P3   = .device_adr[vsta$ct_l_vd_id]
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_getdis);
+	  END;
+!
+! Return the desired display characteristics to calling routine
+!
+	IF parameter_address(color_num) NEQ 0 THEN
+	   VSTA$$CONVERT_COLOR_TO_USER(
+		.vd_char[vsu$w_vd_background], .color_num);
+	IF parameter_address(width) NEQ 0 THEN
+	  .width = .vd_char[vsu$w_vd_width];
+	IF parameter_address(height) NEQ 0 THEN
+	  .height = .vd_char[vsu$w_vd_height];
+	IF parameter_address(bitplanes) NEQ 0 THEN
+	  .bitplanes = .vd_char[vsu$w_vd_depth];
+	IF parameter_address(perm_flag) NEQ 0 THEN
+	  IF (.vd_char[vsu$w_vd_chars] AND vs$m_perm_vd) NEQ 0 THEN
+	    .perm_flag = $true
+	  ELSE
+	    .perm_flag = $false;
+	IF parameter_address(protection) NEQ 0 THEN
+	  .protection = .vd_char[vsu$w_vd_protection];
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$get_display_char
+
+
+%SBTTL 'vsta$push_display_state -- Push state of virtual display'
+ROUTINE vsta$push_display_state =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for saving the characteristics of the
+! "current" terminal. This terminal is used by any procedure that does not
+! take the terminal ID as an argument. The information is pushed onto a
+! stack (including its name) so that another terminal can be selected. If
+! no terminal has been previously "selected" or too many vsta$POP_TERMINALCHAR's
+! have been invoked (implying that the stack is empty), the state of the stack
+! after this call will remain unchanged. In that case, the return status will
+! not cause an exception but will return SS$_NOTMODIFIED for information
+! purposes.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSELECT		!Stack not modified 
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	old_stb: REF BLOCK[0,BYTE],	 !Last "selected" terminal info block
+	stb: REF BLOCK[0,BYTE],		 !New "selected" terminal info block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! First make sure that the caller has previously "selected" a terminal which
+! can be pushed onto the stack
+!
+	IF .impure_area[vsta$a_curr_tty_ptr] EQL impure_area[vsta$a_curr_tty_ptr]
+	  THEN
+	    lib_ret_err(vsta$_noselect);
+!
+! Allocate heap storage for an empty selected terminal information block and
+! place it at the head of the selected terminal information block list
+! (pushing the last "selected" terminal info block "on the stack")
+!
+	IF (NOT (status = lib$get_vm (%REF(vsta$st_k_st_length),stb)))
+	  THEN
+	    BEGIN
+	      lib_add_err(.status);
+	      lib_ret_err(vsta$_noselect);
+	    END;
+!
+	old_stb = .impure_area[vsta$a_curr_tty_ptr];
+	stb[vsta$st_w_size] = vsta$st_k_st_length;
+	stb[vsta$st_w_type] = 0;
+	stb[vsta$st_a_curr_tty] = .old_stb[vsta$st_a_curr_tty];
+	INSQUE(.stb,impure_area[vsta$a_curr_tty_ptr]);
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$push_display_state
+
+
+%SBTTL 'vsta$pop_display_state -- Pop Display State'
+ROUTINE vsta$pop_display_state =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for restoring the characteristics of the
+! last terminal pushed onto the stack. This terminal is used by any procedure
+! that does not take the terminal ID as an argument. A call to
+! vsta$get_selectedterminal will return the channel number to this terminal
+! which has been popped off the stack. If the stack is already empty, this
+! routine will return SS$_NOTMODIFIED for information purposes. This will not
+! cause an exception condition.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	IMPURE_AREA  : Address of VAXstation per-process work area
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSELECT		!Stack not modified
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	st_ptr: REF BLOCK[0,BYTE],	 !Ptr to the selected terminal block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! See if there is anything on the selected terminal "stack"
+!
+	IF .impure_area[vsta$a_curr_tty_ptr] EQL impure_area[vsta$a_curr_tty_ptr]
+	  THEN
+	    lib_ret_err(vsta$_noselect);
+!
+! Something is on the stack -- Just remove it from the linked list and
+! deallocate the memory occupied by the selected terminal block
+!
+	REMQUE(.impure_area[vsta$a_curr_tty_ptr],st_ptr);
+	lib$free_vm(%REF(vsta$st_k_st_length),st_ptr);
+!
+      RETURN SS$_NORMAL;
+    END;		! End of routine vsta$pop_display_state
+
+
+%SBTTL 'vsta$read_graphics -- Read Graphics Report from Terminal'
+GLOBAL ROUTINE vsta$read_graphics(
+			tty_chan,			!Terminal channel no.
+			buffer_desc: REF BLOCK[0,BYTE],	!GIDIS report buffer
+			report_status,			!GIDIS report status
+			astadr,				!AST routine address
+			astprm				!AST routine parameter
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for reading GIDIS graphics report info from
+! a native display device. This routine will only fill as much of the buffer
+! that is specified in the buffer descriptor, but the actual amount of data
+! written will be place in buffer_length. An AST routine will be delivered to
+! the caller (if specified) or else this routine will wait for a response.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Longword channel number to the terminal device
+!				(input parameter)
+!	BUFFER_DESC   : Address of 2 longword GIDIS report buffer descriptor
+!				(input parameter)
+!	REPORT_STATUS : Address of 4 word GIDIS report status, where
+!			  word 1 = success/fail return status
+!			  word 2 = number of bytes actually written into buffer
+!			  words 3,4 = reserved for future use
+!				(output parameter)
+!	ASTADR	      : Address of AST routine to activate when info available
+!				(input parameter)
+!	ASTPRM	      : Address of longword AST parameter
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_REAGPH		!Read graphics (GIDIS report) failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status;					!Return status value
+
+!
+! Validate output parameter addresses
+!
+	IF parameter_address(buffer_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(buffer_desc));
+	    lib_ret_err(vsta$_reagph);
+	  END;
+	IF parameter_address(report_status) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(report_status));
+	    lib_ret_err(vsta$_reagph);
+	  END;
+!
+! If ASTADR specified is zero, then caller wants to wait for GIDIS report.
+! ACP will return an error code if unable to read graphics from this device.
+!
+	IF parameter_value(astadr) EQL 0 THEN
+	  status = VSTA$QIOW(
+			CHAN = parameter_value(tty_chan),
+			FUNC = IO$_ACCESS + IO$M_GRAPHICS,
+			IOSB = .report_status,
+			P1   = .buffer_desc[vsta$ad_a_string],
+			P2   = .buffer_desc[vsta$ad_w_size])
+	ELSE
+!
+! If ASTADR specified is non-zero, then caller does not want to wait
+! for GIDIS report but have specified AST routine fired off at completion.
+! ACP will return an error code if unable to read graphics from this device.
+!
+	  status = $QIO(
+			CHAN = parameter_value(tty_chan),
+			FUNC = IO$_ACCESS + IO$M_GRAPHICS,
+			IOSB = .report_status,
+			ASTADR = parameter_address(astadr),
+			ASTPRM = parameter_address(astprm),
+			P1   = .buffer_desc[vsta$ad_a_string],
+			P2   = .buffer_desc[vsta$ad_w_size]);
+!
+	IF NOT .status THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_reagph);
+	  END;
+!
+	RETURN SS$_NORMAL;
+    END;			! End of routine vsta$read_graphics
+
+
+%SBTTL 'vsta$write_graphics -- Write Graphics to Terminal'
+GLOBAL ROUTINE vsta$write_graphics(
+			tty_chan,			!Terminal channel no.
+			cmd_desc: REF BLOCK[0,BYTE],	!Command list descr.
+			cmd_number,			!Number of commands
+			cmd_format			!Command format
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for writing graphics to an emulated
+! graphics display device. This routine is capable of writing either GIDIS
+! or device native graphics, assuming that the command list is in the proper
+! format.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to the terminal device
+!			(input parameter)
+!	CMD_DESC : Address of 2 longword command list ascii descriptor
+!			(input parameter)
+!	CMD_NUMBER : Longword number of commands in command list
+!			(input parameter)
+!	CMD_FORMAT : Longword command format indicator where
+!		     0 => GIDIS format and 1 => Native Device format
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_WRTGPH		!Write graphics failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! Make sure a command list descriptor was input
+!
+	IF parameter_address(cmd_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(cmd_desc));
+	    lib_ret_err(vsta$_wrtgph);
+	  END;
+!
+! Just send graphics command list to the ACP via $QIO and VDDRIVER. ACP
+! will return an error code if unable to write graphics to this device.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = parameter_value(tty_chan),
+		FUNC = IO$_WRITE_VD+IO$M_GRAPHICS,
+		IOSB = iosb,
+		P1   = .cmd_desc[vsta$ad_a_string],
+		P2   = .cmd_desc[vsta$ad_w_size],
+		P3   = parameter_value(cmd_number),
+		P4   = parameter_value(cmd_format)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_wrtgph);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$write_graphics
+
+
+
+
+
+%SBTTL 'vsta$create_native_viewport -- Create a System Viewport'
+GLOBAL ROUTINE vsta$create_native_viewport(
+			w_id,			!Window ID to map to
+			vp_id,			!Viewport ID returned
+			x_coor,			!X-coordinate on VS
+			y_coor,			!Y-coordinate on VS
+			base_vp			!place on viewport stack to put this one
+!
+! MAYBE ADDED AS AN OPTIONAL PARAMETER LATER 
+!			vs_id,			!Virtual Screen ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating viewports. Viewports
+! provide the mechanism for mapping the contents of a window to a virtual
+! screen and potentially to within the confines of a physical screen to make
+! it visible. Viewports may move around a virtual screen, occlude one another,
+! and in future release will scale the contents of a window.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID   : Longword unique window ID to map the viewport to.
+!			(input parameter)
+!	VS_ID  : Longword unique virtual screen ID to attach viewport to.
+!			(input parameter)
+!	VP_ID  : Address to contain viewport ID
+!			(output parameter)
+!	X_COOR : Longword X-coordinate of viewport on virtual screen
+!			(input parameter)
+!	Y_COOR : Longword Y-coordinate of viewport on virtual screen
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_NODEVAVL		!No device available at this time
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+
+	dummy_chan,			 !Temporary storage for channel no.
+	vp_iosb: VECTOR[2],		 !I/O status block for VP $QIO
+	status;				 !To contain return status value
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevie);
+	  END;
+
+!
+! Use $QIO to get to VDDRIVER with appropriate viewport modifier
+! function codes to create the viewport and wait for response.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_CREATE+IO$M_VP,
+			IOSB = vp_iosb,
+			P2   = ..w_id,
+			P3   = 1, ! Dummy VSID for now
+			P4   = parameter_value(x_coor),
+			P5   = parameter_value(y_coor),
+			P6   = parameter_value(base_vp)
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_crevie);
+	  END;
+
+
+!
+! Viewport has been successfully created -- return the viewport ID
+!
+	IF parameter_address(vp_id) NEQ 0 THEN
+	.vp_id = .vp_iosb[1];
+
+
+      RETURN .vp_iosb[0];
+
+    END;			! End of routine vs$create_vp
+
+
+
+%SBTTL 'vsta$delete_viewport -- Delete a Viewport'
+GLOBAL ROUTINE vsta$delete_viewport(
+			vp_id			!Unique viewport ID
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting viewports. Viewports
+! provide the mechanism for mapping the contents of a window to a virtual
+! screen and potentially to within the confines of a physical screen to make
+! it visible. Viewports may move around a virtual screen, occlude one another,
+! be attached and detached from virtual screens, and in future release will
+! scale the contents of a window.
+!
+! FORMAL PARAMETERS:
+!
+!	VP_ID : Longword unique ID of the viewport to be deleted
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_NOSUCHDEV		!No such device
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+
+	dummy_chan,			 !Dummy channel number
+	vp_iosb: VECTOR[2],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delvie);
+	  END;
+!
+! Delete the viewport. Use this dummy channel number to get past
+! $QIOW to VDDRIVER.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DELETE+IO$M_VP,
+			IOSB = vp_iosb,
+			P3   = ..vp_id
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delvie);
+	  END;
+!
+      RETURN .vp_iosb[0];
+    END;			! End of routine vs$delete_vp
+
+
+
+
+%SBTTL 'vsta$attach_virtual_keyboard -- Activate a Virtual Keyboard'
+GLOBAL ROUTINE vsta$attach_virtual_keyboard(
+			vkb_id		!ID of virtual keyboard to activate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for activating the specified virtual
+! keyboard if it exists. This entails an implicit deactivation of the
+! previously active virtual keyboard and the loading of the new context.
+! No information is lost from the previously active VKB (i.e. the typeahead
+! buffer is intact), and read requests to inactive VKB's will only be blocked
+! when the typeahead buffer is not sufficient to satisfy the read.
+!
+! FORMAL PARAMETERS:
+!
+!	VKB_ID    : Longword unique Virtual Keyboard ID
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_NOSUCHDEV		!No such device (virtual keyboard)
+!
+! SIDE EFFECTS:
+!
+!	Data typed at the physical keyboard will now be routed to the active
+! virtual keyboard buffer and can only be used to satisfy read requests on this
+! virtual keyboard.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	iosb: VECTOR[2],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	   BEGIN
+	     lib_add_err(.status);
+	     lib_ret_err(vsta$_actvkb);
+	   END;
+!
+! Use $QIO to get to VDDRIVER with appropriate function codes and 
+! modifiers to activate this VKB and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_ACTIVATE + IO$M_VKB,
+			IOSB = iosb,
+			P3   = ..vkb_id
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_actvkb);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vs$activate_vkb
+
+
+%SBTTL 'vsta$detach_virtual_keyboard -- Deactivate a Virtual Keyboard'
+GLOBAL ROUTINE vsta$detach_virtual_keyboard(
+			vkb_id		!ID of virtual keyboard to deactivate
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deactivating the specified virtual
+! keyboard if it exists. This entails an explicit deactivation of the
+! active virtual keyboard and the loading of a null context.
+! No information is lost from the previously active VKB (i.e. the typeahead
+! buffer is intact), and read requests to inactive VKB's will only be blocked
+! when the typeahead buffer is not sufficient to satisfy the read. However,
+! until another call to VS$ACTIVATE_VKB, all information typed at the physical
+! keyboard is thrown away.
+!
+! FORMAL PARAMETERS:
+!
+!	VKB_ID    : Longword unique Virtual Keyboard ID
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_NOSUCHDEV		!No such device (virtual keyboard)
+!
+! SIDE EFFECTS:
+!
+!	Data typed at the physical keyboard will now be disregarded.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	dummy_chan,			 !Temporary storage for channel no.
+	iosb: VECTOR[2],		 !$QIO return status block
+	status;				 !To contain return status value
+!
+	VSTACALL_INIT();
+!
+! Get a channel to generic vaxstation device to get us through $QIO
+! to VDDRIVER and eventually to the vaxstation ACP.
+!
+	IF (NOT (status = vsta$$get_template_chan(dummy_chan))) THEN
+	   BEGIN
+	     lib_add_err(.status);
+	     lib_ret_err(vsta$_deactvkb);
+	   END;
+!
+! Use $QIO to get to VDDRIVER with appropriate function codes and 
+! modifiers to deactivate this VKB and wait for response
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .dummy_chan,
+			FUNC = IO$_DEACTIVATE + IO$M_VKB,
+			IOSB = iosb,
+			P3   = ..vkb_id
+				))) THEN
+	   BEGIN
+	     lib_add_err(.status);
+	     lib_ret_err(vsta$_deactvkb);
+	   END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$deactivate_vkb
+
+
+END					!End of module
+ELUDOM

@@ -1,0 +1,488 @@
+module txtalloc8 (
+		addressing_mode (external = general,nonexternal = general)
+		) = begin
+
+
+! Routines for allocation and deallocations of structures
+
+forward routine!s . . .
+	deallocateStringBlock,	! release a string block and its string
+	deallocateString,	! release string from string block
+	forgetString,		! deallocate a string, given descriptor
+	deallocate_text_block,	! deallocate a text block
+	deallocateLineBlock,	! release a line block and its fields
+	deallocateAllLines,	! release all lines for a virtual display
+	deallocateAllFields,	! release all fields for a line
+	deallocateAllStrings,
+				! release all strings of a field
+	deallocateFieldBlock,	! release a field block and its strings
+	createLineBlock,	! create a line block
+	alcful,			! allocate block
+	deallocateFullwords,	! deallocate block
+	alcbyt,			! allocate string (or other byte array)
+	deallocateBytes;
+
+external routine!s
+
+	fibDereference,		! decrement reference count for fib
+	releaseFontsBetween,	! delete group of fonts
+	releaseStringsBetween,	! release strings from field block
+	vs$$acp_free_vm,		! free up some space
+	vs$$acp_get_vm;		! get some free space
+
+library 'vsta$library:txtsym';
+library 'vsta$library:libmacros';! macros like $return_bug
+library 'vsta$library:termio';
+
+$vsta_psect;
+
+builtin
+
+	remque;
+
+%sbttl 'data structure deallocation routines'
+global routine deallocateStringBlock
+!++
+! Functional description:
+!
+!	Deallocate a string block, given its address.
+!	This involves deallocating every block the string block points to, such
+!	as its string, and finally deallocating the string block itself.
+!
+! Formal parameters:
+ (
+    strBlk:ref string_block
+		      ) =
+!
+! Completion codes:
+!
+!	An error results if the block being deallocated isn't a string block
+!
+!--
+
+	begin
+
+	! Make sure block being deallocated is of correct type
+	!
+	if .strBlk[block_id] neq string_block_id
+	then $return_bug (vsta$_not_strng, .strBlk);
+
+	! Clear block id so we'll know if block is erroneously deleted again.
+	strBlk[block_id] = 0;
+
+	! deallocate the string
+	deallocateString (.strBlk);
+
+	! Deallocate space taken up by typeface.
+	forgetString (strBlk[str_typeface_len]);
+
+	! Dereference the fib, to allow it to be deleted if no one else
+	! is referencing it.  However, don't attempt to dereference it if it
+	! is 0, which it will be in the case of an aborting write-text, which
+	! is aborting because no font could be found with which to print the
+	! string.
+	!
+	if .strBlk[str_fid] neq 0
+	then fibDereference (.strBlk[str_fid]);
+
+	! deallocate the string block
+	deallocateFullwords (string_block_length, .strBlk)
+
+	end;
+
+global routine deallocateString
+!++
+! Functional description:
+!
+!	Deallocate the string in a string block, given the address of the block
+!
+! Formal parameters:
+ (
+    strBlk:ref string_block
+		      ) =
+!--
+
+	begin
+	forgetString (strBlk[str_len])
+	end;
+
+global routine forgetString
+!++
+! Functional description:
+!
+!	Deallocate space taken up by string
+!
+! Formal parameters:
+ (
+    desc:ref string_descriptor		! vax string descriptor
+ ) =
+!--
+
+	! Don't attempt to release null string, which can exist if we are
+	! deleting a partially created block.
+	!
+	if .desc[sd_len] neq 0
+	then deallocateBytes (.desc[sd_len], .desc[sd_adr])
+	else true;
+
+global routine deallocate_text_block
+!++
+! Functional description:
+!
+!	Deallocate a text block, given its address.
+!	This involves deallocating every block the text block points to,
+!	and deallocating the text block itself.
+!
+! Formal parameters:
+ (
+    txtBlk:ref text_block
+		      ) =
+!
+! Completion codes:
+!
+!	An error results if the block being deallocated isn't the expected type
+!
+!--
+
+	begin
+
+	local s;
+
+	! Delete all font definitions for this text block
+	!
+	if not (s = releaseFontsBetween (txtBlk[base], 0, 1+.txtBlk[txt_nFonts]))
+	then return .s;
+	
+	! Remove all lines from text block.
+	!
+	deallocateAllLines (txtBlk[base]);
+!
+! Release space taken up by typeface string, if any.
+!
+	forgetString (txtBlk[txt_curTypefaceLen]);
+!
+! Remove this text block from the queue.
+!
+	remque (txtBlk[txt_flink], txtBlk[txt_flink]);
+!
+! deallocate the text block.
+!
+	deallocateFullwords (text_block_length, .txtBlk);
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateLineBlock
+!++
+! Functional description:
+!
+!	Deallocate a line block, given its address.
+!	This involves deallocating every block the line block points to, such
+!	as its field blocks, and finally deallocating the line block itself.
+!
+! Formal parameters:
+ (
+    linBlk:ref line_block
+		      ) =
+!
+! Completion codes:
+!
+!	An error results if the block being deallocated isn't the expected type
+!
+!--
+
+	begin
+
+	local s;
+
+	! Make sure block being deallocated is of correct type
+	!
+	if .linBlk[block_id] neq line_block_id
+	then $return_bug (vsta$_not_line, .linBlk);
+
+	! Deallocate all fields on this line
+	if not (s = deallocateAllFields(.linBlk))
+	then return .s;
+
+	! deallocate the line block itself
+	deallocateFullwords (line_block_length, .linBlk);
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateAllLines
+!++
+! Functional description:
+!
+!	Deallocate all lines of a virtual display.
+!
+! Formal parameters:
+ (
+    txtBlk:ref text_block	! address of text block whose lines are being deleted
+		    ) =
+!--
+
+	begin
+
+	external routine
+
+	    releaseLinesBetween;
+
+	local s;
+
+	bind
+
+	    ! Get number of lines for this text block
+	    nLines = .txtBlk[txt_nLines];
+
+	! Deallocate the lines.
+	if not (s = releaseLinesBetween (txtBlk[base], 0, 1+nLines))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateAllFields
+!++
+! Functional description:
+!
+!	Deallocate all fields of a line.  Two occasions on which this is done are
+!	1) when the line is being entirely deleted, as in being scrolled off the
+!	screen, and 2) when the line is being kept but cleared, as in a call to
+!	clearLine.
+!
+! Formal parameters:
+ (
+    linBlk:ref line_block	! address of line block whose fields are being deleted
+		    ) =
+!--
+
+	begin
+
+	external routine
+
+	    releaseFieldsBetween;
+
+	local s;
+
+	bind
+	    ! Get number of fields for this line
+	    nFields = .linBlk[lin_nFields];
+
+	! Deallocate the fields of the line.
+	if not (s = releaseFieldsBetween (linBlk[base], 0, 1+nFields))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateAllStrings
+!++
+! Functional description:
+!
+!	Deallocate all strings of a field.  Two occasions on which this is done are
+!	1) when the field is being entirely deleted, as in deleteField, and 2) when
+!	the field is being kept but cleared, as in a call to clearField.
+!
+! Formal parameters:
+ (
+    fldBlk:ref field_block	! address of field block whose strings are being deleted
+		    ) =
+!--
+
+	begin
+
+	local s;
+
+	bind
+	    ! Get number of strings for this field
+	    nStrings = .fldBlk[fld_nStrings];
+
+	! deallocate the strings of the field
+	if not (s = releaseStringsBetween (.fldBlk, 0, 1+nStrings))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateFieldBlock
+!++
+! Functional description:
+!
+!	 Deallocate a field block, given its address.
+!	This involves deallocating every block the field block points to, such
+!	as its string blocks, and finally deallocating the field block itself.
+!
+! Formal parameters:
+ (
+    fldBlk:ref field_block
+		      ) =
+!
+! Completion codes:
+!
+!	An error results if the block being deallocated isn't the expected type
+!
+!--
+
+	begin
+
+	local s;
+
+	! Make sure block being deallocated is of correct type
+	!
+	if .fldBlk[block_id] neq field_block_id
+	then $return_bug (vsta$_not_field, .fldBlk);
+
+	! deallocate the strings of the field
+	if not (s = deallocateAllStrings(.fldBlk))
+	then return .s;
+
+	! deallocate the field block itself
+	deallocateFullwords (field_block_length, .fldBlk);
+
+	! Give success return
+	true
+
+	end;
+
+global routine createLineBlock
+!++
+! Functional description:
+!
+!	Create a database for a new line and fill in defaults.
+!	Return the address of the new block, or 0 if error.
+!
+! Formal parameters:
+ (
+    height			! how high line is
+		) =
+!--
+
+	begin
+	local linBlk:ref line_block;
+
+	! Allocate space for the new block
+	linBlk = allocateFullwords(line_block_length);
+
+	! Identify block as a line block
+	linBlk[block_id] = line_block_id;
+
+	! Remember height of line
+	linBlk[lin_height] = .height;
+
+	! Return address of block
+	.linBlk
+
+	end;
+
+%sbttl 'memory allocation routines'
+global routine alcful
+!++
+! Functional description:
+!
+!	Allocate block of fullwords.  This is intended to be used by macro
+!	"allocateFullwords"
+!
+! Formal parameters:
+ (
+    howMany,
+    result			! where to write address of block
+		   ) =
+!--
+
+	begin
+
+	local s;
+
+	if not (s = vs$$acp_get_vm (%ref(4*.howMany), .result))
+	then return .s;
+
+	! Clear the block ("zero" it)
+	ch$fill(0, .howMany*4, ..result);
+
+	! Give success return
+	true
+
+	end;
+
+global routine deallocateFullwords
+!++
+! Functional description:
+!
+!	Deallocate a block of fullwords, given quantity and address of block.
+!
+! Formal parameters:
+ (
+    howMany,
+    addr
+		    ) =
+!--
+
+	begin
+
+	local s;
+
+	if not (s = vs$$acp_free_vm (%ref(4*.howMany), addr))
+	then $return_bug (vsta$_bad_dlok8)
+	else .s
+
+	end;
+
+global routine alcbyt
+!++
+! Functional description:
+!
+! Allocate a string for bytes, used by macro allocateBytes
+!
+! Formal parameters:
+ (
+    howMany,
+    result		! where to write address of block
+		   ) =
+!--
+
+	begin
+
+	local s;
+
+	if not (s = vs$$acp_get_vm (howMany, .result))
+	then return .s
+	else true
+
+	end;
+
+global routine deallocateBytes
+!++
+! Functional description:
+!
+!	Deallocate a string of bytes, given number of characters and address
+!
+! Formal parameters:
+ (
+    howMany,
+    addr
+		) =
+!--
+
+	begin
+
+	local s;
+
+	if not (s = vs$$acp_free_vm (howMany, addr))
+	then $return_bug (vsta$_bad_sdlok)
+	else .s
+
+	end;
+
+end
+eludom

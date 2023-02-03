@@ -1,0 +1,1129 @@
+MODULE vstargn (
+		IDENT = '1.2-1',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!	Operations have been provided to allow the access of VAXstation regions
+!	by the application program.  Regions are non-overlapping rectangular
+!	portions of virtual displays, that may be selectable, which means that
+!	when they are selected with the mouse, a program is notified, or a
+!	pasteboard appears, presumably one containing a menu, which in turn
+!	contains items coinciding with more regions.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+!
+! INCLUDE FILES:
+!
+REQUIRE 'vsta$library:VSVDSVD.FLD';	! symbols like rdb_block
+LIBRARY 'vsta$library:LIBMACROS';	! VSTALIB common macro definitions
+REQUIRE 'vsta$library:VXSLIB.FLD';	! symbols like ct_block
+LIBRARY 'vsta$library:VSERRORS';	! VSTA specific error symbols
+LIBRARY 'vsta$library:TXTCODES';	! symbols like txt$_region
+REQUIRE 'vsta$library:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+LIBRARY 'vsta$library:vstagbl';		! Application global symbols
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! PSECT definitions
+!
+	$VSTA_PSECT;
+
+!
+!		Private routines
+!
+FORWARD ROUTINE
+
+	vsta$define_region,		! Define a region on a virtual display.
+	vsta$delete_region,		! Remove region definition.
+	vsta$delete_all_regions,	! Remove all regions from a vd.
+	vsta$set_region_selectable,	! Declare routine or popup pb.
+	vsta$create_menu,		! Create a menu of items.
+	measure_menu_input_buffer,	! Measure size of acp buffer needed.
+	measure_menu_output_buffer,	! Measure size of return buffer needed.
+	fill_menu_title_section,	! Put title in buffer for acp.
+	fill_menu_item_section,		! Fill item strings into buffer.
+	fill_menu_end_section,		! Fill end section for acp.
+	copy_menu_coordinates,		! Return coordinates to caller.
+	cleanup_menu,			! Relinquish buffers.
+	region_init,			! Initialize operations.
+	region_talk_to_acp;		! Complete operations.
+
+external
+
+	    vsta$gl_local_error;
+
+external routine
+
+	lib$free_vm,			! Release virtual memory
+	lib$get_vm,			! Get virtual memory
+	vsta$$get_template_chan;	! Get channel for acp communication.
+
+
+global routine vsta$define_region
+!++
+! Functional description:
+!
+!	Given a virtual display channel and rectangle, define region on the
+!	vd.
+!
+! Formal parameters:
+ (
+	vd_chan,		! channel of vd on which to define region
+	rgn_x,			! coordinates of region
+	rgn_y,
+	rgn_width,		! size of region
+	rgn_height
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    real_chan,			! filled in with actual channel
+	    rdb : ref rdb_block,	! holds region request info
+	    s;				! status from routines.
+
+	! Initialize rdb etc.
+	!
+	if not (s = region_init (.vd_chan, real_chan, rdb))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_defreg);
+	  end;
+
+	! Fill in block with needed info about what to do.
+	!
+	rdb[rdb$l_op] = rgn_op_k_define;
+	rdb[rdb$l_x] = parameter_value (rgn_x);
+	rdb[rdb$l_y] = parameter_value (rgn_y);
+	rdb[rdb$l_width] = parameter_value (rgn_width);
+	rdb[rdb$l_height] = parameter_value (rgn_height);
+
+	! Talk to acp, interpret result, and clean up.
+	!
+	if not (s = region_talk_to_acp (.real_chan, rdb[$base]))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_defreg);
+	  end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$delete_region
+!++
+! Functional description:
+!
+!	Delete a particular region from a virtual display.
+!
+! Formal parameters:
+ (
+	vd_chan,		! channel of vd on which to delete region
+	rgn_x,			! coordinates of region
+	rgn_y
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    real_chan,			! filled in with actual channel
+	    rdb : ref rdb_block,	! holds region request info
+	    s;				! status from routines.
+
+	! Initialize rdb etc.
+	!
+	if not (s = region_init (.vd_chan, real_chan, rdb))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_delreg);
+	  end;
+
+	! Fill in block with needed info about what to do.
+	!
+	rdb[rdb$l_op] = rgn_op_k_delete;
+	rdb[rdb$l_x] = parameter_value (rgn_x);
+	rdb[rdb$l_y] = parameter_value (rgn_y);
+
+	! Talk to acp, interpret result, and clean up.
+	!
+	if not (s = region_talk_to_acp (.real_chan, rdb[$base]))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_delreg);
+	  end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$delete_all_regions
+!++
+! Functional description:
+!
+!	Delete all regions for a given virtual display.
+!
+! Formal parameters:
+ (
+	vd_chan		! channel of vd on which to delete all region
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    real_chan,			! filled in with actual channel
+	    rdb : ref rdb_block,	! holds region request info
+	    s;				! status from routines.
+
+	! Initialize rdb etc.
+	!
+	if not (s = region_init (.vd_chan, real_chan, rdb))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_delall);
+	  end;
+
+	! Fill in block with needed info about what to do.
+	!
+	rdb[rdb$l_op] = rgn_op_k_delete_all;
+
+	! Talk to acp, interpret result, and clean up.
+	!
+	if not (s = region_talk_to_acp (.real_chan, rdb[$base]))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_delall);
+	  end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$set_region_selectable
+!++
+! Functional description:
+!
+!	Declare what routine should be called when a particular region is
+!	selected, and what pasteboard should pop up.
+!
+! Formal parameters:
+ (
+	vd_chan,		! channel of vd on which to set region selectable
+	rgn_x,			! coordinates of region
+	rgn_y,
+	efn,			! event flag to set when region selected
+	iosb : ref vector [2],	! receives status when region is selected
+	astadr,			! routine to call when region selected
+	astprm,			! parameter to pass routine
+	pb_id,			! pasteboard to pop up when region selected.
+	pb_x,			! pb coordinates to coincide with mouse
+	pb_y,
+	sel_attribute		! Selectable attribute (e.g. vsta$K_sel_text)
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    lib$free_vm;	! memory-release routine.
+
+	local
+
+	    real_chan,			! filled in with actual channel
+	    rdb : ref rdb_block,	! holds region request info
+	    mem_s,			! Status from lib$free_vm;
+	    s;				! status from routines.
+!
+! Initialize rdb etc.
+!
+	if not (s = region_init (.vd_chan, real_chan, rdb))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_setreg);
+	  end;
+!
+! Fill in block with needed info about what to do.
+!
+	rdb[rdb$l_op] = rgn_op_k_set_selectable;
+	rdb[rdb$l_x] = parameter_value (rgn_x);
+	rdb[rdb$l_y] = parameter_value (rgn_y);
+	rdb[rdb$l_pb_id] = parameter_value (pb_id);
+	rdb[rdb$l_pb_x] = parameter_value (pb_x);
+	rdb[rdb$l_pb_y] = parameter_value (pb_y);
+	rdb[rdb$l_sel_attribute] = parameter_value (sel_attribute);
+!
+! Talk to acp and get result
+!
+	s = $qio (
+	    chan = .real_chan,
+	    efn = parameter_value (efn),
+	    func = IO$_WRITE_VD+IO$M_TEXT,
+	    iosb = parameter_address (iosb),
+	    astadr = (if .astadr eql 0 then 0 else parameter_address (astadr)),
+	    astprm = parameter_value (astprm),
+	    p1 = rdb[$base],
+	    p2 = rdb$s_rdb_block,
+	    p3 = txt$_region
+	    );
+
+	! Release the rdb.
+	!
+	if not (mem_s = lib$free_vm (%ref (rdb$s_rdb_block), rdb))
+	then
+	  begin
+	    lib_add_err(.mem_s);
+	    lib_ret_err(vsta$_setreg);
+	  end;
+
+	if not .s
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_setreg);
+	  end;
+
+	ss$_normal
+
+	end;
+
+global routine vsta$create_menu
+!++
+! Functional description:
+!
+!	Given title and items for menu, create a virtual display and write
+!	the menu onto it.  If xbuf and ybuf given, define regions on the
+!	items, and fill in buffers with coordinates so that program can
+!	set the item regions to be selectable.
+!
+!	The menu information is conveyed to the acp via an "input block"
+!	(ibuf).  (It's called "input" because it's "input" to the acp.)
+!	The block is portioned into sections.  For instance, there's
+!	a section that contains the menu title, another containing the
+!	items, etc.  Each section of the block is preceded by a quadword,
+!	the first longword of which tells how many bytes long the section is,
+!	and the second longword of which tells what kind of section this is.
+!
+!	The last section of the block will always have a length of 0 and
+!	its kind is a special one denoting the end of the block.
+!
+!	Here's a picture of the block:
+!
+!	+===============================================+
+!	|	  number of bytes in section		|
+!	+-----------------------------------------------+
+!	|		type of section			|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		section			    . . .
+!
+!	|						|
+!	+-----------------------------------------------+
+!	|	  number of bytes in section		|
+!	+-----------------------------------------------+
+!	|		type of section			|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		section			    . . .
+!
+!	|						|
+!	+-----------------------------------------------+
+!
+! Formal parameters:
+ (
+	title_desc : ref $string_descriptor,
+			! title string for menu
+	item_list : ref vector,
+			! item vector, length followed by descriptor addresses
+	chan_adr,	! where to write resultant vd channel
+	width_adr,	! where to write vd width
+	height_adr,	! where to write vd height
+	xbuf_adr : ref vector,	! buffer to fill with x coordinates of items
+	ybuf_adr : ref vector	! buffer for y's.
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    vsta$$register_vd;		! register virtual display
+
+	! Define macro for cleaning up and returning.
+	!
+	macro
+
+	    $return_cleanup_menu =
+		return cleanup_menu (.s, .ibuf_size, libuf[0], .obuf_size,
+		lobuf[$base]) % ;
+
+	bind
+
+	    ! Get number of items.
+	    !
+	    n_items = .item_list[0];
+
+	local
+
+	    ibuf_size,		! receives size of input buffer
+	    obuf_size,		! receives size of output buffer
+	    libuf : ref vector,	! local input buffer passed to acp
+	    lobuf : ref mo_block,	! menu output buffer
+	    xbuf : ref vector,	! coordinates buffer (or 0)
+	    ybuf : ref vector,
+	    item_section, end_section,	! base address of section headers
+	    s,			! status from calls
+	    our_iosb : vector[2],	! io status block
+	    dummy_chan;		! Temporary storage for channel no.
+
+!
+! Perform initialization
+!
+	VSTACALL_INIT ();
+
+	! Calculate size of "input" buffer needed.  
+	!
+	if not (s = measure_menu_input_buffer (
+	    title_desc[$base],
+	    item_list[0],
+	    ibuf_size
+	    ))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_cremnu);
+	  end;
+
+	! Calculate size of output buffer needed.
+	!
+	if not (s = measure_menu_output_buffer (
+	    n_items,			! number of items
+	    xbuf = $parameter_or_0 (xbuf_adr),
+					! tell routine whether caller gave . .
+	    ybuf = $parameter_or_0 (ybuf_adr),
+					! . . buffer addresses.
+	    obuf_size			! where to needed size
+	    ))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_cremnu);
+	  end;
+
+	! Allocate the needed buffers.
+	!
+	if (s = lib$get_vm (obuf_size, lobuf))
+	then
+	    begin
+	    if not (s = lib$get_vm (ibuf_size, libuf))
+	    then
+		begin
+		lib$free_vm (obuf_size, lobuf);
+		lib_add_err(.s);
+		lib_ret_err(vsta$_cremnu);
+		end
+	    end
+	else
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_cremnu);
+	  end;
+
+	! Fill title section of buffer
+	!
+	if not (s = fill_menu_title_section (
+	    title_desc[$base],
+	    libuf[0],
+	    item_section		! get address for next section here.
+	    ))
+	then $return_cleanup_menu;
+
+	! Fill item section in buffer.
+	!
+	if not (s = fill_menu_item_section (
+	    item_list[0],
+	    .item_section,
+	    end_section			! get address for next section
+	    ))
+	then $return_cleanup_menu;
+
+	! Fill end section in buffer.
+	!
+	if not (s = fill_menu_end_section (
+	    .end_section
+	    ))
+	then $return_cleanup_menu;
+
+	! Get dummy channel for talking to the acp.
+	!
+	if NOT (s = vsta$$get_template_chan(dummy_chan))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_cremnu);
+	  end;
+
+	! Talk to acp and get result
+	!
+	if not (s = vsta$qiow (
+	    chan = .dummy_chan,
+	    func = IO$_create_menu,
+	    iosb = our_iosb[0],
+	    p1 = lobuf[$base],		! buffer to receive information back
+	    p2 = .obuf_size,
+	    p5 = libuf[0],		! buffer with menu title, items etc.
+	    p6 = .ibuf_size
+	    ))
+	then $return_cleanup_menu
+	else
+	    if not (s = .our_iosb[0])
+	    then $return_cleanup_menu;
+
+	! Get channel on new virtual display and register it.
+	!
+	if not (s = vsta$$register_vd (
+	    .lobuf[mob$l_vd_id],		! vd unit number
+	    vs$k_vtem_generic,			! vd type (generic)
+	    0,					! not permanent
+	    0,					! no logical name
+	    parameter_address (chan_adr)	! probably address into which
+						! to write channel
+	    ))
+	then
+	  begin
+	    lib_add_err(.s);
+	    lib_ret_err(vsta$_cremnu);
+	  end;
+
+	! Copy requested vd info into caller's area.
+	!
+	if parameter_address (width_adr) neq 0
+	then .width_adr = .lobuf[mob$l_vd_width];
+	if parameter_address (height_adr) neq 0
+	then .height_adr = .lobuf[mob$l_vd_height];
+
+	! Copy the resultant coordinates into the caller's space.
+	!
+	if not (s = copy_menu_coordinates (n_items, lobuf[$base],
+	    xbuf[0], ybuf[0]))
+	then $return_cleanup_menu;
+
+	! All done.  Release buffers and return.
+	!
+	cleanup_menu (ss$_normal, .ibuf_size, libuf[0], .obuf_size,
+	    lobuf[$base])
+
+	end;
+
+routine measure_menu_input_buffer
+!++
+! Functional description:
+!
+!	Given the elements needed to be sent to the acp for creating a menu,
+!	measure how many bytes of storage are needed.
+!
+! Formal parameters:
+ (
+	title_desc : ref $string_descriptor,	! title for menu
+	item_list : ref vector,		! list of items
+	ibuf_size_adr			! where to write required size.
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get address into which to tally size
+	    !
+	    ibuf_size = .ibuf_size_adr,
+
+	    ! Get number of items
+	    !
+	    n_items = .item_list[0];
+
+	! Initialize count to things we can tally without a loop.
+	!
+	ibuf_size =
+
+	    4			! a longword for length of title length
+	    + 4			! a longword to identify title section
+	    + 8			! a quadword for the title descriptor
+	    + .title_desc[sd$w_len]
+				! a byte for each character of title string
+	    + 4			! a longword to hold length of items section
+	    + 4			! a longword to identify items section
+	    + 4			! a longword to hold the number of items
+	    + 4 * n_items	! a longword for address of each descriptor
+	    + 8 * n_items	! a quadword for each item descriptor
+	    + 4			! a longword for length of end indicator
+	    + 4			! a longword for end indicator
+	    ;
+
+	! Loop over all items, tallying how much space is needed for each
+	! string itself.
+	!
+	incr i from 1 to n_items do
+	ibuf_size = .ibuf_size +	! remember total running size
+		.$string_descriptor_str[.item_list[.i], sd$w_len];
+
+	ss$_normal
+
+	end;
+
+routine measure_menu_output_buffer
+!++
+! Functional description:
+!
+!	Calculate size of buffer needed to receive information back from acp
+!	during menu creation.
+!
+! Formal parameters:
+ (
+	n_items,		! number of menu items
+	xbuf,			! xbuf parameter passed by caller
+	ybuf,			! ybuf parameter passed by caller
+	obuf_size_adr		! where to write size of buffer needed
+ ) =
+!
+!--
+
+	begin
+
+	! O.k. here's how it works.  We always need room to return certain
+	! info like virtual display channel and virtual display size.
+	! Then, if caller supplied non-zero buffer addresses, we need room
+	! to return the x and y coordinates, with each of the two lists
+	! preceded by the number of items in the list.
+
+	.obuf_size_adr =
+
+	    ! Leave room for static info.
+	    !
+	    mob$s_mo_block +
+
+	    ! If both buffer addresses were given, leave room for coordinates
+	    ! to come back too.
+	    !
+	    begin
+	    if parameter_address (xbuf) neq 0 and
+		parameter_address (ybuf) neq 0
+	    then
+		! Two buffers (x's and y's)
+		2 * (
+
+		! Leave a longword in which length of buffers will be written.
+		4 +
+
+		! Leave room in each buffer for a longword per item.
+		4 * .n_items )
+	    else 0
+	    end;
+
+	ss$_normal
+
+	end;
+
+routine fill_menu_title_section
+!++
+! Functional description:
+!
+!	Create a section in the menu buffer to contain the title.
+!	The section and it's preceding header are set up to look like this:
+!
+!	+-----------------------------------------------+
+!	|	  number of bytes in title section	|
+!	+-----------------------------------------------+
+!	|	type of section = MENU_K_TITLE		|
+!	+-----------------------------------------------+
+!	|		    | title string length	|section_desc
+!	+-- (descriptor) -------------------------------+
+!	|		title string address		|
+!	+-----------------------------------------------+
+!	|						|title_str
+!	. . .		title string		    . . .
+!	|						|
+!	+===============================================+
+!	|		next free address		|next_section_adr
+!
+!   *	All addresses in the section are set up to be relative to the
+!	beginning of the item section itself.
+!
+! Formal parameters:
+ (
+	title_desc : ref $string_descriptor,
+					! title descriptor passed by caller.
+	section : ref vector,		! address of title section header.
+	next_section_adr		! where to write address of next section
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Calculate offsets into section for various pieces.
+	    !
+	    section_hdr = section[0] : vector[2],	! header
+	    section_desc = section[2] : $string_descriptor,
+						! quadword title descriptor
+		section_base = section_desc,	! base is always BEYOND header
+	    title_str = section_desc[$base] + sd$s_string_descriptor
+		: vector[,byte];		! beginning of title string
+
+	! Copy title string into string portion.
+	!
+	ch$move (
+	    .title_desc[sd$w_len],
+	    .title_desc[sd$a_adr],
+	    title_str);
+
+	! Set up length in descriptor correctly.
+	! Set up string address in descriptor to be relative.
+	!
+	section_desc[sd$w_len] = .title_desc[sd$w_len];
+	section_desc[sd$a_adr] = title_str - section_base;
+
+	! Tell caller where next section may begin.
+	!
+	.next_section_adr = title_str[.title_desc[sd$w_len]];
+
+	! Fill in total length of section in first longword, section type in
+	! second, and tell caller address of next section.
+	!
+	section_hdr[0] = (.next_section_adr =
+	    title_str[.title_desc[sd$w_len]]) - section_base;
+	section_hdr[1] = menu_k_title;
+
+	ss$_normal
+
+	end;
+
+routine fill_menu_item_section
+!++
+! Functional description:
+!
+!	Create a section in the menu buffer to contain the items.
+!	The section and it's preceding header are set up to look like this:
+!
+!	+-----------------------------------------------+
+!	|	  number of bytes in item section	|
+!	+-----------------------------------------------+
+!	|	type of section = MENU_K_ITEM_LIST	|
+!	+-----------------------------------------------+
+!	|	number of items (3 in this example)	|section_nitems
+!	+-----------------------------------------------+
+!	|	   first item descriptor address   *	|section_desc_adrs[0]
+!	+-----------------------------------------------+
+!	|	    second item descriptor address	|
+!	+-----------------------------------------------+
+!	|	    third item descriptor address	|
+!	+-----------------------------------------------+
+!	|		    | first item string length	|section_descs[0,$base]
+!	+-- (descriptor) -------------------------------+
+!	|		first item string address	|
+!	+-----------------------------------------------+
+!	|		    | second item string length	|section_descs[1,$base]
+!	+-- (descriptor) -------------------------------+
+!	|		second item string address	|
+!	+-----------------------------------------------+
+!	|		    | third item string length	|
+!	+-- (descriptor) -------------------------------+
+!	|		third item string address	|
+!	+-----------------------------------------------+
+!	|						|section_strs[0]
+!	. . .		first string		    . . .
+!	|						|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		second string		    . . .
+!	|						|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		third string		    . . .
+!	|						|
+!	+===============================================+
+!	|		next free address		|next_section_adr
+!
+!   *	All addresses in the item section are set up to be relative to the
+!	beginning of the item section itself.
+!
+! Formal parameters:
+ (
+	item_list : ref vector,		! address of item list passed by user
+	section : ref vector,		! address of section header to fill in.
+	next_section_adr		! where to write address of next section
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get number of items
+	    !
+	    n_items = .item_list[0],
+
+	    ! Calculate offsets into section for various pieces.
+	    !
+	    section_hdr = section[0] : vector[2],	! header
+	    section_nitems = section[2],	! where to write number of items
+	    section_desc_adrs = section[3] : vector,
+						! descriptor addresses
+		section_base = section_nitems,	! base of section
+	    section_descs = section_desc_adrs[n_items]
+		: blockvector[,sd$s_string_descriptor, byte]
+		field ($string_descriptor$fieldset),
+						! beginning of descriptors
+	    section_strs = section_descs[n_items, $base] : vector[,byte];
+						! beginning of strings.
+
+	local
+
+	    str_ptr;
+
+	! Initialize pointer to where next string goes.
+	!
+	str_ptr = section_strs[0];
+
+	! Fill in number of items as first part of section.
+	!
+	section_nitems = n_items;
+	
+	! Loop over all items and fill in the info.
+	!
+	incr i from 1 to n_items do
+	    begin
+
+	    bind
+
+		! Get descriptor for latest item.
+		!
+		this_item_desc = .item_list[.i] : $string_descriptor;
+
+	    ! Copy next item string into string portion.
+	    !
+	    ch$move (
+		.this_item_desc[sd$w_len],
+		.this_item_desc[sd$a_adr],
+		.str_ptr);
+
+	    ! Point relative address of descriptor to descriptor.
+	    !
+	    section_desc_adrs[.i-1] = section_descs[.i-1, $base]
+		- section_base;
+
+	    ! Set up length in descriptor correctly.
+	    ! Set up string address in descriptor to be relative.
+	    !
+	    section_descs[.i-1, sd$w_len] = .this_item_desc[sd$w_len];
+	    section_descs[.i-1, sd$a_adr] = .str_ptr - section_base;
+
+	    ! update string pointer so we're all set for next string.
+	    !
+	    str_ptr = .str_ptr + .this_item_desc[sd$w_len]
+
+	    end;
+
+	! Tell caller next available address for another section.
+	!
+	.next_section_adr = .str_ptr;
+
+	! Fill in total length of section in first longword, and type in
+	! second.
+	!
+	section_hdr[0] = .str_ptr - section_base;
+	section_hdr[1] = menu_k_item_list;
+
+	ss$_normal
+
+	end;
+
+routine fill_menu_end_section
+!++
+! Functional description:
+!
+!	Create a section in the menu buffer to contain the end header.
+!	The section and it's preceding header are set up to look like this:
+!
+!	+-----------------------------------------------+
+!	|	  number of bytes in end section (0)	|
+!	+-----------------------------------------------+
+!	|	type of section = MENU_K_END		|
+!	+===============================================+
+!
+! Formal parameters:
+ (
+	section : ref vector		! address of section header.
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Calculate offsets into section for various pieces.
+	    !
+	    section_hdr = section[0] : vector[2];	! header
+
+	! Fill in length of section to be 0
+	!
+	section_hdr[0] = 0;
+
+	! Fill in type to be that of an end block.
+	!
+	section_hdr[1] = menu_k_end;
+
+	ss$_normal
+
+	end;
+
+routine copy_menu_coordinates
+!++
+! Functional description:
+!
+!	If the caller supplied region coordinate buffer addresses, we've
+!	defined regions on the menu items, so this routine copies the region
+!	coordinates back into the caller's area.
+!
+! Formal parameters:
+ (
+	n_items,		! number of menu items
+	lobuf : ref mo_block,	! menu output buffer
+	xbuf : ref vector,	! x buffer to copy into or 0
+	ybuf : ref vector	! y buffer to copy into or 0
+ ) =
+!
+!--
+
+	begin
+
+	! If either buffer address is 0, assume no regions have been defined.
+	!
+	if xbuf[0] eql 0 or ybuf[0] eql 0
+	then return ss$_normal;
+
+	$please_bind
+
+	    ! Calculate length of the coordinate buffers, which is a longword's
+	    ! worth for the length, plus a longword for each item.
+	    !
+	    buf_len = 1 + .n_items,
+
+	    ! Calculate location of coordinate buffers in output buffer as
+	    ! returned by acp, keeping track of fact that number of items is
+	    ! stored at head longword of each coordinate buffer.
+	    !
+	    oxbuf = lobuf[$base] + mob$s_mo_block : vector,
+	    oybuf = oxbuf[buf_len] : vector;
+
+	! Copy the two buffers.
+	!
+	ch$move (
+	    buf_len * 4,
+	    oxbuf[0],
+	    xbuf[0]
+	    );
+	ch$move (
+	    buf_len * 4,
+	    oybuf[0],
+	    ybuf[0]
+	    );
+
+	$please_end;
+
+	ss$_normal
+
+	end;
+
+routine cleanup_menu
+!++
+! Functional description:
+!
+!	When returning from the create-menu operation, relinquish allocated
+!	buffers.
+!
+! Formal parameters:
+ (
+	status,		! Status to return
+	len1,		! lengths and addresses of buffers to release
+	adr1,
+	len2,
+	adr2
+ ) =
+!
+!
+! Return value:
+!
+!	In order that this routine may be used as the object of a "return"
+!	statement, the status code passed to us is used as the return value
+!	of this routine.
+!--
+
+	begin
+
+	! Free up local buffers.
+	!
+	lib$free_vm (len1, adr1);
+	lib$free_vm (len2, adr2);
+
+	! Return specified status code.
+	!
+	if not .status
+	then
+	  begin
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_cremnu);
+	  end
+	else
+	  return .status;
+
+	end;
+
+routine region_init
+!++
+! Functional description:
+!
+!	This routine does all the things necessary for each region procedure,
+!	such as initializing the error handler, validating the channel, and
+!	obtaining an rdb.
+!
+! Formal parameters:
+ (
+	vd_chan,		! channel parameter from procedure
+	real_chan_adr,		! where to write real channel for qio
+	rdb_adr			! where to write rdb address.
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s,
+	    device_adr : ref ct_block;	! hold info about channel
+
+	external
+	    vsta$_undchan;
+
+	external routine
+
+	    vsta$$channel_found,! routine to calculate what channel to use.
+	    lib$get_vm;		! library routine for getting memory
+!
+! Perform initialization
+!
+	VSTACALL_INIT ();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(vd_chan),
+		device_adr) THEN
+	  RETURN vsta$_undchan;
+
+	! Tell caller the channel.
+	!
+	.real_chan_adr = .device_adr[vsta$ct_l_tty_chan];
+
+	! Allocate rdb
+	!
+	if not (s = lib$get_vm (%ref (rdb$s_rdb_block), .rdb_adr))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+routine region_talk_to_acp
+!++
+! Functinal description:
+!
+!	Once rdb has been filled in, call this routine to talk to the acp,
+!	interpret the result, and release the rdb.
+!
+! Formal parameters:
+ (
+	real_chan,		! Channel of virtual display we're talking to.
+	rdb : ref rdb_block,	! Block to be sent to acp.
+	efn, iosb, astadr, astprm	! optional qio parameters
+ ) =
+!
+!--
+
+	begin
+
+	external routine
+
+	    lib$free_vm;	! memory-release routine.
+
+	local
+
+	    local_iosb : vector [2],
+	    s,			! Status from acp
+	    mem_s;		! Status from lib$free_vm;
+
+	! Talk to acp and get result
+	!
+	s = vsta$qiow (
+	    chan = .real_chan,
+	    func = IO$_WRITE_VD+IO$M_TEXT,
+	    iosb = local_iosb[0],
+	    p1 = rdb[$base],
+	    p2 = rdb$s_rdb_block,
+	    p3 = txt$_region
+	    );
+
+	! Release the rdb.
+	!
+	if not (mem_s = lib$free_vm (%ref (rdb$s_rdb_block), rdb))
+	then return .mem_s;
+
+	! Say status returned from acp.
+	if not .s
+	then return .s;
+
+	.local_iosb[0]
+
+	end;
+
+end
+eludom

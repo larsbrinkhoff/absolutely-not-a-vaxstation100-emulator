@@ -1,0 +1,87 @@
+ 
+!*** MODULE VS$VTB ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+!    This module contains all the data structures relevent to dealing with
+!    the VAXstation Virtual Tablet as an entity in the context of
+!    a VAX workstation running the associated workstation display software;
+!    an implementation of the System Display Architecture.
+! 
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+! 
+!  Virtual Tablet Module Constant Definitions
+! 
+! 
+!  Virtual Tablet I/O Request Block
+! 
+literal vs$rb_k_block_size = 40;        ! Length of data block
+FIELD vs$rb_rb_block_FIELDSET =
+  SET
+  vs$rb_a_flink = [0,0,32,0],           ! Ptr to next request block
+  vs$rb_a_blink = [4,0,32,0],           ! Ptr to previous request block
+  vs$rb_w_size = [8,0,16,0],            ! Data block size
+  vs$rb_w_type = [10,0,16,0],           ! Data block type
+  vs$rb_a_irp = [12,0,32,0],            ! I/O request IRP address
+  vs$rb_l_pid = [16,0,32,0],            ! I/O request PID
+  vs$rb_l_user_last_x = [20,0,32,0],    ! User last known X-coordinate
+  vs$rb_l_user_last_y = [24,0,32,0],    ! User last known Y-coordinate
+  vs$rb_l_distance = [28,0,32,0],       ! Distance to satisfy I/O
+  vs$rb_l_user_up_mask = [32,0,32,0],   ! User desired button up mask
+  vs$rb_l_user_down_mask = [36,0,32,0]  ! User desired button down mask
+  TES;
+literal vs$rb_s_rb_block = 40;
+MACRO rb_block = BLOCK [vs$rb_s_rb_block,byte] FIELD (vs$rb_rb_block_FIELDSET) %;
+! 
+!  Virtual Tablet Button Event Flags
+! 
+literal vs$vtb_k_efn_block_size = 2;    ! Length of data block
+FIELD vs$vtb_vtb_efn_block_FIELDSET =
+  SET
+  vs$vtb_b_down_efn = [0,0,8,0],        ! Button down transition efn
+  vs$vtb_b_up_efn = [1,0,8,0]           ! Button up transition efn
+  TES;
+literal vs$vtb_s_vtb_efn_block = 2;
+MACRO vtb_efn_block = BLOCK [vs$vtb_s_vtb_efn_block,byte] FIELD (vs$vtb_vtb_efn_block_FIELDSET) %;
+! 
+!  Virtual Tablet Data Block Definition
+! 
+literal vs$vtb_m_active = 1;
+literal vs$vtb_k_block_size = 54;       ! Length of data block
+FIELD vs$vtb_vtb_block_FIELDSET =
+  SET
+  vs$vtb_a_flink = [0,0,32,0],          ! Ptr to next virtual tablet
+  vs$vtb_a_blink = [4,0,32,0],          ! Ptr to previous vtb block
+  vs$vtb_w_size = [8,0,16,0],           ! Data block size
+  vs$vtb_w_type = [10,0,16,0],          ! Data block type
+  vs$vtb_l_id = [12,0,32,0],            ! Virtual Tablet ID
+  vs$vtb_l_owner = [16,0,32,0],         ! Owner of virtual tablet
+  vs$vtb_w_ptb_chan = [20,0,16,0],      ! Physical Tablet channel no.
+    vs$vtb_l_state = [22,0,32,0],       ! State of virtual tablet
+      vs$vtb_v_active = [22,0,1,0],     ! Activated virtual tablet
+      vs$vtb_v_extra = [22,1,7,0],      ! For future DEC use
+    vs$vtb_r_state_bits = [22,0,8,0],   ! Individual VTB state bits
+  vs$vtb_r_state_field = [22,0,32,0],
+  vs$vtb_a_pm_head = [26,0,32,0],       ! Ptr move request head
+  vs$vtb_a_pm_tail = [30,0,32,0],       ! Ptr move request tail
+  vs$vtb_a_tb_head = [34,0,32,0],       ! Button request head
+  vs$vtb_a_tb_tail = [38,0,32,0],       ! Button request tail
+  vs$vtb_l_x = [42,0,32,0],             ! Current X-coordinate
+  vs$vtb_l_y = [46,0,32,0],             ! Current Y-coordinate
+  vs$vtb_l_button_mask = [50,0,32,0]    ! Current button mask
+  TES;
+literal vs$vtb_s_vtb_block = 54;
+MACRO vtb_block = BLOCK [vs$vtb_s_vtb_block,byte] FIELD (vs$vtb_vtb_block_FIELDSET) %;
+! 
+!  End of module VS$VTB
+! 

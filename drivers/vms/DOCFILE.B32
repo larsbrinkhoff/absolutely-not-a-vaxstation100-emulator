@@ -1,0 +1,1149 @@
+MODULE DOC$FILE (
+		IDENT = 'VSTADOC Utility File I/O routines'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module interfaces to RMS.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$open_source,
+    doc$$get_source_line,		!Get next line from source file
+    doc$$open_list,
+    doc$$append_list_line,		!Append string to current list line
+    doc$$put_list_line,			!Write current line to list file
+    doc$$open_rvw,			!Open REVIEW file
+    doc$$append_rvw_line,		!Append string to current rvw line
+    doc$$put_rvw_line,			!Write current rvw line to list file
+    doc$$close_rvw,			!Close review file
+    doc$$abort_rvw,			!Close + delete review file
+    doc$$open_edf_out,			!Open encoded doc file for output
+    doc$$open_edf_in,			!Open encoded doc file for input
+    doc$$write_edf_file,		!Write buffer to edf file
+    doc$$read_edf_file,			!Read edf file buffer
+    doc$$open_line_file,		!Open the temporary "lines" file
+    doc$$put_line_file,			!Put record to "line" file
+    doc$$rewind_line_file,		!Get set to start reading "line" file
+    doc$$get_line_file,			!Read record from "line" file
+    doc$$open_toc_line_file,		!Open the toc "lines" file
+    doc$$rewind_toc_line_file,		!Rewind the toc "lines" file
+    doc$$close_source,
+    doc$$close_list,
+    doc$$abort_list,			!Close list and abort
+    doc$$close_edf,			!Close edf file
+    doc$$abort_edf,			!Close edf file and abort if writing
+    doc$$close_line_file,		!Close (and delete) "lines" file
+    doc$$close_toc_line_file;		! " " " " " " " the TOC "lines" file
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$error,			!Report error
+    doc$$type_sts,		!Type error and status
+    doc$$type_line,		!Type out a line
+    doc$$update_srcfil,		!Update srcfil name on screen
+    doc$$update_lisfil,		!Update listing file name on screen
+    doc$$update_edffil,		!Update extended doc name on screen
+    doc$$update_rvwfil;		!Update review file name on screen
+
+EXTERNAL
+    fatal_error,		!Set to 1 if a fatal error occurs
+    doc$_rms_open_fai,		!"RMS $OPEN failed"
+    doc$_rms_create_fai,	!"RMS $CREATE failed"
+    doc$_rms_cnt_fai,		!"RMS $CONNECT failed"
+    doc$_fil_write_error,	!"Error writing file"
+    doc$gl_cur_line_num;	!Current listing line number
+
+GLOBAL
+    doc$gl_line_buf: BLOCK [512,BYTE],	!Record buffer for "lines" file
+    doc$gl_edf_buffer: BLOCK [512,BYTE],	!EDF file buffer
+    doc$gl_src_open_flag,	!=1 if source file is open
+    doc$gl_lis_open_flag,	!=1 if listing file is open
+    doc$gl_rvw_open_flag,	!=1 if review file is open
+    doc$gl_edf_open_flag,	!=1 if encoded doc file is open
+    doc$gl_src_desc: VECTOR [2],
+    doc$gl_lis_desc: VECTOR [2],
+    doc$gl_rvw_desc: VECTOR [2],
+    doc$gl_edf_desc: VECTOR [2];
+
+OWN
+    src_record_buf: BLOCK [512,BYTE],	!Source file record buffer
+    lis_record_buf: BLOCK [512,BYTE],	!LISTING file record buffer
+    rvw_record_buf: BLOCK [512,BYTE],	!REVIEW file record buffer
+    list_line_desc: VECTOR [2]		!Current list line descriptor
+		INITIAL (0, lis_record_buf),
+    rvw_line_desc: VECTOR [2]		!Current review line descriptor
+		INITIAL (0, rvw_record_buf),
+    src_rsa: BLOCK [NAM$C_MAXRSS,BYTE],	!Where resultant string goes
+    rvw_rsa: BLOCK [NAM$C_MAXRSS,BYTE],	!Review file resultant string
+    lis_rsa: BLOCK [NAM$C_MAXRSS,BYTE],	!Listing file resultant string
+    edf_rsa: BLOCK [NAM$C_MAXRSS,BYTE],	!Encoded doc file resultant string
+    src_nam_block: $NAM
+		(RSS = NAM$C_MAXRSS	!Resultant string size
+		,RSA = src_rsa		!Resultant string buffer addr.
+		),
+    srcfab: $FAB
+		(DNM = '.TXT'		!Default file spec string
+		,FAC = <GET>		!Just read access desired
+		,NAM = src_nam_block	!NAM block address
+		),
+    srcrab: $RAB
+		(FAB = srcfab
+		,ROP = <RAH>		!Read-ahead for performance
+		,UBF = src_record_buf	!Buffer address for reads
+		,USZ = 512		!Size of record buffer
+		),
+    cr_bit_on,				!=1 if SRC records have implied <CR>
+    lis_fil_desc: VECTOR [2],
+    lis_nam_block: $NAM
+		(RSS = NAM$C_MAXRSS	!Resultant string size
+		,RSA = lis_rsa		!Resultant string buffer addr.
+		),
+    lisfab: $FAB
+		(DNM = '.LIS'		!Default file spec string
+		,FAC = <PUT>		!Just PUT access desired
+		,MRS = 512		!Max record size
+		,NAM = lis_nam_block	!NAM block address
+		,ORG = SEQ		!Sequential organization
+		,RFM = VAR		!Variable records
+		,RAT = <CR>		!Assumed CRLFs in file
+		),
+    lisrab: $RAB
+		(FAB = lisfab
+		,RAC = SEQ		!Sequential access only
+		,RBF = lis_record_buf	!Record buffer address
+		,ROP = <WBH>		!Write-behind for performance
+		),
+    linefab: $FAB
+		(ORG = SEQ
+		,FNM = 'LINES.TMP'
+		,FAC = <GET,PUT>
+		,ALQ = 100
+		,DEQ = 100
+		,BKS = 4
+		,FOP = <CBT,DFW,TMD,TMP>
+		,MRS = 512
+		,RFM = VAR		!Variable length records
+		),
+    linerab: $RAB
+		(FAB = linefab
+		,RBF = doc$gl_line_buf
+		,UBF = doc$gl_line_buf
+		,USZ = 512		!User buffer size
+		),
+    line_open_flag,			!Set to 1 if lines file is open
+    toc_linefab: $FAB
+		(ORG = SEQ
+		,FNM = 'LINES.TMP'
+		,FAC = <GET,PUT>
+		,ALQ = 100
+		,DEQ = 100
+		,BKS = 4
+		,FOP = <CBT,DFW,TMD,TMP>
+		,MRS = 512
+		,RFM = VAR		!Variable length records
+		),
+    toc_linerab: $RAB
+		(FAB = toc_linefab
+		,RBF = doc$gl_line_buf
+		,UBF = doc$gl_line_buf
+		,USZ = 512		!User buffer size
+		),
+    toc_line_open_flag,			!Set to 1 if TOC lines file is open
+    curr_linerab: REF BLOCK[,BYTE],	!Ptr to current "Lines" file RAB
+    rvw_nam: $NAM
+		(RSS = NAM$C_MAXRSS	!Resultant string size
+		,RSA = rvw_rsa		!Resultant string address
+		),
+    rvw_fab: $FAB
+		(NAM = rvw_nam
+		,RFM = VAR		!Variable records
+		,MRS = 512		!Max record size
+		,ORG = SEQ		!Sequential organization
+		,RAT = <CR>		!Assumed CRLF's in file
+		),
+    rvw_rab: $RAB
+		(FAB = rvw_fab
+		,RAC = SEQ		!Sequential access only
+		,RBF = rvw_record_buf	!Record buffer address
+		,ROP = <WBH>		!Write-behind for performance
+		),
+    edf_nam: $NAM
+		(RSS = NAM$C_MAXRSS	!Resultant string buffer size
+		,RSA = edf_rsa		!Resultant string buffer adr.
+		),
+    edf_fab: $FAB
+		(DNM = '.EDF'		!Default name
+		,FAC = <BIO,GET,PUT>	!Block I/O (low overhead)
+		,NAM = edf_nam		!name block address
+!		,MRS = 512		!Max record size
+		,ALQ = 100
+		,DEQ = 100
+		,FOP = <CBT>		!Contig best try
+!		,RFM = FIX		!Fixed length records
+		),
+    edf_rab: $RAB
+		(FAB = edf_fab
+		);
+
+GLOBAL ROUTINE doc$$open_source
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens the source file for input (and possibly set cr_bit_on)
+! FORMAL PARAMETERS:
+	(file_desc: REF VECTOR [2] !Address of ascii descriptor of file name
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_open_src;	!Can't open source
+LOCAL
+    status;
+
+srcfab [FAB$B_FNS] = .file_desc [0];	!Set file name in FAB
+srcfab [FAB$L_FNA] = .file_desc [1];	! . .
+
+IF NOT (status =
+   $open	(FAB = srcfab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_src, .file_desc);
+	doc$$error (doc$_rms_open_fai);
+	RETURN doc$$error (.status);	!Report RMS error
+	END;
+!
+! Get descriptor to resultant file name string
+!
+doc$gl_src_desc [0] = .src_nam_block [NAM$B_RSL];
+doc$gl_src_desc [1] = src_rsa;
+
+doc$gl_src_open_flag = 1;		!Remember that the source file is open
+
+doc$$update_srcfil (doc$gl_src_desc);
+
+IF NOT (status =
+   $connect	(RAB = srcrab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_src, .file_desc);
+	doc$$error (doc$_rms_cnt_fai);
+	RETURN doc$$error (.status)	!Report RMS error
+	END;
+
+cr_bit_on = .srcfab [FAB$V_CR];		!Set to 1 if a CR file
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$open_list
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens the list file for output
+! FORMAL PARAMETERS:
+	(file_desc: REF VECTOR[2] !Address of ascii descriptor of file name
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_open_list;
+LOCAL
+    status;
+
+lisfab [FAB$B_FNS] = .file_desc [0];	!Set file name in FAB
+lisfab [FAB$L_FNA] = .file_desc [1];	! . .
+
+IF NOT (status =
+   $create	(FAB = lisfab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_list, .file_desc);
+	doc$$error (doc$_rms_create_fai);
+	RETURN doc$$error (.status);		!Report RMS error
+	END;
+!
+! Get descriptor to resultant file name string
+!
+doc$gl_lis_desc [0] = .lis_nam_block [NAM$B_RSL];
+doc$gl_lis_desc [1] = lis_rsa;
+
+doc$gl_lis_open_flag = 1;			!Remember listing file open
+
+doc$$update_lisfil (doc$gl_lis_desc);		!Update listing file on screen
+
+IF NOT (status =
+   $connect	(RAB = lisrab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_list, .file_desc);
+	doc$$error (doc$_rms_cnt_fai);
+	RETURN doc$$error (.status);	!Report RMS error
+	END;
+
+doc$gl_cur_line_num = 0;		!Initialize current listing line #
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_source_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns descriptor to source line
+! FORMAL PARAMETERS:
+	(line_desc_addr		!Returned line descriptor address
+	,delim_flag		!Delimiter flag
+	) =
+!--
+BEGIN
+OWN
+    next_lf_flag,		!=1 if next record is a CRLF
+    next_rec_flag,		!=1 if next record already read in
+    ff_char: INITIAL (%O'14'),	!A form-feed character
+    ff_desc: VECTOR [2]
+	INITIAL (1, ff_char),	!Descriptor to form-feed character
+    lf_char: INITIAL (%O'12'),	!A line_feed character
+    lf_desc: VECTOR [2]
+	INITIAL (1, lf_char),	!Descriptor to line_feed character
+    first_part_desc: VECTOR [2],	!To return first part of a line
+    nxt_line_desc: VECTOR [2];
+LOCAL
+    char_buf: REF VECTOR[0,BYTE],	!To ref individual chars
+    ff_pos,
+    lf_pos,
+    chars_before_delimiter,
+    temp,			!Temporary variable
+    status;
+
+IF (.next_lf_flag NEQ 0)
+  THEN
+	BEGIN
+	next_lf_flag = 0;
+	.line_desc_addr = lf_desc;	!Return desc. of line feed
+	.delim_flag = 1;		!Return "delimiter"
+	RETURN SS$_NORMAL
+	END;
+
+IF NOT (.next_rec_flag)			!Have some more chars?
+  THEN
+	BEGIN				!No, go read 'em in
+   !
+   ! Time to really read a source line.
+   !
+	IF NOT (status =
+	    $get	(RAB = srcrab)
+		)
+	  THEN RETURN .status;
+	nxt_line_desc [0] = .srcrab [RAB$W_RSZ];	!Get record size
+	nxt_line_desc [1] = src_record_buf;		! and addr of buffer
+	END;
+
+next_rec_flag = 0;		!Clear next rec indicator.
+!
+! This record is either freshly read in or the remainder of a line
+! we read in before. We do the same thing in both cases.
+!
+! If record is blank, then return LF descriptor.
+!
+IF (.nxt_line_desc [0] EQL 0)
+  THEN
+	BEGIN
+	.line_desc_addr = lf_desc;	!Return desc. of line feed
+	.delim_flag = 1;		!Return "delimiter"
+	RETURN SS$_NORMAL
+	END;
+!
+! Search for delimiter characters in the record.
+!
+ff_pos = CH$FIND_CH	(.nxt_line_desc[0]	!Length
+			,.nxt_line_desc[1]	!Ptr
+			,%O'14'			!Search for FF
+			);
+lf_pos = CH$FIND_CH	(.nxt_line_desc[0]
+			,.nxt_line_desc[1]
+			,%O'12'
+			);
+!
+! If no delimiters are found in the record,
+! return the whole record. Set "next_lf_flag" if a CR record.
+!
+IF (.ff_pos EQL 0) AND (.lf_pos EQL 0)
+  THEN
+    BEGIN
+    .line_desc_addr = nxt_line_desc;	!Return address of line descriptor
+    .delim_flag = 0;			!NOT a delimiter
+    IF (.cr_bit_on)
+      THEN next_lf_flag = 1;		!Remember to send a LF next
+    RETURN SS$_NORMAL
+    END;
+!
+! There is a formfeed or a linefeed in there somewhere.
+!
+next_rec_flag = 1;			!Know next time we'll have a record
+
+IF (.ff_pos EQL 0) THEN ff_pos = %X'FFFF';	!Make big number
+IF (.lf_pos EQL 0) THEN lf_pos = %X'FFFF';	! . .
+
+IF (.lf_pos LSS .ff_pos)
+  THEN
+    BEGIN				!LF delimiter is first (or only)
+    next_lf_flag = 1;			!Set flag temporarily
+    chars_before_delimiter = .lf_pos - .nxt_line_desc[1];
+    IF (.chars_before_delimiter GEQ 1)
+      THEN
+	BEGIN		!Maybe CR too
+	char_buf = .lf_pos - 1;
+	IF (.char_buf[0] EQL %O'15')
+	  THEN
+	    chars_before_delimiter = .chars_before_delimiter - 1;
+	END;
+    END
+  ELSE			!FF char is first (or only)
+    chars_before_delimiter = .ff_pos - .nxt_line_Desc[1];
+!
+! If no chars before the delimiter, return just the delimiter
+! and adjust the beginning of the buffer.
+!
+IF (.chars_before_delimiter EQL 0)
+  THEN
+    BEGIN
+    .delim_flag = 1;		!Returning a delimiter
+    IF (.next_lf_flag EQL 1)
+      THEN
+	BEGIN
+	next_lf_flag = 0;
+	.line_desc_addr = lf_desc;
+	temp = .lf_pos - .nxt_line_desc[1] + 1;	!# chars to skip
+	nxt_line_desc[0] = .nxt_line_desc[0] - .temp;
+	nxt_line_desc[1] = .nxt_line_Desc[1] + .temp;
+	END
+      ELSE
+	BEGIN
+	.line_desc_addr = ff_desc;
+	nxt_line_Desc[0] = .nxt_line_desc[0] - 1;
+	nxt_line_desc[1] = .nxt_line_Desc[1] + 1;
+	END;
+    IF (.nxt_line_desc[0] EQL 0)
+      THEN
+	BEGIN			!Only the delimiter on the line.
+
+	next_rec_flag = 0;		!Next time, must read in a record.
+	END;
+    RETURN SS$_NORMAL
+    END;
+
+!
+! Some REAL text before the delimiter.
+! Return the text before the delimiter.
+!
+.delim_flag = 0;
+!
+! Return descriptor to the first part of the text.
+!
+first_part_desc[0] = .chars_before_delimiter;
+first_part_desc[1] = .nxt_line_desc[1];
+.line_desc_addr = first_part_desc;
+!
+! Adjust descriptor to rest of line, (starting with delimiter).
+!
+nxt_line_desc[0] = .nxt_line_desc[0] - .chars_before_delimiter;
+nxt_line_desc[1] = .nxt_line_desc[1] + .chars_before_delimiter;
+
+next_lf_flag = 0;			!Even if it was a LF, the search
+					! next time will get it.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$append_list_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Appends a string to the current list line
+! FORMAL PARAMETERS:
+	(desc: REF VECTOR[2]	!Descriptor of text to append
+	) =
+!--
+BEGIN
+LOCAL
+    nchars: WORD,		!Number of characters to append
+    status;
+
+nchars = .desc[0];		!Get length of string to append.
+
+CH$MOVE	(.nchars		!This many characters
+	,.desc [1]		!From here..
+	,.list_line_desc[1] + .list_line_desc[0]
+	);
+
+list_line_desc = .list_line_desc + .nchars;	!New length of string
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$put_list_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes current line to the LIST file
+!--
+BEGIN
+LOCAL
+    status;
+
+lisrab [RAB$W_RSZ] = .list_line_desc[0]; !Number of chars in record
+list_line_desc[0] = 0;			!Pretend no characters there anymore
+
+IF (NOT (.doc$gl_lis_open_flag))
+  THEN RETURN SS$_NORMAL;
+
+IF NOT (status =
+    $put	(RAB = lisrab)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$open_rvw
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open REVIEW file for output
+! FORMAL PARAMETERS:
+	(file_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_open_rvw;	!"Can't open review file"
+LOCAL
+    status;
+
+rvw_fab [FAB$B_FNS] = .file_desc [0];	!Set file name in FAB
+rvw_fab [FAB$L_FNA] = .file_desc [1];	! . .
+
+IF NOT (status =
+   $create	(FAB = rvw_fab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_rvw, .file_desc);
+	doc$$error (doc$_rms_create_fai);
+	RETURN doc$$error (.status);		!Report RMS error
+	END;
+!
+! Get descriptor to resultant file name string
+!
+doc$gl_rvw_desc [0] = .rvw_nam [NAM$B_RSL];
+doc$gl_rvw_desc [1] = rvw_rsa;
+
+doc$gl_rvw_open_flag = 1;			!Remember REVIEW file open
+
+doc$$update_rvwfil (doc$gl_rvw_desc);		!Update REVIEW file on screen
+
+IF NOT (status =
+   $connect	(RAB = rvw_rab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_rvw, .file_desc);
+	doc$$error (doc$_rms_cnt_fai);
+	RETURN doc$$error (.status);	!Report RMS error
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$append_rvw_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Append string to review file line
+! FORMAL PARAMETERS:
+	(desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    nchars: WORD,		!Number of characters to append
+    status;
+
+nchars = .desc[0];		!Get length of string to append.
+
+CH$MOVE	(.nchars		!This many characters
+	,.desc [1]		!From here..
+	,.rvw_line_desc[1] + .rvw_line_desc[0]
+	);
+
+rvw_line_desc = .rvw_line_desc + .nchars;	!New length of string
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$put_rvw_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write out current review line
+!--
+BEGIN
+LOCAL
+    status;
+
+rvw_rab [RAB$W_RSZ] = .rvw_line_desc[0]; !Number of chars in record
+rvw_line_desc[0] = 0;			!Pretend no characters there anymore
+
+! This is not necessary because we only call this routine if the file is open.
+!IF (NOT (.doc$gl_rvw_open_flag))
+!  THEN RETURN SS$_NORMAL;
+
+IF NOT (status =
+    $put	(RAB = rvw_rab)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_fil_write_error, doc$gl_rvw_desc);
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$close_rvw =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Close the review file
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_close_rvw;	!"can't close REVIEW file"
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = rvw_fab)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_cant_close_rvw, doc$gl_rvw_desc);
+    doc$$error (.status);	!Report RMS error
+    RETURN .status
+    END;
+
+doc$gl_rvw_open_flag = 0;		!Note file no longer open
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$abort_rvw =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Abort the review file (close with delete)
+!--
+BEGIN
+LOCAL
+    status;
+
+rvw_fab [FAB$V_DLT] = 1;		!Delete on close
+status = doc$$close_rvw ();
+rvw_fab [FAB$V_DLT] = 0;		!Clear flag for posterity
+
+RETURN .status
+END;
+
+GLOBAL ROUTINE doc$$open_edf_out
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens edf file for output
+! FORMAL PARAMETERS:
+	(file_desc: REF VECTOR [2]	!Name of file to write
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_open_out;		!"Can't open output file"
+LOCAL
+    status;
+
+edf_fab [FAB$B_FNS] = .file_desc [0];	!Set file name in FAB
+edf_fab [FAB$L_FNA] = .file_desc [1];	! . .
+
+IF NOT (status =
+   $create	(FAB = edf_fab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_out, .file_desc);
+	doc$$error (doc$_rms_create_fai);
+	RETURN doc$$error (.status);		!Report RMS error
+	END;
+!
+! Get descriptor to resultant file name string
+!
+doc$gl_edf_desc [0] = .edf_nam [NAM$B_RSL];
+doc$gl_edf_desc [1] = edf_rsa;
+
+doc$gl_edf_open_flag = 1;			!Remember edffile open
+
+doc$$update_edffil (doc$gl_edf_desc);		!Update edf file on screen
+
+IF NOT (status =
+   $connect	(RAB = edf_rab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_out, .file_desc);
+	doc$$error (doc$_rms_cnt_fai);
+	RETURN doc$$error (.status);	!Report RMS error
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$open_edf_in
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens edf file for input
+! FORMAL PARAMETERS:
+	(file_desc: REF VECTOR [2]	!Name of file
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_open_edf;		!Can't open encoded doc file
+LOCAL
+    status;
+
+edf_fab [FAB$B_FNS] = .file_desc [0];	!Set file name in FAB
+edf_fab [FAB$L_FNA] = .file_desc [1];	! . .
+
+IF NOT (status =
+   $open	(FAB = edf_fab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_edf, .file_desc);
+	doc$$error (doc$_rms_open_fai);
+	RETURN doc$$error (.status);	!Report RMS error
+	END;
+!
+! Get descriptor to resultant file name string
+!
+doc$gl_edf_desc [0] = .edf_nam [NAM$B_RSL];
+doc$gl_edf_desc [1] = edf_rsa;
+
+doc$gl_edf_open_flag = 1;		!Remember that the edffile is open
+
+doc$$update_edffil (doc$gl_edf_desc);
+
+IF NOT (status =
+   $connect	(RAB = edf_rab)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_cant_open_edf, .file_desc);
+	doc$$error (doc$_rms_cnt_fai);
+	RETURN doc$$error (.status)	!Report RMS error
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$write_edf_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes buffer to encoded doc file
+! FORMAL PARAMETERS:
+	(bucket			!Which block to write
+	,bufadr			!Address of 512-byte buffer to write
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+edf_rab [RAB$W_RSZ] = 512;	!Always 512 bytes
+edf_rab [RAB$L_RBF] = .bufadr;	!Put bufaddr
+edf_rab [RAB$L_BKT] = .bucket;	!Write this bucket
+
+IF NOT (status =
+    $write	(RAB = edf_rab)
+	)
+  THEN
+    BEGIN
+    fatal_error = 1;
+    $typeline ('? $write failed for edf file');
+    RETURN doc$$error (.status)
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$read_edf_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read the encoded document file
+! FORMAL PARAMETERS:
+	(bucket			!Which block number to read
+	,bufadr			!Address of 512-byte buffer
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+edf_rab [RAB$L_UBF] = .bufadr;
+edf_rab [RAB$W_USZ] = 512;		!Always 512 bytes
+edf_rab [RAB$L_BKT] = .bucket;
+
+IF NOT (status =
+    $read	(RAB = edf_rab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?$Read failed for edf file');
+    RETURN doc$$error (.status)
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$open_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens the "line" file. Called at start of "GENERATE".
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.line_open_flag)
+  THEN doc$$close_line_file ();
+
+IF NOT (status =
+    $create	(FAB = linefab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $create temporary "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+line_open_flag = 1;		!Remember lines file is open
+
+IF NOT (status =
+    $connect	(RAB = linerab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $connect temporary "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+curr_linerab = linerab;		!Point to line RAB
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$open_toc_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Opens the TOC "line" file. Called when TOC is about to
+!	be generated.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.toc_line_open_flag)
+  THEN doc$$close_toc_line_file ();
+
+IF NOT (status =
+    $create	(FAB = toc_linefab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $create temporary "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+toc_line_open_flag = 1;		!Remember lines file is open
+
+IF NOT (status =
+    $connect	(RAB = toc_linerab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $connect temporary "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+curr_linerab = toc_linerab;		!Point to TOC line RAB
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$put_line_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Puts a record to the "lines" file
+! FORMAL PARAMETERS:
+	(num_chars
+	) =
+!--
+BEGIN
+LOCAL
+    type_desc: VECTOR [2],
+    status;
+
+curr_linerab [RAB$W_RSZ] = .num_chars;
+IF NOT (status =
+    $put	(RAB = .curr_linerab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?$put failed for "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+type_desc [0] = .num_chars;
+type_desc [1] = doc$gl_line_buf;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$rewind_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets up to read from the "lines" file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $rewind (RAB = linerab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $rewind "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+curr_linerab = linerab;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$rewind_toc_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Sets up to read from the TOC "lines" file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $rewind (RAB = toc_linerab)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t $rewind "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+curr_linerab = toc_linerab;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_line_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets line from the "lines" file
+! FORMAL PARAMETERS:
+	(len		!Returned length of line
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $get (RAB = .curr_linerab)
+	)
+  THEN
+    BEGIN
+    doc$$type_sts (%ASCID '?$get failed on "lines" file: ', .status);
+    RETURN .status
+    END;
+
+.len = .curr_linerab [RAB$W_RSZ];	!Return record size
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$close_source =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the source file
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_close_src;	!"Can't close source file"
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = srcfab)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_cant_close_src, doc$gl_src_desc);
+    doc$$error (.status);	!Report RMS error
+    RETURN .status		!Return error
+    END;
+
+doc$gl_src_open_flag = 0;	!Note source no longer open
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$close_list =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the list file
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_close_lis;	!"can't close listing file"
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = lisfab)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_cant_close_lis, doc$gl_lis_desc);
+    doc$$error (.status);	!Report RMS error
+    RETURN .status
+    END;
+
+doc$gl_lis_open_flag = 0;		!Note file no longer open
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$abort_list =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the list file and deletes it
+!--
+BEGIN
+LOCAL
+    status;
+!
+! For the list file, let's not really abort. Let's save what we got.
+!
+doc$$close_list ();		!save what we got (good for error diagnosis!)
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$close_edf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the encoded document file
+!--
+BEGIN
+EXTERNAL
+    doc$_cant_close_edf;	!Can't CLOSE EDF file
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = edf_fab)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_cant_close_edf, doc$gl_edf_desc);
+    doc$$error (.status);	!Report RMS error
+    RETURN .status
+    END;
+
+doc$gl_edf_open_flag = 0;		!Note file no longer open
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$abort_edf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes and deletes the output encoded document file
+!--
+BEGIN
+LOCAL
+    status;
+
+edf_fab [FAB$V_DLT] = 1;		!Delete on close
+status = doc$$close_edf ();
+edf_fab [FAB$V_DLT] = 0;		!Leave this 0 for next time
+
+RETURN .status
+END;
+
+GLOBAL ROUTINE doc$$close_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes (and deletes) the "lines" file.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = linefab)
+	)
+  THEN
+    BEGIN
+    $typeline ('Can''t $close "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+line_open_flag = 0;		!Remember line file no longer open
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$close_toc_line_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes (and deletes) the TOC "lines" file.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = toc_linefab)
+	)
+  THEN
+    BEGIN
+    $typeline ('Can''t $close "lines" file');
+    RETURN doc$$error (.status)
+    END;
+
+toc_line_open_flag = 0;		!Remember line file no longer open
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

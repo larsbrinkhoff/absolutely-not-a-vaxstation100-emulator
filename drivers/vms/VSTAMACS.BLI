@@ -1,0 +1,1216 @@
+!----------------------------------------------------------------------------
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This file contains the macro definitions used in the acp.
+!
+!---
+!
+! TABLE OF CONTENTS:
+!
+
+keywordmacro!s
+	 $RETERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 RETURN (VSTA$$ERROR(STATUS)))%
+	,$RETLOG(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR_LOGGER(STATUS);
+		 RETURN STATUS)%
+	,$LOGERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR_LOGGER(STATUS))%
+
+	;
+
+macro!s
+	 $EXTSYM(SYMBOL) =
+		(EXTERNAL LITERAL SYMBOL;
+		 SYMBOL)%
+
+	,$GETDSC(dsc) =
+		(
+		external vsta$l_dsc_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_dsc_size
+				,dsc
+				)
+		     			)
+		%
+
+	,$FREEDSC(dsc) =
+		(
+		external vsta$l_dsc_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_dsc_size
+				,%ref (dsc)
+				)
+		     			)
+		%
+	,$GETVDC(dsc) =
+		(
+		external vsta$l_vdc_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_vdc_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREEVDC(dsc) =
+		(
+		external vsta$l_vdc_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_vdc_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+
+	,$GET32B(dsc) =
+		(
+		external vsta$l_32b_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_32b_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE32B(dsc) =
+		(
+		external vsta$l_32b_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_32b_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	,$GET128B(dsc) =
+		(
+		external vsta$l_128b_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_128b_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE128b(dsc) =
+		(
+		external vsta$l_128b_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_128b_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	,$GET256B(dsc) =
+		(
+		external vsta$l_256b_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_256b_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE256B(dsc) =
+		(
+		external vsta$l_256b_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_256b_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	,$GET512B(dsc) =
+		(
+		external vsta$l_512b_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_512b_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE512B(dsc) =
+		(
+		external vsta$l_512b_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_512b_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	,$GET1KB(dsc) =
+		(
+		external vsta$l_1kb_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_1kb_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE1KB(dsc) =
+		(
+		external vsta$l_1kb_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_1kb_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	,$GET2KB(dsc) =
+		(
+		external vsta$l_2kb_size;
+		external routine VS$$ACP_GET_VM;
+
+		VS$$ACP_GET_VM(
+				 vsta$l_2kb_size
+				,dsc
+				)
+		     			)	
+		%
+
+	,$FREE2KB(dsc) =
+		(
+		external vsta$l_2kb_size;
+		external routine VS$$ACP_FREE_VM;
+
+		VS$$ACP_FREE_VM(
+				 vsta$l_2kb_size
+				,%ref (dsc)
+				)
+		     			)	
+		%
+	;
+
+
+
+keywordmacro!s
+
+	 $VSTACOPY(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPSIZ	= 1
+		,MAPADR = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_COPY_AREA;
+	VSTA$$NAT_COPY_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPSIZ
+		,MAPADR 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTADRAW(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_rectangle
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPSIZ	= 1
+		,MAPADR = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,PATSTA	= 0
+		,SSRTYP = VSTA$K_SRC_CONST
+		,SSOURC = 1
+		,SSOFFX	= 0
+		,SSOFFY	= 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_DRAW_CURVE;
+	VSTA$$NAT_DRAW_CURVE(
+		 SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPSIZ
+		,MAPADR 
+		,PTHNUM 
+		,PTHADR 
+		,PATMOD 
+		,PATACT 
+		,PATBLK 
+		,PATSTA
+		,SSRTYP 
+		,SSOURC 
+		,SSOFFX
+		,SSOFFY
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTAPRINT(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPSIZ	= 1
+		,MAPADR = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTDSC = 0
+		,CTRNUM = 0
+		,CTRADR	= 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_PRINT_TEXT;
+	VSTA$$NAT_PRINT_TEXT(
+		 SRCTYP	
+		,SOURCE 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST
+		,DSTOFA
+		,DSTOFF	
+		,MAPTYP 
+		,MAPSIZ
+		,MAPADR 
+		,TXTTYP 
+		,TXTDSC 
+		,CTRNUM 
+		,CTRADR
+		,CHRPAD 
+		,SPCPAD 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTAFILL(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPSIZ	= 1
+		,MAPADR = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_FILL_AREA;
+	VSTA$$NAT_FILL_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPSIZ
+		,MAPADR 
+		,PTHNUM 
+		,PTHADR 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+
+	,$VSTAFLOOD(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,BNDMAP = 0
+		,SEDPTX = 0
+		,SEDPTY = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_FLOOD_AREA;
+	VSTA$$NAT_FLOOD_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,BNDMAP
+		,SEDPTX
+		,SEDPTY
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTANOOP(
+		 EFN	= 0
+		,ASTADR	= 0
+		,ASTPRM = 0
+		 ) =
+	(EXTERNAL ROUTINE VSTA$$NAT_NOOP;
+	VSTA$$NAT_NOOP(
+		 EFN
+		,ASTADR
+		,ASTPRM
+		))%
+	;
+
+
+!
+! TABLE OF CONTENTS:
+!
+
+keywordmacro!s
+
+	 $DRIVEBACK(
+		 CHAN	= 0
+		,COLOR	= vsta$k_color_black
+		,DST	= 0
+		,OFFX	= 0
+		,OFFY	= 0
+		,WIDTH	= 0
+		,HEIGHT	= 0
+		,RECNUM	= 0
+		,RECADR	= 0
+		,EFN	= 0
+		,ASTADR	= 0
+		,ASTPRM = 0
+		) =
+
+	(EXTERNAL ROUTINE VSTA$$DRIVE_PAINT_BG;
+	VSTA$$DRIVE_PAINT_BG(
+		 CHAN
+		,COLOR
+		,DST
+		,OFFX
+		,OFFY
+		,WIDTH
+		,HEIGHT
+		,RECNUM
+		,RECADR
+		,EFN
+		,ASTADR
+		,ASTPRM
+		))%
+
+	,$DRIVECOPY(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_COPY_AREA;
+	VSTA$$DRIVE_COPY_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,RECNUM
+		,RECADR
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEDRAW(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,PATSTA	= 0
+		,SECTYP = VSTA$K_SRC_CONST
+		,SECSRC = 1
+		,SECOFX = 0
+		,SECOFY	= 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_DRAW_CURVE;
+	VSTA$$DRIVE_DRAW_CURVE(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,PTHNUM
+		,PTHADR
+		,PATMOD 
+		,PATACT 
+		,PATBLK 
+		,PATSTA
+		,SECTYP
+		,SECSRC
+		,SECOFX
+		,SECOFY
+		,RECNUM
+		,RECADR
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEPRINT(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTNUM = 0
+		,TXTADR = 0
+		,CTRNUM = 0
+		,CTRADR = 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_PRINT_TEXT;
+	VSTA$$DRIVE_PRINT_TEXT(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,MSKTYP 
+		,MASK	
+		,DST
+		,DSTOFA
+		,DSTOFF
+		,MAPTYP 
+		,MAPVAL 
+		,TXTTYP 
+		,TXTNUM
+		,TXTADR
+		,CTRNUM
+		,CTRADR
+		,CHRPAD 
+		,SPCPAD 
+		,RECNUM
+		,RECADR
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEFILL(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_FILL_AREA;
+	VSTA$$DRIVE_FILL_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,PTHNUM
+		,PTHADR
+		,RECNUM
+		,RECADR
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+
+	,$DRIVEFLOOD(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,BNDMAP = 0
+		,SEEDX	= 0
+		,SEEDY  = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_FLOOD_AREA;
+	VSTA$$DRIVE_FLOOD_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,BNDMAP
+		,SEEDX
+		,SEEDY
+		,RECNUM
+		,RECADR
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVENOOP(
+		 CHAN	= 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_NOOP;
+	VSTA$$DRIVE_NOOP(
+		 CHAN
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+	;
+
+keywordmacro!s
+
+	 $VDCBACK(
+		 VDCBLK
+		,COLOR	= vsta$k_color_black
+		,OFFX	= 0
+		,OFFY	= 0
+		,WIDTH	= 0
+		,HEIGHT	= 0
+		,RECNUM	= 0
+		,RECADR	= 0
+		,EFN	= 0
+		,ASTADR	= 0
+		,ASTPRM = 0
+		) =
+
+	(bind BLK = VDCBLK: block [,byte];
+
+		BLK [VDC$L_TYPE]	= vsta$k_background;
+		BLK [VDC$A_SRC]		= COLOR;
+		BLK [VDC$W_DOX]		= OFFX;
+		BLK [VDC$W_DOY]		= OFFY;
+		BLK [VDC$W_WIDTH]	= WIDTH;
+		BLK [VDC$W_HEIGHT]	= HEIGHT;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN;
+		BLK [VDC$A_ASTADR]	= ASTADR;
+		BLK [VDC$L_ASTPRM]	= ASTPRM;
+		)%
+
+	,$VDCMOVE(
+		 VDCBLK
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(bind BLK=VDCBLK: block [,byte];
+
+		BLK [VDC$L_TYPE]	= vsta$k_move_text;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+		)%
+
+	,$VDCCOPY(
+		 VDCBLK
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(bind BLK=VDCBLK: block [,byte];
+
+		BLK [VDC$L_TYPE]	= vsta$k_copy_area;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+		)%
+
+	,$VDCDRAW(
+		 VDCBLK
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,PATSTA	= 0
+		,SECTYP = VSTA$K_SRC_CONST
+		,SECSRC = 1
+		,SECOFX = 0
+		,SECOFY	= 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(bind BLK=VDCBLK: block [,byte];
+
+		BLK [VDC$L_TYPE]	= vsta$k_draw_curve;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP ;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_PATH_COUNT]	= PTHNUM;
+		BLK [VDC$A_PATH]	= PTHADR;
+		BLK [VDC$W_PATTERN_MODE]	= PATMOD ;
+		BLK [VDC$W_PATTERN_ACTION]	= PATACT ;
+		BLK [VDC$A_PATTERN_BLOCK]	= PATBLK ;
+		BLK [VDC$A_PATTERN_STATE]	= PATSTA;
+		BLK [VDC$W_SEC_TYPE]	= SECTYP;
+		BLK [VDC$A_SEC]		= SECSRC;
+		BLK [VDC$W_SSX]		= SECOFX;
+		BLK [VDC$W_SSY]		= SECOFY;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+		)%
+
+	,$VDCPRINT(
+		 VDCBLK
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTNUM = 0
+		,TXTADR = 0
+		,CTRNUM = 0
+		,CTRADR = 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(bind BLK=VDCBLK: block [,byte];
+
+		BLK [VDC$L_TYPE]	= vsta$k_print_text;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOA]		= DSTOFA;
+		BLK [VDC$A_DOF]		= DSTOFF;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_TXT_TYPE]	= TXTTYP ;
+		BLK [VDC$W_TXTNUM]	= TXTNUM;
+		BLK [VDC$A_TXTADR]	= TXTADR;
+		BLK [VDC$W_CONTROL_COUNT]	= CTRNUM;
+		BLK [VDC$A_CONTROL_ADDR]	= CTRADR;
+		BLK [VDC$W_CHAR_PAD]	= CHRPAD ;
+		BLK [VDC$W_SPACE_PAD]	= SPCPAD ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+		)%
+
+
+	,$QVDCBACK(
+		 VDB
+		,VDID
+		,COLOR	= vsta$k_color_black
+		,OFFX	= 0
+		,OFFY	= 0
+		,WIDTH	= 0
+		,HEIGHT	= 0
+		,RECNUM	= 0
+		,RECADR	= 0
+		,EFN	= 0
+		,ASTADR	= 0
+		,ASTPRM = 0
+		) =
+
+	(external routine VSTA$$VDS_QUEUE_VDC;
+	 external routine VDC$$QUEUE_VDC;
+	 local BLK : ref block [,byte];
+
+		$GETVDC( BLK);
+
+		BLK [VDC$L_TYPE]	= vsta$k_background;
+		BLK [VDC$A_SRC]		= COLOR;
+		BLK [VDC$W_DOX]		= OFFX;
+		BLK [VDC$W_DOY]		= OFFY;
+		BLK [VDC$W_WIDTH]	= WIDTH;
+		BLK [VDC$W_HEIGHT]	= HEIGHT;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN;
+		BLK [VDC$A_ASTADR]	= ASTADR;
+		BLK [VDC$L_ASTPRM]	= ASTPRM;
+
+		%if not %null(VDB) 
+		%then VDC$$QUEUE_VDC( VDB, .BLK)
+		%else VSTA$$VDS_QUEUE_VDC( VDID, .BLK) %FI
+
+		)%
+
+	,$QVDCMOVE(
+		 VDB
+		,VDID
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(external routine VSTA$$VDS_QUEUE_VDC;
+	 external routine VDC$$QUEUE_VDC;
+	 local BLK : ref block [,byte];
+
+		$GETVDC( BLK);
+
+		BLK [VDC$L_TYPE]	= vsta$k_move_text;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+
+		%if not %null(VDB) 
+		%then VDC$$QUEUE_VDC( VDB, .BLK)
+		%else VSTA$$VDS_QUEUE_VDC( VDID, .BLK) %FI
+
+		)%
+
+
+	,$QVDCCOPY(
+		 VDB
+		,VDID
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(external routine VSTA$$VDS_QUEUE_VDC;
+	 external routine VDC$$QUEUE_VDC;
+	 local BLK : ref block [,byte];
+
+		$GETVDC( BLK);
+
+		BLK [VDC$L_TYPE]	= vsta$k_copy_area;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+
+		%if not %null(VDB) 
+		%then VDC$$QUEUE_VDC( VDB, .BLK)
+		%else VSTA$$VDS_QUEUE_VDC( VDID, .BLK) %FI
+
+		)%
+
+	,$QVDCDRAW(
+		 VDB
+		,VDID
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,PATSTA	= 0
+		,SECTYP = VSTA$K_SRC_CONST
+		,SECSRC = 1
+		,SECOFX = 0
+		,SECOFY	= 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(external routine VSTA$$VDS_QUEUE_VDC;
+	 external routine VDC$$QUEUE_VDC;
+	 local BLK : ref block [,byte];
+
+		$GETVDC( BLK);
+
+		BLK [VDC$L_TYPE]	= vsta$k_draw_curve;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP ;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_SOX]		= SRCOFX ;
+		BLK [VDC$W_SOY]		= SRCOFY ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOX]		= DSTOFX ;
+		BLK [VDC$W_DOY]		= DSTOFY ;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_PATH_COUNT]	= PTHNUM;
+		BLK [VDC$A_PATH]	= PTHADR;
+		BLK [VDC$W_PATTERN_MODE]	= PATMOD ;
+		BLK [VDC$W_PATTERN_ACTION]	= PATACT ;
+		BLK [VDC$A_PATTERN_BLOCK]	= PATBLK ;
+		BLK [VDC$A_PATTERN_STATE]	= PATSTA;
+		BLK [VDC$W_SEC_TYPE]	= SECTYP;
+		BLK [VDC$A_SEC]		= SECSRC;
+		BLK [VDC$W_SSX]		= SECOFX;
+		BLK [VDC$W_SSY]		= SECOFY;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+
+		%if not %null(VDB) 
+		%then VDC$$QUEUE_VDC( VDB, .BLK)
+		%else VSTA$$VDS_QUEUE_VDC( VDID, .BLK) %FI
+
+		)%
+
+	,$QVDCPRINT(
+		 VDB
+		,VDID
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTNUM = 0
+		,TXTADR = 0
+		,CTRNUM = 0
+		,CTRADR = 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+
+	(external routine VSTA$$VDS_QUEUE_VDC;
+	 external routine VDC$$QUEUE_VDC;
+	 local BLK : ref block [,byte];
+
+		$GETVDC( BLK);
+
+		BLK [VDC$L_TYPE]	= vsta$k_print_text;
+		BLK [VDC$W_SRC_TYPE]	= SRCTYP;
+		BLK [VDC$A_SRC]		= SOURCE ;
+		BLK [VDC$W_MSK_TYPE]	= MSKTYP ;
+		BLK [VDC$A_MSK]		= MASK	;
+		BLK [VDC$W_DOA]		= DSTOFA;
+		BLK [VDC$A_DOF]		= DSTOFF;
+		BLK [VDC$W_MAP_TYPE]	= MAPTYP ;
+		BLK [VDC$A_MAP]		= MAPVAL ;
+		BLK [VDC$W_TXT_TYPE]	= TXTTYP ;
+		BLK [VDC$W_TXTNUM]	= TXTNUM;
+		BLK [VDC$A_TXTADR]	= TXTADR;
+		BLK [VDC$W_CONTROL_COUNT]	= CTRNUM;
+		BLK [VDC$A_CONTROL_ADDR]	= CTRADR;
+		BLK [VDC$W_CHAR_PAD]	= CHRPAD ;
+		BLK [VDC$W_SPACE_PAD]	= SPCPAD ;
+		BLK [VDC$W_RCC]		= RECNUM;
+		BLK [VDC$A_RCA]		= RECADR;
+		BLK [VDC$L_EFN]		= EFN	;
+		BLK [VDC$A_ASTADR]	= ASTADR ;
+		BLK [VDC$L_ASTPRM]	= ASTPRM ;
+
+		%if not %null(VDB) 
+		%then VDC$$QUEUE_VDC( VDB, .BLK)
+		%else VSTA$$VDS_QUEUE_VDC( VDID, .BLK) %FI
+
+		)%
+
+	;

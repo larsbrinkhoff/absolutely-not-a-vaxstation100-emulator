@@ -1,0 +1,438 @@
+%TITLE 'vsta$acp_access -- VAXSTATION OBJECT ACCESS CHECKING'
+MODULE  vsta$acp_access (
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!	This module contains all the routines required for checking read,
+!   write, and delete access to SDA objects (although the routines are
+!   general enough to be used for other objects as well).
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+library 'vsta$library:vsvdspb';		!Symbols like pb_block
+library 'vsta$library:libmacros';	!PSECT definitions
+!
+FORWARD ROUTINE
+!
+! Public routines (to ACP)
+!
+	vsta$$acp_check_privileges,	!Check process for specific privileges
+	vsta$$acp_check_read_access,	!Check read access to object by PID
+	vsta$$acp_check_pb_read_access,	!Check read access to pasteboard
+	vsta$$acp_check_write_access,	!Check write access to object by PID
+	vsta$$acp_check_execute_access,	!Check execute access to object by PID
+	vsta$$acp_check_delete_access;	!Check delete access to object by PID
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	vsta$$acp_match_privs,		!Match specific privs. against process'
+	vsta$$acp_check_access;		!Check specified access for PID
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+! OWN STORAGE:
+!
+LITERAL
+	vsta$k_read_access = 0,
+	vsta$k_write_access = 1,
+	vsta$k_execute_access = 2,
+	vsta$k_delete_access = 3;
+!
+!
+
+
+%SBTTL 'vsta$$acp_check_privileges -- Check Specific Privileges of Process'
+GLOBAL ROUTINE vsta$$acp_check_privileges(
+			pid,		!Process ID of requesting process
+			privileges	!Privileges to be matched
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has the specified privileges to perform some operation.
+! This routine looks at the CURRENT process privileges and checks to see if
+! ALL the privileges in the specified mask are set.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	PRIVILEGES  : Longword privilege mask to check against
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Process DOES have specified privileges
+!	SS$_NOPRIV : Process DOES NOT have all the specified privileges
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	arg_list: VECTOR[3];		!$CMKRNL argument block
+!
+! Set up the argument block and go into kernel mode to do the actual work
+!
+	arg_list[0] = 2;
+	arg_list[1] = .pid;
+	arg_list[2] = .privileges;
+!
+	RETURN $CMKRNL(
+			ARGLST = arg_list,
+			ROUTIN = vsta$$acp_match_privs);
+END;  
+
+
+%SBTTL 'vsta$$acp_check_read_access -- Check Read Access of Process'
+GLOBAL ROUTINE vsta$$acp_check_read_access(
+			pid,		!Process ID of requesting process
+			owner_uic,	!Object owner's UIC
+			protection	!Protection on object
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has read access to the object owned by owner_uic with a
+! protection mask as specified. Privileges of the process are also taken into
+! account.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	OWNER_UIC   : Longword object owner's UIC
+!				(input parameter)
+!	PROTECTION  : Longword protection mask (RWED format) on object
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Access GRANTED to the process in question
+!	SS$_NOPRIV : Access DENIED to the process in question
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	arg_list: VECTOR[5];		!$CMKRNL argument block
+!
+! Set up the argument block and go into kernel mode to do the actual work
+!
+	arg_list[0] = 4;
+	arg_list[1] = vsta$k_read_access;
+	arg_list[2] = .pid;
+	arg_list[3] = .owner_uic;
+	arg_list[4] = .protection;
+!
+	RETURN $CMKRNL(
+			ARGLST = arg_list,
+			ROUTIN = vsta$$acp_check_access);
+END;  
+
+global routine vsta$$acp_check_pb_read_access
+!++
+! Functional description:
+!
+!	Call this instead of the normal vsta$$acp_check_read_access when
+!	you want to allow access for an owning process even if the uic
+!	doesn't match.  Such is currently necessary, for instance, when
+!	a process reads from it's main terminal, since the uic of the
+!	terminal pasteboard is US, which doesn't match the uic of the
+!	calling process.
+!
+!	If we had been able to store the calling process's uic in the
+!	pasteboard database, this routine would not be necessary.  However,
+!	when creating a non-logged in terminal, there's no exact time at
+!	which we can know that the uic is available.
+!
+! Formal parameters:
+ (
+			pid,		!Process ID of requesting process
+			owner_uic,	!Object owner's UIC
+			protection,	!Protection on object
+			pb : ref pb_block
+					!Pasteboard database address
+ ) =
+!
+!--
+	begin
+
+	local
+	    top_pid,
+	    status;
+
+	external routine
+
+	    vsta$$pid_check_access,
+	    vsta$$pid_get_top;
+!
+! If normal read access is granted, no further checking needed.
+!
+	if status = vsta$$acp_check_read_access (.pid, .owner_uic, .protection)
+	then return .status;
+!
+! Access denied so far.  Probably this is a spawned subprocess, so get top
+! process id.  First make sure acp knows about us . . .
+!
+	vsta$$pid_check_access (.pid);
+!
+! Now get top level pid.
+!
+	if not (status = vsta$$pid_get_top (.pid, top_pid))
+	then return .status;
+!
+! If the requesting process's top pid matches the owner of this
+! pasteboard, then allow.
+!
+	if .top_pid eql .pb[vs$vds_l_pb_pid]
+	then return ss$_normal
+	else return .status
+
+	end;
+
+%SBTTL 'vsta$$acp_check_write_access -- Check Write Access of Process'
+GLOBAL ROUTINE vsta$$acp_check_write_access(
+			pid,		!Process ID of requesting process
+			owner_uic,	!Object owner's UIC
+			protection	!Protection on object
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has write access to the object owned by owner_uic with a
+! protection mask as specified. Privileges of the process are also taken into
+! account.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	OWNER_UIC   : Longword object owner's UIC
+!				(input parameter)
+!	PROTECTION  : Longword protection mask (RWED format) on object
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Access GRANTED to the process in question
+!	SS$_NOPRIV : Access DENIED to the process in question
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	arg_list: VECTOR[5];		!$CMKRNL argument block
+!
+! Set up the argument block and go into kernel mode to do the actual work
+!
+	arg_list[0] = 4;
+	arg_list[1] = vsta$k_write_access;
+	arg_list[2] = .pid;
+	arg_list[3] = .owner_uic;
+	arg_list[4] = .protection;
+!
+	RETURN $CMKRNL(
+			ARGLST = arg_list,
+			ROUTIN = vsta$$acp_check_access);
+END;  
+
+
+%SBTTL 'vsta$$acp_check_execute_access -- Check Execute Access of Process'
+GLOBAL ROUTINE vsta$$acp_check_execute_access(
+			pid,		!Process ID of requesting process
+			owner_uic,	!Object owner's UIC
+			protection	!Protection on object
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has execute access to the object owned by owner_uic with
+! a protection mask as specified. Privileges of the process are also taken into
+! account.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	OWNER_UIC   : Longword object owner's UIC
+!				(input parameter)
+!	PROTECTION  : Longword protection mask (RWED format) on object
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Access GRANTED to the process in question
+!	SS$_NOPRIV : Access DENIED to the process in question
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	arg_list: VECTOR[5];		!$CMKRNL argument block
+!
+! Set up the argument block and go into kernel mode to do the actual work
+!
+	arg_list[0] = 4;
+	arg_list[1] = vsta$k_execute_access;
+	arg_list[2] = .pid;
+	arg_list[3] = .owner_uic;
+	arg_list[4] = .protection;
+!
+	RETURN $CMKRNL(
+			ARGLST = arg_list,
+			ROUTIN = vsta$$acp_check_access);
+END;  
+
+
+%SBTTL 'vsta$$acp_check_delete_access -- Check Delete Access of Process'
+GLOBAL ROUTINE vsta$$acp_check_delete_access(
+			pid,		!Process ID of requesting process
+			owner_uic,	!Object owner's UIC
+			protection	!Protection on object
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has delete access to the object owned by owner_uic with a
+! protection mask as specified. Privileges of the process are also taken into
+! account.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	OWNER_UIC   : Longword object owner's UIC
+!				(input parameter)
+!	PROTECTION  : Longword protection mask (RWED format) on object
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Access GRANTED to the process in question
+!	SS$_NOPRIV : Access DENIED to the process in question
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	arg_list: VECTOR[5];		!$CMKRNL argument block
+!
+! Set up the argument block and go into kernel mode to do the actual work
+!
+	arg_list[0] = 4;
+	arg_list[1] = vsta$k_delete_access;
+	arg_list[2] = .pid;
+	arg_list[3] = .owner_uic;
+	arg_list[4] = .protection;
+!
+	RETURN $CMKRNL(
+			ARGLST = arg_list,
+			ROUTIN = vsta$$acp_check_access);
+END;  
+
+
+
+END
+ELUDOM

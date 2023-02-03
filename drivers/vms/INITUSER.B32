@@ -1,0 +1,1712 @@
+MODULE inituser (IDENT = 'V04-000',
+	ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:  Login
+!
+! ABSTRACT:
+!
+!	This module handles all user-specific and CLI initializations.
+!
+! ENVIRONMENT:
+!
+!	VAX/VMS operating system.
+!
+!--
+
+!
+! Include files
+!
+
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+
+REQUIRE 'SHRLIB$:UTILDEF';		! Common BLISS definitions
+
+LIBRARY 'SHRLIB$:NET';			! Network definitions
+
+REQUIRE 'LIB$:PPDDEF';			! Process permanent data region
+
+!
+! Declare the linkages to allocate and deallocate nonpaged pool
+!
+LINKAGE
+        ALLO   = JSB (REGISTER = 1; 		! R1 = size (on input)
+    		  REGISTER = 1,			! R1 = size of block
+    		  REGISTER = 2):		! R2 = address of block
+    		  NOPRESERVE (3,4,5),		! R3, R4, R5 destroyed
+	DEALLO = JSB (REGISTER = 0):		! R0 = address of block
+    		  NOPRESERVE (1,2,3,4,5),	! R1-R5 destroyed
+	JGTABLE = JSB( 				! Create Job and Group Tables
+		      REGISTER = 7, 		! Job Table Creation Quota
+		      REGISTER = 10, 		! JIB Address ASCII Equivalent
+		      REGISTER = 11 ):		! Group Number ASCII Equivalent
+		  NOPRESERVE( 1, 2, 3, 4, 5 , 8 );
+
+!
+! Table of contents
+!
+
+FORWARD ROUTINE
+    init_user:		NOVALUE,	! Initialize user process quotas, etc.
+    init_kernel:	NOVALUE,	! Initialize user in kernel mode
+    init_cli:		NOVALUE,	! Initialize CLI image
+    setup_login_proc:	NOVALUE,	! Setup login command procedure
+    map_cli:		NOVALUE,	! Map the CLI image into P1 space
+    execute_cli:	NOVALUE,	! Call the CLI image at its entry point
+    map_imgact:		NOVALUE,	! Map image activator code segment
+    set_p1_base,			! Set base address of control region
+    set_account:	NOVALUE,	! Set account name in JIB and P1 space
+    set_username:	NOVALUE,	! Set username in JIB and P1 space
+    set_node_name:	NOVALUE,	! Set remote node info in P1 space
+    set_term_name:	NOVALUE,	! Set terminal name in PCB
+    set_uic,				! Set process UIC
+    create_logical,			! Create logical name with LNM services
+    make_rightslists:	NOVALUE,	! Create the rights lists
+    set_localrights,			! Set up the local rights list
+    set_more_rights,			! Set up the extended rights list
+    set_lnm_tables;			! Set up group and job-wide lnm tables
+
+!
+! External routines
+!
+
+EXTERNAL ROUTINE
+    str$append,				! Append to a dynamic buffer
+    set_ppd_prot,			! Set page protection on PPD structure
+    handler,				! Condition handler
+    sys$setddir,			! Set default directory
+    lgi$protect_cli,			! Read-protect CLI code
+    execute_image:	NOVALUE,	! Chain to an image
+    lib$p1_merge,			! Merge image into P1 space
+    sys$find_held,			! RDB routine to find all ID's for a user
+    exe$deanonpaged: DEALLO,		! Deallocate non-paged pool
+    exe$alononpaged: ALLO,		! Allocate non-paged pool
+    exe$cre_jgtable: JGTABLE;		! Create Job and Group Tables
+
+!
+! External storage
+!
+EXTERNAL
+    terminal_device:	BYTE,		! True if SYS$INPUT is a terminal
+    term_name:		VECTOR,		! Terminal name descriptor
+    dev_char_2:		$BBLOCK,	! Device characteristics of sys$input
+    dev_dep_2:		$BBLOCK,	! Dev-dependent chars of sys$input
+    pcb_sts:		BITVECTOR,	! PCB status flags
+    job_type,				! Job type code for JIB
+    uaf_record:		REF $BBLOCK,	! Address of UAF record
+    sys$input:		VECTOR,		! Translation of SYS$INPUT
+    cli_name:		VECTOR,		! Descriptor of CLI to map
+    cli_name_buffer:	VECTOR [,BYTE],	! Buffer for CLI name
+    table_name:		VECTOR,		! Descriptor of CLI command table
+    table_name_buffer:	VECTOR [,BYTE],	! Buffer for CLI command table
+    disk_name:		VECTOR,		! Descriptor of initial default disk
+    com_name:		VECTOR,		! Descriptor of procedure to execute
+    com_negated:	BYTE,		! True if procedure inhibited
+    subprocess:		BYTE,		! True if subprocess
+    image_activate:	BYTE,		! True if image to be activated
+    mmg$imghdrbuf,			! Image header buffer
+    ctl$gl_pcb:		REF $BBLOCK,	! This process's PCB
+    ctl$gl_ccbbase,
+    ctl$gl_uaf_flags:	BITVECTOR,	! P1 space UAF flags
+    ctl$gt_cliname:	VECTOR [,BYTE],	! Activated CLI name (ASCIC)
+    ctl$gt_tablename:	VECTOR [,BYTE],	! Activated CLI table name (ASCIC)
+    ctl$gt_spawncli:	VECTOR [,BYTE],	! Spawn CLI name (ASCIC)
+    ctl$gt_spawntable:	VECTOR [,BYTE],	! Spawn CLI table name (ASCIC)
+    ctl$ag_cmedata:	VECTOR [,BYTE],	! CLI passed here from $IMGACT
+					!  if cli image name give to $CREPRC
+    ctl$ag_climage,			! Address of CLI code in control region
+    ctl$ag_clitable,			! Address of CLI command tables
+    ctl$ag_clidata;			! Process permanent data region
+
+BIND
+    ppd = ctl$ag_clidata: $BBLOCK;	! Address of PPD structure
+
+!
+! Define message codes
+!
+EXTERNAL LITERAL
+    lgi$_clifail,
+    lgi$_cliprot,
+    lgi$_clitblfail,
+    lgi$_clitblprot,
+    lgi$_clisymtbl;
+
+GLOBAL ROUTINE init_user: NOVALUE =
+
+!---
+!
+!	Initialize all user context for the process.  All
+!	information from the UAF record is set into the appropriate
+!	places in the executive database, such as the UIC, privileges,
+!	base priority, limits, quotas, account name, etc.
+!
+! Inputs:
+!
+!	uaf_record = Address of UAF record for user (must be non-zero)
+!	disk_name = Descriptor of device name to be used as SYS$DISK
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    ptr,
+    username:	VECTOR [2],		! Descriptor of username
+    account:	VECTOR [2],		! Descriptor of account name
+    device:	VECTOR [2],		! Descriptor of default device
+    directory:	VECTOR [2];		! Descriptor of default directory
+
+!
+! Set base priority for process
+!
+
+IF .pcb_sts[$BITPOSITION(pcb$v_inter)]	! If interactive
+OR .pcb_sts[$BITPOSITION(pcb$v_netwrk)]	! or network process
+THEN
+    $SETPRI(PRI = .uaf_record [uaf$b_pri]); ! Set base priority
+
+!
+! Set default directory
+!
+
+directory [0] = CH$RCHAR(uaf_record [uaf$t_defdir]); ! Get descriptor of directory
+directory [1] = uaf_record [$BYTEOFFSET(uaf$t_defdir)+1,0,0,0];
+
+SYS$SETDDIR(directory, 0, 0);		! Set default directory
+
+!
+! Set default disk (logical name SYS$DISK)
+!
+
+IF .disk_name [0] EQL 0			! If no explicit disk specified
+THEN
+    BEGIN
+    device [0] = CH$RCHAR(uaf_record [uaf$t_defdev]); ! Get UAF disk name
+    device [1] = uaf_record [$BYTEOFFSET(uaf$t_defdev)+1,0,0,0];
+    END
+ELSE
+    BEGIN
+    device [0] = .disk_name [0];	! Else, use what user specifies
+    device [1] = .disk_name [1];
+    END;
+
+IF .device [0] NEQ 0			! If device specified,
+THEN
+    create_logical(%ASCID 'SYS$DISK',
+		   device,
+		   psl$c_exec);
+
+!
+! Set the username string
+!
+
+ptr = CH$FIND_CH(uaf$s_username, uaf_record [uaf$t_username], ' ');
+
+IF CH$FAIL(.ptr)			! If no space found,
+THEN
+    ptr = uaf_record [uaf$t_username] + uaf$s_username; ! Use entire thing
+
+username [0] = CH$DIFF(.ptr, uaf_record [uaf$t_username]);
+username [1] = uaf_record [uaf$t_username];
+
+$CMKRNL(ROUTIN = set_username,		! Set username string
+	ARGLST = username);
+
+!
+! Set the process UIC
+!
+
+$CMKRNL(ROUTIN = set_uic,		! Set the UIC
+	ARGLST = .uaf_record [uaf$l_uic]);
+
+!
+! Set up the correct group and job-wide logical name tables (ie - redo what
+! PROCSTRT tried to do only this time with the correct UIC and quota 
+! information. 
+!
+
+BEGIN
+
+LOCAL
+     status;
+
+IF NOT ( status = $CMKRNL( ROUTIN = set_lnm_tables ) )
+THEN
+    SIGNAL_STOP( .status );
+
+END;
+
+!
+! Set the account name for the process
+!
+
+account [0] = uaf$s_account;		! Setup descriptor of string
+account [1] = uaf_record [uaf$t_account];
+
+$CMKRNL(ROUTIN = set_account,		! Set account for process
+	ARGLST = account);
+
+!
+! Set process name to username.  If this fails, the process name will be
+! left to the orignal name, in the form _TTxx:
+!
+
+IF NOT .ppd [ppd$v_mode]		! If not batch, network or detached,
+THEN
+    $SETPRN(PRCNAM = username);		! Set process name (ignore errors)
+
+!
+! Create the access rights lists and attach them to the PCB.
+!
+make_rightslists();
+
+!
+! Set terminal name in PCB if connected to a terminal
+!
+IF .terminal_device			! If connected to a terminal,
+THEN set_term_name();			!  set terminal name in PCB
+
+!
+! Perform kernel mode initialization
+!
+
+$CMKRNL(ROUTIN = init_kernel);		! Copy UAF fields into proper places
+
+END;
+
+ROUTINE init_kernel: NOVALUE =
+
+!---
+!
+!	Initialize process context in kernel mode.
+!
+! Inputs:
+!
+!	Access mode is kernel.
+!
+!	uaf_record = Address of UAF record for user (must be non-zero)
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+STRUCTURE
+    threebytevector [i; n, ext=0] =
+	[n*3]
+	(threebytevector+i*3)<0, 24, ext>;
+
+EXTERNAL
+    ctl$gl_phd,				! Address of process header
+    ctl$gl_wspeak,			! Peak working set size
+    ctl$gl_virtpeak,			! Peak page file usage
+    ctl$gq_procpriv,			! Process permanent privileges
+    pfn$gl_phypgcnt,			! Total physical pages of memory
+    sch$gl_freelim,
+    sgn$gl_maxwscnt;			! SYSGEN parameter WSMAX
+
+LOCAL
+    pcb:	REF BBLOCK,		! Address of PCB
+    phd:	REF BBLOCK,		! Address of PHD
+    jib:	REF BBLOCK,		! Address of JIB
+    arb:	REF BBLOCK,		! Address of ARB
+    available_memory;			! Amount of available physical memory
+
+!
+! Define a vector structure over the UAF hourly restriction fields
+! for quick reference.
+!
+$ASSUME (jib$c_network, EQL, 1);
+$ASSUME (jib$c_batch, EQL, 2);
+$ASSUME (jib$c_local, EQL, 3);
+$ASSUME (jib$c_dialup, EQL, 4);
+$ASSUME (jib$c_remote, EQL, 5);
+$ASSUME ($BYTEOFFSET (uaf$b_network_access_s), EQL, $BYTEOFFSET (uaf$b_network_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_batch_access_p), EQL, $BYTEOFFSET (uaf$b_network_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_batch_access_s), EQL, $BYTEOFFSET (uaf$b_batch_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_local_access_p), EQL, $BYTEOFFSET (uaf$b_batch_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_local_access_s), EQL, $BYTEOFFSET (uaf$b_local_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_dialup_access_p), EQL, $BYTEOFFSET (uaf$b_local_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_dialup_access_s), EQL, $BYTEOFFSET (uaf$b_dialup_access_p)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_remote_access_p), EQL, $BYTEOFFSET (uaf$b_dialup_access_s)+3);
+$ASSUME ($BYTEOFFSET (uaf$b_remote_access_s), EQL, $BYTEOFFSET (uaf$b_remote_access_p)+3);
+
+BIND
+    restrict_vector = uaf_record[uaf$b_network_access_p]
+		    : threebytevector;
+
+ctl$gl_wspeak = 0;			! Initialize peak working set usage
+ctl$gl_virtpeak = 0;			! Initialize peak page file usage
+
+pcb = .ctl$gl_pcb;			! Get address of PCB
+jib = .pcb [pcb$l_jib];			! Get address of JIB
+
+jib[jib$b_jobtype] = .job_type;
+
+ctl$gl_uaf_flags = .uaf_record [uaf$l_flags];
+
+IF .uaf_record [uaf$v_audit]
+THEN
+    BEGIN
+    pcb_sts [$BITPOSITION(pcb$v_secaudit)] = 1;
+    pcb [pcb$v_secaudit] = 1;
+    END;
+
+pcb [pcb$w_biolm] = .uaf_record [uaf$w_biolm];
+pcb [pcb$w_biocnt] = .uaf_record [uaf$w_biolm];
+pcb [pcb$w_diolm] = .uaf_record [uaf$w_diolm];
+pcb [pcb$w_diocnt] = .uaf_record [uaf$w_diolm];
+jib [jib$l_bytlm] = .uaf_record [uaf$l_bytlm]
+			+ (.jib[jib$l_bytlm] - .jib [jib$l_org_bytlm]);
+jib [jib$l_bytcnt] = .uaf_record [uaf$l_bytlm]
+			+ (.jib[jib$l_bytcnt] - .jib [jib$l_org_bytlm]);
+jib [jib$w_prclim] = .uaf_record [uaf$w_prccnt];
+jib [jib$w_filcnt] = .uaf_record [uaf$w_fillm]
+			+ (.jib [jib$w_filcnt] - .jib [jib$w_fillm]);
+jib [jib$w_fillm] = .uaf_record [uaf$w_fillm];
+IF .job_type NEQ jib$c_detached
+THEN
+    BEGIN
+    jib [jib$b_daytypes] = .uaf_record [uaf$b_primedays];
+    jib [jib$l_pdayhours] = .restrict_vector [(.job_type-1)*2];
+    jib [jib$l_odayhours] = .restrict_vector [(.job_type-1)*2+1];
+    END;
+
+phd = .ctl$gl_phd;			! Get address of PHD
+
+available_memory = MINU(.pfn$gl_phypgcnt - .sch$gl_freelim,
+			.sgn$gl_maxwscnt);
+
+phd [phd$w_wsquota] = .phd [phd$w_wslist]-1
+		+ MINU(.uaf_record [uaf$l_wsquota], .available_memory);
+
+phd [phd$w_wsextent] = .phd [phd$w_wslist]-1
+		+ MINU(.uaf_record [uaf$l_wsextent], .available_memory);
+
+phd [phd$w_wsextent] = MAXU(.phd [phd$w_wsquota],.phd [phd$w_wsextent]);
+
+phd [phd$w_wsauth] = .phd [phd$w_wsquota];
+
+phd [phd$w_wsauthext] = .phd [phd$w_wsextent];
+
+phd [phd$w_dfwscnt] = MINU(.phd [phd$w_wsauth],
+		.phd [phd$w_wslist]-1 + .uaf_record [uaf$l_dfwscnt]);
+jib [jib$l_pgflcnt] = .jib [jib$l_pgflcnt]
+		+ (.uaf_record [uaf$l_pgflquota] - .jib [jib$l_pgflquota]);
+jib [jib$l_pgflquota] = .uaf_record [uaf$l_pgflquota];
+
+phd [phd$w_astlm] = .uaf_record [uaf$w_astlm];
+pcb [pcb$w_astcnt] = .uaf_record [uaf$w_astlm];
+jib [jib$w_tqlm] = .uaf_record [uaf$w_tqcnt];
+jib [jib$w_tqcnt] = .uaf_record [uaf$w_tqcnt];
+phd [phd$l_cpulim] = .uaf_record [uaf$l_cputim];
+jib [jib$l_cpulim] = .uaf_record [uaf$l_cputim];
+jib [jib$w_enqcnt] = .uaf_record [uaf$w_enqlm]
+			+ (.jib [jib$w_enqcnt] - .jib [jib$w_enqlm]);
+jib [jib$w_enqlm] = .uaf_record [uaf$w_enqlm];
+jib [jib$w_shrfcnt] = .uaf_record [uaf$w_shrfillm]
+			+ (.jib [jib$w_shrfcnt] - .jib [jib$w_shrflim]);
+jib [jib$w_shrflim] = .uaf_record [uaf$w_shrfillm];
+jib [jib$l_pbytlim] = .uaf_record [uaf$l_pbytlm];
+jib [jib$l_pbytcnt] = .uaf_record [uaf$l_pbytlm];
+jib [jib$w_maxjobs] = .uaf_record [uaf$w_maxjobs];
+jib [jib$w_maxdetach] = .uaf_record [uaf$w_maxdetach];
+
+! The AUTHPRI cell exists in two places. The $SETPRI system service uses
+! the PCB cell but the PHD cell must exist forever because that is where
+! the JPI item code believes that AUTHPRI is located.
+
+pcb [pcb$b_authpri] = .pcb [pcb$b_prib];    ! Reset authorized priority
+phd [phd$b_authpri] = .pcb [pcb$b_prib];    ! ... in both of its homes
+
+arb = .pcb [pcb$l_arb];			! Get address of ARB
+
+move_quad(uaf_record [uaf$q_priv], phd [phd$q_authpriv]);
+move_quad(uaf_record [uaf$q_priv], arb [arb$q_priv]);
+move_quad(uaf_record [uaf$q_def_priv], ctl$gq_procpriv);
+
+END;
+
+GLOBAL ROUTINE init_cli: NOVALUE =
+
+!---
+!
+!	Initialize the CLI by mapping it into P1 space and
+!	setting up the communication region.  The logical
+!	names PROC1-N are defined to specify initialization
+!	command procedures that the CLI should execute.
+!
+! Inputs:
+!
+!	cli_name = Address of descriptor of CLI name
+!	table_name = Address of descriptor of command table
+!	uaf_record = Address of UAF record for user, if any
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+BIND
+    dcl_string = UPLIT BYTE('DCL');
+
+LOCAL
+    restricted_user;		!True if defcli/captive in p1 or uaf
+!
+! Setup fields of the PPD communication region
+!
+
+IF .uaf_record NEQ 0			! If UAF record valid
+THEN
+    BEGIN
+    IF .uaf_record [uaf$v_disctly]	! If ctrl/y initially disabled,
+    OR .uaf_record [uaf$v_captive] 	! (CAPTIVE implies disable ctrl/y
+    THEN ppd [ppd$v_noctly] = true;	! then indicate that to CLI
+    IF .uaf_record [uaf$v_captive]	! Propagate the captive bit
+    THEN ppd [ppd$v_captive] = true;	!  to PPD communication region
+    END;
+
+restricted_user = (IF .uaf_record NEQ 0	
+		   THEN (.uaf_record [uaf$v_defcli]
+			OR .uaf_record [uaf$v_captive])
+		    ELSE (.ctl$gl_uaf_flags [$BITPOSITION(uaf$v_defcli)]
+			OR .ctl$gl_uaf_flags [$BITPOSITION(uaf$v_captive)]));
+
+!
+! Setup system-wide command procedure, defined by logname SYS$SYLOGIN
+!
+
+IF NOT .subprocess
+THEN
+    BEGIN
+
+    LOCAL
+	buffer:			VECTOR [128,BYTE],
+	desc:			VECTOR [2],
+	trnlnm_item_list:	BLOCK [1*3+1,LONG];	! Item list for 1 item
+
+    trnlnm_item_list[0, 0,16,0] = (desc[0] = %ALLOCATION(buffer));
+    trnlnm_item_list[0,16,16,0] = lnm$_string;	! Fetch name's value string
+    trnlnm_item_list[1, 0,32,0] = (desc[1] = buffer);
+    trnlnm_item_list[2, 0,32,0] = desc[0];
+    trnlnm_item_list[3, 0,32,0] = 0;
+
+    IF $TRNLNM(TABNAM = %ASCID 'LNM$SYSTEM_TABLE',
+	       LOGNAM = %ASCID 'SYS$SYLOGIN',
+	       ACMODE = UPLIT(psl$c_exec),
+	       ITMLST = trnlnm_item_list)
+    EQL ss$_normal
+    THEN
+	setup_login_proc(desc);			! Tell CLI to execute it
+
+    END;
+
+!
+! If not a subprocess, setup the initial command procedure to execute.
+!
+
+IF .com_name [0] EQL 0			! If no command procedure to execute
+    AND NOT .com_negated		! and not explicitly negated,
+    AND .uaf_record NEQ 0		! and if UAF record valid,
+THEN
+    BEGIN
+    com_name [1] = uaf_record [$BYTEOFFSET(uaf$t_lgicmd)+1,0,0,0];
+    com_name [0] = CH$RCHAR(uaf_record [uaf$t_lgicmd]);
+	
+    IF .com_name [0] EQL 0		! If no default in UAF
+    THEN
+	BEGIN
+	com_name [1] = UPLIT BYTE('LOGIN');
+	com_name [0] = 5;
+	END;
+    END;
+
+IF .com_name [0] NEQ 0			! If user has login procedure,
+    AND NOT .subprocess			! and not a subprocess
+THEN
+    setup_login_proc(com_name);		! Tell CLI to execute it
+
+!
+! Get the name of the CLI and tables to map.  If /CLI or /TABLE was
+! specified on the username prompt, then cli_name or table_name will already
+! have initial values.
+!
+
+!
+! If no cli specified, and not (captive or defcli), and image activator
+! gave us a cli in cmedata, then use it.
+!
+IF .cli_name [0] EQL 0				!If no cli name specified
+AND NOT .restricted_user
+AND (.ctl$ag_cmedata [0] NEQ 0)			!And $imgact stored cli name
+THEN
+    BEGIN
+    cli_name [0] = .ctl$ag_cmedata [0];
+    cli_name [1] = ctl$ag_cmedata [1];
+    END;
+!
+! If we don't have a CLI name yet then get CLI and tables from spawn info.
+!
+IF .cli_name [0] EQL 0			! If no CLI has been specified yet
+AND NOT .restricted_user		!  and user can specify cli
+THEN					!  then get it from spawn information
+    BEGIN
+    cli_name [0] = .ctl$gt_spawncli [0];
+    cli_name [1] = ctl$gt_spawncli [1];
+    IF .table_name [0] EQL 0		! If no tables have been specified yet
+    THEN				!  then get tables from spawn, too
+	BEGIN
+	table_name [0] = .ctl$gt_spawntable [0];
+	table_name [1] = ctl$gt_spawntable [1];
+	END;
+    END;
+
+!
+! If we have a UAF record, but not a CLI or table name yet, or the UAF default
+! CLI flags are set, then get the CLI and tables from the UAF record.
+!
+IF .uaf_record NEQ 0			! If the UAF record is valid
+AND (.cli_name [0] EQL 0		!  and no CLI has been specified yet
+ OR .restricted_user)			!   or we must use the default CLI
+THEN					! Then get the CLI from the UAF
+    BEGIN
+    cli_name [0] = .VECTOR [uaf_record [uaf$t_defcli], 0; ,BYTE];
+    cli_name [1] = uaf_record [uaf$t_defcli] + 1;
+    IF .table_name [0] EQL 0		! If no tables have been specified yet
+    OR .restricted_user			!  or we must use the default CLI
+    THEN				! Then the tables from the UAF too
+	BEGIN
+	table_name [0] = .VECTOR [uaf_record [uaf$t_clitables], 0; ,BYTE];
+	table_name [1] = uaf_record [uaf$t_clitables] + 1;
+	END;
+    END;
+
+!
+! If we don't have a CLI name yet, or we don't have a UAF record but the UAF
+! flags in P1 space indicate that we must use the default CLI, then get both
+! CLI and tables from P1 space.
+!
+IF .cli_name [0] EQL 0			! If no CLI has been specified yet
+OR (					!  or,
+    .uaf_record EQL 0			! There is no UAF record
+    AND (				!  but, P1 flags specify
+	 .restricted_user		!  user is restricted
+        )
+   )
+THEN					! Then get CLI from P1 space
+    BEGIN
+    cli_name [0] = .ctl$gt_cliname [0];
+    cli_name [1] = ctl$gt_cliname [1];
+    IF .table_name [0] EQL 0		! If no tables have been specified yet
+    OR (				!  or,
+	.uaf_record EQL 0		! There is no UAF record
+	AND (				!  but, P1 flags specify
+	     .restricted_user		!   that user is restricted
+	    )
+       )
+    THEN				! Then get tables from P1 space too
+	BEGIN
+	table_name [0] = .ctl$gt_tablename [0];
+	table_name [1] = ctl$gt_tablename [1];
+	END;
+    END;
+
+!
+! If we still don't have a CLI yet, the use DCL as the final default.  Or,
+! if this is a network process, force DCL, since network requires it.
+!
+IF (.cli_name[0] EQL 0)			! If no CLI has been specified yet
+    OR .pcb_sts[$BITPOSITION(pcb$v_netwrk)]
+THEN					! Then use DCL as the final default
+    BEGIN
+    cli_name [0] = 3;
+    cli_name [1] = dcl_string;
+    IF .pcb_sts[$BITPOSITION(pcb$v_netwrk)] ! Use default tables if network
+	THEN table_name [0] = 0;
+    END;
+
+!
+! Ensure that the CLI image name is prefixed with a device name. We do
+! not want the CLI image to be logical name translatable.
+!
+IF CH$FAIL (CH$FIND_CH (.cli_name[0], .cli_name[1], ':'))
+THEN
+    BEGIN
+    CH$COPY (.cli_name[0], .cli_name[1], ' ',
+	     80 - 11, cli_name_buffer[11]);
+    CH$MOVE (11, UPLIT BYTE ('SYS$SYSTEM:'), cli_name_buffer);
+    cli_name[0] = .cli_name[0] + 11;
+    cli_name[1] = cli_name_buffer;
+    END;
+
+!
+! If no CLI tables name is yet specified and the CLI name is for the form
+! "SYS$SYSTEM:cliname", then create a CLI tables name of the form
+! "clinameTABLES".
+!
+IF .table_name [0] EQL 0		! If no CLI tables name yet
+AND .cli_name [0] GTRU 11		!  and CLI name
+AND CH$EQL(11, .cli_name [1],		!   starts with "SYS$SYSTEM:",
+	   11, UPLIT BYTE('SYS$SYSTEM:'))
+THEN
+    BEGIN				! Form "clinameTABLES"
+    CH$COPY(.cli_name [0] - 11, .cli_name [1] + 11,
+	    6, UPLIT BYTE('TABLES'),
+	    ' ',
+	    80, table_name_buffer);
+    table_name [0] = .cli_name [0] - 11 + 6;
+    table_name [1] = table_name_buffer;
+    END;
+
+!
+! Map the CLI image into the control region.
+!
+
+$CMEXEC(ROUTIN = map_cli);		! Map the CLI image
+
+END;
+
+ROUTINE setup_login_proc (desc): NOVALUE =
+
+!---
+!
+!	Setup a login command procedure, to be executed initially
+!	before starting interactive session.  The CLI will execute
+!	the procedures in the order they are give to this routine.
+!
+! Inputs:
+!
+!	desc = Address of descriptor of command procedure
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+LOCAL
+    logbuf:	VECTOR [8,BYTE],	! Buffer for logical name 'PROC#'
+    logdesc:	VECTOR [2];		! Descriptor of above buffer
+
+logdesc [0] = 5;			! Setup descriptor of logical name
+logdesc [1] = logbuf;
+
+CH$MOVE(4, UPLIT BYTE('PROC'), logbuf);	! Create logical name string
+
+ppd [ppd$b_nprocs] = .ppd [ppd$b_nprocs] + 1; ! Increment # of login procs
+
+logbuf [4] = '0' + .ppd [ppd$b_nprocs];	! Set procedure index into logname
+
+create_logical(logdesc,			! Create PROC# = login file
+	       .desc,
+	       psl$c_user);
+
+END;
+
+ROUTINE map_cli: NOVALUE =
+
+!---
+!
+!	Map the CLI into the control region.
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+!	cli_name = Address of descriptor of CLI name
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+OWN
+    image_name:		VECTOR[2],	! Image's name descriptor
+    image_filespec:	VECTOR[2],	! Image's filespec descriptor
+    image_header_buf:	VECTOR[128];	! Image header from $IMGACT
+$ASSUME(%ALLOCATION(image_header_buf),EQL,512);
+
+ROUTINE extract_image_name : NOVALUE =	! Subroutine to extract image's
+BEGIN					!  filespec and name after $IMGACT
+LOCAL
+    len,
+    ptr: REF BLOCK[,BYTE];
+image_name[0] = 0;
+image_filespec[0] = 0;
+IF (ptr = .image_header_buf[1]) EQL 0
+THEN RETURN;
+image_name[0] = .(ptr[ifd$q_curprog])<0,16>;
+image_name[1] = .(ptr[ifd$q_curprog])<32,32>;
+move_quad(image_name, image_filespec);
+IF (len = .image_name[0]) EQL 0
+THEN RETURN;
+ptr = .image_name[1];
+DO
+    BEGIN
+    LOCAL
+	chr: BYTE;
+    chr = CH$RCHAR_A(ptr);
+    IF .chr EQL ':'
+    OR .chr EQL ']'
+    OR .chr EQL '>'
+    THEN
+	BEGIN
+	image_name[0] = .len - 1;
+	image_name[1] = .ptr;
+	END;
+    len = .len - 1;
+    END
+WHILE .len GTR 0;
+IF NOT CH$FAIL(ptr = CH$FIND_CH(.image_name[0], .image_name[1], '.'))
+THEN
+    BEGIN
+    image_name[0] = CH$DIFF(.ptr, .image_name[1]);
+    image_filespec[0] = CH$DIFF(.ptr, .image_filespec[1]);
+    END;
+END;
+
+BUILTIN FP;
+
+EXTERNAL
+    exe$gl_clitabl;			! SYSGEN parameter CLISYMTBL
+
+BIND
+    clisymtbl = ppd [ppd$q_clisymtbl]: VECTOR;	! Reference as 2 longwords
+
+LOCAL
+    status,
+    arglist:	VECTOR [2],		! Arg list to LGI$PROTECT_CLI
+    range:	VECTOR [2];		! Range of CLI symbol table
+
+.fp = handler;				! Enable condition handler
+
+!
+! Change the page protection on the CLI and its tables to supervisor
+! write (where writable) and user read, supervisor owned, to prevent
+! the user from modifying the CLI.
+!
+status = lib$p1_merge(cli_name,		! Map CLI into control region
+	%ASCID 'SYS$SYSTEM:.EXE',	! Default filespec for CLI
+	image_header_buf,		! Return image header buffer
+	ctl$ag_climage);		! Return address range
+
+IF NOT .status				! If error detected,
+THEN
+    SIGNAL_STOP(lgi$_clifail,1,cli_name,.status); ! then signal fatal error
+
+arglist[0] = 1;
+arglist[1] = ctl$ag_climage;
+status = $CMKRNL (ROUTIN = lgi$protect_cli, ARGLST = arglist);
+IF NOT .status
+THEN
+    SIGNAL_STOP(lgi$_cliprot,0,.status);
+
+extract_image_name();			! Extract image name
+CH$MOVE((ctl$gt_cliname[0] = .image_name[0]), ! Load
+	.image_name[1],			!  image name
+	ctl$gt_cliname[1]);		!   as ASCIC
+
+IF .table_name[0] NEQ 0
+THEN
+    BEGIN
+    status = lib$p1_merge(table_name,	! Map command table into control region
+	%ASCID 'SYS$SHARE:.EXE',	! Default filespec for tables
+	image_header_buf,		! Return image header buffer
+	ctl$ag_clitable);		! Return address range
+
+    IF NOT .status			! If error detected,
+    THEN
+        SIGNAL_STOP(lgi$_clitblfail,1,table_name,.status); ! signal fatal error
+    arglist[1] = ctl$ag_clitable;
+    status = $CMKRNL (ROUTIN = lgi$protect_cli, ARGLST = arglist);
+    IF NOT .status
+    THEN
+	SIGNAL_STOP(lgi$_clitblprot,0,.status);
+
+    extract_image_name();		! Extract image filespec
+    CH$MOVE((ctl$gt_tablename[0] = .image_filespec[0]), ! Load
+	    .image_filespec[1],		!  image filespec
+	    ctl$gt_tablename[1]);	!   as ASCIC
+    END;
+
+!
+! Create the CLI symbol table space.
+!
+status = $EXPREG(PAGCNT = .exe$gl_clitabl,
+		RETADR = range,
+		ACMODE = psl$c_super,
+		REGION = 1);
+
+IF NOT .status
+THEN
+    SIGNAL_STOP(lgi$_clisymtbl, 0, .status);
+
+$CMKRNL(ROUTIN = set_p1_base,		! Set new base of control region
+	ARGLST = .range [1]);
+
+clisymtbl [0] = .range [0] - .range [1] + 1;	! Setup descriptor of storage
+clisymtbl [1] = .range [1];
+
+END;
+
+GLOBAL ROUTINE execute_cli: NOVALUE =
+
+!---
+!
+!	This routine is called to transfer control to the CLI
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+! Outputs:
+!
+!	None
+!---
+
+BEGIN
+
+BUILTIN FP;
+
+MAP FP: REF BBLOCK;			! Address of call frame
+
+EXTERNAL LITERAL
+    exe$c_cmstksz;			! # bytes after $CMEXEC frame to PC/PSL
+
+LOCAL
+    prev_fp:	REF BBLOCK,		! Address of previous frame
+    pcpsl:	REF VECTOR,		! Address of previous PC/PSL pair
+    psl:	REF BBLOCK;		! Address of previous PSL
+
+!
+! Change the page protection on the PPD structure to allow only supervisor
+! mode write access for the protection of the CLI data storage.
+!
+
+$CMEXEC(ROUTIN = set_ppd_prot,		! Set PPD page protection
+	ARGLST = prt$c_ursw);
+
+!
+! Locate the PC/PSL in the $CMEXEC call frame and alter it to point
+! to the CLI entry point and set the PSL to supervisor mode.
+!
+
+prev_fp = .fp [sf$l_save_fp];		! Get address of CMEXEC call frame
+pcpsl = .prev_fp + exe$c_cmstksz;	! Point to PC/PSL after argument list
+pcpsl [0] = .ctl$ag_climage;		! Set PC to CLI entry point
+psl = pcpsl [1];			! Get address of PSL
+psl [psl$v_curmod] = psl$c_super;	! Set access mode to supervisor
+psl [psl$v_prvmod] = psl$c_super;	! and previous mode as well
+
+!
+! Now, on exit from the $CMEXEC system service, control will be transferred
+! to the CLI in supervisor mode.
+!
+
+END;
+
+GLOBAL ROUTINE map_imgact: NOVALUE =
+
+!---
+!
+!	Map a code segment into P1 space which, when called, will
+!	unmap the login program and activate a given image.
+!
+! Inputs:
+!
+!	Access mode is executive.
+!
+!	sys$input = Descriptor of image file specification
+!
+! Outputs:
+!
+!	ctl$ag_climage = Address of P1 code segment to do the work
+!			(should be called in executive mode)
+!---
+
+BEGIN
+
+LOCAL
+    range:	VECTOR [2];		! Range of allocated space in P1
+
+BIND
+    image_desc = mmg$imghdrbuf: VECTOR;	! Pass image filespec in buffer
+
+image_activate = true;			! Mark image activate to be done
+
+image_desc [0] = .sys$input [0];	! Store filespec descriptor into buffer
+image_desc [1] = image_desc [2];	! as well as string itself
+CH$MOVE(.sys$input [0], .sys$input [1], .image_desc [1]);
+
+$EXPREG(PAGCNT = 1,			! Allocate one page in P1 space
+	RETADR = range,
+	ACMODE = psl$c_super,
+	REGION = 1);
+
+$CMKRNL(ROUTIN = set_p1_base,		! Set new base of control region
+	ARGLST = .range [1]);		! so that code stays after rundown
+
+CH$MOVE(512, execute_image, .range [1]); ! Copy code into page (max. 1 page)
+
+ctl$ag_climage = .range [1];		! Store address of code segment
+
+END;
+
+ROUTINE set_p1_base =
+
+!---
+!
+!	This routine resets the base address of the fixed portion
+!	of the control region.
+!
+! Inputs:
+!
+!	Access mode is kernel.
+!
+!	ap = New base address for fixed P1
+!
+! Outputs:
+!
+!	routine = status (not signaled)
+!---
+
+BEGIN
+
+BUILTIN
+    ap;
+
+EXTERNAL
+    ctl$gl_ctlbasva;			! Base address of permanent P1 space
+
+ctl$gl_ctlbasva = .ap;			! Set new base of fixed P1 region
+
+RETURN true;
+
+END;
+
+GLOBAL ROUTINE set_account: NOVALUE =
+
+!---
+!
+!	Set the account name in the JIB and P1 space.
+!
+! Inputs:
+!
+!	Access mode = Kernel
+!
+!	AP = Address of account name descriptor
+!
+! Outputs:
+!
+!	None.  The JIB and P1 space are updated.
+!
+!---
+
+BEGIN
+
+BUILTIN
+    AP;
+
+MAP
+    AP:		REF VECTOR;		! Address of account name descriptor
+
+EXTERNAL
+    ctl$t_account;			! Account name string in P1 space
+
+LOCAL
+    jib:	REF BBLOCK;		! Address of JIB
+
+CH$COPY(.AP [0], .AP [1],		! Copy account name string
+	' ',				!  blank padded
+	jib$s_account, ctl$t_account);	!   to control region
+
+jib = .ctl$gl_pcb [pcb$l_jib];		! Get JIB address
+
+CH$COPY(.AP [0], .AP [1],		! Copy it to JIB as well
+	' ',
+	jib$s_account, jib [jib$t_account]);
+
+END;
+
+GLOBAL ROUTINE set_username: NOVALUE =
+
+!---
+!
+!	Set the username in the JIB and P1 space.
+!
+! Inputs:
+!
+!	Access mode = Kernel
+!
+!	AP = Address of username descriptor
+!
+! Outputs:
+!
+!	None.  The JIB and P1 space are updated.
+!
+!---
+
+BEGIN
+
+BUILTIN
+    AP;
+
+MAP
+    AP:		REF VECTOR;		! Address of username descriptor
+
+EXTERNAL
+    ctl$t_username;			! Username string in P1 space
+
+LOCAL
+    jib:	REF BBLOCK;		! Address of JIB
+
+CH$COPY(.AP [0], .AP [1],		! Copy username string
+	' ',				!  blank padded
+	jib$s_username, ctl$t_username); !   to control region
+
+jib = .ctl$gl_pcb [pcb$l_jib];		! Get JIB address
+
+CH$COPY(.AP [0], .AP [1],		! Copy it to JIB as well
+	' ',
+	jib$s_username, jib [jib$t_username]);
+
+END;
+
+GLOBAL ROUTINE set_node_name (link): NOVALUE =
+
+!---
+!
+!	Set the node name, node address, and remote ID strings.
+!
+! Inputs:
+!
+!	link = local link number
+!
+! Outputs:
+!
+!	None.  P1 space is updated.
+!
+!---
+
+BEGIN
+
+OWN
+    last_link:		INITIAL (0);		! Last link processed
+
+ROUTINE load_node_info (bufadr, buflen) =	! $CMKRNL subroutine to load
+BEGIN						!  node info into P1 space
+
+EXTERNAL
+    ctl$t_nodeaddr:	VECTOR [,BYTE],		! Node address (ASCIC, max=6)
+    ctl$t_nodename:	VECTOR [,BYTE],		! Node name (ASCIC, max=6)
+    ctl$t_remoteid:	VECTOR [,BYTE];		! Remote id (ASCIC, max=16)
+
+LOCAL
+    bufend,
+    srclen,
+    srcptr;
+
+!
+! Address the returned information and its end
+!
+bufend = (srcptr = .bufadr) + .buflen;
+
+!
+! Copy remote node address
+!
+IF .srcptr GEQA .bufend
+THEN RETURN 0;
+srclen = 4;
+CH$COPY((ctl$t_nodeaddr [0] = .srclen), .srcptr, 0, 6, ctl$t_nodeaddr [1]);
+srcptr = .srcptr + .srclen;
+
+!
+! Copy remote node name
+!
+IF .srcptr GEQA .bufend
+THEN RETURN 0;
+srclen = .(.srcptr)<0,16>;
+srcptr = .srcptr + 2;
+CH$COPY((ctl$t_nodename [0] = .srclen), .srcptr, 0, 6, ctl$t_nodename [1]);
+srcptr = .srcptr + .srclen;
+
+!
+! Copy remote ID
+!
+IF .srcptr GEQA .bufend
+THEN RETURN 0;
+srclen = .(.srcptr)<0,16>;
+srcptr = .srcptr + 2;
+CH$COPY((ctl$t_remoteid [0] = .srclen), .srcptr, 0, 16, ctl$t_remoteid [1]);
+
+RETURN 1;
+
+END;
+
+LOCAL
+    nfb:		BBLOCK [nfb$c_length + (3 * 4)],
+    key:		VECTOR [2],
+    buffer:		BBLOCK [4 + (2 + 6) + (2 + 16)],
+    chan:		WORD,
+    iosb:		VECTOR [4,WORD],
+    nfb_desc:		VECTOR [2] INITIAL (%ALLOCATION(nfb), nfb),
+    key_desc:		VECTOR [2] INITIAL (%ALLOCATION(key), key),
+    buffer_desc:	VECTOR [2] INITIAL (%ALLOCATION(buffer), buffer),
+    arglist:		VECTOR [3] INITIAL (2, buffer, 0);
+
+!
+! Set up NFB for NETACP QIO
+!
+CH$FILL(0, %ALLOCATION(nfb), nfb);
+nfb [nfb$b_fct] = nfb$c_fc_show;
+nfb [nfb$b_flags] = nfb$m_noctx;
+nfb [nfb$b_database] = nfb$c_db_lli;
+nfb [nfb$b_oper] = nfb$c_op_eql;
+nfb [nfb$l_srch_key] = nfb$c_lli_lln;
+nfb [nfb$l_fldid] = nfb$c_lli_pna;
+(nfb [nfb$l_fldid]) + 4 = nfb$c_lli_pnn;
+(nfb [nfb$l_fldid]) + 8 = nfb$c_lli_rid;
+
+!
+! Store logical link number as key of reference
+! Exit without calling NETACP if link was already processed
+!
+key [0] = 0;
+IF (key [1] = .link) EQL .last_link
+THEN RETURN;
+
+!
+! Assign channel to network device
+! Issue QIO to NETACP
+! Deassign the channel
+!
+IF NOT $ASSIGN(DEVNAM = %ASCID '_NET:',
+	       CHAN   = chan)
+THEN RETURN;
+IF NOT $QIOW(CHAN = .chan,
+	     FUNC = io$_acpcontrol,
+	     IOSB = iosb,
+	     P1   = nfb_desc,
+	     P2   = key_desc,
+	     P3   = arglist[2],
+	     P4   = buffer_desc)
+THEN iosb [0] = 0;
+$DASSGN(CHAN = .chan);
+IF NOT .iosb [0]
+THEN RETURN;
+
+!
+! Go load P1 space with the node info
+! Remember the last link we fully processed
+!
+IF $CMKRNL(ROUTIN = load_node_info, ARGLST = arglist)
+THEN
+    last_link = .link;
+
+END;
+
+GLOBAL ROUTINE set_term_name: NOVALUE =
+
+!---
+!
+!	Set the terminal name in the PCB.
+!
+! Inputs:
+!
+!	term_name = Descriptor of terminal name
+!
+! Outputs:
+!
+!	None.  PCB is updated.
+!
+!---
+
+BEGIN
+
+OWN
+    link;				! Remote terminal's local link
+
+ROUTINE load_term_set_link: NOVALUE =	! $CMKRNL subroutine to load PCB
+BEGIN					!  and fetch remote terminal's link
+
+CH$COPY(.term_name [0],			! Copy terminal name
+	.term_name [1],			!  with the leading "_"
+	' ',				!   blank filled
+	8,				!    into
+	ctl$gl_pcb [pcb$t_terminal]);	!     the PCB
+ctl$gl_pcb [$BYTEOFFSET(pcb$t_terminal),0,8,0] = ! Change to ASCIC
+		.term_name [0] - 1;	!  without the leading "_"
+
+link = 0;				! Assume no link to fetch
+IF .dev_char_2 [dev$v_rtt]		! If this is a remote terminal,
+THEN
+    BEGIN
+    LOCAL
+	chn: WORD,			! Channel to terminal
+	ucb: REF $BBLOCK;		! CCB/UCB pointer
+    IF $ASSIGN(DEVNAM = term_name,	! Assign channel to terminal
+	       CHAN   = chn)
+    THEN
+	BEGIN
+	ucb = .ctl$gl_ccbbase - .chn;	! Get the CCB
+	ucb = .ucb [ccb$l_ucb];		! Get the UCB
+	link = .ucb [ucb$w_rtt_link];	! Get the local link number
+	$DASSGN(CHAN = .chn);		! Deassign the channel
+	END;
+    END;
+
+END;
+
+$CMKRNL(ROUTIN = load_term_set_link);	! Load terminal into PCB, set link
+
+IF .link NEQ 0				! If there is a link,
+THEN
+    set_node_name(.link);		! Store the node stuff into P1 space
+
+END;
+
+GLOBAL ROUTINE set_uic (new_uic) =
+
+!---
+!
+!	Set the process UIC
+!
+! Inputs:
+!
+!	Access mode = Kernel
+!
+!	ap = New UIC
+!
+! Outputs:
+!
+!	routine = Previous UIC
+!---
+
+BEGIN
+
+BUILTIN AP;
+
+
+LOCAL
+    prev_uic;
+
+prev_uic = .ctl$gl_pcb [pcb$l_uic];	! Save previous UIC
+
+ctl$gl_pcb [pcb$l_uic] = .ap;		! Set UIC
+
+RETURN .prev_uic;			! Return with previous UIC
+
+END;
+
+GLOBAL ROUTINE create_logical(log_name,eqv_name,acc_mode,att_bute,tbl_name) =
+
+!---
+!
+!	Create a logical name using the LNM services.
+!
+! Inputs:
+!
+!	log_name = Address of descriptor of logical name
+!	eqv_name = Address of descriptor of equivalence name
+!	acc_mode = Access mode for logical name
+!	att_bute = Address of longword of logical name attributes
+!		    Optional: Default is no attributes
+!	tbl_name = Address of descriptor of table name
+!		    Optional: Default is LNM$PROCESS_TABLE
+!
+! Outputs:
+!
+!	$CRELNM's status is returned.
+!
+!---
+
+BEGIN
+
+MACRO
+    lnm_attsize = 0, 0,16,0%,		! Attributes size
+    lnm_atttype = 0,16,16,0%,		! Attributes type
+    lnm_attaddr = 1, 0,32,0%,		! Attributes address
+    lnm_attrlen = 2, 0,32,0%,		! Attributes result length
+    lnm_strsize = 3, 0,16,0%,		! String size
+    lnm_strtype = 3,16,16,0%,		! String type
+    lnm_straddr = 4, 0,32,0%,		! String address
+    lnm_strrlen = 5, 0,32,0%,		! String result length
+    lnm_endlist = 6, 0,32,0%;		! End-of-list
+
+OWN
+    item_list : BLOCK[2*3+1,LONG]	! $CRELNM item list (2 entries)
+		 PRESET([lnm_attsize] = 4,
+			[lnm_atttype] = lnm$_attributes,
+			[lnm_attaddr] = 0,	! Filled in...
+			[lnm_attrlen] = 0,
+			[lnm_strsize] = 0,	! Filled in...
+			[lnm_strtype] = lnm$_string,
+			[lnm_straddr] = 0,	! Filled in...
+			[lnm_strrlen] = 0,
+			[lnm_endlist] = 0);
+
+BUILTIN
+    NULLPARAMETER;
+
+MAP
+    eqv_name : REF VECTOR;
+
+LOCAL
+    table_name;
+
+table_name = %ASCID 'LNM$PROCESS_TABLE';	! Default table to process
+IF NOT NULLPARAMETER(5)				! If table name supplied
+THEN table_name = .tbl_name;			!  then use supplied one
+
+item_list[lnm_attaddr] = UPLIT(0);		! Default attributes to 0
+IF NOT NULLPARAMETER(4)				! If attributes supplied
+THEN item_list[lnm_attaddr] = .att_bute;	!  then use supplied ones
+
+item_list[lnm_strsize] = .eqv_name[0];		! Set string length
+item_list[lnm_straddr] = .eqv_name[1];		!  and string address
+
+$CRELNM(TABNAM = .table_name,			! Create the logical name
+	LOGNAM = .log_name,
+	ACMODE = acc_mode,
+	ITMLST = item_list)
+
+END;
+
+ROUTINE make_rightslists : NOVALUE =
+BEGIN
+
+!+++
+!
+! Collect all the identifiers associated with this user, and then
+! copy them into appropriate places in the process PCB, and maybe
+! non-paged pool.
+!
+! Inputs:
+!	None.  The rights database is interrogated for the information.
+!
+! Outputs:
+!	None.  The PCB is updated.
+!
+!---
+
+LITERAL
+    id_number = (arb$s_localrights/8) - 1;
+LOCAL
+    status,
+    n : INITIAL(0),
+    proc_type : INITIAL(0),
+    term_type : INITIAL(0),
+    arglist : VECTOR[5],
+    desc : $BBLOCK[dsc$c_s_bln],		! Descriptor for extended rights
+    rights : VECTOR[id_number*2]		! Local copy of rights list
+    	     INITIAL(REP 2*id_number of (0))	! preset to zero
+    	     VOLATILE,
+    context : INITIAL (0) VOLATILE,		! Context block for SYS$FIND_HELD
+    holder_block : VECTOR[2] VOLATILE;		! Identification for this user
+
+!
+! The first step is to get as many identifiers as possible in the local
+! rights list.  Note that the literal ID_NUMBER is actually one less than
+! the number of ID's that go into the local rights list.  This is because the 
+! first ID, the UIC, is set elsewhere.
+!
+! First, the environmental rights.
+!
+IF .pcb_sts[$BITPOSITION(pcb$v_batch)]			! Process type
+THEN proc_type = %ASCID 'BATCH'
+ELSE IF .pcb_sts[$BITPOSITION(pcb$v_netwrk)]
+THEN proc_type = %ASCID 'NETWORK'
+ELSE IF .pcb_sts[$BITPOSITION(pcb$v_inter)]		! For interactive
+THEN							! processes, find
+    BEGIN						! the type of terminal
+    proc_type = %ASCID 'INTERACTIVE';
+    IF .terminal_device
+    THEN
+	BEGIN
+	IF .dev_char_2[dev$v_rtt]
+	THEN term_type = %ASCID 'REMOTE'
+	ELSE IF .dev_dep_2[tt2$v_dialup]
+	THEN term_type = %ASCID 'DIALUP'
+	ELSE term_type = %ASCID 'LOCAL';
+	END;
+    END;
+
+IF .proc_type NEQ 0				! If some kind of 
+THEN
+    BEGIN
+    IF $ASCTOID(NAME   = .proc_type,
+    		ID     = rights[2*.n],
+    		ATTRIB = rights[(2*.n)+1])
+    THEN n = .n + 1;
+    IF .term_type NEQ 0
+    THEN
+	BEGIN
+	IF $ASCTOID(NAME   = .term_type,
+		    ID     = rights[2*.n],
+		    ATTRIB = rights[(2*.n)+1])
+	THEN n = .n + 1;
+	END;
+    END;
+
+!
+! Get the non-environmental rights.
+!
+holder_block[0] = .uaf_record[uaf$l_uic];
+holder_block[1] = 0;
+
+arglist[0] = 4;
+arglist[1] = holder_block;
+arglist[4] = context;
+
+INCR i FROM .n TO (id_number - 1) DO
+    BEGIN
+    arglist[2] = rights[2*.i];
+    arglist[3] = rights[2*.i+1];
+    IF NOT (status = $CMEXEC(ROUTIN = SYS$FIND_HELD,
+    			     ARGLST = arglist))
+    THEN EXITLOOP;
+    END;
+
+!
+! Call the kernel-mode routine to set these in place.
+!
+BEGIN
+LOCAL status2;
+IF NOT (status2 = $CMKRNL(ROUTIN = set_localrights,
+    			  ARGLST = rights))
+THEN SIGNAL_STOP(.status2);
+END;
+
+!
+! It may be that there are more than 15 ID's to put into place.  If so,
+! then keep getting them, but put them in an expandable buffer.
+!
+IF .status
+THEN
+    BEGIN
+    $init_dyndesc(desc);		! Create a dynamic descriptor
+
+    rights[0] = 8;			! Set up a descriptor pointing to
+    rights[1] = rights[2];		! the new ID to add to the list
+
+    arglist[0] = 4;
+    arglist[1] = holder_block;
+    arglist[2] = rights[2];
+    arglist[3] = rights[3];
+    arglist[4] = context;
+
+    WHILE $CMEXEC(ROUTIN = SYS$FIND_HELD,
+		  ARGLST = arglist)
+    DO (str$append(desc, rights));
+
+    IF .desc[dsc$w_length] NEQ 0	! If there are more, 
+    THEN 				! then continue
+	BEGIN
+
+!
+! Call the kernel-mode routine that will allocate a suitable chunk of
+! non-paged pool in which to put the rights list, and point to it.
+!
+	IF NOT (status = $CMKRNL(ROUTIN = set_more_rights,
+    			 	 ARGLST = desc))
+	THEN SIGNAL_STOP(.status);
+	END;
+    END;
+
+RETURN;
+END;
+
+ROUTINE set_localrights =
+BEGIN
+
+!+++
+!
+! Copy the local rights list to the PCB.
+!
+! Inputs:
+!	mode is KERNEL
+!	AP = address of the local rights list
+!
+! Outputs:
+!	None.  The PCB is altered.
+!
+!---
+
+BUILTIN
+    ap;
+
+
+BIND
+    pcb = .ctl$gl_pcb : $BBLOCK,
+    arb = .pcb[pcb$l_arb] : $BBLOCK;
+
+!
+! Move the local copy into the PCB.  Note that we skip the first
+! ID, which is the UIC of the user.
+!
+CH$MOVE(arb$s_localrights - 8, .ap, arb[arb$r_localrights] + 8);
+
+RETURN true;
+END;
+
+ROUTINE set_more_rights =
+BEGIN
+
+!+++
+!
+! Copy the extended rights list to non-paged pool, and
+! set a pointer in the PCB.
+!
+! Inputs:
+!	mode is KERNEL
+!	AP = address of descriptor pointing to the rights list
+!
+! Outputs:
+!	None.  The PCB is modified.
+!
+!---
+
+BUILTIN
+    ap;
+
+
+BIND
+    pcb = .ctl$gl_pcb : $BBLOCK,
+    arb = .pcb[pcb$l_arb] : $BBLOCK,
+    desc = .ap : $BBLOCK,
+    rightslist = arb[arb$l_rightslist] : VECTOR;
+
+LOCAL
+    status,
+    size,
+    chunk : REF VECTOR;
+
+!
+! Check to see if there is already a rights list.  If so, deallocate it.
+!
+IF .rightslist[2] NEQ 0
+THEN
+    BEGIN
+    IF NOT (status = exe$deanonpaged(.rightslist[2]))
+    THEN RETURN .status;
+    END;
+
+!
+! Grab a chunk of non-paged pool large enough for the rights list.  This
+! must be the size in the descriptor, plus 12 bytes: 8 bytes to store the
+! descriptor, and another 4 for type and size of the chunk.
+!
+IF NOT (status = exe$alononpaged(.desc[dsc$w_length] + 12; size, chunk))
+THEN RETURN ss$_insfmem;
+
+chunk[0] = .desc[dsc$w_length];			! Set up the descriptor
+chunk[1] = chunk[3];
+chunk[2] = dyn$c_rightslist^16 + .size;		! Set size and type of block
+
+CH$MOVE(.desc[dsc$w_length],			! Copy the local data
+    	.desc[dsc$a_pointer],			! into the rest of
+    	chunk[3]);				! the block
+
+rightslist[2] = .chunk;				! Record address of rights descriptor
+
+RETURN true;
+END;
+
+GLOBAL ROUTINE set_lnm_tables =
+
+!---
+!
+!	Set the correct group and job-wide logical name tables.
+!
+! Inputs:
+!
+!	subprocess = TRUE if the process is a sub-process
+!	uaf_record = Address of UAF record for user ( must be non-zero )
+!
+!---
+
+BEGIN
+
+LOCAL
+    group_table_name:	VECTOR [ 16, BYTE ],
+    job_table_name:	VECTOR [ 16, BYTE ],
+    table_name_desc: 	VECTOR [ 2, LONG ]  INITIAL ( 16, group_table_name ),
+    item_list:		VECTOR [ (2*3)+1, LONG ];
+
+!
+! Convert the binary group number to ASCII and append it to "LNM$GROUP_"
+!
+
+$FAO ( %ASCID 'LNM$GROUP_!OW',
+       table_name_desc,
+       table_name_desc,
+       .uaf_record [ uaf$w_grp ] );
+
+!
+! Construct the item list for LNM$GROUP and re-create the logical name.
+!
+
+item_list [ 0 ] = (LNM$_ATTRIBUTES^16 OR 4);	! Define the translation to be
+item_list [ 1 ] = UPLIT (LNM$M_TERMINAL);	!  terminal
+item_list [ 2 ] = 0;
+
+item_list [ 3 ] = (LNM$_STRING^16 OR .table_name_desc [ 0 ] );
+item_list [ 4 ] = .table_name_desc [ 1 ];	! Define the translation string
+item_list [ 5 ] = 0;
+
+item_list [ 6 ] = 0;				! End the item list
+
+$CRELNM	( ACMODE = %REF(PSL$C_KERNEL),
+	  ITMLST = item_list,
+	  LOGNAM = %ASCID 'LNM$GROUP',
+	  TABNAM = %ASCID 'LNM$PROCESS_DIRECTORY');
+
+!
+! If the process is not a sub-process, re-create the job-wide and group
+! logical name tables. While the job table will be created in a fashion that
+! will causing the existing table (created within PROCSTRT) to be deleted, this
+! will not be the case with the group table that is to be created. If a group
+! table with the same name is found, it is left undisturbed and no table 
+! creation takes place.
+!
+
+IF NOT .subprocess
+THEN
+    BEGIN
+
+    !
+    ! Construct the name of the job-wide logical name table by appending to
+    ! "LNM$JOB_" the ASCII representation of the process's JIB address.
+    !
+
+    table_name_desc[ 1 ] = job_table_name;
+    $FAO ( %ASCID 'LNM$JOB_!XL',
+	   table_name_desc,
+	   table_name_desc,
+	   .ctl$gl_pcb [ pcb$l_jib ] );
+
+    ! 
+    ! Create the job and group logical name tables.
+    !
+
+    RETURN EXE$CRE_JGTABLE( .uaf_record[ uaf$l_jtquota ],
+			    job_table_name + 8,
+			    group_table_name + 10 );
+    END
+ELSE
+    RETURN 1;
+END;
+
+END
+ELUDOM

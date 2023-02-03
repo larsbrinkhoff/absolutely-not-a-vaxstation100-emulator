@@ -1,0 +1,1514 @@
+module menus(addressing_mode (external=general, nonexternal=general)) = begin
+
+
+! Vax-station routines for controlling menus.
+
+library 'vsta$library:vsacpdef';	! symbols like rxblock
+library 'vsta$library:vserrors';	! symbols like integer_type
+library 'vsta$library:ttydefs';		! symbols like ttyrb
+library 'vsta$library:libmacros';	! symbols like $parameter_or_0
+library 'vsta$library:vsvdsvd';		! symbols like mob$l_vd_id
+library 'vsta$library:txtsym';		! symbols like ff_left
+library 'vsta$library:vstagbl';		! symbols lik vsta$k_default_protection
+library 'vsta$library:vstamacs';	! symbols like $vstadraw
+library 'sys$library:lib';		! symbols like irp$l_svapte
+
+$vsta_psect;				! Define PSECTs
+
+forward routine!s
+
+	define_menu_fields,	! Define various fields for text.
+	create_menu_border,	! Draw border around menu.
+	vsta$$lib_create_menu,	! Entry point from library.
+	inner_lib_create_menu,	! Worker routine for library's create-menu.
+	disect_menu_buffer,	! Isolate parts of input buffer.
+	convert_menu_title,	! isolate passed title.
+	convert_menu_item_list,	! Convert from relative to absolute addresses
+	lib_menu_cleanup,	! cleanup internal menu buffers
+	locate_menu_buffers,	! Trace irp chain to find menu buffers.
+	vsta$$create_menu,	! Main menu driver.
+	measure_menu_strings,	! Calculate maximum size of menu strings.
+	write_menu_text,	! Write text on menu.
+	create_menu_lines;	! Create lines of correct height on menu.
+
+literal!s
+!
+! First several pixels shows some of the display, which we keep as a different
+! color than the menu border.  This guarantees that whatever color the menu
+! occludes, that some sort of border is visible.
+!
+	    fringe_thickness = 1,
+!
+! Second set of pixels are border.
+!
+	    border_thickness = 4,
+!
+! Left corner character is printed in field just beyond border.
+!
+	    left_corner_position =
+		fringe_thickness
+		+ border_thickness,
+!
+! Calculate distance from top of display down to where text starts.
+!
+	    top_text_margin =
+		fringe_thickness
+		+ border_thickness,
+!
+! Title line is second line, with first line being reserved for border.
+!
+	    title_line = 2,
+!
+! Rounded corners at top currently go on same line as title.
+!
+	    top_corner_line = title_line,
+!
+! Some room is needed for the rounded corners.
+!
+	    corner_width = 10,
+!
+! Specify how much space must be allotted to thin lines above and below each
+! item text line for the selectability box to be drawn (when the mouse is
+! pointing at the menu item).  If the thickness of this box is ever changed,
+! this symbol must be adjusted to be equal to that thickness (plus 1 or 2
+! for white space BETWEEN the box and the text.)
+!
+	    box_thickness = 2,
+!
+! Calculate distance from side of display to text
+!
+	    side_text_margin =
+		fringe_thickness
+		+ border_thickness
+		+ corner_width
+		+ box_thickness,
+!
+! Specify amount of space that should be left below the title.
+!
+	    below_title_gap = border_thickness,
+!
+! Represent desired ratio of line height to text height.  (This used to be
+! 4 / 3, but now that we're leaving room for the selectablility box around the
+! items, I reduced it to unity (4 / 4).
+!
+	     numerator  = 4,
+!	    -----------
+	    denominator = 4,
+!
+! Color for menu writing (black).
+!
+	    writing_color = 0,
+!
+! Color for menu background (white)
+!
+	    menu_color = 1,
+!
+! color for text background (white)
+!
+	    text_background_color = 1;
+
+bind
+!
+! Establish strings, each one-character long, whose character is appropriate
+! index into the corner font to produce rounded corners.
+!
+	upper_left_corner_string = %ascid 'A' : $string_descriptor,
+	upper_right_corner_string = %ascid 'B' : $string_descriptor,
+	lower_left_corner_string = %ascid 'C' : $string_descriptor,
+	lower_right_corner_string = %ascid 'D' : $string_descriptor,
+!
+! Typeface, size, and rendition for menus.  For now, this is
+! static.  In the future we may want to allow it to be settable,
+! but maybe not since by keeping it static, menus are forced to
+! have a unique quality, making them easier to recognize by people.
+!
+	menu_item_typeface = %ascid 'VSTA$menu_item_typeface'
+	    : $string_descriptor,
+	menu_item_typesize = uplit (12),
+	menu_item_rendition = uplit(0),
+
+	rounded_corners_typeface = %ascid 'VSTA$rounded_corners_typeface'
+	    : $string_descriptor,
+	rounded_corners_typesize = uplit (12),
+	rounded_corners_rendition = uplit(0),
+
+	menu_title_typeface = %ascid 'VSTA$menu_title_typeface'
+	    : $string_descriptor,
+	menu_title_typesize = uplit (12),
+	menu_title_rendition = uplit(0);
+
+external routine!s
+
+	vsta$$move_kernel_bytes,	! move bytes in kernel mode
+	vsta$$read_kernel_word,		! read one word in kernel mode
+	vsta$$read_kernel_long,		! read one longword in kernel mode
+	vsta$$rgn_define_region,
+	vs$$acp_free_vm,		! memory aquisition / relinquition
+	vs$$acp_get_vm,
+	vs$$txt_addLines,
+	vs$$txt_appendText,
+	vs$$txt_defineField,
+	vs$$txt_defineSystemWideFont,
+	vs$$txt_deleteField,
+	vs$$txt_measure_text,
+	vs$$txt_setBaseline,
+	vs$$txt_set_field_format,
+	vs$$txt_set_rendition,
+	vs$$txt_setBackgroundColor,
+	vs$$txt_setTypeface,
+	vs$$txt_setTypesize,
+	vs$$txt_setWritingColor,
+	vs$$vds_delete_vd,
+	vs$$vds_create_vd;
+
+routine define_menu_fields
+!++
+! Functional description:
+!
+!	Define text fields needed for menu.
+!
+! Formal parameters:
+ (
+	vd_id,			! which virtual display
+	vd_nlines,		! how many lines total there are on vd
+	text_field_width	! width necessary for menu item text
+ ) =
+!
+! Implicit inputs:
+!
+!	item_left_margin,	! Distance from left margin to start field
+!	corner_width		! Width needed for corner characters
+!
+!--
+
+	begin
+
+	local
+
+	    corner_counter : initial (0);
+
+	bind
+!
+! Establish line on which bottom rounded corners will be written, and
+! position for right-hand corners, calculated from number of items and
+! text width.
+!
+	    bottom_corner_line =
+		.vd_nlines		! almost at bottom
+		- 1,			! but just above border
+
+	    right_corner_position =
+		side_text_margin
+		+ .text_field_width	! right corner is beyond text
+		+ box_thickness;	! leave room for region box
+!
+! Establish a field on each text line for the text, starting the field
+! just beyond the left border and letting it run to the right border.
+! Note that we delete default field on each line first.
+!
+	incr i from 1 to .vd_nlines do
+	if not vs$$txt_deleteField (
+	    .vd_id,
+	    .i,
+	    1
+	    )
+	then $return_error (vsta$_mnu_delfld_fld)
+	else
+	    if not vs$$txt_defineField (
+		.vd_id,
+		.i,
+		side_text_margin,
+		.text_field_width
+		)
+	    then $return_error (vsta$_mnu_deffld_fld);
+!
+! Specify the typeface, size, and rendition to be used for the
+! rounded corners.
+!
+	if not vs$$txt_setTypeface (.vd_id, rounded_corners_typeface[sd$w_len])
+	then $return_error (vsta$_mnu_settyp_fld);
+
+	if not vs$$txt_setTypesize (.vd_id, .rounded_corners_typesize)
+	then $return_error (vsta$_mnu_setsiz_fld);
+
+	if not vs$$txt_set_rendition (.vd_id, .rounded_corners_rendition, 0)
+	then $return_error (vsta$_mnu_setren_fld);
+!
+! Define four fields, near beginning and end of title line and last item
+! line, for the rounded corners.
+! Write the corner characters into the fields.
+!
+	incr i from top_corner_line to bottom_corner_line
+	    by bottom_corner_line - top_corner_line do
+	incr j from left_corner_position to right_corner_position
+	    by right_corner_position - left_corner_position do
+	if not vs$$txt_defineField (
+	    .vd_id,
+	    .i,		! i is line number, either top_corner or bottom_corner
+	    .j,		! j is field position, either left or right
+	    corner_width
+	    )
+	then $return_error (vsta$_mnu_deffld_fld)
+	else
+	    if not vs$$txt_appendText (
+		.vd_id,
+		selectOne .corner_counter of	! pick correct character
+		    set
+		    [0] : upper_left_corner_string;
+		    [1] : upper_right_corner_string;
+		    [2] : lower_left_corner_string;
+		    [3] : lower_right_corner_string;
+		    tes,
+		.i,
+		.j
+		)
+	    then $return_error (vsta$_mnu_wrtcnr_fld)
+	    else corner_counter = .corner_counter + 1;
+
+	ss$_normal
+
+	end;
+
+routine create_menu_border
+!++
+! Functional description:
+!
+!	Write the appropriate border around the edge of the menu.
+!
+!	Currently, this routine ASSUMES the border to be written is one
+!	pixel wide, and that it should be centered in the available
+!	border thickness.
+!
+! Formal parameters:
+ (
+	vd_id,			! which vd
+	vd_width,		! how big
+	vd_height,
+	title_height		! height of title
+ ) =
+!
+! Implicit inputs:
+!
+!	fringe_thickness,	! width of fringe
+!	border_thickness,	! border thickness (paint brush width)
+!	writing_color		! writing color for text
+!
+!--
+
+	begin
+
+	external routine
+
+	    vsta$$get_ef,			!get an event flag
+	    lib$free_ef;			!Free an event flag
+
+MACRO
+    $need_room (n) =
+	begin
+	path_count = .path_count + 1;
+	if .pidx + (n) gtr pthblk$s_path_block
+	then $return_error (vsta$_mnu_bdr_no_fit)
+	end %,
+    $moveto (x, y) =
+	BEGIN
+	$need_room (3);
+	path_block [.pidx] = x;
+	path_block [.pidx + 1] = y;
+	path_block [.pidx + 2] = %B'10';	!Bit1 = 1 = "MOVE"
+	pidx = .pidx + 3;
+	END %,
+    $drawto (x, y) =
+	BEGIN
+	$need_room (3);
+	path_block [.pidx] = x;
+	path_block [.pidx + 1] = y;
+	path_block [.pidx + 2] = %B'00';	!Bit1 = 0 = "DRAW"
+	pidx = .pidx + 3;
+	END %;
+
+	literal
+!
+! Literal for maximum number of items in path block.
+!
+	    pthblk$s_path_block = 100;
+
+	bind
+!
+! Calculate size of border to be drawn.
+!
+	    border_width = .vd_width
+		- fringe_thickness
+		- fringe_thickness
+		- border_thickness,
+	    border_height = .vd_height
+		- fringe_thickness
+		- fringe_thickness
+		- border_thickness,
+!
+! Calculate the coordinates of the four corners.
+!
+	    upper_left_x = fringe_thickness,
+	    upper_left_y = fringe_thickness,
+
+	    upper_right_x = upper_left_x + border_width,
+	    upper_right_y = upper_left_y,
+
+	    lower_right_x = upper_right_x,
+	    lower_right_y = upper_right_y + border_height,
+
+	    lower_left_x = fringe_thickness,
+	    lower_left_y = lower_right_y,
+!
+! Calculate left and right coordinates for underscore for title.
+!
+	    left_title_x = upper_left_x,
+	    left_title_y = top_text_margin + .title_height,
+
+	    right_title_x = upper_right_x,
+	    right_title_y = left_title_y;
+
+	local
+
+	    efn,	! event flag number for waiting for graphics
+	    s,
+!
+! Local storage needed for graphics.
+!
+	    path_block: VECTOR [pthblk$s_path_block, WORD],	!Path block
+	    pattern_block: VECTOR [3,WORD],
+	    msk_block: VECTOR [2,WORD],	!(dx, dy)
+	    path_count : initial (0),	!Number of "items" in path
+	    pidx : initial (0);		!Index into "path-block" array
+!
+! Fill buffer with commands that draw the border.
+!
+	    $moveto (upper_left_x, upper_left_y);  ! Start at upper left
+	    $drawto (upper_right_x, upper_right_y);! Draw to right
+	    $drawto (lower_right_x, lower_right_y);! Draw down
+	    $drawto (lower_left_x, lower_left_y);  ! Draw to left
+	    $drawto (upper_left_x, upper_left_y);  ! Connect back to upper left
+	    $moveto (left_title_x, left_title_y);  ! Get to beginning of title
+	    $drawto (right_title_x, right_title_y);! Draw underscore on title
+
+msk_block [0] = border_thickness;		!DX	These describe shape of
+msk_block [1] = border_thickness;		!DY	brush being dragged.
+
+pattern_block [0] = 16;			!# bits in pattern
+pattern_block [1] = %X'FFFF';		!Here it is (could have used 1,1 also)
+pattern_block [2] = 1;			!Multiplier
+!
+! Have to use an event flag and wait for it, since the data
+! is in local storage.
+!
+	if not (s = vsta$$get_ef (efn))
+	then return .s;
+
+	$clref (EFN = .efn);
+
+	IF NOT (s = $VSTADRAW (
+		 SOURCE	= writing_color
+		,MSKTYP = vsta$k_msk_rectangle
+		,MASK	= msk_block
+		,DST	= .vd_id
+		,PTHNUM = .path_count
+		,PTHADR = path_block
+		,PATBLK	= pattern_block
+		,EFN	= .efn
+	      ))
+	THEN return .s;		!Actually log error
+
+	$waitfr (EFN = .efn);
+	lib$free_ef (efn)
+
+	end;
+
+global routine vsta$$lib_create_menu =
+!++
+! Functional description:
+!
+!	Call inner routine to do most of the work of menu creation on behalf
+!	of the library. (see inner_lib_create_menu).
+!	Then complete the io and return.
+!
+!--
+
+	begin
+
+	external
+
+	    vs$a_irp;
+
+	external routine
+
+	    vs$$acp_done_io;
+
+	local
+
+	    status;
+!
+! Do all the work, get the result.
+!
+	status = inner_lib_create_menu ();
+!
+! Complete the io, propagating the status back to the caller.
+!
+	vs$$acp_done_io (
+	    .status,
+	    0,
+	    .vs$a_irp
+	    );
+!
+! Done.  Give "success" return, since status has already been given back
+! to caller.
+!
+	ss$_normal
+
+	end;
+
+routine inner_lib_create_menu =
+!++
+! Functional description:
+!
+!	This is the entry point for a user program calling the library
+!	to create a menu.  This routine calls vsta$$create_menu to do the
+!	internal work and uses input and output buffers pointed to by
+!	the irp in order to communicate with the user program.
+!
+! Implicit inputs:
+!
+!	vs$a_lirp, which is assumed to be the local copy of the irp.
+!
+!--
+
+	begin
+
+	external
+
+	    vs$gl_uic;				! uic of process that called us
+
+	local
+
+	    ibuf_size, ibuf_adr, obuf_size, obuf_adr,
+					! kernel space buffer info
+	    s,				! status code
+	    item_list : ref vector,	! holds address of item list
+	    title_desc : ref $string_descriptor,
+					! holds address of title descriptor
+	    xbuf : ref vector,		! points to x coordinates
+	    ybuf : ref vector,		! points to y coordinates
+	    libuf : ref vector[,byte],	! local input buffer
+	    lobuf : ref mo_block;	! menu output block
+
+	! Get sizes and kernel address of input and output buffers.
+	!
+	if not locate_menu_buffers (ibuf_size, ibuf_adr, obuf_size, obuf_adr)
+	then $return_error (vsta$_mnu_cntfnd_bfs);
+
+	! In order to stop having to mess around in kernel mode, allocate
+	! local storage and read the two buffers into the local storage.
+	!
+	if vs$$acp_get_vm (obuf_size, lobuf, 0)
+	then
+	    begin
+	    if not vs$$acp_get_vm (ibuf_size, libuf, 0)
+	    then
+		begin
+		vs$$acp_free_vm (obuf_size, lobuf);
+		$return_error (vsta$_mnu_mem_fld, integer_type, ibuf_size)
+		end
+	    end
+	else $return_error (vsta$_mnu_mem_fld, integer_type, obuf_size);
+
+	vsta$$move_kernel_bytes (.ibuf_size, .ibuf_adr, libuf[0]);
+	vsta$$move_kernel_bytes (.obuf_size, .obuf_adr, lobuf[$base]);
+
+	! Disect input buffer into its various constituents.
+	!
+	if not (s = disect_menu_buffer (
+	    .ibuf_size,		! length of entire buffer
+	    libuf[0],		! address of buffer
+	    title_desc,		! where to write title descriptor address
+	    item_list		! where to write address of item list
+	    ))
+	then return lib_menu_cleanup (
+	    .s, .ibuf_size, libuf[0], .obuf_size, lobuf[$base]);
+
+	$please_bind
+
+	    ! Pick up number of items out of first longword of item list.
+	    !
+	    n_items = .item_list[0];
+
+	! Establish addresses of x and y buffers as offsets into the
+	! local output buffer.  If output buffer isn't large enough to include
+	! the x and y bufs (each of which must be large enough for item count
+	! plus number of items), then use 0 for the addresses, which the
+	! create-menu routine knows means not to create regions and not to
+	! write coordinates.
+	!
+	if .obuf_size geq 2 * (1 + n_items)
+	    + mob$s_mo_block	! leave room to return other data before buffers
+	then
+	    begin
+	    xbuf = lobuf[$base] + mob$s_mo_block;	! x's follow named slots
+	    ybuf = xbuf[1 + n_items]
+	    end
+	else xbuf = (ybuf = 0);
+
+	! Now create the actual menu.
+	!
+	if not (s = vsta$$create_menu (
+	    title_desc[$base],
+	    item_list[0],
+	    .vs$gl_uic,			! uic of caller
+	    lobuf[mob$l_vd_id],		! write vd id into output block
+	    lobuf[mob$l_vd_width],	! write width into output block
+	    lobuf[mob$l_vd_height],	! write height into output block
+	    xbuf[0],			! write x coordinates of regions here
+	    ybuf[0],			! write y coordinates here
+	    0				! Declare that this is NOT an NternL vd
+	    ))
+	then return lib_menu_cleanup (
+	    .s, .ibuf_size, libuf[0], .obuf_size, lobuf[$base]);
+
+	! Copy the final output buffer back into kernel space for delivering
+	! to caller.
+	!
+	vsta$$move_kernel_bytes (.obuf_size, lobuf[$base], .obuf_adr);
+
+	$please_end;
+
+	! All done.  Clean up and return.
+	!
+	lib_menu_cleanup (
+	    ss$_normal,
+	    .ibuf_size,
+	    libuf[0],
+	    .obuf_size,
+	    lobuf[$base]
+	    )
+
+	end;
+
+routine disect_menu_buffer
+!++
+! Functional description:
+!
+!	Given an input buffer from the library containing all the info needed
+!	for a menu, break the buffer down into its individual parts (such
+!	as number of items, flags, item list).
+!
+!	Although some order of parts may be imposed, the main method of
+!	identifying parts is by a part type, which helps us detect that we've
+!	run amok, or that we've been dealt sludge.
+!
+! Formal parameters:
+ (
+	ibuf_size,		! size of input buffer
+	libuf : ref vector[,byte],	! address of local copy of input buffer
+	title_desc,		! where to write address of title descriptor
+	item_list		! where to write address of item list
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    section_hdr : ref vector[2];		! length, type
+
+	! Read the various parts of the input buffer.  Rather than
+	! having a rule about what the order of sections is in the buffer,
+	! we'll assume two longwords precede each portion of the buffer, the
+	! first tells us what to expect, the second tells us how much.
+	!
+	! Please see vstargn.b32 for pictures of the block, showing it's
+	! format.
+	!
+	section_hdr = libuf[0];
+
+	while section_hdr[2] leq libuf[.ibuf_size] do	! don't read too much
+	    begin
+
+	    bind
+		! Get type and length of this section in buffer.
+		!
+		section_len = .section_hdr[0],
+		section_type = .section_hdr[1],
+		section = section_hdr[2] : vector,
+		next_section_hdr = section[0] + section_len;
+
+	    ! Make sure this section completely fits in the buffer (because
+	    ! if not, we'd be sapped into getting an access violation, which
+	    ! some mischievous user might attempt)
+	    !
+	    if next_section_hdr gtr libuf[.ibuf_size]
+	    then $return_error (vsta$_mnu_badint_buf);
+
+	    ! Decide what type of section we've got, and remember the info.
+	    !
+	    case section_type from 0 to menu_k_end of
+	    set
+	    [menu_k_item_list] :	! here come the items themselves
+		begin
+		if not convert_menu_item_list (
+		    section_len,	! length of entire item list
+		    section[0]		! address of item list to be converted
+		    )
+		then $return_error (vsta$_mnu_bad_itmlst);
+		.item_list = section[0]	! tell caller location of item list
+		end;
+	    [menu_k_title] :	! here comes the title, represented
+				! as a two-longword descriptor followed by
+				! the string itself.
+		if not convert_menu_title (
+		    section_len,		! length of entire title
+		    section[0],		! address of title item
+		    .title_desc		! where to write title descriptor adr
+		    )
+		then $return_error (vsta$_mnu_bad_title);
+	    [menu_k_end] :		! this marks the end
+		return ss$_normal
+	    tes;
+
+	    ! Prepare for next section.
+	    !
+	    section_hdr = next_section_hdr
+
+	    end;
+
+	! If we fall through to here, we never saw a proper end to the
+	! list, so give an error.
+	!
+	$return_error (vsta$_mnu_noend_seen)
+
+	end;
+
+routine convert_menu_title
+!++
+! Functional description:
+!
+!	The title has been located.  It consists of two longwords representing
+!	a descriptor for the title, followed by the string itself.  We must
+!	fill in the string address in the descriptor with an absolute address
+!	pointing at the string, and tell the caller the address of the
+!	descriptor.
+!
+! Formal parameters:
+ (
+	chunk_len,			! total bytes in title item
+	chunk : ref vector,		! address of title item
+	title_desc_adr			! where to write descriptor address
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get address into which descriptor address will be written.
+	    !
+	    title_desc = .title_desc_adr : ref $string_descriptor,
+
+	    ! Get a byte-organized reference to the longword-organized list.
+	    !
+	    chunk_bytes = chunk[0] : vector[,byte];
+
+	! Get address of title descriptor address.
+	!
+	title_desc = chunk[0];
+
+	! Make sure the chunk is at least long enough to hold a descriptor
+	! address for the string.
+	!
+	if chunk[0] + 8 gtru chunk_bytes[.chunk_len]
+	then $return_error (
+	    vsta$_mnu_bad_ttllen,
+	    integer_type, .chunk_len
+	    );
+
+	! Fill in absolute string address.
+	!
+	title_desc[sd$a_adr] = chunk_bytes[8];
+
+	! Make sure the string itself will fit entirely within the
+	! chunk.
+	!
+	if .title_desc[sd$a_adr] + .title_desc[sd$w_len] gtru
+	    chunk_bytes[.chunk_len]
+	then $return_error (
+	    vsta$_mnu_bad_ttllen,
+	    integer_type, .chunk_len
+	    );
+
+	ss$_normal
+
+	end;
+
+	    
+routine convert_menu_item_list
+!++
+! Functional description:
+!
+!	The item list has been located.  The item list consists of longword
+!	revealing number of items, folloed by
+!	descriptor addresses followed by descriptors followed by
+!	actual strings.  All the addresses are relative to the
+!	beginning of the item list, so we must now add a constant
+!	to each of them to make them real addresses.
+!
+! Formal parameters:
+ (
+	item_list_len,			! total bytes in item list
+	item_list : ref vector		! item list itself
+ ) =
+!
+!--
+
+	begin
+
+	bind
+
+	    ! Get a byte-organized reference to the longword-organized list.
+	    !
+	    item_bytes = item_list[0] : vector[,byte],
+
+	    ! Get number of items from list, but make sure there are enough
+	    ! bytes to read the longword.
+	    !
+	    n_items =
+
+		begin
+		if .item_list_len lss 4
+		then $return_error (
+		    vsta$_mnu_bad_lstlen,
+		    integer_type, .item_list_len
+		    )
+		else .item_list[0]
+		end,
+
+	    ! Establish offset to be added to each relative address to make
+	    ! a real one.
+	    !
+	    item_offset = item_list[0];
+
+	! Make sure the item list is at least long enough to hold a descriptor
+	! address for each item.
+	!
+	if item_list[1 + n_items] gtru item_bytes[.item_list_len]
+	then $return_error (
+	    vsta$_mnu_bad_lstlen,
+	    integer_type, .item_list_len
+	    );
+
+	! Now loop and convert each descriptor address and string address
+	! within each descriptor from relative to absolute.
+	!
+	incr i from 1 to n_items do
+	begin
+
+	bind
+
+	    ! Get address of next descriptor address.
+	    !
+	    desc_adr = item_list[.i] : ref $string_descriptor;
+
+	! Convert the descriptor address to absolute.
+	!
+	desc_adr = .desc_adr + item_offset;
+
+	! Before converting the string address within the descriptor,
+	! make sure the descriptor is located entirely within the item
+	! list.
+	!
+	if desc_adr[$base] + 8 gtru item_bytes[.item_list_len]
+	then $return_error (
+	    vsta$_mnu_bad_lstlen,
+	    integer_type, .item_list_len
+	    );
+
+	! Convert the descriptor's string address to absolute.
+	!
+	desc_adr[sd$a_adr] = .desc_adr[sd$a_adr] + item_offset;
+
+	! Make sure the string itself will fit entirely within the
+	! item list.
+	!
+	if .desc_adr[sd$a_adr] + .desc_adr[sd$w_len] gtru
+	    item_bytes[.item_list_len]
+	then $return_error (
+	    vsta$_mnu_bad_lstlen,
+	    integer_type, .item_list_len
+	    )
+
+	end;	! of incr
+
+	ss$_normal
+
+	end;
+
+	    
+routine lib_menu_cleanup
+!++
+! Functional description:
+!
+!	Routine to exit through in case of menu error.  It's
+!	parameters are what are needed for cleaning up (releasing
+!	local storage etc.)
+!
+! Formal parameters:
+ (
+	status,		! Status to return
+	len1,		! lengths and addresses of buffers to release
+	adr1,
+	len2,
+	adr2
+ ) =
+!
+!
+!--
+
+	begin
+
+	! Free up local buffers.
+	!
+	vs$$acp_free_vm (len1, adr1, 0);
+	vs$$acp_free_vm (len2, adr2, 0);
+
+	! Return specified status code.
+	!
+	.status
+
+	end;
+
+routine locate_menu_buffers
+!++
+! Functional description:
+!
+!	From the irp, locate the input and output buffers for menu operations.
+!
+! Formal parameters:
+ (
+	ibuf_size,		! where to write input size
+	ibuf_adr,		! where to write input address
+	obuf_size,		! where to write output size
+	obuf_adr		! where to write output address
+ ) =
+!
+! Implicit inputs:
+!
+!	vs$a_lirp, which is the local copy of the current irp.
+!
+!--
+
+	begin
+
+	external
+
+	    vs$a_lirp : ref irp_block;
+
+	bind
+
+	! Two buffers are chained via the irp, an INPUT buffer and an
+	! OUTPUT buffer.
+	!
+	! The INPUT buffer is disguised as a "prompt string",
+	! and contains all the caller's menu information such as the items
+	! themselves, and whether or not regions are desired on each item.
+	!
+	! The OUTPUT buffer is disguised as a "read buffer" and is where
+	! we write any information being sent back, such as the region
+	! origins.
+	!
+	! SO . . . let's get the lengths and address of the blocks.
+	!
+
+	    ! Get preliminary pointers needed.
+	    !
+	    ttyblk = .vs$a_lirp[irp$l_svapte] : ttyrb,
+	    rxblk = vsta$$read_kernel_long (ttyblk[tty$l_rb_aes])
+		: rxblock;
+
+	! Get size and address of output buffer.
+	!
+	.obuf_size = .vs$a_lirp[irp$w_bcnt];
+	.obuf_adr = ttyblk[tty$l_rb_data];
+
+	! Get size and address of input buffer.
+	!
+	.ibuf_size = vsta$$read_kernel_word (rxblk[rx$w_prompt_size]);
+	.ibuf_adr = rxblk[rx$b_prompt];
+
+	ss$_Normal
+
+	end;
+
+global routine vsta$$create_menu
+!++
+! Functional description:
+!
+!	Given a title and list of items, create a virtual display and write
+!	the title and items onto the display, making it appropriate for use
+!	as a menu.  Define regions on each item such that the calling program
+!	can set the regions to be selectable.
+!
+! Formal parameters:
+ (
+	title_desc : ref $string_descriptor,
+	item_list : ref vector,
+		! address of list of choices for menu,
+		! word 0 gives total length of vector,
+		! rest are each string descriptors.
+	uic,	! ownership to be given to the vd.
+	vd_id_adr,	! where to write virtual display id of menu
+	vd_width_adr,	! where to write vd width
+	vd_height_adr,	! where to write vd height
+	xbuf : ref vector,
+			! where to write item region x coordinates
+	ybuf : ref vector,
+			! where to write item region y coordinates
+	internal_vd_flag	! 1 for internal vd, 0 for not
+	) =
+!
+! Side effects:
+!
+!	A virtual display and regions are defined, and the virtual display
+!	is written into.
+!
+!	The menu font is loaded if it wasn't already.
+!
+! Returned values:
+!
+!	The virtual display id, width, and height are returned, as are
+!	the region coordinates.
+!--
+
+	begin
+!
+! Macro for cleaning up and returning upon an error occurring
+! AFTER the vd has been created.
+!
+	macro $cleanup_and_return (error_code) []=
+
+	    begin
+	    vs$$vds_delete_vd (.vd_id, .uic);
+	    $return_error (
+		error_code
+		%if not %null (%remaining) %then , %remaining %fi
+		)
+	    end % ;
+
+!
+! Macro for cleaning up after an inner routine has failed, whose status
+! we want to pass back, again AFTER the vd has been created.
+!
+	macro $inner_menu_failure (error_code) []=
+
+	    begin
+	    vs$$vds_delete_vd (.vd_id, .uic);
+	    error_code
+	    end % ;
+
+	bind
+!
+! Get addresses into which to write virtual display data.
+!
+	    vd_id = .vd_id_adr,
+	    vd_width = .vd_width_adr,
+	    vd_height = .vd_height_adr,
+
+	    ! Get number of choices being displayed in menu.
+	    number_of_items = .item_list[0];
+
+	local
+
+	    text_field_width,	! Width for text field.
+	    s,			! status from routines
+
+	    ! Height of each item line.
+	    !
+	    line_height, title_height,
+
+	    ! Height of corner characters.
+	    !
+	    corner_height,
+
+	    ! Cell to hold height of font, so we can choose a good line height.
+	    font_height,
+
+	    ! Specs for the virtual display that will hold the menu.
+	    vd_depth : initial (1), vd_nlines,
+
+	    ! Cell to hold width of largest item.
+	    largest_string_width;
+!
+! Calculate largest item width involved, for determining width of
+! virtual display.
+!
+	if not (s = measure_menu_strings (
+	    title_desc[$base],
+	    item_list[0],
+	    largest_string_width,
+	    font_height,
+	    corner_height
+	    ))
+	then return .s;
+!
+! Calculate appropriate heights.
+!
+	line_height = .font_height * numerator / denominator
+	    + 2 * box_thickness;	! leave room for selectability box
+	title_height = max (.font_height, .corner_height);
+!
+! Set up virtual display height as function of computed line height
+! and number of items, leaving one more line for the title etc.
+!
+	vd_height =
+	    top_text_margin			! room for border on top
+	    + .title_height			! room for title string
+	    + below_title_gap			! space below title
+	    + .line_height * number_of_items	! room for each item
+	    + top_text_margin;			! room for border on bottom
+!
+! Calculate total number of lines needed.
+!
+	vd_nlines =
+	    1			! One line to hold room for top border
+	    + 1			! One line for title
+	    + 1			! Space below title before first text line
+	    + number_of_items	! a line per item
+	    + 1;		! a line for bottom border
+!
+! Specify width of virtual display, large enough for widest item,.
+!
+	vd_width =
+	    side_text_margin			! room for border on left
+	    + .largest_string_width		! room for longest string
+	    + side_text_margin;			! room for border on right
+!
+! Create a virtual display for the menu.
+!
+	if not vs$$vds_create_vd (
+	    .vd_height,
+	    .vd_width,
+	    1,			! bitplanes in vd
+	    menu_color,
+	    writing_color,
+	    if .internal_vd_flag then vs$k_internal else vs$k_vtem_generic,
+				! specify no ucb for human interface, yes ucb
+				! for user-created menu.
+	    vdb$k_text_and_graphics,
+				! we want both text and graphics
+	    .uic,
+	    0,			! not sharable or permanent
+	    vsta$k_default_protection,
+				! standard protection
+	    vd_id
+	    )
+	then $return_error (vsta$_mnu_no_vd);
+!
+! Set up the writing color.
+!
+	if not vs$$txt_setWritingColor (
+	    .vd_id,
+	    writing_color
+	    )
+	then $cleanup_and_return (vsta$_mnu_setclr_fld);
+!
+! Set up correct text background color.
+!
+	if not vs$$txt_setBackgroundColor (
+	    .vd_id,
+	    text_background_color
+	    )
+	then $cleanup_and_return (vsta$_mnu_setclr_fld);
+!
+! Create the border around the menu.
+!
+	if not (s = create_menu_border (
+	    .vd_id,
+	    .vd_width,
+	    .vd_height,
+	    .title_height
+	    ))
+	then return $inner_menu_failure (.s);
+!
+! Create menu lines.
+!
+	if not (s = create_menu_lines (
+	    .vd_id,
+	    .title_height,
+	    .line_height,
+	    number_of_items
+	    ))
+	then return $inner_menu_failure (.s);
+
+!
+! Compute text field width.
+!
+	text_field_width =
+	    .vd_width			! start with entire width
+	    - side_text_margin		! field doesn't include left border
+	    - side_text_margin;		! or right border
+!
+! Define fields on lines.
+!
+	if not (s = define_menu_fields (
+	    .vd_id,
+	    .vd_nlines,
+	    .text_field_width
+	    ))
+	then return $inner_menu_failure (.s);
+!
+! Cause all items to be left-justified in the menu.
+!
+	incr i from 1 to .vd_nlines do
+	    if not vs$$txt_set_field_format (
+		.vd_id,
+		.i,
+		side_text_margin,
+		ff_left
+		)
+	    then $cleanup_and_return (vsta$_mnu_fldfmt_fld);
+!
+! Make title be centered.  This must occur AFTER setting left-justification
+! in previous loop, lese title not end up centered !
+!
+	if not vs$$txt_set_field_format (
+	    .vd_id,
+	    title_line,
+	    side_text_margin,
+	    ff_center
+	    )
+	then $cleanup_and_return (vsta$_mnu_fldfmt_fld);
+!
+! Write the text.
+!
+	if not (s = write_menu_text (
+	    .vd_id,
+	    title_desc[$base],
+	    item_list[0]
+	    ))
+	then return $inner_menu_failure (.s);
+!
+! If the caller supplied buffers to receive the coordinates of regions,
+! define a region on each item, and tell the caller the origin of the
+! regions.
+!
+	if $parameter_or_0 (xbuf) neq 0 and $parameter_or_0 (ybuf) neq 0
+	then
+
+	    begin
+
+	    bind
+!
+! Establish height of region.
+!
+		region_height =
+		    + .line_height,	! leave room for item text line
+!
+! Establish distance from left margin of display that region starts.
+!
+		rx = side_text_margin - box_thickness;
+
+	    local
+
+		line_y;
+!
+! Write number of items in zeroth slot of each coordinate
+! buffer.
+!
+	    xbuf[0] = (ybuf[0] = number_of_items);
+!
+! Initialize pixels down from top of vd that first item line is at.
+!
+	    line_y =
+		top_text_margin		! beyond the top border.
+		+ .title_height		! beyond the title line.
+		+ below_title_gap;	! beyond gap.
+
+	    incr i from 1 to number_of_items do
+
+		begin
+
+		! Define region for next item.
+		!
+		if not (s = vsta$$rgn_define_region (
+		    .vd_id,
+		    rx,				! upper left x, leave
+						! room for box
+		    .line_y,			! upper left y
+		    .text_field_width		! width of region, leave room
+			+ 2 * box_thickness,	! for box around text
+		    region_height		! height of region
+		    ))
+		then $cleanup_and_return (vsta$_mnu_defrgn_fld);
+!
+! Give caller the item region coordinates.
+!
+		ybuf[.i] = .line_y;
+		xbuf[.i] = rx;
+!
+! Compute where next item starts.
+!
+		line_y =
+		    .line_y		! At least as far as previous.
+		    + region_height	! Leave room for this region
+		end
+
+	    end;
+
+	ss$_normal
+
+    end;
+
+routine measure_menu_strings
+!++
+! Functional description:
+!
+!	Given title string and menu item strings, calculate width and
+!	height needed to fit them all.
+!
+! Formal parameters:
+ (
+	title_desc : ref $string_descriptor,
+	item_list : ref vector,
+		! address of list of choices for menu,
+		! word 0 gives total length of vector,
+		! rest are each string descriptors.
+	largest_string_width,	! where to write necessary field width
+	font_height,	! where to write necessary line height
+	corner_height	! where to write height of corner characters
+ ) =
+!
+! Implicit inputs:
+!
+!	menu title and item typefaces, typesizes, and rendition.
+!
+!--
+
+	begin
+
+	local s, corner_width;	! corner_width not really yet used.
+!
+! Initialize largest_string_width by measuring size taken up by title.
+!
+	if not (s = vs$$txt_measure_text (
+	    0,
+	    .title_desc[sd$w_len], .title_desc[sd$a_adr],
+	    .menu_title_typeface[sd$w_len], .menu_title_typeface[sd$a_adr],
+	    4, menu_title_typesize,
+	    4, menu_title_rendition,
+	    .largest_string_width, .font_height))
+	then $return_error (vsta$_mnu_msrtxt_fld);
+!
+! Measure all the items, updating largest_string_width whenever a new largest
+! is seen.
+!
+	incr i from 1 to .item_list[0] do
+	    begin
+
+	    local item_width;
+
+	    bind desc = .item_list[.i] : $string_descriptor;
+
+	    if not (s = vs$$txt_measure_text (
+		0,
+		.desc[sd$w_len], .desc[sd$a_adr],
+		.menu_item_typeface[sd$w_len], .menu_item_typeface[sd$a_adr],
+		4, menu_item_typesize,
+		4, menu_item_rendition,
+		item_width, .font_height))
+	    then $return_error (vsta$_mnu_msrtxt_fld);
+
+	    if .item_width gtr ..largest_string_width
+	    then .largest_string_width = .item_width
+
+	    end;
+!
+! Calculate height of corner characters
+!
+	if not (s = vs$$txt_measure_text (
+	    0,
+	    .upper_left_corner_string[sd$w_len],
+		.upper_left_corner_string[sd$a_adr],
+	    .rounded_corners_typeface[sd$w_len],
+		.rounded_corners_typeface[sd$a_adr],
+	    4, rounded_corners_typesize,
+	    4, rounded_corners_rendition,
+	    corner_width,
+	    .corner_height
+	    ))
+	then $return_error (vsta$_mnu_msrtxt_fld);
+
+	ss$_normal
+
+	end;
+
+routine write_menu_text
+!++
+! Functional description:
+!
+!	Once fields have been established for menu title and text,
+!	write them in the correct font attributes.
+!
+! Formal parameters:
+ (
+	vd_id,			! which vd to write to
+	title_desc : ref $string_descriptor,	! title string
+	item_list : ref vector	! item list
+ ) =
+!
+!--
+
+	begin
+!
+! Specify the typeface, size, and rendition to be used for the
+! title.
+!
+	if not vs$$txt_setTypeface (.vd_id, menu_title_typeface[sd$w_len])
+	then $return_error (vsta$_mnu_settyp_fld);
+
+	if not vs$$txt_setTypesize (.vd_id, .menu_title_typesize)
+	then $return_error (vsta$_mnu_setsiz_fld);
+
+	if not vs$$txt_set_rendition (.vd_id, .menu_title_rendition, 0)
+	then $return_error (vsta$_mnu_setren_fld);
+!
+! Write the title.
+!
+	if not vs$$txt_appendText (
+	    .vd_id,
+	    title_desc[sd$w_len],
+	    title_line,
+	    side_text_margin
+	    )
+	then $return_error (vsta$_mnu_wrtttl_fld);
+!
+! Specify the typeface, size, and rendition to be used for the
+! menu display.
+!
+	if not vs$$txt_setTypeface (.vd_id, menu_item_typeface[sd$w_len])
+	then $return_error (vsta$_mnu_settyp_fld);
+
+	if not vs$$txt_setTypesize (.vd_id, .menu_item_typesize)
+	then $return_error (vsta$_mnu_setsiz_fld);
+
+	if not vs$$txt_set_rendition (.vd_id, .menu_item_rendition, 0)
+	then $return_error (vsta$_mnu_setren_fld);
+!
+! Cause text to be raised a bit in each line such that lower line of
+! selectability box doesn't collide with text.
+!
+	if not vs$$txt_setBaseline (.vd_id, box_thickness)
+	then $return_error (vsta$_mnu_setbas_fld);
+!
+! Write the items on the menu, one item per line.
+! Lines go 1=border, 2=title, 3=below_title_gap,
+! 4=item1, 5=item2 etc.
+!
+	incr i from 1 to .item_list[0] do
+
+	    if not vs$$txt_appendText (
+		.vd_id,
+		.item_list[.i],		! item text
+		.i + 3,			! line to write it on
+		side_text_margin	! use field at left margin
+		)
+	    then $return_error (vsta$_mnu_wrtitm_fld);
+
+	ss$_normal
+
+	end;
+
+routine create_menu_lines
+!++
+! Functional description:
+!
+!	Create text lines on vd for menu.  Some of these lines are for actual
+!	text, while others merely serve for color or graphics enhancements.
+!
+!	A region will be created around each menu item.  When user moves
+!	mouse onto menu item, a box will be drawn on the screen around the
+!	item, whose thickness is "box_thickness" pixels.  In order to allow
+!	this box to be drawn without crashing into the text, we'll leave
+!	a thin line above and below each item text line that's just wide (high)
+!	enough for the box thickness.  (The only reason we
+!	don't allow the two boxes to share the space is that regions aren't
+!	allowed to overlap).
+!
+! Formal parameters:
+ (
+	vd_id,			! which vd to write on
+	title_height,		! height of title line
+	line_height,		! height of text lines
+	number_of_items		! number of menu items to be written
+ ) =
+!
+! Implicit inputs:
+!
+!	below_title_gap		! gap between title and items
+!	above_item_gap		! size of inter-item gaps
+!
+!--
+
+	begin
+!
+! Create a line for the top border.
+!
+	if not vs$$txt_addLines (
+	    .vd_id,
+	    1,
+	    top_text_margin
+	    )
+	then $return_error (vsta$_mnu_addlin_fld);
+!
+! Create the title line.
+!
+	if not vs$$txt_addLines (
+	    .vd_id,
+	    1,
+	    .title_height
+	    )
+	then $return_error (vsta$_mnu_addlin_fld);
+!
+! Create gap below the title line.
+!
+	if not vs$$txt_addLines (
+	    .vd_id,
+	    1,
+	    below_title_gap
+	    )
+	then $return_error (vsta$_mnu_addlin_fld);
+!
+! Create item lines.
+!
+	incr i from 1 to .number_of_items do
+	    begin
+
+	    if not vs$$txt_addLines (
+		.vd_id,
+		1,
+		.line_height
+		)
+	    then $return_error (vsta$_mnu_addlin_fld);
+
+	    end;
+!
+! Create a line for the bottom border.
+!
+	if not vs$$txt_addLines (
+	    .vd_id,
+	    1,
+	    top_text_margin
+	    )
+	then $return_error (vsta$_mnu_addlin_fld);
+
+	ss$_normal
+
+	end;
+
+end
+eludom

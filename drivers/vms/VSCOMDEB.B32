@@ -1,0 +1,133 @@
+MODULE VS$COM_DEBUG (
+			IDENT = 'HI SERVER Debug routines'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!   This module provides debugging aids to VSSERVE.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+	vsta$$com_debug_brdcst,		!Broadcast a string to the OPR
+	append_string;			!Append string 1 to string 2
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+!EXTERNAL ROUTINE
+!	routine_name;
+
+
+GLOBAL ROUTINE vsta$$com_debug_brdcst
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Broadcasts a message to the operator.
+!
+! FORMAL PARAMETERS:
+	(string_desc		!Address of string descriptor
+	)=
+!
+! ROUTINE VALUE
+!   Returns "ss$_normal" if successful, or
+!	VS facility error status code
+!--
+BEGIN
+OWN
+    msgbuf: BLOCK [250,BYTE],	!A buffer
+    msg_desc: VECTOR [2]
+		INITIAL	(0
+			,msgbuf),
+    cr: BLOCK [1,BYTE]
+		INITIAL (BYTE (%O'15')),
+    cr_desc: VECTOR [2]
+		INITIAL (1
+			,cr);
+LOCAL
+    status;			!Return status
+
+
+msg_desc [0] = 1;		!Set string length = 0
+!
+! Put header in message
+!
+! "<CR> <<ACP_COM: "
+append_string (cr_desc, msg_desc);
+!
+append_string (%ASCID '<<ACP_COM:', msg_desc);
+append_string (%ASCID ' ', msg_desc);
+!
+! Append given string to message
+!
+append_string (.string_desc, msg_desc);
+!
+! And give message a trailer
+!
+append_string (%ASCID ' >>', msg_desc);
+
+
+IF NOT (status =
+   $BRDCST	(MSGBUF = msg_desc	!Address of descriptor
+		,DEVNAM = %ASCID 'OPA0:'
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL		!Return success
+
+END;
+
+ROUTINE append_string
+! ++
+! FUNCTIONAL DESCRIPTION:
+!	Appends string 1 to string 2
+! FORMAL PARAMETERS:
+	(str_1_desc		!String to append
+	,str_2_desc		!String appended to
+	)=
+BEGIN
+MAP
+    str_1_desc: ref VECTOR[2],
+    str_2_desc: ref VECTOR[2];
+OWN
+    msg_length: WORD,
+    addr_buf_1,
+    addr_buf_2;
+
+msg_length = .str_1_desc [0];	!Length of message 1
+				! Get rid of type bits, just want length
+addr_buf_2 = .str_2_desc [0] + .str_2_desc [1];	!Address of place to
+						! append string
+addr_buf_1 = .str_1_desc [1];			!Address of string to append
+
+str_2_desc [0] = .str_2_desc [0] + .msg_length;	!Add lengths
+CH$MOVE	(.msg_length		!Number of bytes to move
+	,.addr_buf_1		!From here
+	,.addr_buf_2		!To here
+	);
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

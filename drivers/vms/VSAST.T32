@@ -1,0 +1,20 @@
+ 
+!*** MODULE vsast ***
+! 
+!  Definitions used by AST handling in the ACP.
+! 
+! 
+!  gnq_block is the queue entry for generic VD actions.
+!  (like "create job running on a VT100"), "delete job", etc.
+! 
+FIELD gnq$gnq_block_FIELDSET =
+  SET
+  gnq$a_flink = [0,0,32,0],
+  gnq$a_blink = [4,0,32,0],
+  gnq$w_function = [8,0,16,1],          !  (not needed??)
+  gnq$w_filler = [10,0,16,1],           !  to force longword boundary
+  gnq$a_routine = [12,0,32,0],          !  Addr of routine to call
+  gnq$l_param = [16,0,32,1]             !  longword passed to routine
+  TES;
+literal gnq$s_gnq_block = 20;
+MACRO gnq_block = BLOCK [gnq$s_gnq_block,byte] FIELD (gnq$gnq_block_FIELDSET) %;

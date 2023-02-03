@@ -1,0 +1,337 @@
+module $VSDEF;
+
+/*+++
+/* Facility:
+/*.
+/*	VAX Workstation Virtual Display data structures
+/*.
+/* Abstract:
+/*.
+/*	This file contains all the Workstation Virtual Display
+/*	data structures.  Various constants are also 
+/*	defined. The data
+/*	definitions are defined to be language independent.
+/*.
+/* Environment:
+/*.
+/*	VSACP process.
+/*.
+/*---
+
+/*.
+/*.
+/* Data Block Types
+/*.
+	constant VDB_TYPE_VAL equals 251
+		prefix VS$;
+	constant PBD_TYPE_VAL equals 252
+		prefix VS$;
+	constant PSB_TYPE_VAL equals 256
+		prefix VS$;
+/* Sizes
+/*.
+	constant HEADER_SIZE equals 8
+		prefix VS$;		/* Doubly-linked Queue header size
+
+/*					.
+/* VTEM constants
+/*					.
+	constant (
+		VTEM_GENERIC,
+		VTEM_VT100,
+		VTEM_4014,
+		INTERNAL
+		) equals 0 increment 1 prefix VS$;
+
+	constant VTEM_NUMBER equals 3
+		prefix VS$;		/* Number of emulators, not 
+					/*    including the INTERNAL type
+
+	constant INTERNAL_VD_ID_BASE equals %x8000
+		prefix VS$;		/* Starting ID for Internal VDs
+/*					.
+/* Virtual Display Block -- VDB
+/*					.
+
+aggregate VDBLOCK structure prefix VDB$;
+	FL		address;
+	BL		address;
+	SIZE		word unsigned;
+	TYPE		byte unsigned;
+	MODE		byte unsigned;	/* Emulation code
+	VDID		union;
+		VD_ID	longword unsigned tag"";
+		ID	word unsigned tag"";
+		end 	VDID;
+	UIC		longword unsigned;		/* UIC of Virt. Disp owner
+	CHARACS		union;
+		CHARS		word unsigned tag"";	/* Chars
+		CHARBITS	structure prefix VDB$;
+			GRAPHICS_EXIST bitfield mask;	/* 1 Gr, 0 No_Gr
+			TEXT_EXIST bitfield mask;	/* 1 Text, 0 None
+			FULL_VIS bitfield mask;		/* 1 fully visible
+			GRAPHICS_IO bitfield mask;	/* This request
+			TEXT_IO	bitfield mask;		/* This request
+			NATIVE_GRAPHICS bitfield mask;	/* This request
+			STAGE_VALID bitfield mask;	/* Good stage buffr?
+			DISABLED bitfield mask;		/* screen update disabled?
+			VAX_BACKING bitfield mask;	/* Stage in VAX memory?
+			BIT_BLIT bitfield mask;		/* BITBLT in progress
+			XON_XOFF bitfield mask;		/* 1=XOFF   0=XON
+			PERM bitfield mask;		/* 1= permanent, 0=temp
+			SHARE bitfield mask;		/* 1=shareable,0=non-
+			BACKING_DISABLED bitfield mask;	/* 1=disabled,0=enabled
+			RECTANGLES_PURGED bitfield mask;
+			spares	bitfield length 1 mask;
+			end CHARBITS;
+		end CHARACS;
+	BLOCKS		word;		/* # of reasons for further IO blockage
+	PROT		word;		/* UIC protection code
+	TEXT_OR_GRAPHICS byte unsigned;	/* Indicates whether text or graphics or both
+		constant (
+			NEITHER_TEXT_NOR_GRAPHICS,
+			GRAPHICS_ONLY,
+			TEXT_ONLY,
+			TEXT_AND_GRAPHICS
+			) equals 0 increment 1 prefix VDB$;
+	spare1		byte;
+	BACKGROUND	word;		/* Intensity
+	FOREGROUND	word;
+	PBDQFL	address;	/* PBD Queue Head
+	PBDQBL	address;
+	GRAPHIC_SIZE longword unsigned; /*Size of graphics storage
+	STAGE	address;	/* Pointer to staging area
+
+/*
+/* The following queues are provided to put Virtual Display Command
+/* blocks in.  Eventually all operations to the VD screen will use
+/* this mechanism but for now provide both the queues the next area
+/* which is used for the same purpose.
+/*
+	VDCQFL  address;
+	VDCQBL	address;
+
+/*
+/* Address of vstadrive restore queue entry. If backing is disabled
+/*
+	RESADR	address;
+
+/*
+/* Define the text cursor offsets, dimensions and controls here
+/* 
+	CURSOR_RECTANGLE structure;
+		CUR_OFF_X	WORD;
+		CUR_OFF_Y	WORD;
+		CUR_EXT_X	WORD;
+		CUR_EXT_Y	WORD;
+	end CURSOR_RECTANGLE;
+
+/*
+/* Define the potentially selectable region of the vd
+/*
+	REGION_RECTANGLE structure;
+		RGN_OFF_X	word;
+		RGN_OFF_Y	word;
+		RGN_EXT_X	word;
+		RGN_EXT_Y	word;
+	end REGION_RECTANGLE;
+
+/*
+/* Define the redisplay rectangle list.  Used by proper text scrolling code
+/* and redisplay vd on <object> routines
+/*
+	REDISP_RECTANGLES	address;
+	REDISP_RC_COUNT		longword;
+	REDISP_ROUTINE		address;
+	REDISP_ARGBLOCK		address;
+
+
+	REGION_DSC		address;
+
+	PATHING			longword;
+	
+	PS_OFF_X		word;
+	PS_OFF_Y		word;
+
+	CURSOR_CYCLE		bitfield;	/* 0 means off and 1 means on
+	CURSOR_ENABLE		bitfield;	/* 0 means disabled 1 enabled
+	REGION_ENABLE		bitfield;	/* 0 means disabled 1 pot sel
+	SCROLL_IN_PROGRESS	bitfield;	/* 1 means we are scrolling
+	REGION_CYCLE		bitfield;	/* 0 means off and 1 means on
+
+/* The following are parameters that are set by routines desiring to 
+/* instruct the display processor to write into the image of a VD on
+/* the screen. The parameters are used by "display_vd_on_tube" when
+/* executing the final command after adding clipping rectangles.
+
+
+	OPCODE	word unsigned;	/* Opcode indicating "bitblt", "print", etc.
+	constant (
+		BACKGROUND,
+		BITBLT,
+		DRAW_CURVE,
+		MOVE_TEXT,
+		PRINT_TEXT
+		) equals 0 increment 1 prefix VDB$;
+	   constant FIRST_OPCODE equals VDB$K_BACKGROUND prefix VDB$;
+	   constant LAST_OPCODE equals VDB$K_PRINT_TEXT prefix VDB$;
+	TXTLEN		word unsigned;	/* Bytes in text message
+	TXTPTR		address;	/* Pointer to text descr
+	FONT		address;	/* Pointer to font descriptor
+	CONTROL_STRING 	address;	/* address of control string
+	CONTROL_COUNT 	word unsigned;	/* count of control bits
+	spare2		word;
+	INTERCHAR_PAD 	word unsigned;	/* pad between characters
+	SPACE_PAD 	word unsigned;	/* pad between spaces
+	SOURCE		address;	/* Source bitmap descriptor address or source constant
+	SRC_TYPE 	word unsigned;	/* Tells whether src is const, bitmap, etc
+	BG_WIDTH 	word unsigned;	/* Source width for background operations
+	BG_HEIGHT	word unsigned;	/* Source height for background operations
+	BG_DEPTH	word unsigned;	/* Source planes for background operations
+	SRC_OFF_X 	word unsigned;	/* offset of mask in source
+	SRC_OFF_Y	word unsigned;	/* offset of mask in source
+	MASK_PTR 	address;	/* pointer to mask sub-bitmap or rectangle or list of points
+	MSK_TYPE 	word unsigned;	/* Tells whether mask is rectangle, bitmap, etc
+	spare4		word;
+	SRC_MSK_X 	word unsigned;	/* Mask width
+	SRC_MSK_Y 	word unsigned;	/* Mask height
+	DST_BM		address;	/* Destination bitmap address
+	DST_OFF_X 	word unsigned;	/* Destination offset
+	DST_OFF_Y 	word unsigned;	/* Destination offset
+	MAP_TYPE 	word unsigned;	/* Tells whether map is src, srcdst, etc.
+	MAP_VALUE 	word unsigned;	/* Value of map to use
+	PATH 		address;	/* Address of path points for draw_curve
+	PATH_COUNT 	word unsigned;	/* number of points in path
+	spare5		word;
+	PATTERN 	address;	/* Address of pattern descriptor
+	U_RECTS_COUNT 	word unsigned;	/* Place to store user defined rectangles
+	U_RECTS_ADDR 	address;
+/*
+	BITMAP_DESCRIPTOR address;/*pointer to bitmap descriptor
+	BM_DESC	union;
+		GRAPHIC address;	/* Pointer to graphics storage bitmap data
+		DESCRIPTR	structure prefix VDB$;
+			BITMAP	address;	/*address of bitmap data
+			WIDTH	word unsigned;	/*size (x) of vd
+			HEIGHT	word unsigned;	/*size (y) of vd
+			SIZE_Z	word unsigned;	/*size (z) of vd
+			ADDR_SPACE word unsigned;	/*indicates vax or display memory
+		end DESCRIPTR;
+	end BM_DESC;
+/*
+	RGN_QFL		address;	/* Pointer to list of regions for vd
+	RGN_QBL		address;
+	TS_DOCBLK	address;	/* terminal settings document block adr
+	HELP_ROUTINE	address;	/* help routine
+	HELP_DATA	longword;	/* data to pass to help routine
+			/* keep following three together as descriptor
+	HELP_STR_LEN	word;		/* length of help string
+	HELP_STR_CLASS	word;		/* second word of help string desc
+	HELP_STR_ADR	address;	/* address of help string
+			/* keep previous three together as descriptor
+	HELP_STR_BUF	byte dimension 50;
+					/* holds help string
+/*
+/*	Put in new rectangle list queues
+/*
+	RCAQFL	address;
+	RCAQBL	address;
+	constant BLOCK_LENGTH equals .;
+end VDBLOCK;
+
+	/* Menu input buffer section types
+	constant (
+		ITEM_LIST,		/* section contains menu items
+		TITLE,			/* section contains menu title
+		END			/* section marks end of buffer
+		) equals 0 increment 1 prefix MENU_;
+/*
+/* Menu output block.  This is used for sending data back to the library
+/* regarding a menu virtual display that has just been created.
+/*
+aggregate mo_block structure prefix mob$;
+	vd_id		longword;	/* id (unit) of virtual display
+	vd_width	longword;	/* width of vd
+	vd_height	longword;	/* height of vd
+/*	region data			/* region coordinates follow info
+end mo_block;
+
+/*
+/* Region block
+/*
+aggregate rgn_block structure prefix rgn$;
+
+	FL		address;
+	BL		address;
+	SIZE		word unsigned;
+	TYPE		byte unsigned;
+	spare1		byte;
+
+	/* Keep x, y, width, height together and in order, as they are used
+	/* as a rectangle definition.
+	/*
+	x		longword;	/* x coordinate of upperleft corner
+	y		longword;	/* y coordinate of upperleft corner
+	width		longword;
+	height		longword;
+	irp		address;	/* address of outstanding irp
+	pid		longword;	/* process that owns irp
+	rtn_adr		address;	/* routine to call upon selection
+	rtn_prm		longword;	/* routine parameter for selection
+	pb_id		longword;	/* pb to pop up upon selection
+	pb_x		longword;	/* pb x coordinate to line up with ptr
+	pb_y		longword;	/* pb y coordinate to line up with ptr
+	help_routine	address;	/* help routine
+	help_data	longword;	/* data to pass to help routine
+			/* keep following three together as descriptor
+	HELP_STR_LEN	word;		/* length of help string
+	HELP_STR_CLASS	word;		/* second word of help string desc
+	HELP_STR_ADR	address;	/* address of help string
+			/* keep previous three together as descriptor
+	HELP_STR_BUF	byte dimension 50;
+					/* holds help string
+	sel_attribute	longword;	/* How to show selectability
+end rgn_block;
+
+/*
+/* Region descriptor block.  This is the block the library uses to communicate
+/* with the acp with.
+/*
+aggregate rdb_block structure prefix rdb$;
+	op		longword;	/* opcode saying what to do
+	    constant (
+		define,			/* define region
+		delete,			/* delete a region
+		delete_all,		/* delete all of a vd's regions
+		set_selectable		/* set a region to be selectable
+					/* caution: this one is assumed last,
+					/* see below
+		     ) equals 0 increment 1 prefix rgn_op_;
+		constant last equals rgn_op_k_set_selectable prefix rgn_op_;
+	x		longword;	/* x coordinate of upperleft corner
+	y		longword;	/* y coordinate of upperleft corner
+	width		longword;
+	height		longword;
+	pb_id		longword;	/* pb to pop up upon selection
+	pb_x		longword;	/* pb x coordinate to line up with ptr
+	pb_y		longword;	/* pb y coordinate to line up with ptr
+	sel_attribute	longword;	/* How to show selectability
+end rdb_block;
+
+/*					.
+/* Pasteboard Descriptors -- PBD
+/*					.
+aggregate PBDBLOCK structure prefix PBD$;
+	FL		address;
+	BL		address;
+	SIZE		word unsigned;
+	TYPE		byte unsigned;
+	spare1		byte;
+	PBID		word unsigned;
+	VDID		word unsigned;
+	constant BLOCK_LENGTH equals .;
+end PBDBLOCK;
+/*					.
+/* End of module $VSDEF
+/*					.
+end_module;

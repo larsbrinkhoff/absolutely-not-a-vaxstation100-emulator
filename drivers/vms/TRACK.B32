@@ -1,0 +1,77 @@
+module track (addressing_mode (external=general, nonexternal=general)) = begin
+
+!
+! Track events, useful for debugging race conditions.
+
+library 'sys$library:starlet';		! Symbols such as $setast
+library 'vsta$library:libmacros';	! Common VSTA symbols
+
+$vsta_psect;
+
+forward routine!s
+
+	vsta$$track;		! Record an event.
+
+literal
+
+	max_events = 21;	! Fits on one vt100 screen !!
+global
+
+	event_buf : vector [max_events];
+
+global routine vsta$$track
+!++
+! Functional description:
+!
+!	Call this routine with an aribitrary number of parameters.  The
+!	event buffer gets scrolled up and the latest parameters get put at
+!	the end.
+!
+! Formal parameters:
+ (
+	e1, e2, e3	! . . .	arbitrary events to record (perhaps pairs)
+ ) =
+!
+!--
+
+	begin
+
+	builtin argPtr, actualCount;
+
+	bind
+
+	    ! Get old ast setting, and turn off ast's so that no events happen
+	    ! while we're recording the latest.
+	    !
+	    old_ast = $setast (enbflg = 0),
+
+	    ! Number of new events.
+	    !
+	    n_events = actualCount (),
+
+	    ! Buffer of new events.
+	    !
+	    new_buf = vector [argPtr (), 1] : vector,
+
+	    ! Number of old events being kept.
+	    !
+	    n_kept = max_events - n_events,
+
+	    ! Buffer of old events being kept.
+	    !
+	    old_buf = event_buf[n_events] : vector;
+
+	! In one fell swoop, scroll the remaining old events, and accumulate
+	! the new ones.
+	!
+	ch$copy (n_kept * 4, old_buf[0], n_events * 4, new_buf[0], 
+	    0, max_events * 4, event_buf[0]);
+
+	! Resume ast status.
+	!
+	$setast (enbflg = old_ast eql ss$_wasset)
+
+	end;
+
+end
+eludom

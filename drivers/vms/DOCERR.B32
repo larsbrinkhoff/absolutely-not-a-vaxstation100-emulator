@@ -1,0 +1,210 @@
+MODULE DOC$ERR (
+		IDENT = 'VSTADOC Utility Error Handler module'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module contains routines to handle errors for the VSTADOC utility.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type a line on SYS$OUTPUT
+    doc$$type_sts,		!Print text and status code
+    doc$$gen_error;		!Type out a GENERATE error for current line
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    lib$put_output,
+    doc$$append_list_line,
+    doc$$put_list_line;
+
+EXTERNAL
+    num_user_errors;		!Number of user errors
+
+GLOBAL ROUTINE doc$$error
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Puts error text in a stack
+!	to be typed out later (or ignored).
+!	Returns master error code as status.
+!
+! FORMAL PARAMETERS:
+	(error_code
+	,arg1, arg2 !...	!optional parameters
+	) =
+!--
+BEGIN
+BUILTIN
+    argptr;
+BIND
+    argvec = ARGPTR () : VECTOR;	!Vector of optional arguments
+LOCAL
+    num_params,
+    param_list_addr,
+    msg_before_fao: BLOCK [256,BYTE],
+    msg_before_fao_desc: VECTOR [2],
+    before_fao_length: WORD,
+    msg_after_fao: BLOCK [256,BYTE],
+    msg_desc: VECTOR [2],	!A string desc.
+    msg_interest: VECTOR [4,BYTE], !Returned from $getmsg
+    number_fao_args,
+    msg_real_len,		!Real length of final message
+    status;
+
+num_params = .ARGVEC [0] - 1;	!Get count of FAO parameter
+!
+! Get message without the FAO info from the system
+!
+msg_before_fao_desc [0] = 256;
+msg_before_fao_desc [1] = msg_before_fao;
+
+IF NOT (status =
+    $getmsg	(MSGID = .error_code		!Passed error code
+		,MSGLEN = before_fao_length	!Addr of word to get length
+		,BUFADR = msg_before_fao_desc	!Desc of string to get message
+		,OUTADR = msg_interest		!Get interesting info
+		)
+	)
+  THEN
+	BEGIN
+	doc$$type_line (%ASCID '?getmsg system service failed');
+	$exit (CODE = .status)
+	END;	
+
+msg_before_fao_desc [0] = .before_fao_length;	!Get REAL string desc.
+
+!
+! Now, using the args supplied, get the message with parameters inserted.
+!
+IF (.num_params EQL 0)
+  THEN
+    BEGIN
+    msg_desc [0] = .before_fao_length;
+    msg_desc [1] = msg_before_fao;
+    END
+  ELSE
+    BEGIN
+    msg_desc [0] = 256;				!Desc for output of FAOL
+    msg_desc [1] = msg_after_fao;		! . .
+    param_list_addr = ARGVEC [2];		!Get address of parameter list
+    status =
+	$faol	(CTRSTR = msg_before_fao_desc		!CTRSTR
+		,OUTLEN = msg_real_len			!OUTLEN
+		,OUTBUF = msg_desc			!OUTBUF
+		,PRMLST = .param_list_addr		!PRMLST
+		);
+    IF NOT .status
+      THEN
+	BEGIN
+	doc$$type_line (%ASCID '? FAOL failed');
+	$Exit (CODE = .status)	
+	END;
+    msg_desc [0] = .msg_real_len;		!Get real length of message
+    END;
+
+doc$$type_line (msg_desc);
+
+RETURN .error_code
+END;
+
+GLOBAL ROUTINE doc$$type_line
+!++
+! FUNCTIONAL DESCIPTION:
+!	Types a line to SYS$OUTPUT.
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+
+RETURN lib$put_output (.str_desc);
+END;
+
+GLOBAL ROUTINE doc$$type_sts
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Types text and appends the given status code.
+! FORMAL PARAMTERS:
+	(line_desc: REF VECTOR [2]
+	,code			!Status code
+	) =
+!--
+BEGIN
+LOCAL
+    text_desc: VECTOR [2],
+    text_line: VECTOR [512,BYTE],
+    msg_desc: VECTOR [2],
+    msg_len: WORD,
+    status;
+
+msg_len = .line_desc [0];	!Get word
+text_desc [0] = .msg_len;
+text_desc [1] = text_line;
+!
+! Copy first part of message
+!
+CH$MOVE	(.msg_len
+	,.line_Desc [1]
+	,text_line
+	);
+!
+! Append message code
+!
+msg_desc [0] = 512 - .msg_len;			!# chars left
+msg_desc [1] = text_line + .msg_len;		!Place to put it
+
+IF NOT (status =
+    $getmsg	(MSGID = .code			!Passed error code
+		,MSGLEN = msg_len		!Addr of word to get length
+		,BUFADR = msg_desc		!Desc of string to get message
+		)
+	)
+  THEN
+	BEGIN
+	doc$$type_line (%ASCID '?getmsg system service failed');
+	$exit (CODE = .status)
+	END;	
+
+text_desc [0] = .text_desc [0] + .msg_len;	!Get REAL string desc.
+doc$$type_line (text_desc);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$gen_error
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Types out a GENERATE error and puts it into the listing file.
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+
+doc$$type_line (.str_desc);
+doc$$append_list_line (.str_desc);
+doc$$put_list_line ();
+num_user_errors = .num_user_errors + 1;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

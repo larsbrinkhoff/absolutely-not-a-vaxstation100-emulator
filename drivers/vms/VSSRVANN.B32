@@ -1,0 +1,1100 @@
+MODULE VS$SRV_ANN (
+			IDENT = 'HI SERVER Notices'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					  NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!	VSACP
+!
+! ABSTRACT:
+!
+!  This module handles notices.
+!
+! ENVIRONMENT:
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_init_notices,	!Create SDA objects for notices
+    prepare_write_notices,	!Do text calls for the notices VD
+    cleanup_notice_init,	!Cleanup from error in initialization
+    get_initial_memory,		!Allocate some initial memory
+    reset_memory,		!Delete memory allocated
+    vsta$$announce,		!Routine called when broadcast happens
+    vsta$$hi_notice,		!Notice from human interface.
+    vsta$$srv_notice_number,	! Write a notice to the human
+    write_notice,		!Common routine to write the notice
+    inner_write_notice,		!Do most of work for writing a notice
+    remove_nonprintable_chars,	!Get rid of bells, etc in notices
+    print_it,			!Print the notice on the form
+    print_one,			!Print one line of notice
+    vsta$$srv_how_much_fits,	!Compute how much of text fits on the line
+    vsta$$srv_notice_clear,	!Clear the notices document.
+    vsta$$srv_end_notices;	!Routine to delete notices SDA objects
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white, etc.
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!Human interface data structures
+LIBRARY 'VSTA$LIBRARY:vstagbl';		!symbols like
+					!"vsta$k_default_protection"
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!$string_descriptor,...
+LIBRARY 'VSTA$LIBRARY:VSERRORS';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+! MACROS
+!
+
+MACRO
+    $modulus (expres, base) =		!Quick modulus when expres is
+	BEGIN				! at most base + 1
+	IF (expres LSS base)
+	  THEN expres
+	  ELSE expres - base
+	END %;
+
+GLOBAL
+    srv$gl_notice_wdb: REF window_data_block;	!WDB-U of the notices document
+
+LITERAL
+    vsta$K_notice_vd_linesize = 16,	!Height of notice lines
+    notice_leftm = 1,		!Left margin
+    notice_rightm = 0;		!Right margin (completely fill)
+
+global
+    notice_vd_id;		!virtual display for notices, 0 means
+				!not initialized yet.
+OWN
+    finger_byte: BYTE INITIAL (0),	!Character 0 of HISYMBOL is the finger.
+    finger_desc: VECTOR [2]
+		INITIAL (1, finger_byte),
+    finger_width,			!How wide this character is
+    notice_vd_width: INITIAL (600),	!Not including margins!
+    notice_vd_height,
+    notice_pb_width: INITIAL (600 + notice_leftm - 1 + notice_rightm),
+    notice_num_lines,		!Number of notice lines
+    notice_pb_id,
+    notice_window_id,
+    lines_ptrs: VECTOR [20],	!ptrs to string desc's
+    lines_sizes: VECTOR [20],	! Sizes of each line
+    line1_idx,			!Which line is line 1
+    lastline_idx,		!Which line was the last one
+    txtline_num_writing,	!TXT line we're about to write.
+    how_many_alloc;		!How many lines are allocated from memory
+				! (don't use 'em until need 'em).    
+
+EXTERNAL ROUTINE
+    get_notice_menu_pb,		!Get notices menu
+    create_form_menu,		!Create menu for form
+    vsta$$srv_get_message_text,
+    vs$$vds_create_pb,
+    vs$$vds_create_vd,
+    vs$$vds_delete_vd,
+    vs$$vds_delete_pb,
+    vs$$vds_paste_vd_to_pb,
+    vs$$vds_create_term_window,
+    vs$$vds_delete_window,
+    vsta$$srv_notice_win_created,
+    vs$$txt_addLines,
+    vs$$txt_setWritingColor,
+    vs$$txt_setBackgroundColor,
+    vs$$txt_setTypeface,
+    vs$$txt_setTypesize,
+    vs$$txt_Measure_Text,		!Measure a text string
+    vs$$txt_writeText,			!Write text string
+    vsta$$foot_attn_notices,		!Got a new notice -- jolt user.
+    vs$$txt_scrollUp,			!Scroll lines up
+    vs$$acp_get_vm,			!Get virtual memory
+    vs$$acp_free_vm,			!Free virtual memory
+    vsta$$error_Logger,			!Log unexpected error
+    vsta$$error;			!Report an error
+
+EXTERNAL
+    srv_gl_ignore_delw,			!Set to 1 so HI will ignore deletion
+					! of window.
+    srv$gl_notice_menu : hi_menu_block,	!Notices menu
+    vsta$gl_notice_slot,		!Slot where NOTICES icon is
+    vsta$gl_notice1_mess_desc: $string_descriptor,
+    srv$gl_notice_num_lines;		!# lines of notices to keep
+
+
+GLOBAL ROUTINE vsta$$srv_init_notices =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates SDA objects for notices.
+!	Called when the workstation session begins.
+!--
+BEGIN
+MACRO
+    $cleanup = (
+	cleanup_notice_init (.cleanup_flags);
+		) %;
+LOCAL
+    name_desc: VECTOR [2],
+    name_itself: VECTOR [128, byte],
+    name_real_len,
+    junk,
+    cleanup_flags,		!1 = got PB
+				!2 = got VD
+				!8 = got memory
+				!16 = got HI stuff for window
+    status;			!Return status
+
+cleanup_flags = 0;
+
+!
+! Get name of this document
+!
+name_desc [0] = 128;
+name_desc [1] = name_itself;	!Initialize descriptor.
+IF NOT (status =
+    vsta$$srv_get_message_text
+		(450		!Message number
+		,name_desc	!Descriptor
+		,name_real_len	!Return length here
+		)
+	)
+  THEN RETURN .status;		!Error logged.
+
+name_desc [0] = .name_real_len;	!Get true descriptor to name.
+
+!
+! Measure the width of a finger for HI messages.
+!
+IF NOT (status =
+    vs$$txt_Measure_Text
+		(0		!VD-id (none)
+		,.finger_desc [0], .finger_desc [1]	!String to measure
+		,%CHARCOUNT ('HISYMBOL'), UPLIT ('HISYMBOL') !TF
+		,0, 0			!Typesize
+		,0, 0			!Rendition
+		,finger_width		!Width returned
+		,junk			!Height returned
+		)
+	)
+  THEN RETURN $error	(vsta$_meastxt_for	!"Can't measure text for !AC"
+			,string_type, %ASCID 'Finger symbol'
+			);
+!
+! Compute height [and width] of VD
+!
+notice_vd_height = vsta$K_notice_vd_linesize * .srv$gl_notice_num_lines;
+notice_num_lines = .srv$gl_notice_num_lines;
+!
+! Create the notices pb, vd, and window.
+!
+IF NOT (status =
+    vs$$vds_create_pb
+		(notice_pb_id		!Return pb-id here
+		,1			!Owned by ACP
+		,vsta$K_color_white
+		,.notice_pb_width
+		,.notice_vd_height
+		,0			!UIC
+		,0			!no keyboard or tablet
+		,vsta$k_default_protection
+					!protection
+		)
+	)
+  THEN RETURN $error	(vsta$_crepb_for
+			,string_type, %ASCID 'Notices document'
+			);
+
+cleanup_flags = .cleanup_flags OR 1;	!Got the PB
+
+IF NOT (status =
+    vs$$vds_create_vd
+		(.notice_vd_height
+		,.notice_vd_width
+		,1			!1 bitplane
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!internal VD
+		,2			!Text only
+		,0			!UIC
+		,0			!Temporary
+		,0			!UIC protection
+		,notice_vd_id		!Return vd-id here
+		,%ascid 'Notices'	!Help keyword
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'Notices document'
+			);
+    END;
+
+cleanup_flags = .cleanup_flags OR 2;	!Remember got the VD
+
+IF NOT (status =
+    vs$$vds_paste_vd_to_pb
+		(.notice_pb_id
+		,.notice_vd_id
+		,notice_leftm - 1, 0	!X,Y
+		,0			!On top
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+  ! "Can't paste !AC on !AC"
+    RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'Notices VD'
+			,string_type, %ASCID 'PB'
+			);
+    END;
+
+!
+! Create window on it.
+!
+IF NOT (status =
+    vs$$vds_create_term_window
+		(.notice_pb_id
+		,notice_window_id	!Return window-id here
+		,name_desc		!Name of window
+		,0, 0			!X, Y
+		,.notice_pb_width	!Same width, height as PB
+		,.notice_vd_height	! . .
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error	(vsta$_crewin_for
+			,string_type, %ASCID 'Notices document'
+			);
+    END;
+
+!
+! Get memory
+!
+IF NOT (status =
+    get_initial_memory ()
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN .status;
+    END;
+
+cleanup_flags = .cleanup_flags OR 8;	!Remember got the memory
+
+IF NOT (prepare_write_notices ()
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_notice);	!"Problem writing notice document"
+    END;
+
+!
+srv$gl_notice_wdb = 0;			!No notices wdb yet..
+
+IF NOT (status =
+    vsta$$srv_notice_win_created
+		(.notice_window_id
+		,.notice_pb_width
+		,.notice_vd_height
+		,.notice_pb_id
+		,.vsta$gl_notice_slot		!Where NOTICEs doc is now
+		,srv$gl_notice_wdb		!Place to store WDB
+		)
+	)
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_notice);
+    END;
+
+cleanup_flags = .cleanup_flags OR 16;		!Remember got HI stuff
+
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as to allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF NOT (status = create_form_menu (
+	    .srv$gl_notice_wdb,
+	    srv$gl_notice_menu,
+	    get_notice_menu_pb
+	    ))
+  THEN
+    BEGIN
+    $cleanup;
+    RETURN $error (vsta$_notice);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE prepare_write_notices =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do text calls to prepare the notices display.
+! IMPLICIT INPUTS:
+!	notice_vd_id
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Create the text lines on the display
+!
+IF NOT (status =
+    vs$$txt_Addlines
+		(.notice_vd_id
+		,.notice_num_lines	!Number of lines
+		,vsta$K_notice_vd_linesize	!Height of each line
+		)
+	)
+  THEN RETURN $error (vsta$_addlines);
+
+IF NOT (status =
+    vs$$txt_setWritingColor
+		(.notice_vd_id
+		,vsta$K_color_black
+		)
+	)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT (status =
+    vs$$txt_setBackgroundColor
+		(.notice_vd_id
+		,vsta$K_color_white
+		)
+	)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT (status =
+    vs$$txt_setTypeface
+		(.notice_vd_id
+		,%ASCID 'PELLUCIDA'
+		)
+	)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'PELLUCIDA'
+			);
+
+IF NOT (status =
+    vs$$txt_setTypesize
+		(.notice_vd_id
+		,12
+		)
+	)
+  THEN RETURN $error	(vsta$_setts);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cleanup_notice_init
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to cleanup from notices creation error.
+! FORMAL PARAMETERS:
+	(cleanup_flags		! What we've done that must be cleaned up.
+				!1 = got PB
+				!2 = got VD
+				!8 = got memory
+				!16 = got HI stuff
+	) =
+!--
+BEGIN
+LOCAL
+    notice_jrb: REF job_block;
+
+IF ((.cleanup_flags AND 16) NEQ 0)
+  THEN
+    BEGIN
+    IF (.srv$gl_notice_wdb NEQ 0)
+      THEN
+	BEGIN
+	notice_jrb = .srv$gl_notice_wdb [wdb$a_jrb];
+	notice_jrb [jrb$l_slot] = 0;	!Don't try to erase NOTICE slot.
+	END;
+    vs$$vds_delete_window (.notice_window_id);
+    END;
+
+IF ((.cleanup_flags AND 8) NEQ 0)
+  THEN reset_memory ();
+
+IF ((.cleanup_flags AND 2) NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.notice_vd_id);
+    notice_vd_id = 0;
+    END;
+
+IF ((.cleanup_flags AND 1) NEQ 0)
+  THEN
+    BEGIN
+    srv_gl_ignore_delw = 1;		!Just incase we got a window...
+    vs$$vds_delete_pb (.notice_pb_id);
+    srv_gl_ignore_delw = 0;
+    notice_pb_id = 0;
+    notice_window_id = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_initial_memory =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Allocate space for first four lines, and setup pointers.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Get memory for four lines of up to 256 chars each.
+!
+IF NOT (status =
+    vs$$acp_get_vm (%REF (256 * 4), lines_ptrs[0], 0)
+	)
+  THEN RETURN $sysres
+		(vsta$_getmem		!"Can't get..."
+		,integer_type, 256*4	!" !UL bytes of memory"
+		,string_type, %ASCID 'Notices lines'	!" for !SL"
+		);		
+
+lines_ptrs [1] = .lines_ptrs [0] + 256;
+lines_ptrs [2] = .lines_ptrs [1] + 256;
+lines_ptrs [3] = .lines_ptrs [2] + 256;
+how_many_alloc = 4;		!Remember we have allocated four lines
+line1_idx = 0;
+lastline_idx = -1;		!No "last line" yet.
+txtline_num_writing = 1;	!TXT line we're about to write.
+
+RETURN SS$_NORMAL	!return success
+END;
+
+ROUTINE reset_memory =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Release all memory for lines. Done at end session and
+! when the notices document is cleared.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Return memory we allocated for the notices lines.
+! we got 4 lines' worth each time; so deallocate in 4-line chunks.
+!
+INCR i FROM 1 TO (.how_many_alloc / 4) DO	!At least 1 of them..
+    BEGIN
+    IF NOT (status =
+	vs$$acp_free_vm (%REF (256 * 4), lines_ptrs [(.i - 1) * 4], 0)
+	    )
+      THEN
+	BEGIN
+	$error	(vsta$_freevm_for
+		,string_type, %ASCID 'Notices lines'
+		);
+	END;
+    END;
+
+how_many_alloc = 0;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$announce
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Prints notice in notices window
+! FORMAL PARAMETERS:
+	(msg_desc: REF $string_descriptor
+	) =
+!--
+BEGIN
+
+RETURN write_notice (0, .msg_desc);	!0 means this is a normal VMS announce
+END;
+
+GLOBAL ROUTINE vsta$$hi_notice
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Prints notice in notices window, with finger pointing at it
+!	to show the user that the human interface wrote it.
+! FORMAL PARAMETERS:
+	(msg_desc: REF $string_Descriptor
+	) =
+!--
+BEGIN
+
+RETURN write_notice (1, .msg_desc);	!1 means that HI wrote notice.
+END;
+
+GLOBAL ROUTINE vsta$$srv_notice_number
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given a notice number, translate to the prevailing
+!	language and write it out to the notices document.
+! FORMAL PARAMETERS:
+	(mess_num			!What number
+	) =
+! ERROR HANDLING:
+!	No errors are returned to the caller.
+!	If the notice can't be found, the "catch-all notice" (number 1)
+!	is written. Other errors are ignored (Not passed back).
+!--
+BEGIN
+LOCAL
+    mess_buf: VECTOR [128,BYTE],
+    mess_desc: VECTOR [2],
+    str_len_returned,
+    status;
+
+mess_desc [0] = 128;
+mess_desc [1] = mess_buf;
+
+IF NOT (status =
+    vsta$$srv_get_message_text
+		(.mess_num
+		,mess_desc
+		,str_len_returned
+		)
+	)
+  THEN
+    BEGIN			!Can't get it, write the catch-all error.
+    LOCAL
+ 	fao_desc: VECTOR [2],
+	fao_str: VECTOR [256,BYTE],
+        fao_len_returned;
+    mess_desc [0] = .vsta$gl_notice1_mess_desc [sd$w_len];
+    mess_desc [1] = .vsta$gl_notice1_mess_desc [sd$a_adr];
+    fao_desc [0] = 256;
+    fao_desc [1] = fao_str;
+    IF NOT (status =
+	$fao	(%ASCID '!AS !SL'	!CTRSTR
+		,fao_len_returned	!OUTLEN
+		,fao_desc		!OUTDSC
+		,mess_desc		!p1 (initial string)
+		,.mess_num		!p2 (which message)
+		)
+	    )
+      THEN
+	BEGIN
+	vsta$$error_logger (.status);	!Report FAO error
+	RETURN .status;
+	END;
+    fao_desc [0] = .fao_len_returned;	!Get true descriptor incl. parameter
+    vsta$$hi_notice (fao_desc);
+    RETURN SS$_NORMAL;
+    END;
+
+mess_desc [0] = .str_len_returned;
+
+vsta$$hi_notice (mess_desc);	!Put message in notices document
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_notice
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write a notice in the notices document.
+! FORMAL PARAMETERS:
+	(hi_flag			!=1 means HI sent the notice
+	,msg_desc: REF $string_descriptor
+	) =
+!--
+BEGIN
+	external
+	    vs$gl_pid,				!Callers pid
+	    vs$gl_acp_pid;			!Our pid
+
+	builtin callg, argPtr;
+
+	local
+	    status,
+	    callers_pid;
+!
+! Since this notice request is likely to be happening on behalf
+! of some other system process that normally wouldn't have access to the
+! notice objects (such as pasteboard), we must establish ourself as
+! the executor, in order not to get an access failure.
+!
+	callers_pid = .vs$gl_pid;
+	vs$gl_pid = .vs$gl_acp_pid;
+!
+! Do the work.
+!
+	status = callg (argPtr (), inner_write_notice);
+!
+! Restore knowledge of who caller is.
+!
+	vs$gl_pid = .callers_pid;
+
+	.status
+
+	end;
+
+routine inner_write_notice
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write a notice in the notices document.
+! FORMAL PARAMETERS:
+	(hi_flag			!=1 means HI sent the notice
+	,msg_desc: REF $string_descriptor
+	) =
+!--
+	begin
+
+LOCAL
+    new_msg_desc: $string_Descriptor,
+    new_msg_str: VECTOR [256,BYTE],
+    this_msg_len,		!Length of this message
+    this_line_idx,		!Index of this line
+    adr_put: REF VECTOR [,BYTE],
+    status;			!Status code
+!
+! If notices not initialized, do it now.  We avoided doing it during
+! session startup so that users that DON'T deal with their notices won't
+! have to wait for notices initialization.
+!
+IF .notice_vd_id EQL 0
+  THEN
+    IF NOT (status = vsta$$srv_init_notices ())
+      THEN RETURN .status;
+!
+! Remove non-printable characters and unnecessary carriage control.
+!
+new_msg_desc [sd$a_adr] = new_msg_str;
+remove_nonprintable_chars (.msg_desc, 255, new_msg_desc);	!Max 255 chars.
+
+this_msg_len = .new_msg_desc [sd$w_len];
+IF (.this_msg_len EQL 0)
+  THEN RETURN SS$_NORMAL;		!No printable chars
+
+vsta$$foot_attn_notices ();		!Tell user we got a new message.
+
+!
+! If this message is the same as the last message, don't print it
+!
+IF (.lastline_idx GEQ 0)
+  THEN
+    IF (.this_msg_len EQL .lines_sizes [.lastline_idx])
+      THEN
+	BEGIN
+	IF (CH$EQL	(.this_msg_len
+			,.lines_ptrs [.lastline_idx] + 1
+			,.this_msg_len
+			,new_msg_str
+			,0
+			)
+	    )
+	  THEN RETURN SS$_NORMAL;	!(Action if strings are equal)
+	END;
+!
+! Not equal to the last string we had. Print it.
+! Note: If we didn't have any lines before, then "lastline_idx" = -1.
+!	This next statement then correctly computes "this_line_idx" = 0.
+!
+this_line_idx = $modulus (.lastline_idx + 1, .notice_num_lines);
+IF (.how_many_alloc LEQ .this_line_idx)
+  THEN
+    BEGIN				!Have to allocate space for more lines
+    IF NOT (status =
+	vs$$acp_get_vm (%REF (256 * 4), lines_ptrs [.lastline_idx + 1], 0)
+	    )
+      THEN RETURN $sysres	(vsta$_getmem
+				,integer_type, 256*4
+				,string_type, %ASCID 'Notices lines'
+				);
+    lines_ptrs [.lastline_idx + 2] = .lines_ptrs [.lastline_idx + 1] + 256;
+    lines_ptrs [.lastline_idx + 3] = .lines_ptrs [.lastline_idx + 2] + 256;
+    lines_ptrs [.lastline_idx + 4] = .lines_ptrs [.lastline_idx + 3] + 256;
+    how_many_alloc = .how_many_alloc + 4;	!Four more lines allocated
+    END;
+!
+! Only keep around as many notices as the user asked for.
+!
+IF (.this_line_idx EQL .line1_idx)
+  THEN line1_idx = $modulus (.line1_idx + 1, .notice_num_lines);
+
+lines_sizes [.this_line_idx] = .this_msg_len;
+
+!
+! Write the new string on the appropriate line(s) on the Virtual display
+!
+IF NOT (print_it (.hi_flag, new_msg_desc))	!0= user message, 1= HI message
+  THEN RETURN $error (vsta$_notice);
+
+!
+! Update the string in core.
+!
+adr_put = .lines_ptrs [.this_line_idx];
+adr_put [0] = 0;		!First byte 0 = "user message"
+CH$MOVE	(.this_msg_len
+	,new_msg_str
+	,adr_put [1]
+	);
+!
+! All done.
+!
+lastline_idx = .this_line_idx;		!Set this up for next time..
+RETURN SS$_NORMAL
+END;
+
+ROUTINE remove_nonprintable_chars
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets rid of bells and extraneous carriage control in notice.
+! FORMAL PARAMETERS:
+	(old_desc: REF $string_descriptor
+	,max_chars
+	,new_desc: REF $string_Descriptor	!With [sd$a_adr] filled in
+	) =
+!--
+BEGIN
+LOCAL
+    a_word: WORD,
+    old_len,
+    old_ptr: REF VECTOR [,BYTE],
+    new_ptr: REF VECTOR [,BYTE],
+    new_idx,
+    num_chars,
+    cc_idx,		!Index of last carriage control
+    status;
+
+old_len = .old_desc [sd$w_len];
+old_ptr = .old_desc [sd$a_adr];
+new_ptr = .new_desc [sd$a_adr];
+cc_idx = 0;
+new_idx = 0;
+num_chars = MIN (.max_chars, .old_len);
+
+INCR i FROM 0 TO .num_chars - 1 DO
+    BEGIN
+    (SELECTONE .old_ptr [.i] OF
+	SET
+	[%O'12']:
+	    BEGIN
+	    IF (.cc_idx NEQ .new_idx)
+	      THEN
+		BEGIN		!Let it thru.
+		new_ptr [.new_idx] = %O'12';
+		new_idx = .new_idx + 1;
+		cc_idx = .new_idx;
+		END;
+	    END;
+	[%O'11']:
+	    BEGIN
+	    new_ptr [.new_idx] = %O'40';	!Translate tab to space
+	    new_idx = .new_idx + 1;
+	    END;
+	[%O'0' TO %O'10',
+	%O'13' TO %O'37',
+	%O'200' TO %O'237']:
+	    BEGIN
+	    1				!Ignore other non-printable chars
+	    END;
+	[OTHERWISE]:
+	    BEGIN
+	    new_ptr [.new_idx] = .old_ptr [.i];
+	    new_idx = .new_idx + 1;
+	    END;
+	TES
+    );
+    END;
+
+new_desc [sd$w_len] = .new_idx;		!Remember how many chars
+RETURN SS$_NORMAL
+END;
+
+ROUTINE print_it
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Actually write the notice, taking as many lines as we need.
+! FORMAL PARAMETERS:
+	(hi_flag		!=0 if user string, =1 if HI string
+	,msg_desc: REF $string_Descriptor
+	) =
+!--
+BEGIN
+LOCAL
+    print_finger_flag,		!=1 if want to print finger.
+    cur_desc: VECTOR [2],
+    lf_pos,			!Position of line feed (if present)
+    one_line_desc: VECTOR [2],
+    status;
+
+cur_desc [0] = .msg_desc [sd$w_len];
+cur_desc [1] = .msg_desc [sd$a_adr];
+print_finger_flag = .hi_flag;
+WHILE (.cur_desc [0] GTR 0) DO
+    BEGIN
+  !
+  ! Find how much text can be written on this line
+  !
+    lf_pos = CH$FIND_CH	(.cur_desc [0]
+			,.cur_desc [1]
+			,%O'12'
+			);
+    IF (.lf_pos EQL 0)
+      THEN RETURN print_one (.print_finger_flag, cur_desc);
+
+    one_line_desc [0] = .lf_pos - .cur_desc [1];
+    one_line_desc [1] = .cur_desc [1];
+    IF NOT (status = print_one (.print_finger_flag, one_line_desc))
+      THEN RETURN .status;
+    print_finger_flag = 0;		!Don't print finger after 1st time
+    cur_desc [0] = .cur_desc [0] - .one_line_desc [0] - 1;
+    cur_desc [1] = .cur_desc [1] + .one_line_desc [0] + 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE print_one
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Print one "line", with wrap.
+! FORMAL PARAMETERS:
+	(print_finger_flag		!=1 if we should print the finger first
+	,line_desc: REF $string_Descriptor
+	) =
+!--
+BEGIN
+LOCAL
+    cur_desc: VECTOR [2],
+    len_that_fits,
+    rem,
+    cpos,
+    space_left,
+    status;
+
+cur_desc [0] = .line_Desc [sd$w_len];
+cur_desc [1] = .line_desc [sd$a_adr];
+WHILE (.cur_desc [0] GTR 0) DO
+    BEGIN
+  !
+  ! Scroll up one line if we must
+  !
+    IF (.txtline_num_writing EQL .notice_num_lines+1)
+      THEN
+	BEGIN
+	IF NOT (status =
+	    vs$$txt_scrollup
+			(.notice_vd_id
+			,1			!First line to scroll
+			,.notice_num_lines	!Last line to scroll
+			)
+		)
+	  THEN RETURN $error (vsta$_scrlup);
+	txtline_num_writing = .notice_num_lines;
+	END;
+
+    cpos = 1;				!Assume cpos = 1
+    IF (.print_finger_flag)
+      THEN
+	BEGIN				!Set typeface to HISYMBOL
+	IF NOT (status =
+	    vs$$txt_setTypeface
+			(.notice_vd_id
+			,%ASCID 'HISYMBOL'
+			)
+		)
+	  THEN RETURN $error	(vsta$_settf
+				,string_type, %ASCID 'HISYMBOL'
+				);
+
+	IF NOT (status =
+	    vs$$txt_writeText
+			(.notice_vd_id
+			,finger_desc
+			,.txtline_num_writing
+			,1		!Field
+			,1		!CPOS
+			)
+		)
+	  THEN RETURN $error	(vsta$_writet	!"Can't write !AC"
+				,string_type, %ASCID 'finger in Notice'
+				);
+
+	IF NOT (status =
+	    vs$$txt_setTypeface
+			(.notice_vd_id
+			,%ASCID 'PELLUCIDA'
+			)
+		)
+	  THEN RETURN $error	(vsta$_settf
+				,string_type, %ASCID 'PELLUCIDA'
+				);		!?Can't set typeface back
+
+	cpos = 2;			!Don't overwrite the finger.
+	END;		!of write finger at beginning of line
+
+!  Now typeface is "standard_typeface"
+
+    space_left = .notice_vd_width - 1 - (.print_finger_flag * .finger_width);
+
+    IF NOT (status =
+	vsta$$srv_how_much_fits
+		(.notice_vd_id		!Virtual display
+		,cur_desc		!Text to be written
+		,.space_left		!Space left in field
+		,len_that_fits		!Return length to write here
+		)
+	    )
+      THEN RETURN .status;		!Error measuring string
+
+    rem = .cur_Desc [0] - .len_that_fits;	!How many more to write
+    cur_desc [0] = .len_that_fits;	!Just write what will fit.
+    IF NOT (status =
+	vs$$txt_writeText
+		(.notice_vd_id
+		,cur_desc
+		,.txtline_num_writing	!line
+		,1			!Field
+		,.cpos			!Char pos.
+		)
+	    )
+      THEN RETURN $error	(vsta$_writet	!"Can't write !AC"
+				,string_type, %ASCID 'notice line'
+				);
+
+    cur_desc [0] = .rem;
+    cur_desc [1] = .cur_desc [1] + .len_that_fits;
+    txtline_num_writing = .txtline_num_writing + 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_how_Much_fits
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Measure text to find out how much of string will fit, and
+!	write it. An error is not expected, of course.
+! FORMAL PARAMETERS:
+	(vd_id
+	,str_desc: REF $string_Descriptor
+	,space_left			!How much space left in field
+	,len_that_fits			!How many characters will fit
+	) =
+!--
+BEGIN
+LOCAL
+    mt_x,
+    mt_y,
+    try_desc: VECTOR [2],
+    status;
+
+!
+! At first, just try the whole string
+!
+try_desc [0] = .str_desc [sd$w_len];
+try_desc [1] = .str_desc [sd$a_adr];
+
+WHILE (.try_desc [0] NEQ 0) DO
+    BEGIN
+    IF NOT (status =
+	vs$$txt_measure_Text
+		(.vd_id		!Current VD
+		,.try_desc [0], .try_desc [1]	!The string to measure
+		,0, 0		!Current typeface
+		,0, 0		!Current typesize
+		,0, 0		!Current rendition
+		,mt_x, mt_y
+		)
+	    )
+      THEN RETURN $error (vsta$_meastxt_for	!"Can't measure text for !AC"
+			,string_type, %ASCID 'Text of notice');
+
+    IF (.mt_x LEQ .space_left)
+      THEN
+	BEGIN
+	.len_that_fits = .try_desc [0];
+	RETURN SS$_NORMAL
+	END;
+
+    try_desc [0] = .try_desc [0] - 1;	!Try 1 less character.
+    END;			!Of while .try_desc [0] NEQ 0 DO
+
+.len_that_fits = 0;		!Nothing fits
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_end_notices =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes SDA objects for notices. Called when
+!	the workstation session ends.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.notice_pb_id NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vs$$vds_delete_pb (.notice_pb_id)
+	    )
+      THEN $error	(vsta$_delpb_for
+			,string_type, %ASCID 'Notices document'
+			);
+    notice_pb_id = 0;
+    END;
+
+IF (.notice_vd_id NEQ 0)
+  THEN
+    BEGIN
+    reset_memory ();		!Deallocate memory used.
+    IF NOT (status =
+	vs$$vds_delete_vd (.notice_vd_id)
+	    )
+      THEN $error	(vsta$_delvd_for
+			,string_type, %ASCID 'Notices document'
+			);
+    notice_vd_id = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_notice_clear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Clear the notices document
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Scroll up .notice-num-lines so we are guaranteed to have cleared the VD.
+!
+INCR i FROM 1 TO .notice_num_lines DO
+    BEGIN
+    IF NOT (status =
+	vs$$txt_scrollup
+		(.notice_vd_id
+		,1			!First line to scroll
+		,.notice_num_lines	!Last line to scroll
+		)
+	    )
+      THEN $error (vsta$_scrlup);
+    END;
+
+reset_memory ();			!Throw old messages away
+get_initial_memory ();			!Get ready to save new ones.
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

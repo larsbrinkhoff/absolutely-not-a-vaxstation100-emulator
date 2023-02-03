@@ -1,0 +1,73 @@
+! VSGICX.REQ	require file for using VaxStation GIdis Coordinate TRANSformer
+!
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	Declarations for using VSGICX.BLI.
+!
+! Environment:
+!
+!	This file should be included by any module in the Gidis system
+!	that needs to perform coordinate transformations.
+!
+!--
+
+EXTERNAL LITERAL GID$$CX_edit_level;
+EXTERNAL ROUTINE GID$$CX_screen_addressing;
+
+
+!+
+MACRO GID$$CX_Map_coordinate(	! Map from Gidis coordinates to VD's
+    soft_coordinate		! Value of coordinate to map
+    ) = 			! Value after mapping
+! Routine value:
+!	Returns the coordinate in the VD's coordinate space
+! Implicit inputs:
+!	physical_extent and logical_extent from the state fetcher
+! Implicit outputs:
+! Function:
+!	Translates a coordinate in the space defined by the screen
+!	addressing command to the corresponging coordinate in the
+!	virtual display space.  This may be used for both X and Y
+!	coordinates, since the coordinate spaces are both square.
+! Side effects:
+!-
+    BEGIN
+    ((soft_coordinate) * .sf[ physical_extent]) / .sf[ logical_extent]
+    END%;
+
+
+!+
+MACRO GID$$CX_Unmap_coordinate(	! Map from VD coordinates to Gidis's
+    hard_coordinate		! Value of the coordinate to map
+    ) =				! Value after mapping
+! Routine value:
+!	Returns the coordinate in the Gidis coordinate space
+! Implicit inputs:
+!	physical_extent and logical_extent from the state fetcher
+! Implicit outputs:
+! Function:
+!	Translates a coordinate in the space defined by the virtual
+!	display dimensions to the corresponging coordinate in the Gidis
+!	screen addressing space.  This may be used for both X and Y
+!	coordinates, since the coordinate spaces are both square.
+! Algorithm:
+!	Do the mathematical inverse of map_coordinate, and undo the
+!	"floor" effect of integer arithmetic by adding 1 when the
+!	transformation misses.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	temp;
+
+    temp = ((hard_coordinate) * .sf[ logical_extent]) / .sf[ physical_extent];
+    (IF GID$$CX_map_coordinate( .temp) NEQ (hard_coordinate)
+    THEN .temp+1 ELSE .temp)
+    END%;
+
+!	End of VSGICX.REQ

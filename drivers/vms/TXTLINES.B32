@@ -1,0 +1,872 @@
+module txtlines (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! Routines for manipulating lines
+
+forward routine!s . . .
+	vs$$txt_scrollUp,		! scroll lines and insert new one
+	vs$$txt_scrollDown,
+	vs$$txt_clearLine,		! delete all text and fields for a line
+	vs$$txt_removeLines,	! remove lines from end of virtual display
+	vs$$txt_addLines,	! add lines to end of virtual display
+	scroll,			! scroll lines up or down
+	raise_lines : novalue,	! move lines up (or down) in response to scrolling
+	measure_height,		! add up heights of a group of lines
+	refreshLines,		! refresh specific range of lines
+	find_line_block,	! get line block for particular line
+	insertLines,		! insert new lines in text block
+	releaseLinesBetween;	! release lines from text block
+
+library 'vsta$library:txtsym';
+library 'vsta$library:vserrors';! symbols like "integer_type"
+library 'vsta$library:libmacros';
+				! symbols like "$return_error"
+library 'sys$library:starlet';	! symbols like "ss$_normal"
+
+external routine!s . . .
+	printField,		! refresh text in one field
+	deleteElements,		! delete elements from a list
+	createLineBlock,	! create a line block
+	defineDefaultField,	! define default field spanning entire line
+	deallocateLineBlock,	! release a line block and its fields
+	addElements,		! add elements to list
+	vs$$vds_clear_text,	! clear previous text from region
+	vs$$vds_move_text;	! driver routine to move existing text on screen
+
+$vsta_psect;			! PSECT definitions
+
+
+global routine vs$$txt_scrollUp
+!++
+! Functional description:
+!
+!	Insert a line, by scrolling a block of lines up to make room.
+!
+! Formal parameters:
+ (
+    id,			! which virtual display to scroll
+    firstLine,		! first line to scroll
+    lastLine,		! last line to scroll
+    optionalLineHeight	! optional height for new line being inserted
+	  ) =
+!
+! Completion codes:
+!
+!	This routine returns an error if there isn't room for the new line
+!	being inserted.
+!--
+
+	begin
+	if argumentExists(4)
+	then scroll (1, .id, .firstLine, .lastLine, .optionalLineHeight)
+	else scroll (1, .id, .firstLine, .lastLine)
+	end;
+
+global routine vs$$txt_scrollDown
+!++
+! Functional description:
+!
+!	Insert a line, by scrolling a block of lines down to make room.
+!
+! Formal parameters:
+ (
+    id,			! which virtual display to scroll
+    firstLineNum,	! first line to scroll
+    lastLineNum,	! last line to scroll
+    optionalLineHeight	! optional height for new line being inserted
+	  ) =
+!
+! Completion codes:
+!
+!	This routine returns an error if there isn't room for the new line
+!	being inserted.
+!--
+
+	begin
+	if argumentExists(4)
+	then scroll (0, .id, .firstLineNum, .lastLineNum, .optionalLineHeight)
+	else scroll (0, .id, .firstLineNum, .lastLineNum)
+	end;
+
+global routine vs$$txt_clearLine
+!++
+!
+! Functional description:
+!
+!	Clear all text and field definitions for a line.
+!	Leave a default field, however.
+!
+! Formal parameters:
+ (
+    id,			! id of virtual display whose line is being cleared
+    lineNum		! which line number to clear
+	   ) =
+!--
+
+	begin
+
+	external routine
+
+	    deallocateAllFields,
+	    vs$$txt_clearField;
+
+	local s;
+
+	bind
+	    ! Get line block for this line
+	    linBlk = getLineBlock(.id, .lineNum):line_block;
+
+	! Delete all fields on the line
+	if not (s = deallocateAllFields(linBlk))
+	then return .s;
+
+	! Leave a default field
+	defineDefaultField(.id, .lineNum);
+
+	! Clear the old line from the screen
+	vs$$txt_clearField (.id, .lineNum, 1);
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_removeLines
+!++
+! Functional description:
+!
+!	Remove the specified number of lines from the end of a text block,
+!	updating their removal from the screen.  This is used by callers to
+!	reduce the total number of lines existing in the virtual display,
+!	perhaps in order to then add back lines of a different height.  It is
+!	also used internally during text block expunging.
+!
+!	The number of lines to remove may be specified as 0, which causes all
+!	lines to be removed.  This allows a caller to remove all lines without
+!	having to know how many there are.
+!
+! Formal parameters:
+ (
+	id,		! which virtual display's lines to remove
+	n_or_0		! how many to remove, or 0 to remove all lines
+ ) =
+!--
+
+	begin
+
+	local s;
+
+	bind
+
+	    ! Get text block associated with the given id
+	    txtBlk = getTextBlock (.id) : text_block,
+
+	    ! Get number of lines existing in this text block
+	    nLines = .txtBlk[txt_nLines],
+
+	    ! Get number being removed.
+	    !
+	    n =
+		begin
+		if .n_or_0 neq 0 then .n_or_0
+		else nLines
+		end,
+
+	    ! Calculate first and last line being removed.
+	    !
+	    first_line_num = nLines - n + 1,
+	    last_line_num = nLines;
+
+	! Give error if attempt to remove more lines than exist.
+	!
+	if n gtr nLines
+	then $return_error (vsta$_rmv_2_mny);
+
+	! Clear the lines before removing them, so the screen shows them as
+	! gone.
+	!
+	incr i from first_line_num to last_line_num do
+	if not (s = vs$$txt_clearLine (.id, .i))
+	then return .s;
+
+	! Release lines from text block
+	!
+	if not (s = releaseLinesBetween (txtBlk,
+	    first_line_num - 1, last_line_num + 1))
+	then return .s;
+
+	true
+
+	end;
+
+global routine vs$$txt_addLines
+!++
+! Functional description:
+!
+!	Add lines to end of text block.
+!
+! Formal parameters:
+ (
+    id,			!VD-id
+    quantity,		!How many
+    line_size		!How big
+	 ) =
+!--
+
+	begin
+	local
+	    add_line_size,
+	    s;
+	bind
+!
+! Get text block involved in transaction.
+!
+	    curTextBlock = getTextBlock(.id):text_block;
+
+	if (.line_size NEQ 0)
+	  then add_line_size = .line_size	!Use passed parameter
+	  else add_line_size = .curTextBlock[txt_stdHgt];
+						!Else use std line height
+!
+! If there have been no lines yet, then consider the line height to be
+! "standard height".
+!
+	if .curTextBlock[txt_stdHgt] eql 0
+	then curTextBlock[txt_stdHgt] = .add_line_size;
+!
+! Make sure there is room for the requested lines.  If not, tell caller how
+! much over they are.
+!
+	if .quantity * .add_line_size + .curTextBlock[txt_tot_lin_hit]
+	    gtr .curTextBlock[txt_height]
+	then $return_error (vsta$_lin_no_room, integer_type,
+	    .quantity * .add_line_size + .curTextBlock[txt_tot_lin_hit]
+	    - .curTextBlock[txt_height]);
+!
+! Insert the new lines
+!
+	if not (s = insertLines(
+	    .id,
+	    .quantity,
+	    curTextBlock,
+	    .curTextBlock[txt_nLines],
+	    .add_line_size
+	    ))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+routine scroll
+!++
+! Functional description:
+!
+!	Called from scrollUp and scrollDown to scroll text on screen.
+!
+!	Note: The lastLineNumOrZero arg may be specified as 0, which causes
+!	the last existing line of the display to be assumed.  This makes it
+!	convenient for a caller to scroll all lines from some position through
+!	the end, without having to know how many lines there are.
+!
+! Formal parameters:
+	(
+    upFlag,
+    id,			! which virtual display to scroll
+    firstLineNum,	! first line to scroll
+    lastLineNumOrZero,	! last line to scroll, 0 to default to last line of display
+    optionalLineHeight	! optional height for new line being inserted
+	  ) =
+!
+! Implicit outputs:
+!
+!	Text database gets updated to reflect the scrolling operation.
+!
+!--
+
+	begin
+
+	local s;
+
+	bind
+	    ! Get text block for this display, return error if can't.
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get list of lines for this virtual display
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Get total number of lines existing for this virtual display
+	    nLines = .txtBlk[txt_nLines],
+
+	    ! Get width of lines.
+	    width = .txtBlk[txt_width],
+
+	    ! Calculate last line involved in scroll, which if given as non-0
+	    ! by caller then use that, but if given as 0, assume last line of
+	    ! display.
+	    !
+	    lastlineNum =
+		begin
+		if .lastLineNumOrZero neq 0
+		then .lastLineNumOrZero
+		else nLines
+		end,
+
+	    ! Get height for new line being inserted, which is normally the
+	    ! standard line height for this virtual display.  However,
+	    ! if an optional line height is given, use it.
+	    !
+	    newLineHeight =
+		begin
+		if argumentExists(5)
+		then .optionalLineHeight
+		else .txtBlk[txt_stdHgt]
+		end,
+
+	    ! Get line number of line being deleted.
+	    ! While calculating, give an error if the scroll region is not
+	    ! reasonable.
+	    !
+	    oldLineNum =
+		begin
+		if .firstLineNum lss 1
+		then $return_error (vsta$_scrl_top);
+
+		if lastLineNum lss .firstLineNum
+		then $return_error (vsta$_scrl_bot);
+
+		if lastLineNum gtr nLines
+		then $return_error (vsta$_scrl_botl);
+
+		if .upFlag
+		then .firstLineNum
+		else lastLineNum
+		end,
+	    
+	    ! Get number of line being inserted
+	    newLineNum =
+		begin
+		if .upFlag
+		then lastLineNum
+		else .firstLineNum
+		end,
+
+	    ! Get block for line being deleted
+	    oldLinBlk = .linLst[oldLineNum]:line_block,
+
+	    ! Get height of line being deleted
+	    oldLineHeight = .oldLinBlk[lin_height],
+
+	    ! Get total height of display, which indicates how much room there
+	    ! is for text lines
+	    !
+	    displayHeight = .txtBlk[txt_height],
+!
+! Calculate height of all lines involved.  If ALL lines are involved, read
+! this value from text block instead of calling measure_height.
+!
+	    all_height =
+		begin
+		if .firstLineNum eql 1 and lastLineNum eql nLines
+		then .txtBlk[txt_tot_lin_hit]
+		else measure_height (txtBlk[base], .firstLineNum, lastLineNum)
+		end,
+!
+! Calculate height of scroll region, which is the combined heights
+! of all lines involved minus the height of the line being thrown
+! away.
+!
+	    sr_height = all_height - oldLineHeight,
+!
+! Calculate height of trailer region, which is the combined heights
+! of all lines after the scroll region and the new line.
+!
+	    tr_height =
+		begin
+		if lastLineNum geq nLines
+		then 0
+		else measure_height (txtBlk[base], lastLineNum+1, nLines)
+		end,
+!
+! Calculate header height, which is the height of all lines before
+! the area affected by the scroll.
+!
+	    hd_height =
+		begin
+		if .firstLineNum leq 1
+		then 0
+		else measure_height (txtBlk[base], 1, .firstLineNum-1)
+		end,
+!
+! Calculate total height of lines existing before scroll.
+!
+	    oldTotalHeight = oldLineHeight + sr_height + tr_height,
+!	
+! Calculate distance up the scroll region is to move.
+! For scrolling down, this will be negative.
+! When scrolling up, the distance is the height of the line being thrown
+! away.  When scrolling down, it's the height of the line being added.
+!
+	    sr_up_dis =
+		begin
+		if .upFlag
+		then oldLineHeight
+		else - newLineHeight
+		end,
+
+	    ! Calculate distance up the trailer region must move.  This is
+	    ! 0 if the new line is of the same height as the old.  However,
+	    ! if the new line is different, let's say higher, then the trailer
+	    ! region must be moved down to make room for it, which would be
+	    ! represented by a negative distance.
+	    !
+	    tr_up_dis = oldLineHeight - newLineHeight,
+
+	    ! Calculate location of scroll region, which follows line being
+	    ! deleted if we are scrolling up, and precedes it if we are
+	    ! scrolling down.
+	    !
+	    sr_pos =
+		begin
+		if .upFlag
+		then hd_height + oldLineHeight
+		else hd_height
+		end,
+
+	    ! Calculate location of trailer, which just follows scroll
+	    ! region if we are scrolling up, and which follows scroll region
+	    ! and line being deleted if we are scrolling down.
+	    !
+	    tr_pos =
+		begin
+		if .upFlag
+		then sr_pos + sr_height
+		else sr_pos + sr_height + oldLineHeight
+		end;
+
+	! Give an error if there isn't room for the new line
+	!
+	if oldTotalHeight - oldLineHeight + newLineHeight gtr displayHeight
+	then $return_error (
+	    vsta$_lin_no_room,
+	    integer_type,
+	    oldTotalHeight - oldLineHeight + newLineHeight - displayHeight);
+
+	! Get rid of line being scrolled off
+	!
+	if not (s = releaseLinesBetween(txtBlk, oldLineNum-1, oldLineNum+1))
+	then return .s;
+
+	! Insert new line
+	! Bug here !  If we released old line and fail to insert new one,
+	! a wierd result indeed.
+	!
+	if not (s = insertLines(.id, 1, txtBlk, newLineNum-1, newLineHeight))
+	then return .s;
+!
+! Move scroll region and trailer region.
+! For scrolling down, always move the trailer region before the
+! scroll region to avoid collision.
+! For scrolling up, move the scroll region up before adjusting the
+! trailer region to avoid collision.
+!
+	if .upFlag
+	then
+	    begin
+	    raise_lines (.id, sr_pos, sr_height, sr_up_dis, width);
+	    raise_lines (.id, tr_pos, tr_height, tr_up_dis, width)
+	    end
+	else
+	    begin
+	    raise_lines (.id, tr_pos, tr_height, tr_up_dis, width);
+	    raise_lines (.id, sr_pos, sr_height, sr_up_dis, width)
+	    end;
+!
+! Show new line that was inserted by refreshing it.
+!
+	refreshLines (.id, txtBlk[base], newLineNum, newLineNum);
+!
+! If new total line heights are less than before, remove old excess at bottom.
+!
+	if tr_up_dis gtr 0
+	then
+	    if not (vs$$vds_clear_text (
+		.id,
+		0,				! x
+		.txtBlk[txt_tot_lin_hit],	! y
+		width,				! width
+		tr_up_dis			! height
+	 	))
+	    then return .s;
+!
+! Announce success
+!
+	true
+
+	end;
+
+routine raise_lines
+!++
+!
+! Functional description:
+!
+!	Call the display driver to raise the text in a region.  This
+!	is used for shifting lines during a scroll operation.  It is
+!	called raise_lines instead of scroll_lines or move_lines to
+!	remind the programmer that the distance is expressed as a positive
+!	number for raises, and a negative number for lowerings.
+!
+!	Note that this is called not only for the region of lines being
+!	scrolled, but for the lines beneath them, since if the line being
+!	inserted is of a different height than the one being deleted during
+!	the scroll, the trailer lines must be moved too.
+!
+! Formal parameters:
+ (
+	id,			! which virtual display's lines to move
+	pos,			! vertical start of region to move, measured
+				! from top of virtual display
+	height,			! height of region to move
+	dis,			! distance to raise the region, or negative
+				! distance to drop it.
+	width			! width of region
+ ):novalue =
+!--
+
+	begin
+
+	bind
+
+	    ! Since lines start at left margin of display, x_from and
+	    ! x_to are both 0.
+	    ! Calculate y_from, assuming y increases down the page.
+	    !
+	    y_to = .pos - .dis;
+
+	! Do nothing if distance to move is 0.
+	! This is checked here rather than by our caller merely to avoid
+	! cluttered code at caller's context due to repetive checks.
+	!
+	if .dis eql 0
+	then return;
+
+	! Perform the movement.
+	!
+	vs$$vds_move_text (
+	    .id,	! which virtual display
+	    0,		! where region starts measured from left margin
+	    .pos,	! where regions starts measured from top
+	    .width,	! width of region (entire virtual display)
+	    .height,	! height of region to move
+	    0,		! new distance from left margin
+	    y_to	! new distance from top
+	)
+
+	end;
+
+global routine measure_height
+!++
+! Functional description:
+!
+!	Measure the combined heights of a contiguous set of lines.
+!
+! Formal parameters:
+ (
+	txtBlk : ref text_block,	! which text block's lines to add up
+	first_line,			! first line to add
+	last_line			! last line to add up
+ ) =
+!--
+
+	begin
+
+	bind
+
+	    ! Get list of lines for this display.
+	    linLst = .txtBlk[txt_lines] : vector;
+
+	local tally : initial (0);
+!
+! If we're doing the common case of adding lines 1 through n-1 of an n-line
+! display (as in scrolling a vt100), then rather than adding up everything,
+! merely subtract the height of the last line from the cached total height
+! of all lines.
+!
+	if .first_line eql 1 and .last_line eql .txtBlk[txt_nlines] - 1
+	then return .txtBlk[txt_tot_lin_hit] -
+	    .line_block_str[.linLst[.txtBlk[txt_nlines]], lin_height];
+!
+! Add up heights of lines.
+!
+	incr i from .first_line to .last_line do
+	    tally = .tally + .line_block_str[.linLst[.i], lin_height];
+
+	.tally
+
+	end;
+
+global routine refreshLines
+!++
+! Functional description:
+!
+!	Refresh specified lines on a virtual display.
+!
+! Formal parameters:
+	(
+    id,				! id, which just gets passed along
+    txtBlk:ref text_block,	! which text block's lines to display
+    firstLineNum,		! number of first line to refresh
+    lastLineNum			! number of last one to refresh
+	     ) =
+!
+!--
+	begin
+	bind
+	    ! Get line list for this text block
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! Calculate height of region being refreshed.
+	    !
+	    region_height = measure_height (
+		txtBlk[base], .firstLineNum, .lastLineNum),
+
+	    ! Get width of region being printed.
+	    region_width = .txtBlk[txt_width],
+
+	    ! Calculate distance down from top to region being refreshed.
+	    region_y = measure_height (txtBlk[base], 1, .firstLineNum-1);
+
+	! Clear all old text from region.
+	vs$$vds_clear_text (.id, 0, region_y, region_width, region_height);
+
+	! Loop through all lines.
+	!
+	incr i from .firstLineNum to .lastLineNum do
+	    begin
+	    bind
+		! Get block for this line
+		linBlk = .linLst[.i]:line_block,
+
+		! Get numer of fields defined for this line
+		nFields = .linBlk[lin_nFields],
+
+		! Get list of fields for this line
+		fldLst = .linBlk[lin_fields]:vector;
+
+	    ! Loop through each field on this line.
+	    !
+	    incr j from 1 to nFields do
+		begin
+
+		bind
+		    ! Get block for this field
+		    fldBlk = .fldLst[.j]:field_block,
+
+		    ! Get position of start of this field
+		    fldPos = .fldBlk[fld_pos];
+
+		! Print text in this field but don't clear old field first,
+		! since we've already cleared entire line.
+		!
+		printField (.id,
+			    .txtBlk,
+			    .i,
+			    fldPos,
+			    1,			! start with first char
+			    .fldBlk[fld_nChARS],! print through last
+			    0,			! don't refresh left whitespace
+			    0,			! don't refresh old text
+			    0			! don't refresh right whtspc
+			    )
+
+		end
+	    end
+	end;
+
+global routine find_line_block
+!++
+! Functional description:
+!
+!	Get address of a line block, given an id and a line number.
+!
+! Formal parameters:
+ (
+    id,		! id of display whose line block is sought
+    lineNum,	! line number to get block for
+    lin_blk_adr ! where to write address
+	     ) =
+!
+! Value:
+!
+!	Address of line block or 0.
+!--
+
+	begin
+	bind
+!
+! Get text block for this virtual display, but give error if
+! can't find it.
+!
+	    txtBlk = getTextBlock (.id) : text_block,
+!
+! Get total number of lines defined for this display
+!
+	    nLines = .txtBlk[txt_nLines],
+!
+! Get list of line blocks for this display.
+!
+	    linLst = .txtBlk[txt_lines]:vector;
+!
+! Get line block, but return error if line number out of range.
+!
+	if .lineNum lss 1 or .lineNum gtr nLines
+	then $return_error (vsta$_no_such_line)
+	else .lin_blk_adr = .linLst[.lineNum];
+
+	ss$_normal
+
+	end;
+
+global routine insertLines
+!++
+! Functional description:
+!
+!	Insert new lines with defaults into a text block
+!
+! Formal parameters:
+ (
+	id,			! id for defineField
+	howMany,		! number to insert
+	txtBlk:ref text_block,	! which text block to insert new ones in
+	after,			! which line to put new one after
+	height			! height for new lines
+	   ) =
+!--
+
+	begin
+	bind
+	    ! Get number of lines before addition
+	    oldNlines = .txtBlk[txt_nLines],
+
+	    ! Establish line numbers for beginning and end of block being
+	    ! added.
+	    firstNewLine = .after + 1,
+	    lastNewLine = firstNewLine + .howMany - 1,
+
+	    ! Get width of lines in this text block
+	    width = .txtBlk[txt_width];
+
+	local linLst:ref vector, s;
+
+	! Make room for new elements in list of lines for text block.
+	! Do this first, so that if there's a memory allocation failure,
+	! we haven't updated anything else
+	if not (s = addElements(oldNlines, txtBlk[txt_lines], .after, .howMany))
+	then return .s;
+
+	! Get address of list of lines
+	linLst = .txtBlk[txt_lines];
+
+	! Create a line block for each new line and store the pointer to
+	! the line blocks in the line list.
+	! Initialize to having exactly one field starting at left margin
+	! and spanning entire width of line.
+	! Note that 1 is used as left margin instead of 0, to reserve 0 as
+	! some default mechanism, or to catch errors.
+	!
+	incr i from firstNewLine to lastNewLine do
+	    begin
+	    linLst[.i] = createLineBlock(.height);
+	    txtBlk[txt_nLines] = .txtBlk[txt_nLines] + 1;
+!
+! Account for height of new line.
+!
+	    txtBlk[txt_tot_lin_hit] = .txtBlk[txt_tot_lin_hit] + .height;
+!
+! Create default field for new line.
+!
+	    defineDefaultField(.id, .i)
+	    end;
+
+	! Give success return
+	true
+
+	end;
+
+global routine releaseLinesBetween
+!++
+! Functional description:
+!
+!	Release lines from a text block, such as when they get scrolled.
+!
+! Formal parameters:
+ (
+    txtBlk:ref text_block,	! text block to delete lines from
+    left,			! rank of line to left of first being deleted
+    right			! rank of one to right of last being deleted
+		      ) =
+!--
+
+	begin
+
+	local s;
+
+	bind
+
+	    ! Get address of list of lines
+	    linLst = .txtBlk[txt_lines]:vector,
+
+	    ! get rank of first and last involved.
+	    !
+	    first = .left + 1,	
+	    last = .right - 1,
+
+	    ! Get number of lines in list before reduction
+	    oldCount = .txtBlk[txt_nLines],
+
+	    ! Calculate how many lines will be left after deletion
+	    newCount = max (0, oldCount - last + first - 1);
+!
+! release space allocated for each line block.
+!
+	incr i from first to last do 
+
+	    begin
+!
+! Get address of line block.
+!
+	    bind linBlk = .linLst[.i] : line_block;
+!
+! Reclaim height of line being thrown away.
+!
+	    txtBlk[txt_tot_lin_hit] = .txtBlk[txt_tot_lin_hit] -
+		.linBlk[lin_height];
+!
+! Throw away the line block.
+!
+	    if not (s = deallocateLineBlock(linBlk[base]))
+	    then return .s
+
+	    end;
+!
+! Update number of lines in block to reflect decrease
+!
+	txtBlk[txt_nLines] = newCount;
+
+	! Move lines in list to close gap.
+	! Bug here !  We're in trouble if deleteElements fails even though
+	! we've already called deallocateLineBlock.
+	if not (s = deleteElements(oldCount, txtBlk[txt_lines], first, last))
+	then return .s;
+
+	! Give success return
+	true
+
+	end;
+
+end
+eludom

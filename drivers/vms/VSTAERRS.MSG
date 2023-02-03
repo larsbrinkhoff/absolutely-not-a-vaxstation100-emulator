@@ -1,0 +1,1001 @@
+	.TITLE VSTA$ERRS VAXstation Error Codes
+	.IDENT 'VSTA V1.2-01'
+!
+!		VAXstation software completion codes
+!		-------------------------------------
+!
+!++
+! FACILITY:
+!   VAX WORKSTATION SOFTWARE
+!
+! ABSTRACT:
+!
+!   This module contains all the VSTA error codes which could possibly be
+!   returned from the VSTA software. These codes are divided into sections
+!   by severity, where they occur (library, ACP, etc), and into specific
+!   sections of code (such as native graphics). The facility code was assigned
+!   by VMS and must not be changed.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one
+!   VAXstation system.
+!
+!--
+!
+
+
+! Specify facility prefix and number.
+.FACILITY/SYSTEM/MACRO=$VSTAMSG VSTA, 256
+
+! Entries are of the form
+!
+!	name		<message> [/FAO=n]
+!
+! The generated completion code has the global symbol name "VSTA$_name"
+! (because VSTA is the specified prefix).  If the error message has variable
+! parts to be filled in just after the crime, the /FAO tells how many
+! parameters are to be filled in.
+!
+! To translate VSTA status codes into text from DCL, say
+!	$ SET MESSAGE SYS$MESSAGE:VSTAERRS
+!	$ EXIT vsta_status_value
+!
+! This file is broken down according to subsystems.  Use .PAGE before each
+! subsystem:
+
+! Specify severity-level for internal errors, hardware errors, etc.
+.SEVERITY FATAL
+
+.PAGE
+! Define "stub" error code(s) here AND in VSSTUBERR.MSG. The reason for
+! having to do this is the lack of flexibility provided by the message utility
+! when generating SDL output. Any changes made to these codes or their text
+! must be manually reproduced in the "stub" version as well.
+.BASE	0
+notinstal	<VAXstation Software NOT installed on this system>
+
+! Start numbering at 10 to leave room at beginning for "stub" status codes
+.PAGE
+.BASE	10
+!
+! *** Error for explicitly logging internal VAXstation errors ***
+!
+interrlog	<VAXstation internal error - Logging at !AS>/FAO=1
+
+.PAGE
+
+!
+! *** Errors from vstadrive ***
+!
+crtcopiipfai	<Can't create copy i/o command packet>
+crtdrwiipfai	<Can't create draw i/o command packet>
+crtprniipfai 	<Can't create print i/o command packet>
+noiipmem	<No virtual memory to create iip with>
+
+.PAGE
+!
+! *** Errors from hardware (bad status code from VS100 driver) ***
+!
+undharderror	<Undefined device error !XW > /FAO=1
+nyi		<device function not implemented>
+ifc		<device given illegal function code>
+icc		<device given illegal command code>
+rn		<device receive nxm>
+ro		<device retry overflow>
+le		<device link down>
+buserr		<device command generated Bus error>
+adrerr		<device command generated Address error>
+spurint		<device command generated Spurious interrupt>
+ii		<device given illegal instruction>
+bn		<device received bba nxm>
+nbi		<device has no bba installed>
+koo		<device keyboard output buffer overflow>
+too		<device tablet output buffer overflow>
+itp		<device received invalid tablet packet>
+isrcmb		<device command has invalid source modifier bits>
+isrcbw		<device command has invalid source bitmap width>
+isrcbh		<device command has invalid source bitmap height>
+imskmb		<device command has invalid mask modifier bits>
+imskbw		<device command has invalid mask bitmap width>
+imskbh		<device command has invalid mask bitmap height>
+idstmb		<device command has invalid destination modifier bits>
+idstbw		<device command has invalid destination bitmap width>
+idstbh		<device command has invalid destination bitmap height>
+imapmb		<device command has invalid map modifier bits>
+iclpmb		<device command has invalid clipping modifier bits>
+iclprc		<device command has invalid clipping rectangle count>
+ihtc		<device command has invalid halftone cursor>
+icd		<device command has invalid cursor device>
+ibc		<device command has invalid byte count>
+deqo		<device event queue overflow>
+isrcc		<device command has invalid source constant>
+isrcbd		<device command has invalid source bitmap depth>
+isrcd		<device command has invalid source bitmap dimension>
+imskbd		<device command has invalid mask bitmap depth>
+idstbd		<device command has invalid dst bitmap depth>
+noarea		<device command produced no resultant area>
+imapfc		<device command has invalid map function code>
+zimap		<device command has depth incompatible with map>
+zcimap		<device command depth combination incompatible>
+dc_ipc		<device draw curve command has invalid path count>
+dc_ipsl		<device draw curve command has invalid pattern string length>
+dc_ipsm		<device draw curve command has invalid pattern string multiplier>
+dc_icf		<device draw curve command has invalid closed figure>
+dc_ipsi		<device draw curve command has invalid pattern state information>
+dc_ipsmb	<device draw curve command has invalid pattern string modifier>
+dc_ipmmb	<device draw curve command has invalid pattern mode modifier bits>
+dc_ipsc		<device draw curve command has invalid pattern count>
+dc_issrcbw	<device draw curve command has invalid 2nd source bitmap width>
+dc_issrcbh	<device draw curve command has invalid 2nd source bitmap height>
+dc_issrcbd	<device draw curve command has invalid 2nd source bitmap depth>
+dc_issrcc	<device draw curve command has invalid 2nd source constant>
+dc_idpm		<device draw curve command has incompatible drawing/pattern modes>
+dc_dxo		<device draw curve command caused delta_x overflow>
+dc_dyo		<device draw curve command caused delta_y overflow>
+dc_issrchw	<device draw curve command has invalid 2nd src halftone width>
+dc_issrchh	<device draw curve command has invalid 2nd src halftone height>
+dc_issrchd	<device draw curve command has invalid 2nd src halftone depth>
+pt_icsl		<device print text command has invalid control string length>
+pt_icso		<device print text command has invalid control string opcode>
+pt_icsp		<device print text command has invalid control string parameter>
+pt_itsl		<device print text command has invalid text string length>
+pt_ici		<device print text command has invalid character index>
+pt_tse		<device print text command text string exhausted>
+pt_nfp		<device print text command has no font present>
+pt_isrcfw	<device print text command has invalid source font width>
+pt_isrcfh	<device print text command has invalid source font height>
+pt_isrcfd	<device print text command has invalid source font depth>
+pt_imskfw	<device print text command has invalid mask font width>
+pt_imskfh	<device print text command has invalid mask font height>
+pt_imskfd	<device print text command has invalid mask font depth>
+pt_csmf		<device print text command has conflicting source/mask fonts>
+pt_ilb		<device print text command has invalid left_array bounds>
+pt_ile		<device print text command has invalid left_array element>
+pt_dxo		<device print text command has destination offset_x overflow>
+fa_ibs		<device flood area command has invalid bitmap source>
+fa_tmcr		<device flood area command has too many clipping rectangles>
+fa_spiob	<device flood area command has seed point is on boundary>
+fa_so		<device flood area command generated stack overflow>
+fa_ibmmb	<device command has invalid boundary map modifier bits>
+fp_ibs		<device fill polygon command has invalid bitmap source>
+fp_tmcr		<device fill polygon command has too many clipping rectangles>
+fp_ipc		<device fill polygon command has illegal point count>
+fp_icf		<device fill polygon command has illegal closed figure>
+fp_dxo		<device fill polygon command caused delta_x overflow>
+fp_dyo		<device fill polygon command caused delta_y overflow>
+!
+! General errors for parameters that could be given to a number of different
+! commands.
+!
+isrchw		<device command has invalid src halftone width>
+isrchh		<device command has invalid src halftone height>
+isrchd		<device command has invalid src halftone depth>
+
+
+.PAGE
+
+!	Unrecoverable ACP errors
+!
+acpexcept	<ACP exception condition - See VAXstation error log files for more information>
+maxacperr	<Maximum allowed ACP errors (!UL) exceeded - Aborting operation>/FAO=1
+logerr		<Insufficient dynamic memory to log internal error>
+
+.PAGE
+
+!	Text errors that indicate software bugs:
+!
+not_strng	<Internal text error, block at !XL is not a string_block> /FAO=1
+not_txt		<Internal text error, block at !XL is not a text_block> /FAO=1
+not_line	<Internal text error, block at !XL is not a line_block> /FAO=1
+not_field	<Internal text error, block at !XL is not a field_block> /FAO=1
+bad_dlok8	<Internal text error - memory deallocation failed>
+bad_sdlok	<Internal text error - string deallocation failed>
+fnd_font	<Internal text error - can't find font for string being printed, strBlk = !XL> /FAO=1
+no_hite		<Internal text error - can't find height for existing font>
+nonx_fib	<Internal text error - attempt to dereference nonexistent fib id = !XL> /FAO=1
+ref_0		<Internal text error - fib ref count already 0, fiBlk = !XL> /FAO=1
+dlok_nfib	<Internal text error - attempt to deallocate non-fib, loc = !XL> /FAO=1
+trnct_err	<Internal text error - attempt to truncate entire string>
+
+! Specify default severity-level for error return status codes
+.SEVERITY ERROR
+
+.PAGE
+
+!			*** Errors having to do with packed blocks ***
+!
+too_mny_prs	<Attempt to read more items than exist from packed block>
+too_few_prs	<Attempt to read less items than exist from packed block>
+
+!			*** Text errors ***
+!
+!	Text errors generated by user actions:
+!
+not_a_fld	<No such field>
+ovrlp_fld	<Attempt to define an overlapping field>
+bad_fnt		<Failed to define font from file called !AC> /FAO=1
+no_such_typfac	<No font defined with typeface named !AC> /FAO=1
+no_such_rend	<No font defined with specified rendition>
+mltpl_fnt	<Attempt to multiply-define a font>
+fnt_hite	<Attempt to print with font height of !SL on line height of only !SL> /FAO=2
+bad_character	<Character %O!OL not in font; font's range is %O!OL through %O!OL> /FAO=3
+bad_xtbl	<Font definition failure on file !AC, xtable is out of bounds> /FAO=1
+fnt_mem		<Memory allocation failure during font definition>
+nonx_fnt	<Attempt to delete nonexistent font>
+no_fonts	<Attempt to print text while no fonts defined>
+nonx_sfnt	<Attempt to delete nonexistent system-wide font>
+not_a_fnt	<deallocateFont called with non-font, adr = !XL> /FAO=1
+no_deldis	<Attempt to delete characters from nonexistent virtual display>
+no_delfld	<Attempt to delete characters from nonexistent field>
+nonx_char	<Attempt to delete nonexistent characters from field>
+rmv_2_mny	<Attempt to remove more lines from virtual display than exist>
+scrl_bot	<Invalid last scroll line, must be as great as first>
+scrl_botl	<invalid last scroll line, line does not exist>
+scrl_top	<Invalid first scroll line, must be 1 or greater>
+lin_no_room	<No room on display for requested text line(s), !SL more pixels needed> /FAO = 1
+no_such_line	<No such line>
+no_such_chars	<No such characters>
+mltpl_blk	<Attempt to define text block for virtual display already having one>
+no_txtblk	<No text block for specified virtual display id>
+bad_ff		<Invalid value for field format - !SL> /FAO=1
+ins_no_rm	<No room to insert string of width !SL - !SL in use, total width !SL> /FAO=3
+wrt_no_rm	<No room to write string, field width = !SL, in use = !SL, new string requires !SL> /FAO=3
+
+.PAGE
+
+! *** Errors having to do with pasteboards, virtual displays, and windows ***
+!
+noaccess	<No !AC access to !AC !UL  - Protection violation>/FAO=3
+pbbadsize	<Bad pasteboard size specified, width = !SL, height = !SL>/FAO=2
+nosuchpb	<No such pasteboard>
+badcolor	<Color number !SL out of acceptable range>/FAO=1
+pbwontfit	<Pasteboard !UL won't fit on pasteboard !UL as specified>/FAO=2
+pbnotpasted	<Pasteboard !UL is not pasted on pasteboard !UL>/FAO=2
+multpb		<Multiple occurrence of pasteboard !UL in stacking order>/FAO=1
+pb_unavailable	<Pasteboard !UL is not available for program's use>/FAO=1
+pbnotdel	<Pasteboard !UL not deleted>/FAO=1
+pbnotcr		<Pasteboard not created>
+pbupdfail	<Failure updating pasteboards that pasteboard !UL is pasted on>/FAO=1
+vdbadsize	<Bad virtual display size specified, width = !SL, height = !SL>/FAO=2
+alreadypasted	<Virtual display !UL is already pasted on pasteboard !UL>/FAO=2
+vdwontfit	<Virtual display !UL won't fit on pasteboard !UL as specified>/FAO=2
+vdnotpasted	<Virtual display !UL not pasted or pasteboard !UL does not exist>/FAO=2
+cantpaste	<Can't paste virtual display !UL on pasteboard !UL>/FAO=2
+cantremove	<Can't remove virtual display !UL from pasteboard !UL>/FAO=2
+vdnotdisp	<Virtual display !UL not displayed on pasteboard !UL>/FAO=2
+vdnotmoved	<Virtual display !UL not moved on pasteboard !UL>/FAO=2
+recnotadd	<Rectangle not added to virtual display !UL>/FAO=1
+recnotdel	<Rectangle not removed from virtual display !UL>/FAO=1
+vvrnotadd	<Visible rectangle not added to virtual display !UL>/FAO=1
+vornotadd	<Occluded rectangle not added to virtual display !UL>/FAO=1
+wbadsize	<Bad window size specified, width = !SL (max = !UL) and height = !SL (max = !UL)>/FAO=4
+wnambig		<Window name too long (max = !UL)> /FAO=1
+nosuchw		<No such window>
+wnotowned	<Not owner of window !UL>/FAO=1
+wwontfit	<Window won't fit on pasteboard !UL as specified>/FAO=1
+w2small		<Window is too small, header requires !UL more pixels> /FAO=1
+wnotcr		<Window not created>
+twnotcr		<Terminal window not created>
+wbnotcr		<Window block creation failure>
+wrecfail	<Window rectangle list initialization failure>
+wsetfail	<Failure setting window !UL characteristics>/FAO=1
+wnotdel		<Window !UL not deleted>/FAO=1
+wrecnotadd	<Rectangle not added to window !UL>/FAO=1
+wrecnotdel	<Rectangle not removed from window !UL>/FAO=1
+wmapfail	<Failure mapping window !UL to viewport !UL>/FAO=2
+wnotmoved	<Window !UL not moved on pasteboard !UL>/FAO=2
+
+.PAGE
+! *** Errors having to do with Virtual Screens, VP's and PS's ***
+!
+.SEVERITY FATAL
+cant_recover	<Fatal internal error: Could not clean up after an error.>
+.SEVERITY ERROR
+!
+nosuchvs	<No such Virtual Screen>
+no_vs		<Could not find VS>
+nosuchvsvp	<Internal error: No such VS_VP block.>
+nosuchvsps	<Internal error: No such VS_PS block.>
+vsnotcre	<Could not create Virtual Screen>
+vsnotdel	<Could not delete Virtual Screen>
+vdnotdispvs	<Could not display VD in VS>
+!
+nosuchvp	<No such Viewport>
+vpnotcre	<Could not create Viewport>
+cant_paint_vp	<Could not paint VP background>
+cant_do_occ	<Could not perform VP occlusion test and update.>
+vpnotdel	<Could not delete Viewport>
+cant_zero_vp	<Could not zero Viewport>
+no_target_vp	<Internal error: target VP was not found.>
+no_target_vsvp	<Internal error: target VP's VS_VP BLOCK was not found.>
+no_vp		<Could not find VP>
+no_vsvp		<Internal error: VP's VS_VP block was not found.>
+cant_tell_vds	<Could not notify the VDS that a VP will be deleted>
+vdnotdispvp	<Could not display VD in VP>
+cantgetwchar	<Could not get window characteristics>
+cantgetpbchar	<Could not get pasteboard characteristics>
+cant_map_win	<Could not map window to VP>
+!
+nosuchps	<No such Physical Screen>
+cant_find_ps	<Could not find PS>
+psnotcre	<Could not create Physical Screen>
+psnotdel	<Could not delete Physical Screen>
+vdnotdispps <Could not display vd in ps>
+
+.PAGE
+
+! *** Errors having to do with the VAXstation Library ***
+!
+obsolete	<Attempt to call obsolete VAXstation procedure, pc = !XL> /FAO = 1
+badpar		<Parameter !AC with value: !UL not in allowable range>/FAO=2
+badaln		<!AC buffer must be word aligned>/FAO=1
+badparam	<Parameter number !UL not in allowable range>/FAO=1
+insfarg		<Insufficient number of parameters specified>
+undchan		<Channel not assigned to known VAXstation device>
+badprnmsk	<Mask font not allowed with source font>
+ivtty		<Invalid terminal type for specified operation>
+notvt100	<Device is not a VT100>
+nottek4014	<Device is not a TEK4014>
+notnative	<Device is not a Virtual Display>
+noselect	<No Virtual Display has been selected>
+typnamlng	<Typeface name too long>
+
+! *** Top-level error status codes returned to application programs
+!
+!
+vstaerr		<Vaxstation internal operation failed.>
+cglerr		<CGL call failed.>
+noseldisp	<CGL call aborted.  No Virtual Display has been selected.>
+addlin		<Add lines failed.>
+apptxt		<Append text failed.>
+canrea		<Cancel read failed.>
+chgbas		<Change baseline failed.>
+chgren		<Change rendition failed.>
+chgtxb		<Change text background color number failed.>
+chgtxc		<Change text color number failed.>
+chgtyf		<Change typeface failed.>
+chgtys		<Change typesize failed.>
+clrfld		<Clear field failed.>
+clrbeg		<Clear from beginning of field failed.>
+clrlin		<Clear line failed.>
+clrend		<Clear to end of field failed.>
+credis		<Create display failed.>
+cremnu		<Create menu failed.>
+crepbd		<Create pasteboard failed.>
+cretek		<Create TEK4014 failed.>
+cretab		<Create terminal datapad failed.>
+crevt1		<Create VT100 failed.>
+crewin		<Create window failed.>
+crevie		<Create viewport failed.>
+deffld		<Define field failed.>
+deffnt		<Define font failed.>
+defreg		<Define region failed.>
+defsyf		<Define system font failed.>
+delall		<Delete all regions failed.>
+delchr		<Delete characters failed.>
+deldis		<Delete display failed.>
+delfld		<Delete field failed.>
+delfnt		<Delete font failed.>
+dellin		<Delete line failed.>
+delpbd		<Delete pasteboard failed.>
+delreg		<Delete region failed.>
+delsyf		<Delete system font failed.>
+deltek		<Delete TEK4014 failed.>
+deltab		<Delete terminal datapad failed.>
+delvt1		<Delete VT100 failed.>
+delwin		<Delete window failed.>
+delvie		<Delete viewport failed.>
+getdis		<Get display characteristics failed.>
+geterr		<Get error block failed.>
+getmos		<Get mouse information failed.>
+getpbd		<Get pasteboard characteristics failed.>
+gettab		<Get datapad information failed.>
+gettek		<Get TEK4014 characteristics failed.>
+getkey		<Get virtual keyboard mode failed.>
+getwin		<Get window characteristics failed.>
+inslin		<Insert line failed.>
+instxt		<Insert text failed.>
+meatxt		<Measure text failed.>
+movdis		<Move display failed.>
+movtop		<Move display to top failed.>
+movwin		<Move window failed.>
+pasdis		<Paste display failed.>
+paspbd		<Paste pasteboard failed.>
+reakey		<Read virtual keyboard failed.>
+remdis		<Remove display failed.>
+remlin		<Remove lines failed.>
+rempbd		<Remove pasteboard failed.>
+scldwn		<Scroll down failed.>
+sclup		<Scroll up failed.>
+seldis		<Select display failed.>
+setbas		<Set baseline failed.>
+setdsc		<Set display color number failed.>
+setdsp		<Set display protection failed.>
+seterr		<Set error messages failed.>
+setfmt		<Set field format failed.>
+setmso		<Set mouse boundary AST failed.>
+setmsu		<Set mouse button AST failed.>
+setmsm		<Set mouse move AST failed.>
+setpbc		<Set pasteboard color number failed.>
+setpbp		<Set pasteboard protection failed.>
+setreg		<Set region selectable failed.>
+setren		<Set rendition failed.>
+settbu		<Set datapad button AST failed.>
+settbp		<Set datapad pointer move AST failed.>
+settek		<Set TEK4014 characteristics failed.>
+settxb		<Set text background color number failed.>
+settxc		<Set text color number failed.>
+settyf		<Set typeface failed.>
+settys		<Set typesize failed.>
+setkey		<Set virtual keyboard characteristics failed.>
+setkem		<Set virtual keyboard mode failed.>
+setket		<Set virtual keyboard translation failed.>
+setwin		<Set window characteristics failed.>
+wrttxt		<Write text failed.>
+accerr		<VAXstation hardware or software access error.>
+getcnv		<Get conversion units failed.>
+getsel		<Get selected display failed.>
+reagph		<Read graphics failed.>
+wrtgph		<Write graphics failed.>
+cpyare		<Copy area failed.>
+drwcrv		<Draw curve failed.>
+pritxt		<Print text failed.>
+filare		<Fill area failed.>
+floare		<Flood area failed.>
+
+.PAGE
+!
+! *** Errors generated from the native graphics interface  via vaxstation lib.
+!
+noschfuncode	<no such function code>
+naiwritefai	<write to native graphics failed>
+noparams	<null parameter list>
+tofewpars	<too few parameters in list>
+naicpyfai	<native graphics copy area dispatch routine failed>
+naidrwfai	<native graphics draw curve dispatch routine failed>
+naiprnfai	<native graphics print text dispatch routine failed>
+naiflofai	<native graphics flood area dispatch routine failed>
+
+.PAGE
+!
+! *** Errors generated from the virtual display services.
+!
+nosuchvd	<No such virtual display>
+nosuchtty	<No such virtual terminal device>
+cntdispvd	<can't display virtual display operation>
+cntdisfldvd	<Can't display flood vd operation>
+cntdisresvd	<Can't display restore vd operation>
+cntfindvdtofld	<Can't find vd to flood>
+cntfindvdtores	<Can't find vd to restore>
+odrvcrfai	<Output driver data base creation failure>
+novdemul	<No terminal emulator for VD!AC!UL with device type = !UL>/FAO=3
+
+.PAGE
+!
+! *** Errors from the error block module
+!
+nosucheb	<No error block exists for process with PID = !XL>/FAO=1
+
+.PAGE
+!
+! *** tektronix error codes
+!
+cntallotkdt	<can't allocate tek4014 data table>
+cntquetkdt	<can't queue tek4014 data table>
+cntcretkbdyvd	<can't create tek4014 body virtual display>
+cntcretkbzl	<can't create tek4014 bezel virtual display>
+cntcretkftrvd	<can't create tek4014 footer virtual display>
+cntcretkstapb	<can't create tek4014 stage pasteboard>
+cntcretkbdypb	<can't create tek4014 body pasteboard>
+cntcretkftrpb	<can't create tek4014 footer pasteboard>
+cntcretkw	<can't create tek4014 window>
+cntcretkterm	<can't create tek4014 terminal job>
+cntpsttkbdyvd 	<can't paste tek4014 body vd>
+cntpsttkftrvd 	<can't paste tek4014 footer vd>
+cntpsttkbzlvd 	<can't paste tek4014 bezel vd>
+cntcretkgid	<can't create tek4014 gidis block>
+cntinittk	<can't initialize tek4014>
+cntcretkftr	<can't create tek4014 footer>
+cntpsttkbdypb 	<can't paste tek4014 body pasteboard>
+cntpsttkftrpb 	<can't paste tek4014 footer pasteboard>
+cntsettkvkb	<can't set tek4014 virtual keyboard echo routine>
+nosuchtk	<no such tek4014>
+tkwriteerror	<error in tek4014 write to gidis>
+cntrestkcur	<can't restore tek4014 cursor>
+cntdistkcur	<can't display tek4014 cursor>
+cntstrtkcurtmr	<can't start tek4014 blinking cursor timer>
+tksetchafai	<attempt to set tek4014 characteristics failed>
+tkgetchafai	<attempt to get tek4014 characteristics failed>
+
+
+.PAGE
+!
+! *** vt100 error codes
+!
+vtcurnocan			<attempt to cancel VT100 cursor failed>
+vtcurnostart			<attempt to start VT100 cursor failed>
+vtsetcharfai			<attempt to set VT100 characteristics failed>
+vtgetcharfai			<attempt to get VT100 characteristics failed>
+cntallovtdt			<Can't allocate vt100 data table>
+vtcntcrebdyvd			<Can't create vt100 body virtual display>
+vtcntcrebzl			<Can't create vt100 bezel>
+vtcntcretxblk			<Can't create vt100 text block>
+cntdefvtb			<Can't define vt100 bottom font>
+cntdefvtt			<Can't define vt100 top font>
+cntdefvtd			<Can't define vt100 double width font>
+cntdefvtbb			<Can't define vt100 bottom bold font>
+cntdefvttb			<Can't define vt100 top bold font>
+cntdefvtdb			<Can't define vt100 double width bold font>
+cntsetvtwc			<Can't set vt100 writing color>
+cntsetvtbc			<Can't set vt100 background color>
+cntchgvtwc			<Can't change vt100 writing color>
+cntchgvtbc			<Can't change vt100 background color>
+cntcrevtpb			<Can't create vt100 pasteboard>
+cntcrevtw			<Can't create vt100 window>
+cntcrevtterm			<Can't create vt100 terminal job>
+cntpstvtbzlvd			<Can't paste vt100 bezel vd>
+cntpstvtbdyvd			<Can't paste vt100 bocy vd>
+cnterasevt			<Can't erase vt100>
+cntcrevtfoot			<Can't create vt100 footer>
+cntstartvtcur			<Can't start vt100 blinking cursor>
+cntstopvtcur			<Can't stop vt100 blinking cursor>
+cntsetvtvkb			<Can't set vt100 vkb process>
+nosuchvt			<No such vt100>
+cntdelvtpb			<Can't delete vt100 pasteboard>
+cntdelvtbdyvd			<Can't delete vt100 body virtual display>
+cntdelvtbzlvd			<Can't delete vt100 bezel virtual display>
+cntdeallvtdt			<Can't deallocate vt100 data table>
+cntdisvtvd			<Can't disable vt100 virtual display>
+cntenavtvd			<Can't enable vt100 virtual display>
+cntsetvtvdchrs			<Can't set vt100 virtual display characteristics>
+cntdelvtchars			<Can't delete vt100 characters>
+cntappvttxt			<Can't append vt100 text>
+cntscruvt			<Can't scroll up vt100 text>
+cntscrdvt			<Can't scroll down vt100 text>
+cntsetvttf			<Can't set vt100 typeface>
+cntchgvttf			<Can't change vt100 typeface>
+cntwrivttx			<Can't write vt100 text>
+cntinsvttx			<Can't insert vt100 text>
+cntsetvtrend			<Can't set vt100 rendition>
+cnterasevtchrs			<Can't erase vt100 characters>
+cntclearvttx			<Can't clear vt100 text>
+cntinvvtscreen			<Can't invert vt100 screen>
+cntcrevtftrvd			<Can't create vt100 footer virtual display>
+cntdelvtftrvd			<Can't delete vt100 footer virtual display>
+cntresvttxt			<Can't restore vt100 text>
+cntinvvtcur			<Can't invert vt100 cursor>
+
+.PAGE
+
+! *** Mouse server errors
+!
+bldmrbfail	<Mouse I/O request block build failure - Insufficient resources>
+
+.PAGE
+
+! *** Errors having to do with virtual data pads ***
+!
+nocrttytb	<Unable to create virtual datapad for terminal>
+nodlttytb	<Unable to delete virtual datapad on terminal>
+nosuchvtb	<No such virtual datapad>
+vtbalralloc	<Virtual datapad already exists for this pasteboard>
+vtbnotcre	<Virtual datapad creation failure - Insufficient resources>
+notvtbown	<Requesting process does not own this virtual datapad>
+bldrbfail	<Virtual datapad I/O request block build failure - Insufficient resources>
+geteffail	<Event flag allocation failure - Unable to receive datapad ASTs>
+vtbactfail	<Virtual datapad activation failure>
+
+.PAGE
+
+! *** Errors having to do with virtual keyboards ***
+!
+nosuchvkb	<No such virtual keyboard>
+nosuchvtt	<No such virtual keyboard translation table>
+vkbalralloc	<Virtual keyboard already exists for this pasteboard>
+vkbrdactv	<Read already active on this virtual keyboard - Read disallowed>
+vkbnotcre	<Virtual keyboard not created>
+nopoolforrb	<No non-paged pool available for virtual keyboard ring buffer>
+
+.PAGE
+
+!
+! *** Errors for the  vds text services ***
+!
+cntcretxdb	<Can't create data buffer for text>
+cntdeltxdb	<Can't delete data buffer containing text>
+cntdistxvd	<Can't perform text operation on virtual display>
+deltxtdbfrfai	<Can't delete data buffer containing text>
+
+.PAGE
+!
+! *** Errors from the data buffering services ***
+!
+cntalodb	<Can't get data buffer memory>
+cntdalodb	<Can't free data buffer memory>
+cntalodbvm	<Can't allocate virtual memory for data buffer>
+dbfrrtl		<Data buffer request to large>
+dbfrnsc		<No Such data buffer class>
+
+
+.PAGE
+!
+! *** Errors having to do with ACP initialization ***
+!
+exithndlr_fail	<Failed to establish EXIT-HANDLER>
+trnlog_fail	<Failed to translate logical name !AC> /FAO=1
+name_fail	<Failed to create required ACP device names>
+lock_fail	<Failed to lock memory from VA !XL to VA !XL> /FAO=2
+jpi_fail	<Failed to find the ACP's PID or UIC>
+startup_fail	<Failure in STARTUP routine>
+chan_fail	<Failed to create channels to the VAXstation devices>
+hi_init_fail	<Failed to initialize the human interface>
+srchdv_fail	<Failed to find the UCB for device !AC> /FAO=1
+AQB_fail	<Failed to allocate !SL bytes of non-paged pool for an AQB> /FAO=1
+VCB_fail	<Failed to allocate !SL bytes of non-paged pool for a VCB> /FAO=2
+ass_fail	<Failed to assign channel to device !AC> /FAO=1
+no_DDB		<Failed to find enough Device Data Blocks of VAXstation devices>
+no_UCB_slot	<Tried to create !UL th UCB while maximum is !UL> /FAO=2
+UCB_fail	<Failed to create a UCB for VD # !UL> /FAO=1
+no_UCB		<Failed to find a UCB at address !XL> /FAO=1
+UCB_X_fail	<Failed to delete the UCB at address !XL> /FAO=1
+no_IRP		<DONE_IO was called with an IRP at address !XL> /FAO=1
+INT_X_fail	<Failed to delete the INT at address !XL> /FAO=1
+IRP_XX_fail	<Failed to delete the IRP at address !XL> /FAO=1
+INT_Q_fail	<Failed to create and enqueue an INT from dummy routine POST_AST_REQUEST>
+BADFONDEF	<Bad FONTSDEF.TXT record #!SL - !AC> /FAO=2
+DEFSYSWFAI	<Define of system-wide font failed, FONTSDEF.TXT record #!SL> /FAO=1
+DEFPTRFNT	<Can't define the POINTERS font>
+.page
+!
+! Menu errors
+!
+mnu_bdr_no_fit  <Insufficient static storage for menu border graphics>
+mnu_no_vd	<Failed to create virtual display for menu>
+mnu_addlin_fld	<Failed to add text line to menu>
+mnu_delfld_fld	<Failed to delete default field for menu>
+mnu_deffld_fld	<Failed to define field for menu>
+mnu_setclr_fld	<Failed to set text background color for menu>
+mnu_cntfnd_bfs	<Can't find internal menu communication buffer>
+mnu_mem_fld	<Couldn't allocate !UL bytes for internal menu buffer> /FAO=1
+mnu_badint_buf	<Invalid format for menu communication buffer>
+mnu_bad_itmlst	<Failed to convert internal menu item list>
+mnu_bad_title	<Failed to convert internal menu title>
+mnu_noend_seen	<No 'end section' seen on menu internal buffer>
+mnu_bad_ttllen	<Invalid title section length in menu communication buffer>
+mnu_bad_lstlen	<Invalid item section length in menu communication buffer>
+mnu_fldfmt_fld	<Failed to set field format during menu creation>
+mnu_msrtxt_fld	<Failed to measure text during menu creation>
+mnu_settyp_fld	<Failed to set typeface during menu creation>
+mnu_setsiz_fld	<Failed to set typesize during menu creation>
+mnu_setren_fld	<Failed to set rendition during menu creation>
+mnu_setbas_fld	<Failed to set baseline during menu creation>
+mnu_wrtttl_fld	<Failed to write title at top of menu>
+mnu_wrtitm_fld	<Failed to write item on menu>
+mnu_wrtcnr_fld	<Failed to write rounded corners on menu>
+mnu_defrgn_fld	<Failed to define region on menu item>
+.page
+!
+! Region errors
+!
+BAD_RGN_DIM	<Region size of !UL x !UL or origin of (!UL, !UL) invalid - size must be positive and origin must be non-negative> /FAO=4
+cant_del_rgns	<Failed to delete all regions on vd # !UL> /FAO=1
+rgn_not_del	<Failed to delete region at (!UL, !UL)> /FAO=2
+rgn_not_fnd	<Failed to find region at (!UL, !UL)> /FAO=2
+rgn_not_sel	<Failed to set region at (!UL, !UL) to be selectable> /FAO=2
+cnt_fnd_selrgn	<Failed to find region to set selectable at (!UL, !UL)> /FAO=2
+rgn_no_alloc	<Failed to allocate internal memory for region>
+rgn_no_fit	<Region at (!UL, !UL) with dimensions !UL x !UL won't fit> /FAO=4
+rgn_overlap	<Region at (!UL, !UL) with dimensions !UL x !UL overlaps existing region> /FAO=4
+bad_sel_att	<Invalid value for selectable attribute - !SL> /FAO=1
+
+.PAGE
+!
+! Errors regarding terminal settings.
+!
+badstngidx	<Attempt to set unknown terminal attribute = !XL> /FAO=1
+getjunk		<Can't get settings for vd_id = !XL, unknown type = !XL> /FAO=2
+setjunk		<Can't change settings for vd_id = !XL, unknown type = !XL> /FAO=2
+id_2_large	<Vd id !XL too large to fit in a word> /FAO=1
+.PAGE
+!
+! Errors having to do with ACP Dispatching of function requests
+!
+no_help		<Internal help context missing, ps = !XL, vp = !XL, pb = !XL, vd = !XL, rgn = !XL> /FAO=4
+no_iip_count	<The IRP's IIP count couldn't be offset>
+expreg_fail	<$EXPREG failed to provide a contiguous block of VM>
+expreg_insuf	<$EXPREG provided fewer VM pages than were requested>
+dio_unmapped	<$CRMPSC failed to map a page necessary for Direct I/O>
+no_ldata	<Failed to copy Data Block into local memory>
+dio_fail	<Failed to accomplish memory mapping for Direct I/O>
+no_vkb_access	<Cannot access VKB # !UL> /FAO=1
+vkb_read_fail	<Read from Virtual Keyboard !UL failed> /FAO=1
+!
+vt100_fail	<Failed to create a VT100 terminal>
+tk4014_fail	<Failed to create a Tektronix 4014 terminal>
+genem_fail	<Failed to create a Generic (Native) Display>
+bad_emul	<Unrecognized emulator type !XL> /FAO=1
+pb_create_fail	<Failed to create a PasteBoard>
+w_create_fail	<Failed to create a Window>
+vp_create_fail	<Failed to create a ViewPort>
+vs_create_fail	<Failed to create a Virtual Screen>
+ps_create_fail	<Failed to create a Physical Screen>
+bad_create	<Unrecognized CREATE modifier: !XL> /FAO=1
+badegg		<Troublemaker process (PID = !XL) on VAXstation !AC>/FAO=2
+!
+vt100_x_fail	<Failed to delete VT100 terminal ID # !XL> /FAO=1
+tk4014_x_fail	<Failed to delete Tektronix 4014 terminal ID # !XL> /FAO=1
+genem_x_fail	<Failed to delete Generic (Native) terminal ID # !XL> /FAO=1
+PB_x_fail	<Failed to delete Pasteboard ID # !XL> /FAO=1
+W_x_fail	<Failed to delete Window ID # !XL> /FAO=1
+VP_x_fail	<Failed to delete ViewPort ID # !XL> /FAO=1
+VS_x_fail	<Failed to delete Virtual Screen ID # !XL> /FAO=1
+PS_x_fail	<Failed to delete Physical Screen ID # !XL> /FAO=1
+bad_delete	<Unrecognized DELETE modifier: !XL> /FAO=1
+!
+VD_acc_fail	<Failed to access VT100 # !UL> /FAO=1
+PB_acc_fail	<Failed to access Pasteboard # !UL> /FAO=1
+no_PB_access	<Can't access input devices on PB # !UL> /FAO=1
+W_acc_fail	<Failed to access Window # !UL> /FAO=1
+VP_acc_fail	<Failed to access ViewPort # !UL> /FAO=1
+VS_acc_fail	<Failed to access Virtual Screen # !UL> /FAO=1
+PS_acc_fail	<Failed to access Physical Screen # !UL> /FAO=1
+VKB_acc_fail	<Failed to access Virtual Keyboard # !UL> /FAO=1
+GID_acc_fail	<Failed to access GIDIS information from VD # !UL> /FAO=1
+bad_access	<Unrecognized ACCESS modifier: !XL> /FAO=1
+!
+VD_mod_fail	<Failed to modify Generic (Native) device # !UL> /FAO=1
+PB_mod_fail	<Failed to modify Pasteboard # !UL> /FAO=1
+W_mod_fail	<Failed to modify Window # !UL> /FAO=1
+VS_mod_fail	<Failed to modify Virtual Screen # !UL> /FAO=1
+VKB_mod_fail	<Failed to modify Virtual Keyboard # !UL> /FAO=1
+TRTBL_mod_fail	<Failed to modify Translation Table for VKB # !UL> /FAO=1
+bad_modify	<Unrecognized MODIFY modifier: !XL> /FAO=1
+!
+PB_to_PB_fail	<Failed to paste Pasteboard # !UL to Pasteboard # !UL> /FAO=2
+PB_frm_PB_fail	<Failed to unpaste Pasteboard # !UL from Pasteboard # !UL> /FAO=2
+W_in_PB_fail	<Failed to move Window # !UL within its Pasteboard # !UL> /FAO=2
+VP_in_VS_fail	<Failed to move ViewPort # !UL within its Virtual Screen > /FAO=1
+PS_in_VS_fail	<Failed to move Physical Screen # !UL within its Virtual Screen > /FAO=1
+pop_VP_fail	<Failed to pop ViewPort # !UL to top of its Virtual Screen> /FAO=1
+bad_move	<Unrecognized MOVE modifier: !XL> /FAO=1
+bad_move_vp	<Unrecognized MOVE VP modifier: !XL> /FAO=1
+!
+VKB_actv_fail	<Failed to activate Virtual Keyboard # !UL>/ FAO=1
+VTB_actv_fail	<Failed to activate Virtual datapad # !UL>/ FAO=1
+VKB_dactv_fail	<Failed to deactivate Virtual Keyboard # !UL>/ FAO=1
+VTB_dactv_fail	<Failed to dactivate Virtual datapad # !UL>/ FAO=1
+bad_activate	<Unrecognized ACTIVATE modifier: !XL> /FAO=1
+bad_deactivate	<Unrecognized DEACTIVATE modifier: !XL> /FAO=1
+!
+irp_x_fail	<Failed to delete RUNDOWN IRP>
+VD_rndwn_fail	<Failed in RUNDOWN to delete temporary VD # !UL from process PID # !XL> /FAO=2
+PB_rndwn_fail	<Failed in RUNDOWN to delete temporary PBs from process PID # !XL> /FAO=1
+!
+bad_mouse	<Unrecognized mouse-AST function code: !XL> /FAO=1
+bad_button	<Unrecognized Button-AST function code: !XL> /FAO=1
+bad_boundary	<Unrecognized Boundary-AST function code: !XL> /FAO=1
+bad_ptr		<Unrecognized Pointer-info-AST function code: !XL> /FAO=1
+!
+int_q_fail_d	<Failed to create and enqueue an INT from dummy routine VS$$POST_AST_REQUEST>
+cre_acc		<No create access; process not created on the VAXstation>
+
+!
+! Errors that get put into the user's error block by ACPDSPCH if
+! a bug or system resources error causes the function to fail.
+!
+sysres		<System resources exhausted>
+bug		<Internal software bug, call your software specialist>
+
+!
+! "sysres" errors
+!
+badfrevm	<Internal free_vm error, len = !XL, blk = !XL, hdrlen = !XL, trlrlen = !XL> /FAO=4
+getmem		<Failed to get !UL bytes of memory for !AC> /FAO=2
+
+!
+! Errors that get logged by the human interface but application
+! programs do not get these errors in the error block.
+!
+.SEVERITY SUCCESS
+linkast		<Received "link ast" - VB device was turned off>
+.SEVERITY ERROR
+
+asctim		<$asctim system service failed>
+ass_dev		<$assign system service failed for device !AC> /FAO=1
+dassgn		<$dassgn system service failed for device !AC> /FAO=1
+libgetef	<lib$get_ef call failed for get efn for !AC> /FAO=1
+getdvi		<$getdvi system service failed for device !AC> /FAO=1
+crembx		<$crembx system service failed to create mailbox for !AC> /FAO=1
+qio		<$qio system service failed trying to !AC !AC> /FAO=2
+qio_bad_iosb	<$qio system service returned bad IOSB trying to !AC, status = %X!XW> /FAO=2
+bintim		<$bintim system service failed>
+setimr		<$setimr system service failed>
+fao		<$fao system service failed>
+getjpi		<$getjpi system service failed>
+creprc		<Unexpected status code returned from $creprc system service>
+delprc		<$delprc system service failed>
+stases		<Couldn't start workstation session>
+setdefvkb	<Couldn't set default VKB>
+actvkb		<Couldn't "activate" a virtual keyboard>
+deactvkb	<Couldn't "deactivate" a virtual keyboard>
+actpad		<Couldn't "activate" a virtual data pad>
+deactpad	<Couldn't "deactivate" a virtual tablet>
+kbd_ind_off	<Can't turn off KBD indicator in header>
+kbd_ind_on	<Can't turn on KBD indicator in header>
+pad_ind_off	<Can't turn off PAD indicator in header>
+pad_ind_on	<Can't turn on PAD indicator in header>
+hold_ind_off	<Can't turn off HOLD indicator in header>
+hold_ind_on	<Can't turn on HOLD indicator in header>
+
+rea_def_vkb	<Error reading from default virtual keyboard>
+iniaftaut	<Couldn't initialize after authorization>
+ini_foot	<Initialization of FOOT module failed>
+ini_form	<Initialization of FORM module failed>
+inidmm		<Initialization of display memory management failed>
+initek		<Initialization of TEK module failed>
+ini_notice	<Initialization of NOTICE module failed>
+ini_symb	<Initialization of SYMB module failed>
+ini_drive	<Can't initialize the VSTADRIVE module>
+set_fo_exit	<Can't set fiber-off-when-exit action>
+light_on	<Can't turn fiber light on>
+powerup		<Can't "power up" the VB>
+exit_idle	<Can't set up AST for "exit idle">
+.SEVERITY WARNING
+vbdevunk	<Unknown device type returned by VBDRIVER; assuming VS100>
+.SEVERITY ERROR
+open_mic	<Error opening microcode file !AC> /FAO=1
+read_mic	<Error reading microcode file !AC> /FAO=1
+mic_chksum	<Checksum error in microcode file>
+inv_mic_not_s	<Invalid microcode record; "S" record was expected>
+inv_mic_s	<Invalid microcode "S" record>
+movdisp		<Can't "move to display memory">
+startm		<Can't start the microcode>
+
+open_fnts	<Error opening fonts definition file !AC> /FAO=1
+conn_fnts	<Error in $connect to fonts definition file !AC> /FAO=1
+
+symb_appear	<Can't make the symbol bar appear>
+notice		<Error with NOTICES document>
+authapp		<Can't make the authorization form appear>
+delauthmsg	<Can't delete message from authorization form>
+noauthrmecho	<No room to echo characters on authorization form>
+put_up_auth	<Can't put up the authorization form>
+takdown_auth	<Error taking down the authorization form>
+wrtauthvd	<Error writing the authorization form VD>
+repautherr	<Error trying to put a message in the authorization form>
+sitenamtrun	<Site name truncated on authorization form>
+kwdnotfnd	<Keyword "!AC" not found in HELP document> /FAO=1
+help2long	<Keyword "!AC" contains more than !SL characters> /FAO=2
+open_syssite	<Error opening system site profile file !AC> /FAO=1
+conn_syssite	<Error from $connect to system site profile file !AC> /FAO=1
+close_syssite	<Error from $close of system site profile file !AC> /FAO=1
+uprof_setup	<Error from setup to read user's profile>
+open_uprof	<Error opening user profile file !AC> /FAO=1
+conn_uprof	<Error from $connect to user profile file !AC> /FAO=1
+close_uprof	<Error from $close of user profile file !AC> /FAO=1
+lock_timout	<File !AC was locked too long - open for I/O attempt aborted>
+open_trp	<Error opening profile username translation file !AC> /FAO=1
+cre_trp		<Can't $create profile username translation file !AC> /FAO=1
+.SEVERITY WARNING
+crenew_trp	<Creating new profile username translation file>
+.SEVERITY ERROR
+close_trp	<Error from $close of username translation file !AC> /FAO=1
+conn_trp	<Error from $connect of username translation file !AC> /FAO=1
+openrw_trp	<Error $open'ing profile username translation file !AC for updating> /FAO=1
+reamax_trp	<Can't read "max" record from profile username translation file !AC> /FAO=1
+wrtmax_trp	<Can't write "max" record in profile username translation file !AC> /FAO=1
+find_trp	<Can't $find record just put into profile username translation file !AC> /FAO=1
+updmax_trp	<Can't $update "max" record in profile username translation file !AC> /FAO=1
+put_trp		<Can't add record to profile username translation file !AC> /FAO=1
+rea_prfline	<Error reading profile record>
+miskwd_prf	<Missing keyword in profile record>
+miseql_prf	<Missing "=" after profile keyword !AC> /FAO=1
+eqlreq_prf	<"=" required after keyword !AC in profile> /FAO=1
+kwdval_prf	<Value required for keyword !AC in profile> /FAO=1
+unkkwd_prf	<Unknown keyword !AC in profile> /FAO=1
+invkwdval_prf	<Invalid keyword value for !AC in profile> /FAO=1
+badquo_prf	<Bad quoted string in profile>
+prfitm_trunc	<Profile item too long, truncated>
+badnum_prf	<Bad number specified in profile value>
+lssmin_prf	<Numeric value in profile [!SL] is less than minimum allowed [!SL]>
+gtrmax_prf	<Numeric value in profile [!SL] is greater than maximum allowed [!SL]>
+creusrprf	<Can't create new copy of user profile>
+put_uprof	<Can't write record in user profile>
+
+cvt_ti_l	<ots$cvt_ti_l failed>
+
+delchs		<Can't delete characters>
+deldeffld	<Can't delete the default text field>
+deftxtfld	<Can't define a text field>
+editone		<Error from setup to edit !AC> /FAO=1
+defrgn		<Can't define a region>
+setfldfmt	<Can't set field format>
+setrgnsel	<Can't set a region selectable>
+crepb_for	<Create pasteboard failed for !AC> /FAO=1
+delpb_for	<Delete pasteboard failed for !AC> /FAO=1
+crewin_for	<Create window failed for !AC> /FAO=1
+crevp_for	<Create viewport failed for !AC> /FAO=1
+crevd_for	<Create virtual display for !AC failed> /FAO=1
+delvd_for	<Delete virtual display for !AC failed> /FAO=1
+addlines	<Can't add line(s) to virtual display>
+freevm_for	<Error trying to free virtual memory for !AC> /FAO=1
+meastxt_for	<Can't measure text for !AC> /FAO=1
+paste_what	<Error pasting !AC on !AC> /FAO=2
+scrlup		<Can't scroll up text line(s)>
+settf		<Can't set typeface to !AC> /FAO=1
+setts		<Can't set typesize>
+setrend		<Can't set text rendition>
+chgrend		<Can't change text rendition>
+settxtbkc	<Can't set text background color>
+settxtwrc	<Can't set text writing color>
+writet		<Can't write !AC> /FAO=1
+clkupd		<Error updating clock VD>
+clr_iconvd	<Can't clear an icon VD>
+findfib		<Can't get FIB address>
+getfntaddr	<Can't get font address>
+help_iconvd	<Error writing HELP icon VD>
+mmvd		<Error creating the main menu select VD>
+ntc_iconvd	<Error writing NOTICE icon VD>
+prof_iconvd	<Error writing PROFILE icon VD>
+remlines	<Can't remove lines from VD>
+setusn		<Error writing username VD in right utility area>
+set_clk_rutil	<Error writing clock VD in right utility area>
+unkdatef	<Undefined date format>
+vsta_print	<Error from $VSTAPRINT>
+msgtxt		<Can't get text for message number !SL> /FAO=1
+curthink	<Can't change cursor to the hourglass (VAXstation busy) icon>
+curnormal	<Can't change cursor to the normal up-arrow icon>
+attcur		<Error from "attach cursor" VBDRIVER call>
+vertln		<Error writing vertical lines in display>
+horizln		<Error writing horizontal lines in display>
+xon_xoff	<Error from "vs$$vds_vd_set_xon_xoff">
+remvd		<Can't unpaste vd from pasteboard>
+noefn		<No EFN (VMS event flag number) available>
+readvkb		<Error from vs$$read_vkb>
+rea_vkb_iosb	<Read VKB returned bad iosb, status = %X!XW> /FAO=1
+curon		<Can't turn on text cursor>
+curoff		<Can't turn off text cursor>
+open_doc	<Error opening document file !AC> /FAO=1
+doc_inv		<Invalid document file header for file !AC> /FAO=1
+doc_wrolan	<Wrong language in document file !AC> /FAO=1
+doc_wrover	<Wrong version number in document file !AC> /FAO=1
+doc_genpage	<Error generating a document page>
+doc_help_nok	<No keywords in HELP document file>
+doc_ckenotfnd	<CKE entry not found in document file>
+doc_edenotfnd	<EDE entry not found in document file>
+badwtype	<Internal error - bad wtype specified>
+deffnt_from	<Can't define a font from file !AC> /FAO=1
+jobend		<Unable to perform a "job-end" function at end session>
+dupprcnam	<Got "duplicate process name" from $creprc too many times; something is probably wrong with the system>
+int_cre_job	<Internal error: couldn't create a new job for the user>
+win_in_job	<Can't put window in job screen space>
+notermpad	<Internal error: can't find specified terminal for adding a datapad indicator>
+find_wdb_vp	<Can't find WDB entry for VP-id !SL> /FAO=1
+del2vps		<Can't delete two Vps>
+hi_menu		<Can't create human interface menu for !AC> /FAO=1
+open_mess	<Error opening message file !AC> /FAO=1
+mess_inv	<Invalid message file header for file !AC> /FAO=1
+mess_wrolan	<Wrong language in message file !AC> /FAO=1
+mess_wrover	<Wrong version number in message file !AC> /FAO=1
+getmseloc	<Can't get mouse location on virtual screen>
+movmode		<Can't enter MOVE mode>
+movdoc		<Can't move document>
+storbadwtype	<Attempt to store bad window type [!SL]> /FAO=1
+loamsecur	<Can't load !AC mouse cursor from font> /FAO=1
+ttrange		<Terminal type code [!SL] is out of range> /FAO=1
+vert_2mny	<Attempt to print too many vertical lines [!SL]> /FAO=1
+horiz_2mny	<Attempt to print too many horizontal lines [!SL]> /FAO=1
+
+.page
+!
+! Errors announced after end of session of objects that should be gone are
+! still lurking.
+!
+vpsnotgone	<Viewports still exist that should have been gone by now>
+fntsnotgone	<Fonts still defined that should have been gone by now>
+pbsnotgone	<Pasteboards still exist that should have been gone by now>
+vdsnotgone	<Virtual displays still exist that should have been gone by now>
+memnotgone	<Virtual memory still allocated that should have been gone by now>
+blknotgone	<Lost vm created by PC chain !XL, !XL, !XL, !XL . . .> /FAO=4
+
+.END

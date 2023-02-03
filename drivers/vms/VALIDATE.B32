@@ -1,0 +1,450 @@
+Module VALIDATE_USER
+   (%title 'Validate username and password against UAF'
+    ident = 'V04-000',
+    language(Bliss32),
+    addressing_mode(external=GENERAL)) =
+begin
+
+
+!++
+! FACILITY: System Subprogram
+!
+! ABSTRACT:
+!
+!	Lookup the supplied username in the authorization file.  Validate
+!	the password, and return the record if so, else return the
+!	default values.
+!
+! ENVIRONMENT:
+!
+!--
+
+
+FORWARD ROUTINE
+	LGI$VALIDATE,			! validate username and password against UAF
+	LGI$SEARCHUSER,			! read user's UAF record
+	LGI$CHECK_PASS;			! check password against UAF record
+
+LIBRARY
+	'SYS$LIBRARY:LIB';
+
+
+PSECT	CODE	= _LIB$CODE (EXECUTE, PIC, SHARE, ALIGN (0)),
+	PLIT	= _LIB$CODE (EXECUTE, PIC, SHARE, ALIGN (0));
+
+GLOBAL ROUTINE LGI$VALIDATE (P_USERNAME, P_PASSWORD, P_UAFRECORD) =
+
+!++
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine reads the UAF record for the specified user and
+!	checks the specified password against it.
+!
+! CALLING SEQUENCE:
+!	LGI$VALIDATE (P_USERNAME, P_PASSWORD, P_UAFRECORD)
+!
+! INPUT PARAMETERS:
+!	P_USERNAME: address of string descriptor of username
+!	P_PASSWORD: address of string descriptor of password
+!
+! IMPLICIT INPUTS:
+!	NONE
+!
+! OUTPUT PARAMETERS:
+!	P_UAFRECORD: address of descriptor of buffer into which to read UAF record
+!
+! IMPLICIT OUTPUTS:
+!	NONE
+!
+! ROUTINE VALUE:
+!	1 if successful
+!	-2 if invalid username
+!	-4 if invalid password
+!	RMS$_xxx if errors reading the UAF
+!
+! SIDE EFFECTS:
+!	NONE
+!
+!--
+
+BEGIN
+
+MAP
+	P_UAFRECORD	: REF $BBLOCK;
+
+LOCAL
+	STATUS;				! routine return value
+
+
+! Use common subroutines to read the UAF record, and if that succeeds,
+! to check the password.
+!
+
+STATUS = LGI$SEARCHUSER (.P_USERNAME, .P_PASSWORD, .P_UAFRECORD);
+IF .STATUS
+THEN LGI$CHECK_PASS (.P_PASSWORD, .P_UAFRECORD[DSC$A_POINTER])
+ELSE .STATUS
+
+END;					! End of routine LGI$VALIDATE
+
+
+global routine LGI$SEARCHUSER 
+   (P_USERNAME, P_PASSWORD, P_UAFRECORD, P_FAB, P_RAB, PASS_LC) =
+begin
+
+!++
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine reads the UAF record for the specified user.
+!
+! CALLING SEQUENCE:
+!
+!    LGI$SEARCHUSER(P_USERNAME, P_PASSWORD, P_UAFRECORD, P_FAB, P_RAB, PASS_LC)
+!
+! INPUT PARAMETERS:
+!
+!	P_USERNAME: address of string descriptor of username
+!	P_PASSWORD: address of string descriptor of password (not used)
+!	P_FAB:      address of FAB to use when opening the UAF
+!	P_RAB:      address of RAB to use when connecting to the UAF
+!	PASS_LC:    the presence (regardless of value) of this parameter
+!			indicates that no case conversion is to be done.
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! OUTPUT PARAMETERS:
+!
+!	P_UAFRECORD: address of descriptor of buffer into which to read UAF record
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+!	1 if successful
+!	-2 if invalid username
+!	RMS$_xxx if errors reading the UAF
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+   builtin
+
+      NULLPARAMETER;
+
+   map
+
+      P_USERNAME: ref $BBLOCK,
+      P_UAFRECORD: ref $BBLOCK,
+      P_FAB: ref $BBLOCK,
+      P_RAB: ref $BBLOCK;
+
+   label
+
+      READ_UAF;
+
+   local
+
+      STATUS,					! Routine status value
+      PREV_PRIVS: vector[2],			! Saved process privileges
+      USERNAME_LENGTH,				! Length of username
+      USER_NAME: vector[UAF$S_USERNAME, byte],	! Buffer for username
+      FAB: ref $BBLOCK,				! Pointer to FAB for the UAF
+      RAB: ref $BBLOCK,				! Pointer to RAB for the UAF
+      LOCAL_FAB: $FAB_DECL preset([FAB$W_IFI] = 0),	! FAB to open UAF
+      LOCAL_RAB: $RAB_DECL preset([RAB$W_ISI] = 0);	! RAB to read record
+
+   bind
+   
+      SYSPRV = uplit(1^($BITPOSITION(PRV$V_SYSPRV)), 0),
+      DEFAULT_USER	= uplit byte('DEFAULT');
+
+!
+!	Prepare to access UAF through FAB and RAB
+!
+
+READ_UAF:
+   begin
+
+!
+!	Which FAB and RAB should we use?
+!
+
+      if NULLPARAMETER(4) then
+         begin
+            FAB = LOCAL_FAB;
+            RAB = LOCAL_RAB;
+         end
+      else
+         begin
+            FAB = .P_FAB;
+            RAB = .P_RAB;
+         end;
+
+!
+!	Is the UAF already open?
+!
+
+      if .FAB[FAB$W_IFI] eql 0 then
+         begin
+
+            $FAB_INIT(fab = .FAB,
+                      fnm = 'SYSUAF',
+                      dnm = 'SYS$SYSTEM:.DAT',
+                      fac = (GET, UPD),
+                      shr = (GET, PUT, UPD, DEL));
+
+            RAB[RAB$W_ISI] = 0;
+            FAB[FAB$V_LNM_MODE] = PSL$C_EXEC;
+
+            $SETPRV(enbflg = 1,
+                    prvadr = SYSPRV,
+                    prvprv = PREV_PRIVS);
+
+!
+! Open the UAF. If errors indicate problems with file sharing, try opening
+! it non-shared.
+!
+
+            STATUS = $OPEN(fab = .FAB);
+
+            if .STATUS eql RMS$_SNE
+            or .STATUS eql RMS$_SPE
+            or .STATUS eql RMS$_DME then
+               begin
+                  FAB[FAB$B_SHR] = 0;
+                  STATUS = $OPEN(fab = .FAB);
+               end;
+
+            if not .STATUS then
+               leave READ_UAF;
+
+         end;
+
+!
+!	Is the current RAB connected to the UAF?
+!
+
+      if .RAB[RAB$W_ISI] eql 0 then
+         begin
+
+            $RAB_INIT(rab = .RAB,
+                      fab = .FAB,
+                      rac = KEY,
+                      rop = (NLK, WAT));
+
+            STATUS = $CONNECT(rab = .RAB);
+
+            if .STATUS eql RMS$_CRMP then
+               begin
+                  FAB[FAB$W_GBC] = 0;
+                  STATUS = $CONNECT(rab = .RAB);
+               end;
+
+            if not .STATUS then
+               leave READ_UAF;
+
+         end;
+
+!
+!	Attach key and buffer to RAB
+!
+
+      RAB[RAB$W_USZ] = .P_UAFRECORD[DSC$W_LENGTH];
+      RAB[RAB$L_UBF] = .P_UAFRECORD[DSC$A_POINTER];
+      RAB[RAB$B_KSZ] = UAF$S_USERNAME;
+      RAB[RAB$L_KBF] = USER_NAME;
+
+!
+!	Upcase and blank fill the username string
+!
+
+      USERNAME_LENGTH = .P_USERNAME[DSC$W_LENGTH];
+
+      incr J to .USERNAME_LENGTH-1 do
+         begin
+
+            local
+               C: byte;
+
+            C = .vector[.P_USERNAME[DSC$A_POINTER], .J;, byte];
+   
+            if .C eql ' ' then
+               exitloop (USERNAME_LENGTH = .J);
+
+            if not NULLPARAMETER(6)
+            and .C gequ 'a'
+            and .C lequ 'z' then
+               USER_NAME[.J] = .C - 32
+            else
+               USER_NAME[.J] = .C;
+
+         end;
+
+      ch$fill(' ', UAF$S_USERNAME-.USERNAME_LENGTH, USER_NAME[.USERNAME_LENGTH]);
+
+!
+!	Read the UAF record. If not present, read the default record instead.
+!
+
+      STATUS = $GET(rab = .RAB);
+
+      if .STATUS eql RMS$_RNF then
+         begin
+            USERNAME_LENGTH = 7;
+            ch$copy(7, DEFAULT_USER, ' ', UAF$S_USERNAME, USER_NAME);
+            STATUS = $GET(rab = .RAB);
+            if .STATUS then
+               STATUS = -2;
+         end;
+
+!
+! Check for username = DEFAULT, and return failure if so.
+!
+
+      if .STATUS
+      and ch$eql(.USERNAME_LENGTH, USER_NAME, 7, DEFAULT_USER, ' ') then
+         STATUS = -2;
+
+   end;					! end of block READ_UAF
+
+!
+! Close the UAF (if necessary) and restore the caller's privileges.
+!
+
+   if NULLPARAMETER(4) then
+      begin
+         $DISCONNECT(rab = .RAB);
+         $CLOSE(fab = .FAB);
+      end;
+
+   $SETPRV(enbflg = 0, prvadr = uplit(0, 0));
+   $SETPRV(enbflg = 1, prvadr = PREV_PRIVS);
+
+   return .STATUS
+
+end;					! End of routine LGI$SEARCHUSER
+
+
+GLOBAL ROUTINE LGI$CHECK_PASS (P_PASSWORD, UAF_RECORD, PWD_NUMBER) =
+
+!++
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine reads the UAF record for the specified user.
+!
+! CALLING SEQUENCE:
+!	LGI$CHECK_PASS (P_PASSWORD, UAF_RECORD)
+!
+! INPUT PARAMETERS:
+!	P_PASSWORD: address of string descriptor of password
+!	UAF_RECORD: address of UAF record
+!	PWD_NUMBER: password number, 0 - primary, 1 - secondary
+!
+! IMPLICIT INPUTS:
+!	NONE
+!
+! OUTPUT PARAMETERS:
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!	NONE
+!
+! ROUTINE VALUE:
+!	1 if successful
+!	-4 if invalid password
+!
+! SIDE EFFECTS:
+!	NONE
+!
+!--
+
+BEGIN
+
+MAP
+	P_PASSWORD	: REF $BBLOCK,
+	UAF_RECORD	: REF $BBLOCK;
+
+LITERAL
+	MAX_PASSWORD	= 80;		! maximum password accepted
+
+LOCAL
+	PASSWORD_LENGTH,		! length of password string
+	PASSWORD	: VECTOR [MAX_PASSWORD, BYTE], ! password string buffer
+	PASSWORD_DESC	: VECTOR [2],	! password string descriptor
+	USERNAME_DESC	: VECTOR [2],	! username string descriptor
+	ENCRYPT_BUF	: VECTOR [2],	! buffer for encrypted password
+	ENCRYPT_DESC	: VECTOR [2];	! descriptor for above
+
+EXTERNAL ROUTINE
+	LGI$HPWD;			! encrypt password
+
+$ASSUME ($BYTEOFFSET (uaf$q_pwd2), EQL, $BYTEOFFSET (uaf$q_pwd)+8);
+$ASSUME ($BYTEOFFSET (uaf$b_encrypt2), EQL, $BYTEOFFSET (uaf$b_encrypt)+1);
+
+! Upcase and length check the password string.
+!
+
+PASSWORD_LENGTH = MINU (.P_PASSWORD[DSC$W_LENGTH], MAX_PASSWORD);
+INCR J FROM 0 TO .PASSWORD_LENGTH
+DO
+    BEGIN
+    LOCAL C : BYTE;
+    C = .VECTOR [.P_PASSWORD[DSC$A_POINTER], .J; ,BYTE];
+    IF .C GEQU 'a'
+    AND .C LEQU 'z'
+    THEN PASSWORD[.J] = .C - 32
+    ELSE PASSWORD[.J] = .C;
+    END;
+
+! Set up username and password string descriptors. Note the encryption
+! algorithm determines the format of username used - the old PURDY
+! algorithm uses a 12 character blank-filled username, while the new
+! version uses a variable trimmed username.
+!
+
+ENCRYPT_DESC[0] = 8;
+ENCRYPT_DESC[1] = ENCRYPT_BUF;
+
+PASSWORD_DESC[0] = .PASSWORD_LENGTH;
+PASSWORD_DESC[1] = PASSWORD;
+
+USERNAME_DESC[0] = 12;
+USERNAME_DESC[1] = UAF_RECORD[UAF$T_USERNAME];
+
+IF .VECTOR [UAF_RECORD[UAF$B_ENCRYPT], .PWD_NUMBER; ,BYTE] NEQ UAF$C_PURDY
+THEN
+    BEGIN
+    BUILTIN LOCC, R0;
+    LOCC (%REF (' '), %REF (UAF$S_USERNAME), UAF_RECORD[UAF$T_USERNAME]);
+    USERNAME_DESC[0] = UAF$S_USERNAME - .R0;
+    END;
+
+! Finally encrypt the password and check it.
+!
+
+LGI$HPWD (ENCRYPT_DESC,
+	  PASSWORD_DESC,
+	  .VECTOR [UAF_RECORD[UAF$B_ENCRYPT], .PWD_NUMBER; ,BYTE],
+	  .UAF_RECORD[UAF$W_SALT],
+	  USERNAME_DESC);
+
+IF CH$EQL (8, ENCRYPT_BUF,
+	   UAF$S_PWD, UAF_RECORD[UAF$Q_PWD] + (.PWD_NUMBER * 8))
+THEN 1
+ELSE -4
+
+END;					! End of routine LGI$CHECK_PASS
+
+end
+
+eludom

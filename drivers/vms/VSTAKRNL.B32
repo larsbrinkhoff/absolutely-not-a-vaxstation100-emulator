@@ -1,0 +1,316 @@
+module vstakrnl (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+! This module contains useful routines for doing things in kernel mode.
+! These routines should be called instead of scattering $cmkrnl's and $cmkrnl
+! setups throughout code.
+
+
+forward routine!s . . .
+
+	vsta$$kernel_call,		! Call routine in kernel mode.
+	vsta$$exec_call,		! Call routine in exec mode.
+	vsta$$read_kernel_word,		! Read a word in kernel mode.
+	vsta$$read_kernel_long,		! Read a longword in kernel mode.
+	vsta$$write_kernel_word,	! write a word in kernel mode.
+	vsta$$write_kernel_long,	! write a longword in kernel mode.
+	vsta$$move_kernel_bytes;	! Move bytes in kernel mode.
+
+library 'sys$library:starlet';		! symbols like $cmkrnl
+library 'vsta$library:libmacros';	! Common VSTA symbols
+
+!
+$vsta_psect;
+
+global routine vsta$$kernel_call
+!++
+! Functional description:
+!
+!	General utility routine to call a routine in kernel mode.
+!
+!	Pass the desired routine as the first parameter, and its params
+!	as the rest of the parameters.
+!
+! Formal parameters:
+ (
+	rtn,			! routine to be called in kernel mode
+	param1, param2 !, . . .	! parameters for the routine
+ ) =
+!
+! Returned value:
+!
+!	Whatever $cmkrnl returns.
+!
+!--
+
+	begin
+
+	builtin ap;		! get access to parameters.
+
+	map ap : ref vector;
+
+	bind routine
+
+	    ! Get routine being called.  This binding serves two purposes:
+	    ! it establishes the routine as a routine, and saves it since
+	    ! we're about to clobber it in OUR param list with the param
+	    ! count of the params being passed TO it.
+	    !
+	    kernel_routine = .ap[1];
+
+	bind
+
+	    ! establish base of arglst for routine being called.
+	    !
+	    arglst = ap[1] : vector;
+
+	! Put number of parameters in beginning of list.  Number of parameters
+	! is merely one less than parameters passed to us, because we were
+	! passed the routine as our first parameter.
+	!
+	arglst[0] = .ap[0] - 1;
+
+	! Call the routine in kernel mode.
+	!
+	$cmkrnl (routin = kernel_routine, arglst = arglst[0])
+
+	end;
+
+global routine vsta$$exec_call
+!++
+! Functional description:
+!
+!	General utility routine to call a routine in exec mode.
+!
+!	Pass the desired routine as the first parameter, and its params
+!	as the rest of the parameters.
+!
+! Formal parameters:
+ (
+	rtn,			! routine to be called in exec mode
+	param1, param2 !, . . .	! parameters for the routine
+ ) =
+!
+! Returned value:
+!
+!	Whatever $cmexec returns.
+!
+!--
+
+	begin
+
+	builtin ap;		! get access to parameters.
+
+	map ap : ref vector;
+
+	bind routine
+
+	    ! Get routine being called.  This binding serves two purposes:
+	    ! it establishes the routine as a routine, and saves it since
+	    ! we're about to clobber it in OUR param list with the param
+	    ! count of the params being passed TO it.
+	    !
+	    exec_routine = .ap[1];
+
+	bind
+
+	    ! establish base of arglst for routine being called.
+	    !
+	    arglst = ap[1] : vector;
+
+	! Put number of parameters in beginning of list.  Number of parameters
+	! is merely one less than parameters passed to us, because we were
+	! passed the routine as our first parameter.
+	!
+	arglst[0] = .ap[0] - 1;
+
+	! Call the routine in exec mode.
+	!
+	$cmexec (routin = exec_routine, arglst = arglst[0])
+
+	end;
+
+global routine vsta$$read_kernel_word
+!++
+! Functional description:
+!
+!	When you really want
+!
+!		a = .b
+!
+!	where b is a word in system space, and hence kernel mode is needed to
+!	read it, say
+!
+!		a = vsta$$read_kernel_word (b)
+!
+!	instead.
+!
+! Formal parameters:
+ (
+	adr			! Location to be read.
+ ) =
+!
+!--
+
+	begin
+
+	! Define worker routine.
+	!
+	routine read_kernel_data (adr : ref vector[1,word]) = .adr[0];
+
+	! Call worker routine in kernel mode.
+	!
+	vsta$$kernel_call (read_kernel_data, .adr)
+
+	end;
+
+global routine vsta$$read_kernel_long
+!++
+! Functional description:
+!
+!	When you really want
+!
+!		a = .b
+!
+!	where b is a longword in system space, and hence kernel mode is needed
+!	to read it, say
+!
+!		a = vsta$$read_kernel_long (b)
+!
+!	instead.
+!
+! Formal parameters:
+ (
+	adr			! Location to be read.
+ ) =
+!
+!--
+
+	begin
+
+	! Define worker routine.
+	!
+	routine read_kernel_data (adr) = ..adr;
+
+	! Call worker routine in kernel mode.
+	!
+	vsta$$kernel_call (read_kernel_data, .adr)
+
+	end;
+
+global routine vsta$$write_kernel_word
+!++
+! Functional description:
+!
+!	When you really want
+!
+!		a = b
+!
+!	where a is a word in system space, and hence kernel mode is needed to
+!	write it, say
+!
+!		vsta$$write_kernel_word (a, b)
+!
+!	instead.
+!
+! Formal parameters:
+ (
+	adr,			! Location to be written.
+	data			! Data to be written there.
+ ) =
+!
+!--
+
+	begin
+
+	! Define worker routine.
+	!
+	routine write_kernel_data (
+	    adr : ref vector[1,word],
+	    data
+	    ) =
+	adr[0] = .data;
+
+	! Call worker routine in kernel mode.
+	!
+	vsta$$kernel_call (write_kernel_data, .adr, .data)
+
+	end;
+
+global routine vsta$$write_kernel_long
+!++
+! Functional description:
+!
+!	When you really want
+!
+!		a = b
+!
+!	where a is a longword in system space, and hence kernel mode is needed
+!	to write it, say
+!
+!		vsta$$write_kernel_long (a, b)
+!
+!	instead.
+!
+! Formal parameters:
+ (
+	adr,			! Location to be written.
+	data			! Data to be written there.
+ ) =
+!
+!--
+
+	begin
+
+	! Define worker routine.
+	!
+	routine write_kernel_data (
+	    adr,
+	    data
+	    ) =
+	.adr = .data;
+
+	! Call worker routine in kernel mode.
+	!
+	vsta$$kernel_call (write_kernel_data, .adr, .data)
+
+	end;
+
+global routine vsta$$move_kernel_bytes
+!++
+! Functional description:
+!
+!	When you really want
+!
+!		ch$move (a, b, c)
+!
+!	but a, b, or c require kernel mode for access, say
+!
+!		vsta$$move_kernel_bytes (a, b, c)
+!
+!	instead.
+!
+! Formal parameters:
+ (
+	len, src, dst		! ch$move parameters
+ ) =
+!
+!--
+
+	begin
+
+	! Define worker routine.
+	!
+	routine move_kernel_bytes (len, src, dst) = ch$move (.len, .src, .dst);
+
+	! Call worker routine in kernel mode.
+	!
+	vsta$$kernel_call (move_kernel_bytes, .len, .src, .dst)
+
+	end;
+
+end
+eludom

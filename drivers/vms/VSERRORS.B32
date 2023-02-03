@@ -1,0 +1,1561 @@
+MODULE vserrors (
+		ADDRESSING_MODE ( EXTERNAL = GENERAL, NONEXTERNAL = GENERAL )
+	) =
+BEGIN
+
+!
+! INCLUDE FILES
+!
+REQUIRE 'VSTA$LIBRARY:VSERRORS.R32';		!Error block data structures
+LIBRARY 'SYS$LIBRARY:LIB';			!System services, etc.
+
+! Routines for handling errors.
+
+FORWARD ROUTINE!s . . .
+!
+! Internal routines
+!
+	vsta$$set_kernel_handler,		!Establish handler for booboos
+	vs$$exception_handler,			!Handler for non-kernel booboos
+	vsta$$kernel_exception,			!Handler for kernel booboos
+	vsta$$build_msgvec,			!Build relocatable msg vector
+	vsta$$pe_found,				!Find Per-process error block
+	vsta$$eb_found,				!Find per-IRP error block
+	vsta$$error_get_vm,			!Allocate memory for errors
+	vsta$$error_free_vm,			!Deallocate memory for errors
+	vsta$$inform_system,			!Tell VMS about error condition
+	vsta$$check_error_count,		!Sanity check on ACP error count
+	vsta$$incr_error_count,			!Increment ACP error count
+!
+! Routines to be called externally
+!
+	vsta$$get_error_block,			!Get error block for PID
+	vsta$$delete_error_block,		!Delete error block for PID
+	vsta$$error_logger,			!General error logger
+	vsta$$error,				!General error handler.
+	vsta$$toperr;				!Report top-level error.
+!
+! BUILTIN instructions
+!
+BUILTIN
+	INSQUE,					!Insert into queue
+	REMQUE;					!Remove from queue
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+PSECT
+	CODE   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	PLIT   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	OWN    = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	GLOBAL = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL));
+
+GLOBAL
+	vsta$gl_bug,		!=1 if a bug was found
+	vsta$gl_sysres;		!=1 if system resources exhausted
+!
+! OWN storage
+!
+LITERAL
+	acp_error_limit = 100,			!Max. allowed ACP errors
+	true = 1,
+	false = 0;
+OWN
+	error_refc: INITIAL(0),			!Error logger count
+	acp_error_count: INITIAL(0),		!Count of ACP errors
+	vsta$pe_list: VECTOR[2] INITIAL(vsta$pe_list[0],vsta$pe_list[0]);
+!
+!
+! EXTERNAL routines
+!
+EXTERNAL ROUTINE
+	vsta$$kernel_call,			!Call routine in kernel mode
+	vs$$acp_ast_level,			!See if ACP at AST level
+	vs$$acp_current_mode,			!Current access mode of ACP
+	vsta$$srv_notice_number,		!Display msg in NOTICES
+	vs$$post_ast_request_hipq,		!High-priority non-AST routine
+	vs$$err_argh,				!Dumps stack frames to sys$error
+	lib$get_vm,				!RTL memory allocation
+	lib$free_vm;				!RTL memory deallocation
+
+
+
+global routine vsta$$set_kernel_handler
+!++
+! Functional description:
+!
+!	Establish kernel mode exception handler and get previous one.
+!	The previous one seems to be necessary to retrieve in order that
+!	we can be called during exit to RESTORE the old handler.  System
+!	crashes occurred when this wasn't done.
+!
+! Formal parameters:
+ (
+	new_adr,		! new kernel mode exception routine
+	prev_adr		! where to write previous routine address
+ ) =
+!
+!--
+
+	begin
+
+	local
+
+	    s;
+
+	external routine sys$setexv;
+
+!
+! Establish exception vector for kernel mode booboos.  This allows us
+! to get control instead of system crashing when a kernel mode exception
+! occurs.
+!
+	vsta$$kernel_call (
+	    sys$setexv,		! call this system service in kernel mode
+	    1,			! secondary vector (so DELTA debugger works)
+	    .new_adr,		! routine for exceptions in kernel mode
+	    psl$c_kernel,	! specify kernel mode exception
+	    .prev_adr		! get previous handler address
+	    )
+
+	end;
+
+%SBTTL 'vs$$exception_handler -- VAXstation ACP Exception Handler'
+GLOBAL ROUTINE vs$$exception_handler(
+		signal_array: REF BLOCK [0,BYTE],	!Exception description
+		mechanism_array: REF BLOCK [0,BYTE]	!Exception context
+			): =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for recovering from VSACP
+! exception conditions in a manner appropriate to the VAXstation ACP.
+! The error condition which caused the exception will be returned in the
+! I/O status block via the normal ACP I/O completion routines. Any required
+! error logging or recovery procedures will be executed here.
+!	This routine may only be called by the VMS exception dispatcher.
+!
+! FORMAL PARAMETERS:
+!
+!	SIGNAL_ARRAY    : Condition signal array
+!				(input parameter)
+!	MECHANISM_ARRAY : Condition mechanism array
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_CONTINUE		!Exception processed - continue
+!	SS$_RESIGNAL		!Not processed here - resignal
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    EXTERNAL LITERAL
+	vsta$_acpexcept;			!Exception condition error
+
+    LOCAL
+	status;					!Return status value
+!
+! If the exception condition occurred in the establisher frame or the handler
+! was set up in one of the exception vectors, let somebody else do it
+!
+	IF .mechanism_array[CHF$L_MCH_DEPTH] LEQ 0 THEN
+	  RETURN SS$_RESIGNAL;
+!
+! Here we will do the error logging.  This is important since otherwise the
+! exception code might merely trickle back unannounced to the USER program.
+! We want explicit logging since exceptions are ALWAYS our fault, since we're
+! supposed to have checked user parameters.
+!
+	vsta$$error_logger (vsta$_acpexcept);
+!
+! Store the exception's identity for VS$$ACP_EXIT's use
+!
+	begin
+	external VSTA$GL_EXCEPTION;
+	VSTA$GL_EXCEPTION = .signal_array [CHF$L_SIG_NAME]
+	end;
+!
+! Write the arguments passed to all the procedures on the call stack
+!	to SYS$ERROR
+!
+	VS$$ERR_ARGH();
+!
+! Cause the routine in which the exception occured to return to its caller
+! with the cause of the exception in R0.  Since callers tend to test the status
+! and log detected errors, this exception is likely to cause something to be
+! recorded.
+!
+	mechanism_array[chf$l_mch_savr0] = .signal_array[chf$l_sig_name];
+!
+	$UNWIND (
+	    DEPADR = %ref (1),		! one level
+	    NEWPC  = 0			! no special new pc for now
+	    );
+!
+	RETURN SS$_CONTINUE;	! Request handled here - Continue
+!
+    END;			! end of routine vxs$$exception_handler
+
+
+global routine vsta$$kernel_exception
+!++
+! Functional description:
+!
+!	Come here when a kernel-mode exception occurs.
+!
+!	We merely cause the offending routine to return with a status
+!	indicating the exception that occurred.  Generally this will cause
+!	the caller of the offending routine to perform standard error
+!	handling (like logging the error).
+!
+! Formal parameters:
+ (
+	sig : ref vector,	! Signal vector, contains number of params
+				! passed to "signal", followed by params, where
+				! first param is the condition code.
+	mech : ref block[,byte],! Mechanism vector
+	enbl : ref block[,byte]	! Enable vector
+ ) =
+!
+!--
+
+	begin
+!
+! Unwind the stack one level.  This causes the routine that was called in
+! kernel mode which caused the exception to return.
+!
+	$unwind (
+	    depadr = %ref (1),		! one level
+	    newpc = 0			! no special new pc for now
+	    );
+!
+! Cause the offending routine's status code to be whatever the exception
+! condition was.
+!
+	mech[chf$l_mch_savr0] = .sig[1]
+
+	end;
+
+GLOBAL ROUTINE vsta$$error_logger
+!++
+! Functional description:
+!
+!	This is the error handler for VAXstation internal hardware/software
+!	errors. The format of this call is exactly the same as the general
+!	error handler. In other words, integer parameters are passed by value
+!	as is the status code and string parameters are passed by descriptor.
+!	String parameters will be converted into counted strings and must
+!	therefore be less than 256 characters long.
+!	
+!	NOTE: This routine requires dynamic memory allocation and should not
+!	      be called to log the fact that there is insufficient dynamic
+!	      memory since nothing will be logged.
+!
+!	To have an error logged, routines should now say
+!
+!		vsta$$error_logger (
+!			vsta$_something_specific,
+!			parameter_1_type , parameter_1,
+!			parameter_2_type , parameter_2,
+!			....)
+!
+! Formal parameters:
+ (
+	status_code,		! status code being returned,
+	param1_type,		! optional parameter 1 type for message
+	param1,			! optional parameter 1 for message
+	param2_type,		! optional parameter 2 type for message
+	param2			! optional parameter 2 for message
+	! . . .
+ ) =
+!
+! Side effects:
+!
+!	The error status code and its parameters are merely $PUTMSGed to
+!	wherever SYS$OUTPUT and SYS$ERROR are pointing for the ACP. None of
+!	the information is saved internally, and if so desired, VSTA$$ERROR
+!	should also be called. A canned error message is written here also
+!	via OPCOM to designated central operators and to the system error
+!	log file.
+!
+! Completion code:
+!
+!	usually whatever you pass in "status_code"
+!	SS$_xxx		: System service error return status
+!
+!--
+
+    BEGIN
+
+    EXTERNAL
+	vsta$_logerr,				!Error logging error status
+	vsta$_facility,				!VSTA message facility code
+	vsta$_interrlog;			!Internal error logger error
+
+    BUILTIN
+	actualcount,				!Number of arguments passed
+	actualparameter,			!Actual parameter passed
+	argptr,					!Argument pointer
+	callg;
+
+    OWN
+	in_error_flag : volatile initial (0),	!Set while we're processing
+	time_buffer: VECTOR[20,BYTE],		!Ascii time buffer
+	time_desc: VECTOR[2]			!Time descriptor
+	  INITIAL(20,time_buffer),
+	canned_msgvec: VECTOR[6]		!Canned error message vector
+	  INITIAL(5,vsta$_interrlog,1,time_desc,
+		    vsta$_logerr,0);
+    LOCAL
+	status,					!Return status value
+	message_code: REF VECTOR[0,WORD],	!To examine facility code
+	string_ptr,				!Pointer to string data
+	string_size,				!Size of string
+	string_desc: REF VECTOR,		!String parameter descriptor
+	msgvec_size,				!To remember msg vector size
+	msgvec_ptr,				!Ptr to msg vector element
+	msgvec: REF VECTOR;			!Message argument vector
+!
+! If this error occurred while processing another one, do nothing, less
+! we desctructively recurse.
+!
+	if .in_error_flag then return .status_code;
+!
+! Mark that we're processing an error.
+!
+	in_error_flag = 1;
+!
+! Get the current time and clear the error reference count (So system
+! informer knows which is top level error to report).
+!
+	$ASCTIM( TIMBUF = time_desc );
+!
+	error_refc = 0;
+!
+! Allocate memory for the message vector if possible (of course, if we're
+! trying to log the fact that we have run out of virtual memory, we'll never
+! see it).
+!
+	msgvec_size = 24;
+	INCR index FROM 2 TO (actualcount() - 1) BY 2 DO
+	  CASE actualparameter(.index) FROM integer_type TO string_type OF
+	    SET
+	      [integer_type] :
+		      msgvec_size = .msgvec_size + 4;
+	      [string_type]  :
+		      BEGIN
+			string_desc = actualparameter(.index + 1);
+			msgvec_size = .msgvec_size + 4 +
+				MIN(256,((.string_desc[0] AND %X'ffff') + 1));
+		      END;
+	    TES;
+!
+	IF vsta$$error_get_vm(
+			msgvec_size,
+			msgvec) THEN
+	  BEGIN
+!
+! Tell the user that an error occurred.  This is very important, so that
+! the user can associate a particular action with the error
+! provocation, which is of great value for reproducing a problem.
+!
+! We are careful NOT to attempt putting the message in the notices, however,
+! if we are not in a session, since there is no environment set up for notices.
+!
+! Note that we queue up a request for putting the error in notices rather than
+! doing it directly.  This reduces the chances of getting an exception within
+! an exception, which would crash the acp.
+!
+	    begin
+	    external routine vs$$post_ast_request;
+	    routine announce_error: NOVALUE =
+	    if (external vsta$gl_authorized ; .vsta$gl_authorized)
+	    then
+	    begin
+	    vsta$$srv_notice_number (2080);	! see mfeng.txt for text
+	    vsta$$srv_notice_number (2081)	! of messages.
+	    end;
+	    vs$$post_ast_request (announce_error)
+	    end;
+!
+! Build the message vector for $PUTMSG based on the type of status
+! code (for some stupid reason its different with system and RMS status codes).
+!
+	    msgvec[1] = vsta$_interrlog;
+	    msgvec[2] = 1;
+	    msgvec[3] = time_desc;
+	    msgvec[4] = .status_code;
+	    msgvec[5] = 0;
+!
+	    message_code = status_code;
+	    SELECTONE .message_code[1] OF
+	      SET
+		[system_code]    : msgvec[0] = 4;
+		[rms_code]       : msgvec[0] = 5;
+		[vsta$_facility] :
+		  BEGIN
+!
+! Here we give special attention. Determine the number of $FAO parameters and
+! the total argument count for the message vector.
+!
+		    msgvec_ptr = 6;
+		    msgvec[0] = 5 + (msgvec[5] = (actualcount() - 1) / 2);
+		    string_ptr = .msgvec + ((1 + .msgvec[0]) * 4);
+!
+		    INCR index FROM 2 TO (actualcount() - 1) BY 2 DO
+		      BEGIN
+		        CASE actualparameter(.index)
+				FROM integer_type TO string_type OF
+			  SET
+!
+! Integers are passed by value. So just put it into the message vector
+!
+			    [integer_type] :
+			      msgvec[.msgvec_ptr] = actualparameter(.index+1);
+!
+! Strings are passed by descriptor but all error codes use counted strings.
+!
+			    [string_type]  :
+			      BEGIN
+				string_desc = actualparameter(.index + 1);
+				string_size = MIN(255,
+					(.string_desc[0] AND %X'ffff'));
+!
+! Copy the string into the counted string portion of the message vector
+!
+				    CH$MOVE(
+					1,
+					string_size,
+					.string_ptr);
+				    CH$MOVE(
+					.string_size,
+					.string_desc[1],
+					.string_ptr + 1);
+				    msgvec[.msgvec_ptr] = .string_ptr;
+				    string_ptr = .string_ptr + .string_size + 1;
+			      END;
+			  TES;
+		        msgvec_ptr = .msgvec_ptr + 1;
+		      END;
+		  END;
+	        [OTHERWISE]      : msgvec[0] = 5;
+	      TES;
+!
+! The message argument vector has been built -- Use the $PUTMSG system
+! service to put the message to SYS$ERROR (and SYS$OUTPUT if different).
+!
+	    $PUTMSG(
+		MSGVEC = .msgvec,
+		ACTRTN = vsta$$inform_system,
+		ACTPRM = .status_code );
+!
+! Perform clean-up operations. Deallocate the message vector.
+!
+	    vsta$$error_free_vm(
+		msgvec_size,
+		msgvec);
+	  END		!If enough memory to build and log error block
+!
+! If we failed to get the required memory to display the specified error block,
+! then display a canned error block in its place
+!
+	ELSE
+	  BEGIN
+	    $PUTMSG(
+		MSGVEC = canned_msgvec,
+		ACTRTN = vsta$$inform_system,
+		ACTPRM = .status_code );
+	  END;
+!
+! If we've now exceeded our ACP error log limit, then display this fact
+!
+	vsta$$check_error_count(.status_code);
+!
+! Mark that we're no longer processing an error.
+!
+	in_error_flag = 0;
+
+	RETURN .status_code;		!Successful completion but return
+					!status code so callers can say
+					!"return vsta$$error_logger (. . .)"
+
+    END;				!Of routine vsta$$error_logger
+
+
+GLOBAL ROUTINE vsta$$error
+!++
+! Functional description:
+!
+!	This is the general error handler for VAXstation acp routines.
+!	Routines, instead of merely returning a specific code, as in
+!	
+!		return vsta$_whoops
+!
+!	should say
+!
+!		return vsta$$error (vsta$_whoops)
+!
+!	Also, instead of saying
+!
+!		if not (status = other_routine ())
+!		then return .status
+!
+!	routines should now say
+!
+!		if not other_routine()
+!		then return vsta$$error (vsta$_something_specific)
+!
+!	In other words, don't pass the error from "other_routine" along !
+!	Return a specific code instead.  "other_routine" also called
+!	vsta$$error, so it's error has already been recorded.
+!
+! Formal parameters:
+ (
+	status_code,		! status code being returned,
+	param1_type, param1_adr,! optional types and addresses for message.
+	param2_type, param2_adr
+	! . . .
+ ) =
+!
+! Side effects:
+!
+!	The error status code is accumulated into the error block, such
+!	that the user program can receive the block later.
+!
+! Completion code:
+!
+!	The status_code passed to this routine is also used as its
+!	completion code, so that upper routines can use the standard method
+!	for testing success.
+!
+!--
+
+    BEGIN
+
+    BUILTIN
+	argptr,					!Argument pointer
+	callg;
+
+    EXTERNAL
+	vsta$_bug,				!"Bug"
+	vsta$_sysres,				!"System resources exhausted"
+	vs$a_irp,				!Current IRP
+	vs$a_lirp: REF BLOCK[0,BYTE];		!Local copy of IRP to look at
+
+!
+! If we are being called from kernel mode, don't allow this error to be added
+! to any error blocks and consume the kernel stack
+!
+	BEGIN
+	  LOCAL
+	    access_mode;			!Current ACP access mode
+
+	  vsta$$kernel_call(
+			vs$$acp_current_mode,
+			access_mode);
+	  IF .access_mode EQL 0 THEN
+	    RETURN .status_code;
+	END;
+!
+! If we are being called from AST level, don't allow this error to be added
+! to any error blocks
+!
+    BEGIN
+
+    LOCAL
+	status,					!To store internal status
+	ast_level,				!Current ACP AST level
+	pe_adr: REF BLOCK[0,BYTE],		!Per-process error block
+	eb_adr: REF BLOCK[0,BYTE],		!Old Per-IRP error block
+	new_eb_adr: REF BLOCK[0,BYTE],		!New Per-IRP error block
+	newvec_size,				!New msg vector size
+	msgvec;					!Message argument vector
+!
+	vs$$acp_ast_level(ast_level);
+	IF .ast_level NEQ 0 THEN
+	  RETURN .status_code;
+!
+! If there's no irp, call the error logger. This is an internal call
+! that failed, and that shouldn't have happened.
+!
+	if .vs$a_irp geq 0
+	  THEN
+	    BEGIN
+	    CALLG (argptr (), vsta$$error_logger);
+	    RETURN .status_code;
+	    END;
+!
+! If we haven't yet logged any errors for this process, build a per-process
+! error block and add it to the queue
+!
+	IF NOT vsta$$pe_found(.vs$a_lirp[IRP$L_PID],pe_adr) THEN
+	  BEGIN
+	    IF (NOT (status = vsta$$error_get_vm(UPLIT(vs$pe_k_block_size),
+					pe_adr))) THEN
+	      RETURN .status_code;
+	    pe_adr[vs$pe_w_size] = vs$pe_k_block_size;
+	    pe_adr[vs$pe_w_type] = 0;
+	    pe_adr[vs$pe_l_pid] = .vs$a_lirp[IRP$L_PID];
+	    pe_adr[vs$pe_a_eb_flink] = pe_adr[vs$pe_a_eb_flink];
+	    pe_adr[vs$pe_a_eb_blink] = pe_adr[vs$pe_a_eb_flink];
+	    INSQUE(.pe_adr,vsta$pe_list[0]);
+	  END;
+!
+! We now have the per-process error block. If this process does not have
+! an existing error block for this IRP, then allocate one and add it to
+! the queue for this process. Otherwise remove the old one from the queue.
+!
+	IF NOT vsta$$eb_found(0,.pe_adr,eb_adr) THEN
+	  BEGIN
+	    IF (NOT (status = vsta$$error_get_vm(UPLIT(vs$eb_k_block_size),
+					eb_adr))) THEN
+	      RETURN .status_code;
+	    eb_adr[vs$eb_w_size] = vs$eb_k_block_size;
+	    eb_adr[vs$eb_w_type] = 0;
+	    eb_adr[vs$eb_a_irp] = 0;
+	    eb_adr[vs$eb_a_msgvec] = 0;
+	    eb_adr[vs$eb_l_msgvec_size] = 0;
+	    INSQUE(.eb_adr,pe_adr[vs$pe_a_eb_flink]);
+	  END;
+!
+! Build the relocatable message vector for $PUTMSG
+!
+	vsta$$build_msgvec(
+			.eb_adr,
+			argptr());
+!
+	IF .vsta$gl_sysres THEN RETURN VSTA$_SYSRES;
+	IF .vsta$gl_bug THEN RETURN VSTA$_BUG;
+	RETURN .status_code;			!Return the original status
+
+    END;
+    END;
+
+
+%SBTTL 'vsta$$toperr -- Report top-level error'
+GLOBAL ROUTINE vsta$$toperr (status) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Checks "bug" and "sysres" and if set, puts those in
+!	the error block. Then puts the top-level error in the error block.
+! FORMAL PARAMETERS:
+!	STATUS: top-level status code
+!--
+BEGIN
+EXTERNAL
+    vsta$_bug,
+    vsta$_sysres;
+
+IF (.vsta$gl_bug) THEN vsta$$error (VSTA$_BUG);
+IF (.vsta$gl_sysres) THEN vsta$$error (VSTA$_SYSRES);
+RETURN vsta$$error (.status);
+END;
+
+%SBTTL 'vsta$$build_msgvec -- Build Error Message Vector'
+ROUTINE vsta$$build_msgvec(
+			eb_adr: REF BLOCK[0,BYTE],	!Error block address
+			arg_ptr: REF VECTOR		!Argument ptr of caller
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for building a relocatable error message
+! vector. This message vector will be compatable with the $PUTMSG system
+! service after pre-processing has converted the relative offsets into the
+! block into the virtual addresses required by $FAO. This block will contain
+! all the data required by a $PUTMSG call (and its $FAO call) and is
+! transportable to another process.
+!	Note the format of the arg_ptr parameter below. This routine will
+! allocated memory for the message vector and will return its address and
+! size. It is the responsibility of the caller to deallocate this memory.
+!
+!	ARG_PTR => Block Address => ----------------------------
+!				    ! Number of args to caller !
+!				    !--------------------------!
+!				    !     Status Value         !
+!				    !--------------------------!
+!				    !  $FAO argument 1 type    !
+!				    !--------------------------!
+!				    ! Argument 1 value or addr.!
+!				    !--------------------------!
+!				    !  $FAO argument 2 type    !
+!				    !--------------------------!
+!				    ! Argument 2 value or addr.!
+!				    !--------------------------!
+!				    !          . . .	       !
+!				    !			       !
+!				    !--------------------------!
+!				    !  $FAO argument n type    !
+!				    !--------------------------!
+!				    ! Argument n value or addr.!
+!				    !__________________________!
+!
+! FORMAL PARAMETERS:
+!
+!	EB_ADR      : Address of per-irp error block
+!			(input parameter)
+!	ARG_PTR	    : Address of CALLER'S argument block (in above format)
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vsta$pe_list : Queue head pointer to known Process Error blocks
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    LOCAL
+	status,					!Return status value
+	add_on,					!Adjustment to rel. offsets
+	index,					!Old msg vector loop index
+	vector_size,				!New msg vector size
+	string_length,				!String parameter lengths
+	string_desc: REF VECTOR,		!String parameter descriptors
+	data_storage,				!Data storage adr. in msgvec
+	msg_el: REF VECTOR[0,WORD],		!To refer msgvec element
+	message_code: REF VECTOR[0,WORD],	!To refer to facility code
+	old_msgvec: REF VECTOR,			!Ptr to old message vector
+	msgvec: REF VECTOR;			!Ptr to message vector
+
+!
+! Compute the size of the new message vector (padded to a longword boundary).
+!
+	vector_size = 12;
+	INCR param_number FROM 2 TO .arg_ptr[0] BY 2 DO
+	  CASE .arg_ptr[.param_number] FROM integer_type TO string_type OF
+	    SET
+	      [integer_type] :
+			BEGIN
+			  vector_size = .vector_size + 8;
+			END;
+	      [string_type] :
+			BEGIN
+			  string_desc = .arg_ptr[.param_number + 1];
+			  vector_size = .vector_size + 5 + MIN(256,
+					(.string_desc[0] AND %X'ffff'));
+			END;
+	    TES;
+!
+	vector_size = .vector_size + (4 - (.vector_size MOD 4));
+!
+! Allocate enough memory for the message vector plus all the data which
+! must be imbedded in the vector.
+!
+	IF (NOT (status = vsta$$error_get_vm(
+			%REF(.eb_adr[vs$eb_l_msgvec_size] + .vector_size),
+			msgvec))) THEN
+	  RETURN .status;
+!
+	old_msgvec = .eb_adr[vs$eb_a_msgvec];
+	eb_adr[vs$eb_a_msgvec] = .msgvec;
+!
+! Build the message vector for $PUTMSG based on the type of status
+! code (its different with system and RMS status codes).
+! Note that it is stored in a slightly different format than what is passed
+! to $PUTMSG since it must be relocatable to the context of another process.
+!
+	message_code = arg_ptr[1];
+	msgvec[1] = .arg_ptr[1];
+	msgvec[2] = 0;
+!
+	SELECTONE .message_code[1] OF
+	  SET
+	    [system_code] :		!System service facility code
+		msgvec[0] = 1;
+	    [rms_code]    :		!RMS facility code
+		msgvec[0] = 2;
+	    [OTHERWISE]   : 		!Some user defined facility code
+		BEGIN
+!
+! Define the number of arguments and FAO count for this message and compute
+! the "absolute" address into which to store the data
+!
+		  msgvec[0] = 2 + (msgvec[2] = (.arg_ptr[0] - 1) / 2);
+		  msg_el = msgvec[3];
+		  data_storage = msgvec[0] + ((.msgvec[2] + 3) * 4) +
+				MAX(0,.eb_adr[vs$eb_l_msgvec_size] - 4);
+!
+! For each parameter descriptor passed (if any) add them in a packed,
+! relocatable fashion into the message vector
+!
+		  INCR param_number FROM 2 TO .arg_ptr[0] BY 2 DO
+		    BEGIN
+		      msg_el[0] = .arg_ptr[.param_number];
+		      CASE .msg_el[0] FROM integer_type TO string_type OF
+			SET
+			  [integer_type] :
+				BEGIN
+				  CH$MOVE(
+					4,
+					arg_ptr[.param_number + 1],
+					.data_storage);
+				  msg_el[1] = .data_storage - msgvec[0];
+				  data_storage = .data_storage + 4;
+				END;
+			  [string_type] :
+				BEGIN
+				  string_desc = .arg_ptr[.param_number + 1];
+				  string_length = (MIN(256,
+					(.string_desc[0] AND %X'ffff')));
+				  CH$MOVE(
+					1,
+					string_length,
+					.data_storage);
+				  CH$MOVE(
+					.string_length,
+					.string_desc[1],
+					.data_storage + 1);
+				  msg_el[1] = .data_storage - msgvec[0];
+				  data_storage = .data_storage +
+						   .string_length + 1;
+				END;
+			TES;
+		      msg_el = msg_el[0] + 4;
+		    END;
+		END;
+	  TES;
+!
+! The new stuff has been added to the message vector -- If we have an old
+! message vector, then it has to be updated (relative offsets to string data)
+! and placed into the new message vector
+!
+	IF .old_msgvec NEQ 0 THEN
+	  BEGIN
+	    add_on = (.msgvec[0] + 1) * 4;
+	    index = 1;
+	    WHILE .index LEQ .old_msgvec[0] DO
+	      BEGIN
+		message_code = old_msgvec[.index];
+		SELECTONE .message_code[1] OF
+		  SET
+	            [system_code] :		!System service facility code
+		   	index = .index + 1;
+		    [rms_code]    :		!RMS facility code
+		  	index = .index + 2;
+		    [OTHERWISE]   : 		!Some user facility code
+			BEGIN
+!
+! For each $FAO parameter, adjust the offset into the message vector
+!
+			  INCR param_number FROM 1 TO .old_msgvec[.index+1] DO
+			    BEGIN
+		              msg_el = old_msgvec[.param_number + .index + 1];
+			      msg_el[1] = .msg_el[1] + .add_on - 4;
+		            END;
+			  index = .index + 2 + .old_msgvec[.index + 1];
+			END;
+		  TES;
+	      END;
+!
+! Now copy the updated old message vector into the new buffer
+!
+	    CH$MOVE(
+		.eb_adr[vs$eb_l_msgvec_size] - 4,
+		.old_msgvec + 4,
+		.msgvec + .add_on);
+	    msgvec[0] = .msgvec[0] + .old_msgvec[0];
+	  END;
+!
+! Update the message vector size and deallocate the old error block
+!
+	vsta$$error_free_vm(eb_adr[vs$eb_l_msgvec_size],old_msgvec);
+	eb_adr[vs$eb_l_msgvec_size] = MAX(0,.eb_adr[vs$eb_l_msgvec_size] - 4) +
+						.vector_size;
+!
+	RETURN SS$_NORMAL;	!return successful allocation indication
+END;				! of routine vsta$$build_msgvec
+
+
+%SBTTL 'vsta$$get_error_block -- Get Per-Process Error Block by PID'
+GLOBAL ROUTINE vsta$$get_error_block(
+			pid,			!Process ID
+			msgvec_adr,		!Err block msg vector Address
+			msgvec_size		!Max. bytes to write into adr.
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the per-process error
+! block by PID and copying the relocatable message vector for the appropriate
+! error block into the address specified. This routine will copy either
+! MSGVEC_SIZE bytes or the actual size of the message vector, which ever is
+! smaller, into the address specified.
+!	Note if the address specified is in system space, this routine must
+! be called from Kernel mode.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword Process ID (PID)
+!			(input parameter)
+!	MSGVEC_ADR  : Address to contain process error message vector
+!			(output parameter)
+!	MSGVEC_SIZE : Longword maximum number of bytes to copy into address
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL     : Successful location and copying of message vector
+!	VSTA$_NOSUCHEB : No such error block exists for this process
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    EXTERNAL
+	vsta$_nosucheb;				!No such error block status
+
+    LOCAL
+	eb_adr: REF BLOCK[0,BYTE],		!Ptr to error block
+	pe_adr: REF BLOCK[0,BYTE];		!Ptr to PE block
+
+!
+! If we can't find the PID, then I don't think we are going to find the
+! error block
+!
+	IF NOT vsta$$pe_found(.pid,pe_adr) THEN
+	  RETURN vsta$$error(vsta$_nosucheb,integer_type,.pid);
+!
+! We now have the per-process error block. If this process does not have
+! an existing error block, we are done.
+!
+	IF NOT vsta$$eb_found(0,.pe_adr,eb_adr) THEN
+	  RETURN vsta$$error(vsta$_nosucheb,integer_type,.pid);
+!
+	REMQUE(.eb_adr,eb_adr);
+!
+! Copy the error message vector into the address specified
+!
+	CH$COPY(
+		.eb_adr[vs$eb_l_msgvec_size],	!Source size
+		.eb_adr[vs$eb_a_msgvec],	!Source address
+		0,				!Fill with zeroes
+		.msgvec_size,			!Destination size
+		.msgvec_adr);			!Destination address
+!
+! Free up the memory occupied by this error block and its message vector
+!
+	vsta$$error_free_vm(eb_adr[vs$eb_l_msgvec_size],
+		    eb_adr[vs$eb_a_msgvec]);
+	vsta$$error_free_vm(eb_adr[vs$eb_w_size],eb_adr);
+!
+	RETURN SS$_NORMAL;	! return PID was found
+END;				! of routine vsta$$get_error_block
+
+
+%SBTTL 'vsta$$delete_error_block -- Delete Per-Process Error Block by PID'
+GLOBAL ROUTINE vsta$$delete_error_block(
+			pid			!Process ID
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the per-process error
+! block by PID and deleting it so that a new one will be started with the
+! next call to VSTA$$ERROR.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword Process ID (PID)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL    : Successful location and copying of message vector
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	eb_adr: REF BLOCK[0,BYTE],		!Ptr to error block
+	pe_adr: REF BLOCK[0,BYTE];		!Ptr to PE block
+
+!
+! If we can't find the PID, then I don't think we are going to find the
+! error block
+!
+	IF NOT vsta$$pe_found(.pid,pe_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+! We now have the per-process error block. If this process does not have
+! an existing error block, we are done.
+!
+	IF NOT vsta$$eb_found(0,.pe_adr,eb_adr) THEN
+	  RETURN SS$_NORMAL;
+!
+	REMQUE(.eb_adr,eb_adr);
+!
+! Free up the memory occupied by this error block and its message vector
+!
+	vsta$$error_free_vm(eb_adr[vs$eb_l_msgvec_size],
+		    eb_adr[vs$eb_a_msgvec]);
+	vsta$$error_free_vm(eb_adr[vs$eb_w_size],eb_adr);
+!
+	RETURN SS$_NORMAL;	! return PID was found
+END;				! of routine vsta$$delete_error_block
+
+
+%SBTTL 'vsta$$pe_found -- Find a Per-Process Error Block by PID'
+ROUTINE vsta$$pe_found(
+			pid,			!Process ID
+			pe_adr			!Per-Process Err block Address
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the per-process error
+! block by PID and returning its address if found.
+!
+! FORMAL PARAMETERS:
+!
+!	PID    : Longword Process ID (PID)
+!			(input parameter)
+!	PE_ADR : Address to contain address of PE data block
+!			(output parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	vsta$pe_list : Queue head pointer to known Process Error blocks
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	pe_ptr: REF BLOCK[0,BYTE];		!Ptr to arbitrary PE block
+
+!
+! Search through the list of known process error blocks for the process ID
+! (or PID) passed as a parameter and return its address if found.
+!
+	pe_ptr = .vsta$pe_list[0];
+	WHILE (.pe_ptr NEQ vsta$pe_list[0]) DO
+	  IF .pe_ptr[vs$pe_l_pid] EQL .pid THEN
+	    BEGIN
+	      .pe_adr = .pe_ptr;
+	      RETURN true;
+	    END
+	  ELSE
+	    pe_ptr = .pe_ptr[vs$pe_a_flink];
+!
+	RETURN false;		!return whether or not PID was found
+END;				! of routine vsta$$pe_found
+
+
+%SBTTL 'vsta$$eb_found -- Find an Error Block by IRP'
+ROUTINE vsta$$eb_found(
+			irp_adr,		   !I/O request packet
+			pe_adr: REF BLOCK[0,BYTE], !Per-Process Err block Addr.
+			eb_adr			   !Error block address
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for finding the error block by
+! IRP and returning its address if found.
+!
+! FORMAL PARAMETERS:
+!
+!	IRP_ADR : Address of I/O request packet
+!			(input parameter)
+!	PE_ADR  : Address of Per-Process Error data block
+!			(input parameter)
+!	EB_ADR  : Address of Error data block for this IRP (if found)
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	eb_ptr: REF BLOCK[0,BYTE];		!Ptr to arbitrary PE block
+
+!
+! Search through the list of known process error blocks for the process ID
+! (or PID) passed as a parameter and return its address if found.
+!
+	eb_ptr = .pe_adr[vs$pe_a_eb_flink];
+	WHILE (.eb_ptr NEQ pe_adr[vs$pe_a_eb_flink]) DO
+	  IF .eb_ptr[vs$eb_a_irp] EQL .irp_adr THEN
+	    BEGIN
+	      .eb_adr = .eb_ptr;
+	      RETURN true;
+	    END
+	  ELSE
+	    eb_ptr = .eb_ptr[vs$eb_a_flink];
+!
+	RETURN false;		!return whether or not Error Block was found
+END;				! of routine vsta$$eb_found
+
+
+%SBTTL 'vsta$$error_get_vm -- Allocate Memory for Error Handling'
+ROUTINE vsta$$error_get_vm(
+			size,			   !Buffer size address
+			buffer			   !Address to store buffer
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for allocating memory for error blocks.
+! The standard means is not used to avoid any recursive error reporting
+! situations. This routine will disable ASTs for the ACP (if active),
+! allocate the memory, and then reenable the ASTs if necessary.
+!
+! FORMAL PARAMETERS:
+!
+!	SIZE	: Address of buffer size to be allocated
+!			(input parameter)
+!	BUFFER	: Address to store allocated buffer in
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	status,				!RTL return status value
+	ast_status;			!Current AST enable status
+
+!
+! Disable ASTs for the ACP (if active)
+!
+	ast_status = $SETAST( ENBFLG = false );
+!
+! Allocate the requested memory
+!
+	status = lib$get_vm(
+			.size,
+			.buffer);
+!
+! If we really did turn ASTs off, then turn 'em back on
+!
+	IF .ast_status EQL SS$_WASSET THEN
+	  $SETAST( ENBFLG = true );
+!
+	RETURN .status;		!return RTL status returned
+END;				! of routine vsta$$error_get_vm
+
+
+%SBTTL 'vsta$$error_free_vm -- Deallocate Memory for Error Handling'
+ROUTINE vsta$$error_free_vm(
+			size,			   !Buffer size address
+			buffer			   !Address to store buffer
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deallocating memory for error blocks.
+! The standard means is not used to avoid any recursive error reporting
+! situations. This routine will disable ASTs for the ACP (if active),
+! deallocate the memory, and then reenable the ASTs if necessary.
+!
+! FORMAL PARAMETERS:
+!
+!	SIZE	: Address of buffer size to be deallocated
+!			(input parameter)
+!	BUFFER	: Address of buffer address
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	status,				!RTL return status value
+	ast_status;			!Current AST enable status
+
+!
+! Disable ASTs for the ACP (if active)
+!
+	ast_status = $SETAST( ENBFLG = false );
+!
+! Allocate the requested memory
+!
+	status = lib$free_vm(
+			.size,
+			.buffer);
+!
+! If we really did turn ASTs off, then turn 'em back on
+!
+	IF .ast_status EQL SS$_WASSET THEN
+	  $SETAST( ENBFLG = true );
+!
+	RETURN .status;		!return RTL status returned
+END;				! of routine vsta$$error_free_vm
+
+
+%SBTTL 'vsta$$inform_system -- Inform VMS About Error Condition'
+ROUTINE vsta$$inform_system(
+			msg_desc: REF VECTOR,	   !Buffer desc. being $PUTMSGd
+			status_code		   !VSTA Error status code
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for informing VMS of a VAXstation internal
+! error condition as a result of someone calling the VAXstation error logger. 
+! This routine takes the top level error error message (that which was
+! specified in the error logger call), adds it to the canned text associated
+! with internally detected errors, and does both $SNDOPR and $SNDERR to the
+! message (i.e. sends it to designated central operators via OPCOM and records
+! it in the system error log file).
+!	NOTE: If the format and/or size of OPCOM messages changes, this routine
+! should be changed.
+!
+! FORMAL PARAMETERS:
+!
+!	MSG_DESC    : Address of $PUTMSG output message descriptor
+!			(input parameter)
+!	STATUS_CODE : Longword status code passed to error logger
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    MACRO vsta_errmsg =
+      %STRING('VSTA internal error detected - See LOG files')%;
+
+    LITERAL
+	max_opmsg_size = 120,
+	vsta_errmsg_length = 2 + %CHARCOUNT(vsta_errmsg);
+
+    OWN
+	oprmsg: VECTOR[2 + (max_opmsg_size / 4)] !Error logger message
+	  INITIAL(OPC$M_NM_CENTRL^8+OPC$_RQ_RQST,0,vsta_errmsg,BYTE(13,10));
+
+    LOCAL
+	error_size,				!Error message size
+	logmsg_desc: VECTOR[2]			!Error logger message desc.
+	  INITIAL(vsta_errmsg_length,oprmsg[0] + 8),
+	oprmsg_desc: VECTOR[2]			!OPCOM message desc.
+	  INITIAL(8 + vsta_errmsg_length,oprmsg[0]);
+!
+! Make sure that we only output the top level error passed to the error
+! logger.
+!
+	error_refc = .error_refc + 1;
+	IF .error_refc NEQ 2 THEN
+	  RETURN SS$_NORMAL;
+!
+! Compute how much of the error message we can send to $SNDOPR and $SNDERR
+! and copy it into the output buffer
+!
+	error_size = MIN(
+			.msg_desc[0],
+			(max_opmsg_size - vsta_errmsg_length));
+!
+	CH$MOVE(
+		.error_size,
+		.msg_desc[1],
+		8 + oprmsg[0] + vsta_errmsg_length);
+!
+! Send the canned VAXstation error message to the system error log file and
+! central operator designated terminals along with as much of the specified
+! error message as possible.
+!
+	oprmsg[1] = .status_code;
+	oprmsg_desc[0] = .oprmsg_desc[0] + .error_size;
+	logmsg_desc[0] = .logmsg_desc[0] + .error_size;
+!
+!
+!	$SNDERR( MSGBUF = logmsg_desc[0] );
+!
+	%if %variant gtr 0 %then
+	  $SNDOPR( MSGBUF = oprmsg_desc[0] ); %fi
+!
+	RETURN SS$_NORMAL;	! Return success indication
+END;				! of routine vsta$$inform_system
+
+
+%SBTTL 'vsta$$check_error_count -- Check Error count + Abort if Necessary'
+ROUTINE vsta$$check_error_count(
+			status_code		!Potential $exit status
+				): =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for maintaining and checking the VAXstation
+! internal error count (as they are logged) and causing a message to be
+! displayed and the ACP to die if an unsatisfactory number of errors have been
+! recorded.
+!	NOTE: If the format and/or size of OPCOM messages changes, this routine
+! should be changed.
+!
+! FORMAL PARAMETERS:
+!
+!	STATUS_CODE : Longword status code passed to error logger
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+    EXTERNAL ROUTINE
+	SYS$EXIT;				!VMS image exit routine
+
+    EXTERNAL
+	vsta$_interrlog,			!Internal error detected
+	vsta$_maxacperr;			!Max. ACP errors encountered
+
+    OWN
+	time_buffer: VECTOR[20,BYTE],		!Ascii time buffer
+	time_desc: VECTOR[2]			!Time descriptor
+	  INITIAL(20,time_buffer),
+	canned_msgvec: VECTOR[7]		!Canned error message vector
+	  INITIAL(6,vsta$_interrlog,1,time_desc,
+		    vsta$_maxacperr,1,acp_error_limit);
+!
+! If we haven't reached the error limit, then just return
+!
+	vsta$$kernel_call(vsta$$incr_error_count);
+!
+	IF .acp_error_count LSS acp_error_limit THEN
+	  RETURN SS$_NORMAL;
+!
+! Make sure that we only output the top level error passed to the error
+! logger.
+!
+	error_refc = 0;
+!
+! The message argument vector is pre-built -- Use the $PUTMSG system
+! service to put the message to SYS$ERROR (and SYS$OUTPUT if different).
+!
+	$ASCTIM( TIMBUF = time_desc );
+!
+	$PUTMSG(
+		MSGVEC = canned_msgvec,
+		ACTRTN = vsta$$inform_system,
+		ACTPRM = .status_code );
+!
+! Abort the ACP image (at non-AST level)
+!
+	vs$$post_ast_request_hipq(
+			SYS$EXIT,
+			.status_code );
+!
+	RETURN SS$_NORMAL;	! Return success indication
+END;				! of routine vsta$$check_error_count
+
+
+%SBTTL 'vsta$$incr_error_count -- Increment Error Count'
+ROUTINE vsta$$incr_error_count =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for incrementing the VAXstation
+! internal error count (as they are logged). Note that this value is stored
+! in OWN storage for quick, user-mode access, and in the template UCB to be
+! viewable from outside the ACP.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!	NONE
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine must execute in kernel mode.
+!
+!--
+BEGIN
+
+    EXTERNAL
+	vs$gl_template_ucb: REF BLOCK[0,BYTE];	!Template UCB address
+!
+! Increment our internal error count in both places
+!
+	acp_error_count = .acp_error_count + 1;
+	vs$gl_template_ucb[ucb$w_errcnt] = .acp_error_count;
+!
+	RETURN SS$_NORMAL;	! Return success indication
+END;				! of routine vsta$$incr_error_count
+
+
+end
+eludom

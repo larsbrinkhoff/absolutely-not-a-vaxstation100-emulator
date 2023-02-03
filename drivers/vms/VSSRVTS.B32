@@ -1,0 +1,1108 @@
+MODULE VS$SRV_TS (	IDENT = 'Terminal settings'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+
+! VAXstation mouse routines for calculating mouse locations in terms of
+! coordinates, pb's and regions.
+
+! This module contains code that handles VAXstation terminal settings
+! mechanisms.
+
+FORWARD ROUTINE!S . . .
+    vsta$$ts_menu_selection,	! Start here to display trmnl settings
+    vsta$$ts_reset,		! Reset a terminal
+    pop_settings_to_top,	! Pop existing settings doc to top
+    get_vt100_settings_filename,! Set up fab filenames
+    get_tek4014_settings_filename,
+    vsta$$ts_set_terminal,	! Set some feature of some terminal
+    vsta$$ts_get_terminal,	! Get value for sum feature of terminal
+    set_4014,			! Set some feature of some tek 4014
+    get_4014,			! Get some value for 4014
+    get_vt100,			! Get some feature of vt100
+    set_vt100,			! Set some feature of some vt100
+    change_level_consistently,	! to 8-bit/7-bit-NRC & set to VT100-ANSI 
+    change_legend,		! change bet typewriter & dataprocessing 
+    vsta$$ts_settings_done,	! Come here to finish settings
+    vsta$$ts_update_settings,	! Update checkmarks
+    vsta$$ts_close_doc;		! Close settings document
+
+LIBRARY 'vsta$library:vstekem';		! symbols like s4014$k_level_1
+LIBRARY 'vsta$library:vstagbl';		! new foreign kbd defs
+LIBRARY 'vsta$library:vsvtem100';	! symbols like device_data_table
+LIBRARY 'vsta$library:docfile';		! symbols like header_block
+LIBRARY 'vsta$library:libmacros';	! symbols like $log_error_and_return
+LIBRARY 'vsta$library:vserrors';	! symbols like integer_type
+LIBRARY 'vsta$library:vssrvdata';	! symbols like window_data_block
+LIBRARY 'vsta$library:vsvdsvd';		! symbols like vdblock
+LIBRARY 'sys$library:starlet';		! symbols like ss$_normal
+
+$vsta_psect;			! Define PSECTs
+
+EXTERNAL ROUTINE
+    close_doc,			! Close a document
+    create_multi_page_para,	! Create paraphenalia
+    maybe_update_check,		! Update check mark if necessary
+    vsta$$srv_open_doc_new,	! Open document to new page
+    find_vt100,			! Find a vt100's database
+    startup_doc_file,		! Get doc file ball rolling
+    tk$$emu_find_tek4014,	! Get tek database
+    vs$$acp_free_vm,		! Release memory
+    vs$$acp_get_vm,		! Get memory
+    vs$$vds_delete_vd,		! Delete a virtual display
+    vs$$vds_paste_vd_to_pb,	! Paste display on pasteboard
+    vs$$vds_vd_pointer,		! Find vd database from pointer
+    vsta$$clear_vt100_tab,	! Clear a tab stop
+    vsta$$set_vt100_ansi,	! Set vt100 into ansi mode
+    vsta$$set_vt100_nrc,	! Set/reset vt100 into nrc mode
+    vsta$$set_vt100_answer,	! Set answerback message
+    vsta$$set_vt100_dark,	! Set vt100 to dark background
+    vsta$$set_vt100_level,	! Set whether umlauted chars work
+    vsta$$set_vt100_light,	! Set vt100 to light background
+    vsta$$set_vt100_newline,	! Set vt100 for auto-newline
+    vsta$$set_vt100_nowrap,	! Set vt100 to not wrap
+    vsta$$set_vt100_oldline,	! No auto-newline
+    vsta$$set_vt100_tab,	! Set tab stop at specified column
+    vsta$$set_vt100_vt52,	! Set vt100 into vt52 mode
+    vsta$$set_vt100_wrap,	! Set vt100 into wrap mode
+    vsta$$srv_pop_only_wdb,	! Pop an H.I. vp to top
+    vsta$$srv_settings_created,	! Bookkeeping for settings window.
+    vsta$$srv_update_edits,	! Update editable fields on this page
+    vsta$$tek_reset,		! Reset a tek terminal
+    vsta$$tek_set_bytesize,	! whether umlauted chars are allowed
+    vsta$$tek_set_cr_lf,	! control cr echo
+    vsta$$tek_set_lf_cr,	! control lf echo
+    vsta$$tek_set_del_loy,	! control low order y
+    vsta$$tek_set_gin_term,	! control graphics input terminator
+    vsta$$tek_set_hold_mode,	! control eop action
+    vsta$$tek_settings_exist,	! tell a tek whether settings exist
+    vsta$$vt100_reset,		! reset a vt100
+    vsta$$vt100_settings_exist,	! tell a vt100 whether settings exist
+    vsta$$srv_restore_kbd_attach, ! Attach the keyboard to where it was
+				! before user starting editing term settings.
+    vsta$$get_transtable_id,	! to get new translation table		
+    vs$$set_vkb_trans_table;	! to set to new trans-table	
+EXTERNAL
+    vs$gl_acp_pid,		! to identify ourseleves to routines
+    srv$gl_language,		! prevailing language
+    vs$gl_e_vkb_id,		! VKB-id of currently edited field
+    vsta$gl_last_selected_wdb : REF window_data_block;
+				! info about last selected object
+
+EXTERNAL LITERAL
+    prof$k_tek_7bit,
+    prof$k_tek_8bit,
+    prof$k_tek_addc_none,
+    prof$k_tek_addc_cr,
+    prof$k_tek_addc_creot,
+    prof$k_vt_level1,
+    prof$k_vt_level2;
+
+EXTERNAL LITERAL
+    prof$k_tek_margin1,			! for margin-1 full condition	
+    prof$k_tek_margin2,			! for margin-2 full condition
+    prof$k_tek_marginoff;		! for marginoff full condition
+EXTERNAL
+    srv$gl_kbd_set,			!Keyboard setting	      	 
+    srv$gl_vt_legend,			!Keyboard legend		 
+    vsta$gl_keyboard;			! --> selected kbd & legend type 
+EXTERNAL LITERAL
+    prof$k_kbd_ca,		!LK201CA : American		
+    prof$k_kbd_cb,		!LK201CA : Flemish		
+    prof$k_kbd_cc,		!LK201CC : Canadian (French)	
+    prof$k_kbd_cd,		!LK201CD : Danish		
+    prof$k_kbd_ce,		!LK201CA : British		
+    prof$k_kbd_cf,		!LK201CA : Finnish		
+    prof$k_kbd_cg,		!LK201CA : German/Austrian	
+    prof$k_kbd_ch,		!LK201CA : Dutch		
+    prof$k_kbd_ci,		!LK201CA : Italian		
+    prof$k_kbd_ck,		!LK201CA : French/Swiss		
+    prof$k_kbd_cl,		!LK201CA : German/Swiss		
+    prof$k_kbd_cm,		!LK201CA : Swedish		
+    prof$k_kbd_cn,		!LK201CA : Norwegian		
+    prof$k_kbd_cp,		!LK201CA : French/Belgian	
+    prof$k_kbd_cs,		!LK201CA : Spanish		
+
+    prof$K_7bit_nrc,		!7-bit NRC			
+    prof$K_legend_tw,		!Kbd typewriter			
+    prof$K_legend_dp;		!Kbd dataprocessing		
+
+!
+! Macro to store a filename in a fab.
+!    
+MACRO
+    $store_name_in_fab (strng, fab) =
+	BEGIN
+	fab [FAB$B_FNS] = %CHARCOUNT (strng);
+	fab [FAB$L_FNA] = UPLIT (strng);
+	END %;
+
+
+GLOBAL ROUTINE vsta$$ts_menu_selection =
+!++
+! Functional description:
+!
+!	When the SETTINGS choice on a terminal's border menu is selected,
+!	we come here.  Our job is to figure out which terminal is involved,
+!	and to generate and display the settings form for the user to
+!	look at and change.
+!
+!--
+BEGIN
+OWN
+    fab_template : $FAB	(
+		FAC = <BIO,GET>
+		,MRS = 512
+		,RFM = FIX
+		);
+
+LOCAL
+    ts_fab : REF $fab_decl,
+    curr_ts_hdr : REF header_block,
+    ts_doc : REF doc_block,
+    help_keyword,	! Appropriate help keyword for terminal
+    s,			! status
+    wdb : REF window_data_block,
+    vd_id,		! id for terminal being set
+    vd : REF vdblock;	! database for terminal
+
+! Get wdb associated with terminal whose settings we want to
+! display.
+wdb = .vsta$gl_last_selected_wdb;
+
+! If the terminal already has it's settings document active, then
+! pop it to the top
+!
+IF .wdb [wdb$a_ts_docblk] NEQ 0
+  THEN RETURN pop_settings_to_top (.wdb [wdb$a_ts_docblk]);
+
+!
+! From the wdb, pick up the display id for the terminal.
+!
+vd_id = .wdb [wdb$l_term_vd_id];
+
+!
+! Find the vd's database.
+!
+IF NOT (s = vs$$vds_vd_pointer (.vd_id, vd))
+  then $log_error_and_return (.s);
+
+!
+! Allocate a doc block for the settings document, and remember it's address
+! in the swb for the terminal. Also allocate the document header.
+!
+IF NOT (s = vs$$acp_get_vm (
+	    %REF (dkb$s_doc_block + hdr$S_header_block),
+	    wdb [wdb$a_ts_docblk],
+	    0
+	    ))
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, (dkb$s_doc_block + hdr$S_header_block)
+			,string_type, %ASCID 'doc block for settings'
+			);
+
+ts_doc = .wdb [wdb$a_ts_docblk];		!Get address of doc block
+curr_ts_hdr = .ts_doc + dkb$S_doc_block;	!And addr. of header
+
+! Store address of docblk in vd database so it can be found when settings
+! need to be updated due to program sending escape sequences.
+vd [vdb$a_ts_docblk] = .wdb[wdb$a_ts_docblk];
+
+! Allocate a fab, and put it's address in the doc block.
+!
+IF NOT (s = vs$$acp_get_vm (%REF (fab$c_bln), ts_doc[dkb$a_fab], 0))
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, fab$c_bln
+			,string_type, %ASCID 'FAB for settings document'
+			);
+
+ts_fab = .ts_doc[dkb$a_fab];	!Remember address of fab
+
+! Initialize fab with template.
+CH$MOVE (fab$c_bln, fab_template[$base], ts_fab[$base]);
+
+ts_doc [dkb$a_hdr_address] = curr_ts_hdr[$base]; !Where header is.
+ts_doc [dkb$l_vd_of_body] = 0;	!Specify no document body yet.
+
+!
+! Create the paraphenalia for the settings document, using the appropriate
+! help keyword for the flavor of terminal we're dealing with.  Also, tell
+! appropriate emulator that settings for this terminal is now up.
+!
+SELECTONE .vd[vdb$b_mode] OF
+    SET
+    [vs$k_vtem_vt100] :
+    BEGIN
+    vsta$$vt100_settings_exist (.vd_id, 1);
+    get_vt100_settings_filename (ts_fab[$base]);
+    startup_doc_file (
+		.srv$gl_language,
+		ts_fab[$base],
+		ts_doc[$base]
+		);
+    create_multi_page_para (
+		ts_doc[$base],
+		0,			!Requested name (none)
+		(help_keyword = %ascid 'DEC terminal settings')
+		)
+    END;
+
+    [vs$k_vtem_4014] :
+    BEGIN
+    vsta$$tek_settings_exist (.vd_id, 1);
+    get_tek4014_settings_filename (ts_fab[$base]);
+    startup_doc_file (
+		.srv$gl_language,
+		ts_fab[$base],
+		ts_doc[$base]
+		);
+    create_multi_page_para (
+		ts_doc[$base],
+		0,			!Requested name (none)
+		(help_keyword = %ascid 'TEK 4014 settings')
+		)
+    END;
+
+    TES;
+
+!
+! Allow the settings to be seen on the screen.
+!
+IF NOT (s = vsta$$srv_settings_created
+		(.ts_doc [dkb$l_window_id]
+		,.ts_doc [dkb$w_pb_size_x]
+		,.ts_doc [dkb$w_pb_size_y]
+		,.ts_doc [dkb$l_pb]
+		,wdb[$base]
+		,ts_doc[dkb$a_wdb]		! where to store settings wdb
+		,.help_keyword
+		)
+	)
+  THEN RETURN .s;
+
+!
+! Open the settings document to page 1.
+!
+RETURN vsta$$srv_open_doc_new (ts_doc[$base], 1, 0);	!Page 1 in body
+END;
+
+GLOBAL ROUTINE vsta$$ts_reset =
+!++
+! Functional description:
+!
+!	When user has selected RESET on a terminal menu, see which terminal,
+!	what type, and go reset it.
+!
+! Implicit inputs.
+!
+!	vsta$gl_last_selected_wdb
+!
+!--
+BEGIN
+LOCAL
+    s,
+    vd_id,
+    vd : REF vdblock;
+!
+! Get terminal display id.
+!
+vd_id = .vsta$gl_last_selected_wdb [wdb$l_term_vd_id];
+!
+! Find the vd's database.
+!
+IF NOT (s = vs$$vds_vd_pointer (.vd_id, vd))
+  THEN $log_error_and_return (.s);
+!
+! Call appropriate routine, according to which type of terminal this is.
+!
+SELECTONE .vd[vdb$b_mode] OF
+    SET
+    [vs$k_vtem_vt100] : vsta$$vt100_reset (.vd_id);
+    [vs$k_vtem_4014] : vsta$$tek_reset (.vd_id);
+    TES;
+!
+! If settings is up for this terminal, update the form.
+!
+IF .vsta$gl_last_selected_wdb [wdb$a_ts_docblk] NEQ 0
+  THEN vsta$$ts_update_settings (.vd_id, -1);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE pop_settings_to_top
+!++
+! Functional description:
+!
+!	When the user has requested the settings for a terminal, and the
+!	settings document is already active, this routine is called to
+!	make sure the settings document is on top.
+!
+! Formal parameters:
+	(docblk : REF doc_block		! doc block for active settings.
+	) =
+!--
+BEGIN
+!
+! Pop the settings to the top.
+!
+RETURN vsta$$srv_pop_only_wdb (.docblk [dkb$a_wdb]);
+END;
+
+ROUTINE get_vt100_settings_filename
+!++
+! Functional description:
+!
+!	Given that we're doing settings for a vt100, store appropriate
+!	filename in the terminal settings fab, according to the native tongue.
+!
+! Formal parameters:
+	(fab : REF $fab_decl	! fab to store name in
+	) =
+!--
+BEGIN
+!
+! Pick filename appropriate for current language.
+!
+SELECTONE .srv$gl_language OF
+    SET
+	[doc_lang$K_english]:
+	    $store_name_in_fab ('VSTA$HILIB:TS100ENG.EDF', fab);
+	[doc_lang$K_french]:
+	    $store_name_in_fab ('VSTA$HILIB:TS100FRE.EDF', fab);
+	[doc_lang$K_german]:
+	    $store_name_in_fab ('VSTA$HILIB:TS100GER.EDF', fab);
+	[OTHERWISE]:		!I don't know; use ENGLISH.
+	    $store_name_in_fab ('VSTA$HILIB:TS100ENG.EDF', fab);
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_tek4014_settings_filename
+!++
+! Functional description:
+!
+!	Given that we're doing settings for a tek4014, store appropriate
+!	filename in the terminal settings fab, according to the native tongue.
+!
+! Formal parameters:
+	(fab : REF $fab_decl	! fab to store name in
+	) =
+!--
+BEGIN
+!
+! Pick filename appropriate for current language.
+!
+SELECTONE .srv$gl_language OF
+    SET
+	[doc_lang$K_english]:
+	    $store_name_in_fab ('VSTA$HILIB:TS4014ENG.EDF', fab);
+	[doc_lang$K_french]:
+	    $store_name_in_fab ('VSTA$HILIB:TS4014FRE.EDF', fab);
+	[doc_lang$K_german]:
+	    $store_name_in_fab ('VSTA$HILIB:TS4014GER.EDF', fab);
+	[OTHERWISE]:		!I don't know; use ENGLISH
+	    $store_name_in_fab ('VSTA$HILIB:TS4014ENG.EDF', fab);
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$ts_set_terminal
+!++
+! Functional description:
+!
+!	Given a virtual display id and an index indicating what's being
+!	set, call the appropriate emulator to perform the setting.
+!
+! Formal parameters:
+	(vd_id
+	,index
+	,param1			! optional other info needed
+	) =
+!--
+BEGIN
+LOCAL
+    vd : REF vdblock,	! vd database
+    s;			! status code
+!
+! Find the vd's database.
+!
+IF NOT (s = vs$$vds_vd_pointer (.vd_id, vd))
+  THEN $log_error_and_return (.s);
+!
+! Dispatch to particular routine according to terminal's type.
+!
+CASE .vd[vdb$b_mode] FROM vs$k_vtem_vt100 TO vs$k_vtem_4014 OF
+    SET
+	[vs$k_vtem_vt100] : set_vt100 (vd[$base], .index, .param1);
+	[vs$k_vtem_4014] : set_4014 (vd[$base], .index, .param1);
+	[INRANGE, OUTRANGE] : $return_bug (
+	    vsta$_setjunk,	! attempt to set terminal of unknown type
+	    integer_type, .vd[vdb$_vd_id],
+	    integer_type, .vd[vdb$b_mode]
+	    );
+    TES
+
+END;
+
+GLOBAL ROUTINE vsta$$ts_get_terminal
+!++
+! Functional description:
+!
+!	Given a virtual display and an index indicating what's being
+!	asked for, get some information about the terminal.
+!
+! Formal parameters:
+	(vd_id			! Virtual display id
+	,index			! index indicating what to ask for.
+	,result_adr		! Address into which to write the result.
+	) =
+!--
+BEGIN
+LOCAL
+    vd : REF vdblock,	! Database for virtual display
+    s;			! status code
+!
+! Find the vd's database.
+!
+IF NOT (s = vs$$vds_vd_pointer (.vd_id, vd))
+  THEN $log_error_and_return (.s);
+!
+! Dispatch to particular routine according to terminal's type.
+!
+CASE .vd [vdb$b_mode] FROM vs$k_vtem_vt100 TO vs$k_vtem_4014 OF
+    SET
+	[vs$k_vtem_vt100] : get_vt100 (vd[$base], .index, .result_adr);
+	[vs$k_vtem_4014] : get_4014 (vd[$base], .index, .result_adr);
+	[INRANGE, OUTRANGE] : $return_bug (
+	    vsta$_getjunk,	! attempt to get terminal of unknown type
+	    integer_type, .vd[vdb$_vd_id],
+	    integer_type, .vd[vdb$b_mode]
+	    );
+    TES
+
+END;
+
+ROUTINE set_4014
+!++
+! Functional description:
+!
+!	Given address of vd database of a tek4014 and an index, perform
+!	the specified setting.
+!
+! Formal parameters:
+	(vd : REF vdblock		! address of vd database
+	,index				! index of which setting to perform
+	,param1				! optional extra parameter
+	) =
+!--
+BEGIN
+LOCAL
+    s;
+
+!
+! Dispatch according to what setting is being performed.
+!
+CASE .index FROM 0 TO s4014$k_first_non_setting - 1 OF
+    SET
+	[s4014$k_cr_send_cr] : vsta$$tek_set_cr_lf (.vd[vdb$_vd_id], 0);
+	[s4014$k_cr_send_crlf] : vsta$$tek_set_cr_lf (.vd[vdb$_vd_id], 1);
+	[s4014$k_lf_send_lf] : vsta$$tek_set_lf_cr (.vd[vdb$_vd_id], 0);
+	[s4014$k_lf_send_lf_cr] : vsta$$tek_set_lf_cr (.vd[vdb$_vd_id], 1);
+	[s4014$k_del_loy] : vsta$$tek_set_del_loy (.vd[vdb$_vd_id], 1);
+	[s4014$k_esc_q_loy] : vsta$$tek_set_del_loy (.vd[vdb$_vd_id], 0);
+	[s4014$k_gin_term_none] : vsta$$tek_set_gin_term (
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_addc_none
+	    );
+	[s4014$k_gin_term_cr] : vsta$$tek_set_gin_term (
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_addc_cr
+	    );
+	[s4014$k_gin_term_cr_eot] : vsta$$tek_set_gin_term (
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_addc_creot
+	    );
+	[s4014$k_col1_full] : vsta$$tek_set_hold_mode(
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_margin1		! margin-1 full condition	
+	     );								
+	[s4014$k_stop_full] : vsta$$tek_set_hold_mode(
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_margin2		! margin-2 full condition	
+	     );								
+	[s4014$k_go_full] : vsta$$tek_set_hold_mode(
+	    .vd[vdb$_vd_id],
+	     prof$k_tek_marginoff	! margin-off condition	
+	     );								
+	[s4014$k_level_1] : vsta$$tek_set_bytesize (
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_7bit
+	    );
+	[s4014$k_level_2] : vsta$$tek_set_bytesize (
+	    .vd[vdb$_vd_id],
+	    prof$k_tek_8bit
+	    );
+	[INRANGE, OUTRANGE] : $return_bug (
+	    vsta$_badstngidx,	! attempt to set unknown item
+	    integer_type, .index
+	    );
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_4014
+!++
+! Functional description:
+!
+!	Given address of vd database of a tek4014 and an index, get
+!	the specified info.
+!
+! Formal parameters:
+	(vd : REF vdblock		! address of vd database
+	,index				! index of which item to get
+	,result_adr			! where to write result
+	) =
+!--
+BEGIN
+LOCAL
+    s,
+    tekblk : REF tek_blk;	! tek database
+!
+! Get database for this terminal.
+!
+IF NOT (s = tk$$emu_find_tek4014 (.vd[vdb$_vd_id], tekblk))
+  THEN $log_error_and_return (.s);
+!
+! Dispatch according to what item is being requested.
+!
+CASE .index FROM 0 TO s4014$k_first_non_setting - 1 OF
+    SET
+	[s4014$k_cr_send_cr]: .result_adr = not .tekblk[tk$v_auto_lf_cr];
+	[s4014$k_cr_send_crlf] : .result_adr = .tekblk[tk$v_auto_lf_cr];
+	[s4014$k_lf_send_lf] : .result_adr = not .tekblk[tk$v_auto_cr_lf];
+	[s4014$k_lf_send_lf_cr] : .result_adr = .tekblk[tk$v_auto_cr_lf];
+	[s4014$k_del_loy] : .result_adr = .tekblk[tk$v_del_loy];
+	[s4014$k_esc_q_loy] : .result_adr = not .tekblk[tk$v_del_loy];
+	[s4014$k_gin_term_none] : .result_adr= not .tekblk[tk$v_creot_enabled];
+	[s4014$k_gin_term_cr] : .result_adr =
+	    .tekblk[tk$v_creot_enabled] and not .tekblk[tk$v_auto_creot];
+	[s4014$k_gin_term_cr_eot] : .result_adr =
+	    .tekblk[tk$v_creot_enabled] and .tekblk[tk$v_auto_creot];
+	[s4014$k_col1_full] : .result_adr = 	!manipulate for margin-1 
+	    .tekblk[tk$v_margin_on] and (not .tekblk[tk$v_margin_2]);	
+	[s4014$k_stop_full] : .result_adr =  .tekblk[tk$v_margin_2];	
+	[s4014$k_go_full] : .result_adr = not .tekblk[tk$v_margin_on];
+	[s4014$k_level_1] : .result_adr =
+	     prof$k_tek_7bit eql .tekblk[tk$w_bytesize];
+	[s4014$k_level_2] : .result_adr =
+	     prof$k_tek_8bit eql .tekblk[tk$w_bytesize];
+	[INRANGE, OUTRANGE] : $return_bug (
+	    vsta$_badstngidx,	! attempt to get unknown setting slot
+	    integer_type, .index
+	    );
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_vt100
+!++
+! Functional description:
+!
+!	Given address of vd database of a vt100 and an index, perform
+!	the specified setting.
+!
+! Formal parameters:
+	(vd : ref vdblock		! address of vd database
+	,index				! index of which setting to perform
+	,param1				! other info, like answer message or
+					! column to set tab at
+	) =
+!--
+BEGIN
+LOCAL
+    s,
+    vt100 : REF device_data_table;	! vt100 database
+
+!
+! Get database for this vt100.
+!
+IF NOT (s = find_vt100 (.vd[vdb$_vd_id], vt100))
+  THEN $log_error_and_return (.s);
+!
+! Dispatch according to what setting is being performed.
+!
+CASE .index FROM 0 TO s100$k_first_non_setting - 1 OF
+    SET
+	[s100$k_dark_background] : vsta$$set_vt100_dark (vt100[$base]);
+	[s100$k_light_background] : vsta$$set_vt100_light (vt100[$base]);
+	[s100$k_ansi] : vsta$$set_vt100_ansi (vt100[$base]);
+	[s100$k_vt52] : vsta$$set_vt100_vt52 (vt100[$base]);
+	[s100$k_wrap] : vsta$$set_vt100_wrap (vt100[$base]);
+	[s100$k_nowrap] : vsta$$set_vt100_nowrap (vt100[$base]);
+	[s100$k_newline] : vsta$$set_vt100_newline (vt100[$base]);
+	[s100$k_oldline] : vsta$$set_vt100_oldline (vt100[$base]);
+	[s100$k_answer] : vsta$$set_vt100_answer (
+	    vt100[$base],
+	    $string_descriptor_str [.param1, sd$w_len],		! num chars
+	    $string_descriptor_str [.param1, sd$a_adr]		! adr of chars
+	    );
+	[s100$k_settab] : vsta$$set_vt100_tab (
+	    vt100[$base],
+	    .param1
+	    );
+	[s100$k_cleartab] : vsta$$clear_vt100_tab (
+	    vt100[$base],
+	    .param1
+	    );
+	[s100$k_level_1] : change_level_consistently(
+	    vt100[$base],
+	    prof$k_vt_level1
+	    );
+	[s100$k_level_2] : change_level_consistently(
+	    vt100[$base],
+	    prof$k_vt_level2
+	    );
+	[s100$k_bit7_nrc] : change_level_consistently(	! replace the rtn
+	    vt100[$base],
+	    prof$k_7bit_nrc			! foreign kbd stuff
+	    );
+	[s100$k_legend_tw] : change_legend(	! to typewriter mode
+	    vt100[$base],
+	    prof$k_legend_tw			! foreign kbd stuff
+	    );
+	[s100$k_legend_dp] : change_legend(	! to dataprocessing
+	    vt100[$base],
+	    prof$k_legend_dp			! foreign kbd stuff
+	    );
+	[INRANGE, OUTRANGE] : $return_bug (
+	    vsta$_badstngidx,	! attempt to set unknown item
+	    integer_type, .index
+	    );
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+
+ROUTINE change_level_consistently
+!++
+! Functional description:
+!
+!	Changes levels to 8-bit DEC multinational/7-bit NRC and	
+!	sets to VT100-ANSI for consistency reasons
+!
+!	Make the settings consistent between vt-levels and legends based on
+!	the vt-level value.
+! IMPLICIT INPUT
+!
+! Formal parameters:
+ (
+	id : REF device_data_table,
+	level				! prof$k_vt_level_2 or prof$k_7bit_nrc
+ ) =
+!
+!--
+BEGIN
+LOCAL
+    trans_table,
+    s;
+
+(SELECTONE .level OF
+   SET
+   [prof$k_vt_level1]:
+   BEGIN
+   IF NOT (s = vsta$$set_vt100_level(.id,		! = vt100[$base]
+				     .level		! level to set to
+				    ))
+	THEN $log_error_and_return (.s);
+
+   id[vt$l_legend] = vt$k_legend_dp;	! force to dataprocessing
+
+   IF NOT (s = vsta$$get_transtable_id(.srv$gl_kbd_set,	! Kbd as in profile
+				       vt$k_legend_dp,	! dataprocessing legend
+				       trans_table	! value to be returned
+				      ))
+	THEN $log_error_and_return (.s);
+
+!  set the new translation table
+   IF NOT (s = vs$$set_vkb_trans_table(.id[vt$l_pasteboard_id],	! = vkb_id
+				       .trans_table,	! new translation table
+				       .vs$gl_acp_pid	! tell routine its us
+				      ))
+	THEN $log_error_and_return (.s);
+
+   END;
+
+   [prof$k_vt_level2]:
+   BEGIN
+   IF NOT (s = vsta$$set_vt100_level(.id,		! = vt100[$base]
+				     .level		! level to set to
+				    ))
+	  THEN $log_error_and_return (.s);
+   END;
+
+   [prof$k_7bit_nrc]:
+   BEGIN
+!  first set the level to nrc
+   IF NOT (s = vsta$$set_vt100_nrc(.id))
+	THEN $log_error_and_return (.s);
+
+!  then force the legend to typewriter
+   id[vt$l_legend] = vt$k_legend_tw;	! force to typewriter
+
+!  next, get the new translation table index
+   IF NOT (s = vsta$$get_transtable_id(.srv$gl_kbd_set,	! Kbd as in profile
+				       vt$k_legend_tw,	! typewriter legend
+				       trans_table	! value to be returned
+				      ))
+	THEN $log_error_and_return (.s);
+
+!  and set the new translation table
+   IF NOT (s = vs$$set_vkb_trans_table(.id[vt$l_pasteboard_id],	! = vkb_id
+				       .trans_table,	! new translation table
+				       .vs$gl_acp_pid	! tell routine its us
+				      ))
+	THEN $log_error_and_return (.s);
+
+   END;
+
+   [OTHERWISE]:		!Invalid vt-level
+   BEGIN
+   $RETURN_ERROR (vsta$_nosuchvtt);
+   END;
+
+    TES
+);
+
+   SS$_NORMAL
+
+END;
+
+ROUTINE change_legend
+!++
+! Functional description:
+!
+!	Changes vt100 legend to typewriter/dataprocessing modes
+! IMPLICIT INPUT
+! srv$gl_kbd_set	: the current keyboard value of the profile setting
+! Formal parameters:
+ (
+	id : REF device_data_table,
+	legend				! prof$k_legend_tw or prof$k_legend_dp
+ ) =
+!
+!--
+BEGIN
+LOCAL
+    s,
+    trans_table;			! trans_table index
+
+
+
+IF NOT (s = vsta$$get_transtable_id(.srv$gl_kbd_set,	! Kbd as in profile
+				    .legend,		! legend to set to
+				    trans_table		! value to be returned
+				    ))
+  THEN $log_error_and_return (.s);
+
+! set the new translation table
+IF NOT (s = vs$$set_vkb_trans_table(.id[vt$l_pasteboard_id],	! = vkb_id
+				    .trans_table,	! new translation table
+				    .vs$gl_acp_pid	! tell routine its us
+				    ))
+  THEN $log_error_and_return (.s);
+
+! update the legend value in this vt100 database 
+id[vt$l_legend] = .legend;
+
+! set the vt-level to be consistent with the current legend value
+IF .legend EQL prof$k_legend_tw
+   THEN			! typewriter legend
+     BEGIN
+     IF .id[vt$w_c1_transmission] EQL vt$k_c1_7bit	! if 7-bit ASCII then
+	THEN
+	BEGIN
+	id[vt$w_c1_transmission] = vt$k_bit7_nrc;	! change it to 7-bit NRC
+
+!	change the vt-level to 7-bit nrc
+	IF NOT (s = vsta$$set_vt100_nrc(.id))
+	   THEN $log_error_and_return (.s);
+	END
+     END
+
+   ELSE			! dataprocessing legend
+     IF .id[vt$w_c1_transmission] EQL vt$k_bit7_nrc	! if 7-bit nrc, then
+	THEN
+	BEGIN
+	id[vt$w_c1_transmission] = vt$k_c1_7bit; ! change it to 7-bit ASCII
+	IF NOT (s = vsta$$set_vt100_level(.id,		! = vt100[$base]
+					  vt$k_c1_7bit	!set to 7-bit ASCII
+				    	 ))
+	   THEN $log_error_and_return (.s);
+	END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_vt100
+!++
+! Functional description:
+!
+!	Given address of vd database of a vt100 and an index, get
+!	the requested info.
+!
+! Formal parameters:
+	(vd : REF vdblock		! address of vd database
+	,index				! index of which item to get
+	,result_adr			! where to write answer
+	) =
+!--
+BEGIN
+LOCAL
+    s,
+    vt100 : REF device_data_table;	! vt100 database
+
+!
+! Get database for this vt100.
+!
+IF NOT (s = find_vt100 (.vd[vdb$_vd_id], vt100))
+  THEN $log_error_and_return (.s);
+!
+! Dispatch according to what item is being requested.
+!
+CASE .index FROM 0 TO s100$k_first_non_setting - 1 OF
+    SET
+	[s100$k_dark_background] : .result_adr =
+	    not .vt100[vt$v_screen_background];
+	[s100$k_light_background] : .result_adr =
+	    .vt100[vt$v_screen_background];
+	[s100$k_ansi] : .result_adr = .vt100[vt$v_ansi_vt52];
+	[s100$k_vt52] : .result_adr = not .vt100[vt$v_ansi_vt52];
+	[s100$k_wrap] : .result_adr = .vt100[vt$v_auto_wrap];
+	[s100$k_nowrap] : .result_adr = not .vt100[vt$v_auto_wrap];
+	[s100$k_newline] : .result_adr = .vt100[vt$v_linefeed_newline];
+	[s100$k_oldline] : .result_adr = not .vt100[vt$v_linefeed_newline];
+!
+! for answerback and tab, we give address of descriptor or bits, assumed
+! vt$k_maximum_columns bits long for tab settings
+!
+	[s100$k_answer] : .result_adr = vt100[vt$l_answerback_message_length];
+	[s100$k_settab, s100$k_cleartab] : .result_adr = vt100[vt$v_tabs];
+!	[s100$k_level_1] : .result_adr =
+!	    .vt100[vt$w_conformance_level] eql vt$k_level_1;
+!	[s100$k_level_2] : .result_adr =
+!	    .vt100[vt$w_conformance_level] eql vt$k_level_2;
+!	[s100$k_bit7_nrc] : .result_adr =
+!	    .vt100[vt$w_conformance_level] eql vt$k_bit7_nrc; !foreign kbd
+	[s100$k_level_1] : .result_adr =
+	    .vt100[vt$w_c1_transmission] eql vt$k_c1_7bit;
+	[s100$k_level_2] : .result_adr =
+	    .vt100[vt$w_c1_transmission] eql vt$k_c1_8bit;
+	[s100$k_bit7_nrc] : .result_adr =
+	    .vt100[vt$w_c1_transmission] eql vt$k_bit7_nrc; !foreign kbd
+	[s100$k_legend_tw] : .result_adr =
+	    .vt100[vt$l_legend] eql vt$k_legend_tw; !foreign kbd
+	[s100$k_legend_dp] : .result_adr =
+	    .vt100[vt$l_legend] eql vt$k_legend_dp; !foreign kbd
+	[inrange, outrange] : $return_bug (
+	    vsta$_badstngidx,	! attempt to get unknown setting slot
+	    integer_type, .index
+	    );
+    TES;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$ts_settings_done =
+!++
+! Functional description:
+!
+!	When user selects "done" on terminal settings menu, come here to
+!	get rid of the settings form.
+!
+!--
+BEGIN
+LOCAL
+    ter_wdb : REF window_data_block,
+    wdb : REF window_data_block;
+!
+! Get window data block for terminal settings form.
+!
+wdb = .vsta$gl_last_selected_wdb;
+ter_wdb = .wdb [wdb$a_ter_wdb];
+!
+! Close the terminal settings doc block.
+!
+RETURN vsta$$ts_close_doc (.ter_wdb);
+END;
+
+GLOBAL ROUTINE vsta$$ts_close_doc
+!++
+! Functional description:
+!
+!	Close out a terminal settings document.  This happens in at least
+!	two situations: 1) user has said "done" to her terminal settings
+!	document, and 2) a terminal is being deleted while it's terminal
+!	settings document is up.
+!
+! Formal parameters:
+	(wdb : REF window_data_block	! address of settings doc block
+	) =
+!--
+BEGIN
+LOCAL
+    vd : REF vdblock,
+    docblk : REF doc_block,
+    s;
+!
+! Get terminal display database.
+!
+IF NOT (s = vs$$vds_vd_pointer (.wdb[wdb$l_term_vd_id], vd))
+  THEN $log_error_and_return (.s);
+!
+! Tell appropriate emulator that settings are no longer up (and hence
+! escape sequences sent by programs needn't be reflected in a settings
+! document).
+!
+CASE .vd[vdb$b_mode] FROM vs$k_vtem_vt100 TO vs$k_vtem_4014 OF
+    SET
+	[vs$k_vtem_vt100] : vsta$$vt100_settings_exist (
+	    .wdb[wdb$l_term_vd_id],
+	    0);
+	[vs$k_vtem_4014] : vsta$$tek_settings_exist (
+	    .wdb[wdb$l_term_vd_id],
+	    0);
+    TES;
+!
+! Get address of terminal's setting document block out of the terminal's
+! wdb.
+!
+docblk = .wdb [wdb$a_ts_docblk];
+!
+! If the settings document had the KBD, reattach to the next best place.
+!
+IF (.docblk [dkb$l_pb] EQL .vs$gl_e_vkb_id)
+  THEN
+    vsta$$srv_restore_kbd_attach ();	!Restore KBD to where it was before
+					! we started editing.
+
+!
+! Close out the settings document.
+!
+IF NOT (s = close_doc (docblk[$base]))
+  THEN $log_error_and_return (.s);
+!
+! Release space taken up by fab in the doc block.  Note that close_doc
+! doesn't do this, since help doc blocks and profile doc blocks have static
+! fabs intead of allocated ones.
+!
+IF NOT vs$$acp_free_vm (%REF (fab$c_bln), docblk[dkb$a_fab], 0)
+  THEN RETURN $error (vsta$_freevm_for
+			,string_type, %ASCID 'FAB for terminal settings'
+			);
+!
+! Free up the memory taken up by the doc block.
+!
+IF NOT vs$$acp_free_vm
+		(%REF (dkb$s_doc_block + hdr$S_header_block)
+		,docblk
+		,0
+		)
+  THEN RETURN $error (vsta$_freevm_for
+			,string_type, %ASCID 'DOC block for terminal settings'
+			);
+!
+! Clear out slot in terminal's wdb so terminal knows it no longer has a
+! settings document.
+!
+wdb [wdb$a_ts_docblk] = 0;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$ts_update_settings
+!++
+! Functional description:
+!
+!	When an emulator has determined that a terminal's settings document
+!	is currently open AND some attribute of the terminal has changed
+!	for which a check mark (or some!) on the settings document may need
+!	to be updated, this routine is called to update the marks.
+!
+! Formal parameters:
+	(vd_id		! id of terminal whose settings should be updated
+	,item		! item indicating which check mark to update (should
+			! be a s100$ or s4014$ symbol)
+			! Note:  Specify -1 for things like RESET, for which
+			! you want ALL checkmarks updated
+	) =
+!
+!--
+BEGIN
+LOCAL
+    docblk : REF doc_block,
+    num_chk_blocks,
+    num_edit_blocks,
+    wdb : REF window_data_block,
+    blka,
+    ckh : REF checkoff_header,
+    ckee : REF checkoff_entry,
+    vd : REF vdblock,
+    s;
+!
+! Find database for this terminal.
+!
+IF NOT (s = vs$$vds_vd_pointer (.vd_id, vd))
+  THEN $log_error_and_return (.s);
+!
+! Get document block address for this terminal's settings.  We ASSUME one
+! exists, because if it doesn't, emulator shouldn't be calling us, since
+! it would be a performance degradation.
+!
+docblk = .vd[vdb$a_ts_docblk];
+!
+! Get wdb for settings document.
+!
+wdb = .docblk[dkb$a_wdb];
+!
+! For now, we'll IGNORE the item passed to us and update ALL checkmarks
+! on whatever settings page is currently showing. 
+!
+num_chk_blocks = .docblk [dkb$w_num_chk_blks];
+blka = .docblk [dkb$a_chk_blk];
+
+INCR i FROM 1 to .num_chk_blocks DO
+    BEGIN
+    ckh = .blka + (512 * (.i - 1));
+    ckee = .ckh + ckh$S_checkoff_header;
+    INCR j FROM 1 TO .ckh [ckh$w_num_ents] DO
+	BEGIN
+	maybe_update_check (
+	    .ckee,
+	    .wdb[wdb$a_ter_wdb],
+	    .docblk[dkb$l_vd_of_body]);
+	ckee = .ckee + cke$S_checkoff_entry
+	END
+    END;
+!
+! Update editable fields, if there are any on this page.
+!
+num_edit_blocks = .docblk [dkb$w_num_edit_blks];
+blka = .docblk [dkb$a_edit_blk];
+IF (.num_edit_blocks NEQ 0)
+  THEN vsta$$srv_update_edits
+		(.num_edit_blocks	!How many blocks
+		,.blka			!Address of first
+		,.docblk [dkb$l_vd_of_body]	!Vd-id
+		,.wdb [wdb$a_ter_wdb]	!WDB of terminal
+		);
+
+SS$_NORMAL
+END;
+
+END
+ELUDOM

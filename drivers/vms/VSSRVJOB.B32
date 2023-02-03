@@ -1,0 +1,1024 @@
+MODULE VS$SRV_JOB (
+			IDENT = 'HI SERVER Job Control'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module does things with user jobs. (Creating, destroying, freezing,
+! etc.).
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_job_new_jrb,		!Create JRB for new job
+    vsta$$srv_create_Logged_In,		!Create a logged-in job
+    vsta$$srv_create_not_logged_in,	!Create a NOT-LOGGED-IN job
+					! i.e., running LOGINOUT
+    vsta$$srv_term_mbx_ast,		!Termination mbx read complete AST
+    handle_process_rundown,		! The non-ast part of the above.
+    vsta$$srv_job_go,
+    logged_in_go,			!Create logged-in job for terminal
+    not_logged_in_go,			!Create not logged-in job for terminal
+    create_process,			!Routine to create a process.
+    vsta$$find_jrb_for_pid,		!Find a jrb given a pid
+    vsta$$get_jrb_for_pid,		!Same as find, except if not found,
+					! creates one.
+    vsta$$srv_get_vd_devname,		!Calculate a terminal name from vd-id.
+    vsta$$srv_delete_this_jrb,		!Delete one JRB - the user deassigned
+					! his main terminal.
+    vsta$$srv_logout_job,		!User selected "logout job" in menu.
+    vsta$$srv_delprc,			!Delete process created by HI
+    vsta$$srv_log_out_user_jobs,	!"STOP" user main processes
+    vsta$$srv_job_end;			!End session actions
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!$string_descriptor
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!Data structure defs.
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols and macros
+LIBRARY 'VSTA$LIBRARY:LOGINMSG';	!Defines login errors (Must match
+library 'vsta$library:vsvdspb';		!Symbols like pb_block
+					! VMS version message defs!)
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+! Some GLOBAL variables initialized here:
+GLOBAL
+    vsta$gl_goto_routine,		!Address of routine to call.
+    hi$gl_mtjrb: REF job_block,		!Main terminal JRB block
+    jrb_q_hdr:	VECTOR [2]
+		INITIAL (jrb_q_hdr, jrb_q_hdr),	!JOB reference block queue
+					! In order of stacking order of jobs
+    srv$gl_jobnum_count;		!Starts at 0 and counts jobs.
+
+BUILTIN
+    INSQUE, REMQUE;
+
+EXTERNAL ROUTINE
+    vs$$acp_get_vm,		!Get virtual memory
+    vs$$acp_free_vm,		!Free virtual memory
+    vs$$acp_sysjob_inc,		!Increment system interactive job count
+    vs$$acp_sysjob_dec,		!Decrement system interactive job count
+    vs$$acp_restore_tmbu,	!Restore fudged term. mbx AST state if needed
+    vs$$acp_vd_connected,	!Is VD still connected to virtual terminal?
+    vsta$$kernel_call,		!Call routine in kernel mode
+    vsta$$srv_attach_kbd,	!Attach the keyboard
+    vsta$$com_create_terminal,	!Tell ACP to create a terminal for us
+    vsta$$srv_notice_number,	!Send a notice number to notices document
+    vsta$$srv_delete_all_jrb,	!Delete all SDA objects used for one jrb
+    vsta$$foot_jrb_deleted,	!Delete job icon from footer bar.
+    vs$$vds_delete_vd,		!Delete a VD
+    vs$$post_ast_request,	!Do something at non-AST level.
+    vsta$$srv_append_dec,	!Append decimal number to string.
+    vsta$$pid_add_one,		!Tell PIDACCESS about a new PID we created
+    vsta$$pid_del_one,		!Tell PIDACCESS that a PID we created went away
+    vsta$$srv_get_message_text,	!Get text for error message
+    vsta$$error_logger,		!Log an error.
+    vsta$$error;		!Error routine
+
+EXTERNAL
+    vs$gl_acp_uic,			! UIC of the ACP
+    vs$gl_acp_pid,			!our pid
+    vs$gl_vd_name_desc: VECTOR [2],	!Descriptor to "VDx0:"
+    srv$gl_username_desc: VECTOR [2],	!Descriptor to username.
+    vsta$gl_term_mbx_unit,	!Termination mailbox device unit number
+    vsta$gw_term_mbx_chan: WORD,!Termination mailbox device channel number
+    vsta$gl_term_mbx_efn,	!Termination mailbox event flag
+    vsta$gl_term_mbx_buf:	!Termination mailbox buffer
+		BLOCK[acc$k_termlen,BYTE],
+    vsta$gl_last_selected_wdb,	!Last WDB selected.
+    vsta$gl_sysres;		!=1 if error caused by resource allocation
+				! failure (i.e. a "soft" error).
+
+GLOBAL ROUTINE vsta$$srv_job_new_jrb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a job entry for a new job, puts it
+!	in the front of the JRB queue, and returns
+!	the address of the block.
+!
+! FORMAL PARAMETERS:
+	(jrb_addr		!address of longword where the JRB address
+				! is to be stored.
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block;		!Address of the job block
+!
+! Get memory for the JRB
+!
+IF NOT vs$$acp_get_vm (%REF(JRB$K_BLOCK_LENGTH), jrb, 0)
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, jrb$K_block_length
+			,string_type, %ASCID 'JRB'
+			);
+!
+! Initialize queue headers and other variables
+!
+CH$FILL (0, jrb$K_block_length, .jrb);	!Start with all 0's.
+
+jrb [jrb$a_wdb_q_hdr_fl] = jrb [jrb$a_wdb_q_hdr_fl];
+jrb [jrb$a_wdb_q_hdr_bl] = jrb [jrb$a_wdb_q_hdr_fl];
+
+!
+! Insert the JRB into the FRONT of the queue.
+! (meaning it is first in the new VP stacking order).
+!
+INSQUE (.jrb, jrb_q_hdr);
+!
+! Return address of the job block to the user
+!
+.jrb_addr = .jrb;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_create_not_logged_in
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a not-logged-in terminal for the human interface,
+!	at normal processing level.
+! FORMAL PARAMETERS:
+	(ttype		!Type of terminal
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Create a new JRB and put in global variable "hi$gl_mtjrb"
+!
+IF NOT (status =
+    vsta$$srv_job_new_jrb (hi$gl_mtjrb)
+	)
+  THEN
+    BEGIN
+    vsta$$srv_notice_number (2061);	!* Tell human: not enough resources
+    RETURN .status
+    END;
+!
+!   Now, call the "create-terminal routine". If all goes well this
+! will get to the emulator, which will in turn call the human interface
+! when the terminal window has been created. The routine
+! "vsta$$srv_term_window_created" will see that we have setup
+! the global variable "hi$gl_mtjrb" with the JRB. It will spawn
+! the job, etc. to get the PID. If there are no problems with this,
+! the PID is stored in the new JRB, then terminal appears, and
+! the routine returns to the emulator which returns to here. We then
+! zero the global variable, and everything is ok.
+!
+
+vsta$gl_goto_routine = not_logged_in_go;
+status = vsta$$com_create_terminal (.ttype);
+vsta$gl_goto_routine = 0;	!Make sure this is otherwise always 0.
+
+IF NOT .status
+  THEN
+    BEGIN
+    vsta$$srv_delete_this_jrb (.hi$gl_mtjrb);
+    hi$gl_mtjrb = 0;
+    IF (.status NEQ SS$_NOSLOT)		!Environmental error, already
+					! reported to user in notices.
+      THEN
+	BEGIN
+	IF .vsta$gl_sysres
+	  THEN
+	    vsta$$srv_notice_number (2061) !Report "not enough resources"
+	  ELSE
+	    BEGIN
+	    $error (vsta$_int_cre_job); !"Internal error creating a job"
+	    $exit ();			!Give up the ship
+	    END;
+	END;
+    END;
+!
+! Tell PIDACCESS that this process and its sub's can do creates
+! in this ACP.
+!
+vsta$$pid_add_one (.hi$gl_mtjrb [jrb$l_pid]);
+
+hi$gl_mtjrb = 0;		!Make sure this is otherwise always 0.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_create_logged_in
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a terminal and job for the human interface,
+!	at normal processing level.
+! FORMAL PARAMETERS:
+	(ttype			!Type of terminal to create
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Create a new JRB and put in global variable "hi$gl_mtjrb"
+!
+IF NOT (status =
+    vsta$$srv_job_new_jrb (hi$gl_mtjrb)
+	)
+  THEN
+    BEGIN
+    vsta$$srv_notice_number (2061);	!* Tell human: not enough resources
+    RETURN .status
+    END;
+
+vsta$gl_goto_routine = logged_in_go; !Call this routine when terminal has been
+				!created.
+status = vsta$$com_create_terminal (.ttype);
+vsta$gl_goto_routine = 0;	!Make sure this is otherwise always 0.
+
+IF NOT .status
+  THEN
+    BEGIN
+    vsta$$srv_delete_this_jrb (.hi$gl_mtjrb);
+    hi$gl_mtjrb = 0;
+    IF (.status NEQ SS$_NOSLOT)		!Environmental error, already
+					! reported to user in notices.
+      THEN
+	BEGIN
+	IF .vsta$gl_sysres
+	  THEN
+	    vsta$$srv_notice_number (2061) !Report "not enough resources"
+	  ELSE
+	    BEGIN
+	    $error (vsta$_int_cre_job); !"Internal error creating a job"
+	    $exit ();			!Give up the ship
+	    END;
+	END;
+    RETURN .status;			!Return bad status
+    END;
+
+!
+! Tell PIDACCESS that this process and its sub's can do creates
+! in this ACP.
+!
+vsta$$pid_add_one (.hi$gl_mtjrb [jrb$l_pid]);
+
+hi$gl_mtjrb = 0;		!Make sure this is otherwise always 0.
+RETURN SS$_NORMAL
+END;	
+
+GLOBAL ROUTINE vsta$$srv_term_mbx_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets informed of an HI job being deleted. The systems interactive job
+!	count will be decremented and the AST reenabled.
+!--
+BEGIN
+LITERAL
+    num_trans_entries = 7;		!Number of entries in table
+OWN
+    error_trans_table: VECTOR [2 * num_trans_entries] INITIAL
+	(lgi$_userexc, 2000		!"User process quota exceeded"
+	,lgi$_notvalid, 2001		!"User authorization failure"
+	,lgi$_cmdinput, 2006		!"error reading command input"
+	,lgi$_acntexc, 2002		!"Max allowed processes for account"
+	,lgi$_badhour, 2003		!"Not authorized to login at this time"
+	,lgi$_exquota, 2004		!"Max number of users exceeded - try
+					! again later"
+	,lgi$_logdisabl, 2005		!"Logins are currently disabled - try
+					! again later"
+	);
+LOCAL
+    proc_status,
+    facility_code;
+!
+! Decrement the system's count of known interactive jobs
+!
+vsta$$kernel_call(
+	vs$$acp_sysjob_dec,
+	.vsta$gl_term_mbx_buf[acc$l_pid]
+		);
+!
+! If we did funny stuff to get this particular termination mbx ast, correct
+! the situation
+!
+vs$$acp_restore_tmbu();
+!
+! Tell PIDACCESS that it can forget about this process and
+! all the subprocesses that created things.
+!
+vs$$post_ast_request
+	(handle_process_rundown, .vsta$gl_term_mbx_buf [acc$l_pid]);
+!
+! Check the termination status code; if it is a login error
+! then report the error in the notices document
+!
+IF NOT (proc_status = .vsta$gl_term_mbx_buf [acc$l_finalsts])
+  THEN
+    BEGIN
+!
+! The following hack is to solve a VMS LOGIN problem.
+!
+    IF (.proc_status EQL %X'FFFFFFFE')	!Returned by LOGIN if auth. error
+      THEN proc_status = lgi$_notvalid;	
+
+    facility_code = .proc_status / %X'10000';
+
+    IF (.facility_code EQL lgi$_facility)
+    THEN
+	BEGIN
+	INCR i FROM 0 TO num_trans_entries - 1 DO
+	IF (.proc_status EQL .error_trans_table [.i * 2])
+	  THEN EXITLOOP vs$$post_ast_request
+		(vsta$$srv_notice_number		!Routine to call
+		,.error_trans_table [.i * 2 + 1])	!Parameter = notice #
+	  ELSE
+		IF .i EQL num_trans_entries - 1
+		THEN vs$$post_ast_request (vsta$$srv_notice_number, 2049);
+	END
+
+    END;
+!
+! Issue another read to termination mailbox (without waiting, of course)
+! to find out about next HI job going the way of this one.
+! Note that we do this AFTER using contents of term_mbx_buf.
+!
+$QIO(
+	EFN    = .vsta$gl_term_mbx_efn,
+	CHAN   = .vsta$gw_term_mbx_chan,
+	FUNC   = IO$_READVBLK,
+	ASTADR = vsta$$srv_term_mbx_ast,
+	P1     = vsta$gl_term_mbx_buf,
+	P2     = acc$k_termlen
+);
+
+RETURN SS$_NORMAL
+END;	
+
+ROUTINE handle_process_rundown
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Non-ast level routine to get rid of JRB stuff that a process
+!	left behind.
+! FORMAL PARAMETERS:
+	(pid			! External PID
+	) =
+!--
+BEGIN
+EXTERNAL ROUTINE
+    vs$$acp_cvt_ipid,
+    vs$$acp_cvt_epid,
+    vs$$acp_vd_disconnect,
+    vs$$vds_pb_multi_delete,
+    vsta$$mouse_cancel_requests,
+    vs$$vtb_cancel_asts;
+LOCAL
+    ipid,
+    status,
+    new_ipid,
+    new_epid,
+    wdb: REF window_data_block,
+    jrb: REF job_block;
+
+vsta$$pid_del_one (.pid);	!Forget about this PID and its subprocesses.
+
+!
+! If this process was deleted due to a DCL DISCONNECT/CONNECT, then we don't
+! want to cleanup the login device and want to remember the new PID.
+!
+IF (status = vsta$$find_jrb_for_pid(.pid,jrb)) THEN
+  BEGIN
+    wdb = .jrb[JRB$A_MTWIN];
+    IF vsta$$kernel_call(
+	vs$$acp_vd_disconnect,
+	.wdb[WDB$L_TERM_VD_ID],
+	new_ipid) THEN
+      BEGIN
+	new_epid = vs$$acp_cvt_epid(.new_ipid);
+	jrb[JRB$L_PID] = .new_epid;
+	vsta$$pid_add_one (.new_epid);
+	RETURN SS$_NORMAL;
+      END;
+  END;
+!
+! Delete JRB if any of it still exists. This gets rid of windows
+! created by the process, permanent terminals.
+!
+IF .status
+  THEN
+    vsta$$srv_delete_all_jrb (.jrb);  ! Delete the objects
+!
+! Process may still have created stuff which is still being persistent and
+! hanging around (if no JRB for process, delete access check failed on some
+! objects, etc.). So go delete any such stuff...
+!
+ipid = vs$$acp_cvt_ipid(.pid);
+vs$$vds_pb_multi_delete(.ipid);
+vsta$$mouse_cancel_requests(.ipid);
+vs$$vtb_cancel_asts(.ipid);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_job_go
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a logged-in or not-logged-in job to
+!	go with the terminal that was just created for us.
+!
+! FORMAL PARAMETERS:
+	(vd_id			!This tells us device name
+	,pb_id			! Actually used as keyboard id
+	,ttype			!Type of terminal
+	,pid			!Address of where we put the PID
+	) =
+!
+! RETURN VALUES:
+!	If error spawning the job, returns status non-zero.
+!	At that point, the terminal should just be deleted.
+!--
+BEGIN
+	external routine
+	    vs$$vds_pb_found;
+LOCAL
+    pb : ref pb_block,
+    term_name: BLOCK [12,BYTE],
+    term_desc: VECTOR [2],	!Terminal descriptor
+    real_len_of_term_name: WORD,
+    status;
+!
+! From vd-id, find out name of virtual display
+!
+term_desc [0] = 12;		!# bytes in string
+term_desc [1] = term_name;	!Address of string
+
+vsta$$srv_get_vd_devname
+	(.vd_id			!Virtual display id.
+	,term_desc		!Address of output string descriptor
+	,real_len_of_term_name	!Addr of word to receive real length
+	);
+term_desc [0] = .real_len_of_term_name; !Get a proper descriptor
+!
+! Call routine to spawn the job's process
+!
+IF NOT (status =
+    (.vsta$gl_goto_routine) (term_desc, .pb_id, .pid)
+	)
+  THEN RETURN .status;
+!
+! Find terminal pasteboard database.
+!
+	if not (status = vs$$vds_pb_found (.pb_id, pb))
+	then return .status;
+!
+! Remember the owning pid of the terminal.  This is needed for checking
+! accessibility.
+!
+	pb[vs$vds_l_pb_pid] = ..pid;
+!
+! If no system job slots are available, delete the process just created
+!
+IF NOT (status =
+    vsta$$kernel_call	(vs$$acp_sysjob_inc,..pid)
+	)
+  THEN
+    BEGIN
+    vsta$$srv_delprc ( .pid );
+    vsta$$srv_notice_number (2057);	!"system limit of interactive jobs
+					!  reached"
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_get_vd_devname
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Calculates the device name from the vd-id,
+!	writes the ASCII name in the given descriptor,
+!	and returns the real length.
+!	This may be calculated directly: vd-id=1  = "VDx1:", etc.
+!
+! FORMAL PARAMETERS:
+	(vd_id
+	,str_desc
+	,real_len_addr		!Address of a word to get the real length
+	) =
+!--
+BEGIN
+LOCAL
+    running_length: WORD,
+    nn_string:	BLOCK [12,BYTE],	!ASCII for the number
+    desc_nn:	VECTOR [2],
+    vda0_str_adr: REF VECTOR [5,BYTE],	!Addr of "VDx0:"
+    ctstr: VECTOR [8, BYTE],		!Control string
+    ctstr_desc: VECTOR [2],		!Descriptor to it
+    status;
+
+IF vsta$$kernel_call(
+	vs$$acp_vd_connected, .vd_id, .str_desc, .real_len_addr ) THEN
+    RETURN SS$_NORMAL;
+
+vda0_str_adr = .vs$gl_vd_name_desc [1];	!Get ptr to "VDx0:" string
+ctstr_desc [0] = 8;			!CTRSTR desc.
+ctstr_desc [1] = ctstr;
+CH$MOVE	(8
+	,UPLIT ('_VDx!AS:')
+	,ctstr
+	);
+ctstr [3] = .vda0_str_adr [2];		!Copy x from "VDx0:" to "_VDx!AS:"
+
+desc_nn [0] = 0;	!Start with 0-length string
+desc_nn [1] = nn_string;
+
+vsta$$srv_append_dec (.vd_id, desc_nn); !Get ASCII for dec. number.
+
+IF NOT (status =
+    $fao	(ctstr_desc		!CTRSTR
+		,.real_len_addr		!Address of real output length
+		,.str_desc		!Address of output descriptor
+		,desc_nn		!Descriptor for ASCID 'nn'
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_fao);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$find_jrb_for_pid
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns pointer to JRB given the PID.
+!	If not found, return 0 status.
+! FORMAL PARAMETERS:
+	(pid		!Process id
+	,jrb_addr	!Address of place to put jrb address
+	) =
+BEGIN
+OWN   
+   curr_jrb: REF job_block,
+   status;
+!
+! First, try to match PID directly. We probably will.
+!
+curr_jrb = .jrb_q_hdr [0];	!Point to first entry
+
+WHILE (.curr_jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    IF (.curr_jrb [JRB$L_PID] EQL .pid)
+      THEN
+	BEGIN
+	.jrb_addr = .curr_jrb;	!Found it
+	RETURN SS$_NORMAL
+	END;
+    curr_jrb = .curr_jrb [JRB$A_FLINK]	!Search down the chain...
+    END;
+
+RETURN 0;		!Not found.
+END;
+
+GLOBAL ROUTINE vsta$$get_jrb_for_pid
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns pointer to JRB given the PID.
+!	If not found, create a new one.
+! FORMAL PARAMETERS:
+	(pid		!Process id
+	,jrb_addr	!Address of place to put jrb address
+	) =
+BEGIN
+LOCAL
+    new_jrb: REF job_block,
+    status;
+
+IF NOT (status =
+    vsta$$find_jrb_for_pid (.pid, .jrb_addr)
+	)
+  THEN
+    BEGIN
+  !
+  ! Have to create a new JRB for this Pid
+  !
+    IF NOT (vsta$$srv_job_new_jrb (new_jrb))
+       THEN RETURN .status;
+
+    new_jrb [jrb$l_pid] = .pid;		!Remember the PID
+    .jrb_addr = .new_jrb;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE not_logged_in_go
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Spawn a not-logged-in job, giving it the terminal as SYS$INPUT
+!	   and output and error.
+!	2. Attach the physical keyboard to it.
+!
+! FORMAL PARAMETERS:
+	(term_name_desc		!ASCII descriptor of terminal name
+	,pb_id			!Needed to attach keyboard
+	,pid			!Address of where to put pid
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    create_process
+		(%ASCID 'SYS$SYSTEM:LOGINOUT'	!Image name
+		,%X'10004'			!UIC
+		,.pid				!Address of where to put PID
+		,.term_name_Desc		!INPUT
+		,.term_name_desc		!OUTPUT
+		,.term_name_desc		!ERROR
+		,.term_name_desc		!1st attempted process name
+		,4				!Priority
+		,.vsta$gl_term_mbx_unit		!Mailbox unit
+		,prc$m_inter OR prc$m_detach	!Interactive job
+		)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_process
+!++
+! FUNCTIONAL DESCRIPTION:
+!	  Routine to create a process. The purpose of this routine
+!	is to try the process name we really want first, and if
+!	it's a duplicate, to try different names until we get a
+!	unique one.
+! FORMAL PARAMETERS:
+	(image_desc		!Image name to run
+	,uic			!UIC
+	,pid			!Address of where to put PID
+	,input_desc		!INPUT
+	,output_desc		!OUTPUT
+	,error_desc		!ERROR
+	,prcnam_desc: REF $string_descriptor !Initial process name descriptor
+	,prio			!BASPRI
+	,mbx_unit		!MAXUNT
+	,stsflg			!STSFLG 
+	) =
+! ERROR HANDLING:
+!	If an error occurs, SS$_NOSLOT is returned in all cases, and
+! the error is reported to the notices document; unexpected errors are logged.
+!--
+BEGIN
+EXTERNAL
+    vsta$_dupprcnam,		!?duplicate process name too many times
+    vsta$_creprc;		!?unexpected error from $creprc
+LOCAL
+    att_proc_name: VECTOR [15,BYTE],
+    att_proc_name_desc: VECTOR [2],
+    trial,
+    out_len: WORD,		!Gets output length of $fao string
+    status;
+
+IF (status =
+    $creprc	(IMAGE = .image_desc
+		,UIC = .uic
+		,PIDADR = .pid
+		,INPUT = .input_desc
+		,OUTPUT = .output_desc
+		,ERROR = .error_desc
+		,PRCNAM = .prcnam_desc
+		,BASPRI = .prio
+		,PRVADR = UPLIT(-1,-1)
+		,MBXUNT = .mbx_unit
+		,STSFLG = .stsflg
+		)
+	)
+  THEN RETURN SS$_NORMAL;	!It worked; usually it will.
+
+!
+! Prepare incase duplicate process name.
+!
+trial = 0;
+att_proc_name_Desc [1] = att_proc_name;
+
+INCR i FROM 1 TO 500 DO			!Try this 500 times, then quit.
+    BEGIN
+    IF (.status EQL SS$_NOSLOT)
+      THEN
+	BEGIN
+	vsta$$srv_notice_number (2058);	!"Noslot" error reported for human.
+	RETURN .status;			!Expected that one.
+	END;
+    IF (.status NEQ SS$_DUPLNAM)
+      THEN
+	BEGIN
+	vsta$$error_logger (.status);		!Log this error
+	vsta$$error_logger (vsta$_creprc);
+	vsta$$srv_notice_number (2059);		!System error creating proc.
+	RETURN SS$_NOSLOT;
+	END;
+  !
+  ! The error was "duplicate process name". Build a name appending "_<trial>"
+  ! to the given first part.
+  !
+    trial = .trial + 1;			!First try is "_1"
+    att_proc_name_desc [0] = 15;	!Get good descriptor.
+    IF NOT (status =
+	$fao	(%ASCID '!AS_!UL'	!CTRSTR
+		,out_len		!OUTLEN
+		,att_proc_name_desc	!OUTSTR
+		,.prcnam_desc		!P1 (string)
+		,.trial			!p2 (trial #)
+		)
+	    )
+      THEN
+	BEGIN
+	$system_error (.status);	!Report bad $fao status
+	$error (vsta$_fao);
+	vsta$$srv_notice_number (2060);	!?Tell user that $fao failed (!!)
+	RETURN SS$_NOSLOT;		!Give up
+	END;
+
+    att_proc_name_desc [0] = .out_len;	!Get a good descriptor.
+
+    IF (status =
+	$creprc
+		(IMAGE = .image_desc
+		,UIC = .uic
+		,PIDADR = .pid
+		,INPUT = .input_desc
+		,OUTPUT = .output_desc
+		,ERROR = .error_desc
+		,PRCNAM = att_proc_name_desc	!Next attempt at a name..
+		,BASPRI = .prio
+		,PRVADR = UPLIT(-1,-1)
+		,MBXUNT = .mbx_unit
+		)
+	)
+      THEN RETURN SS$_NORMAL;
+    END;		!Of INCR loop..
+
+vsta$$error_logger (.status);
+vsta$$error_logger (vsta$_dupprcnam);	!?Duplicate process name too many times
+vsta$$srv_notice_number (2059);		!Report error to human
+RETURN SS$_NOSLOT;
+END;
+
+ROUTINE logged_in_go
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Spawn a logged-in job, giving it the terminal as SYS$INPUT
+!	   and output and error.
+!	2. Attach the physical keyboard to it.
+!
+! FORMAL PARAMETERS:
+	(term_name_desc		!Address of terminal name descriptor
+				! e.g. "_VDA5:".
+	,pb_id			!Needed for attach keyboard
+	,pid			!Address of place to store pid
+	) =
+!--
+BEGIN
+LOCAL
+    MBX_CHAN: word,
+    IOSB: vector [4,word],
+    USERNAME: vector [32,byte],
+    PRIVS: vector [2,long] initial (-1,-1),
+    status;
+
+IF (.srv$gl_username_desc [0] EQL 0)
+  THEN RETURN not_logged_in_go (.term_name_desc, .pb_id, .pid);
+!
+! Got a real username... try it!
+!
+
+!
+! Create the process running VSHILOGN (VAXstation version of LOGINOUT.EXE)
+!
+	IF NOT (status =
+	    create_process
+			(%ASCID 'VSTA$EXE:VSHILOGN.EXE'	!Image name
+			,.vs$gl_acp_uic		!UIC
+			,.pid			!Address of where to put PID
+			,.term_name_Desc	!INPUT
+			,.term_name_desc	!OUTPUT
+			,.term_name_desc	!ERROR
+			,.term_name_desc	!1st attempted process name
+			,4			!Priority
+			,.vsta$gl_term_mbx_unit	!Mailbox unit
+			,prc$m_inter OR prc$m_detach
+			)
+	 	)
+	  THEN RETURN .status;		!Only error returned is SS$_NOSLOT.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_delete_this_jrb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the given JRB and all SDA objects.
+! FORMAL PARAMETERS:
+	(jrb: REF job_block	!Address of JRB block
+	) =
+!
+! SIDE EFFECTS:
+!	JRB removed from queue, and memory deleted.
+!--
+BEGIN
+LOCAL
+    junk;
+
+!
+! If there was a job name VD, delete it
+!
+IF (.jrb [jrb$l_job_name_vd] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$vds_delete_vd (.jrb [jrb$l_job_name_vd] , 0 , .vs$gl_acp_pid)
+      THEN $error (vsta$_delvd_for
+		,string_type, %ASCID 'job name'
+		);
+    END;
+
+IF (.jrb [jrb$l_slot] NEQ 0)			!In footer bar?
+  THEN vsta$$foot_jrb_deleted (.jrb [jrb$l_slot]);	!Yes, delete it.
+
+REMQUE (.jrb, junk);		!Remove queue entry
+!
+! Release memory used by JRB
+!
+IF NOT vs$$acp_free_vm (%REF (jrb$k_block_length), jrb, 0)
+  THEN $error (vsta$_freevm_for
+		,string_type, %ASCID 'JRB'
+		);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_logout_job =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Log out the job that the user requested.
+! IMPLICIT INPUTS:
+!	vsta$gl_last_selected_wdb
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,
+    jrb: REF job_block,
+    pid,
+    status;
+
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+wdb = .vsta$gl_last_selected_wdb;
+jrb = .wdb [wdb$a_jrb];
+pid = .jrb [jrb$l_pid];
+
+IF NOT (status =
+    vsta$$srv_delprc (pid)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    $error (vsta$_delprc);
+    END;
+!
+! Note: VDDRIVER will make sure that when the process goes away,
+! everything else created by that process will also go away.
+!
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_delprc( pidadr ) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete the specified process created by the human interface.
+! FORMAL PARAMETERS:
+!	pidadr : Address of process ID
+! IMPLICIT INPUTS:
+!	vs$$gl_acp_prib;
+!--
+BEGIN
+EXTERNAL
+    vs$gl_acp_prib;
+LOCAL
+    stat,
+    priority;
+
+! Lower the process priority to be 1 less than ours to make sure we
+! don't get into a compute-bound deadlock state with the process running
+! down.
+
+priority = max(0,.vs$gl_acp_prib - 1);
+$setpri (
+	PIDADR = .pidadr,
+	PRI    = .priority);
+
+! Now delete the process. If its not there to begin with, then its not an
+! error in this context
+
+stat = $delprc (PIDADR = .pidadr);
+IF NOT .stat THEN
+  IF .stat NEQ SS$_NONEXPR THEN
+    RETURN .stat;
+
+RETURN SS$_NORMAL;
+END;
+
+GLOBAL ROUTINE vsta$$srv_log_out_user_jobs =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This routine loops through the JRB's, logging out
+!	the jobs' main processes. This requires   PRIV.
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    jobpid,			!PID
+    status;
+
+jrb = .jrb_q_hdr [0];		!Get ptr to first JRB
+
+WHILE (.jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    jobpid = .jrb [jrb$l_pid];	!Get pid
+    IF (.jrb [jrb$a_mtwin] NEQ 0)	!Ignore processes we didn't create
+      THEN
+	BEGIN
+	IF NOT (status = vsta$$srv_delprc (jobpid))
+	  THEN
+	    BEGIN
+	    $system_error (.status);
+	    $error (vsta$_delprc);
+	    END;
+	END;
+    jrb = .jrb [jrb$a_flink];	!Go on to next JRB
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_job_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does end session actions.
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    next_jrb,
+    status;
+!
+! Note: At this point, the only JRB's left should belong to user jobs.
+!
+jrb = .jrb_q_hdr [1];			!Get bottom JRB
+WHILE .jrb NEQ jrb_q_hdr DO
+    BEGIN
+    next_jrb = .jrb [jrb$a_blink];	!Get next-highest JRB..
+   ! Delete all windows and terminals in the JRB..
+    vsta$$srv_delete_all_jrb (.jrb);	!.. and the JRB itself gets deleted..
+    jrb = .next_jrb;
+    END;
+
+srv$gl_jobnum_count = 0;		!Reset job number counter.
+!
+! Make sure we were really able to delete all JRBs and the queue is now
+! empty.  (If not, then we have an internal error... don't allow ourselves
+! to get any more screwed up.. just exit).
+!
+IF (.jrb_q_hdr [0] NEQ jrb_q_hdr)
+  THEN
+    BEGIN
+    EXTERNAL vsta$_jobend;
+    vsta$$error_logger (vsta$_jobend);
+    $exit (CODE = vsta$_jobend);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

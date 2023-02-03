@@ -1,0 +1,90 @@
+module VSTA$STUB(
+		ident = 'V1.2-01',
+		ADDRESSING_MODE(EXTERNAL=GENERAL,NONEXTERNAL=GENERAL)
+		) =
+begin
+
+!++
+! Facility:
+!
+! Abstract:
+!
+!
+! Environment:
+!	VSTASTUB and CGLSTUB shareable images.
+!
+!
+!--
+!
+! Include files:
+!
+    library 'SYS$LIBRARY:STARLET';
+    library 'VSTA$LIBRARY:LIBMACROS';
+!
+! PSECT definitions for VAXstation library modules
+!
+    $VSTA_PSECT;
+!
+! Table of contents:
+!
+forward routine
+
+    vsta$stub;
+!
+
+GLOBAL ROUTINE vsta$stub =
+!++
+! Functional description:
+!
+!	This routine provides the common functionality for both "stub" versions
+! of the VAXstation shareable image libraries. All transfer vectors for the
+! stub versions jump to this routine which is responsible for returning a
+! status code which indicates that the VAXstation software is not installed.
+! This is the only routine needed to create both VSTASTUB and CGLSTUB.
+!	These stubs may be installed on systems where "real" VSTASHR and 
+! CGLSHR do not exist by merely being renamed and installed in their place.
+! This will permit layered products which may or may not use the VAXstation
+! software (depending on whether or not there are VAXstations on the system)
+! to execute on those systems. Since such products are linked with "real"
+! VSTASHR and CGLSHR, the image activator on target systems will not permit
+! their execution if no VSTASHR exists. So these products can install these
+! stubs as part of their installation.
+!
+! Formal parameters:
+!
+!	None
+!
+! Implicit inputs:
+!
+!	none
+!
+! Implicit outputs:
+!
+!	none
+!
+! Routine value:
+! Completion codes:
+!
+!	none
+!
+! Side effects:
+!
+!	none
+!
+!--
+
+    begin
+
+    external
+	vsta$_notinstal;	!VAXstation software not installed on system
+!
+! Just return the status which indicates that the VAXstation software has not
+! been installed properly on this system
+!
+    RETURN vsta$_notinstal;
+!
+    END; 			! ROUTINE vsta$stub
+
+
+END 				! module VSTA$STUB
+ELUDOM

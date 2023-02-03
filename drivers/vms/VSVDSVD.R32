@@ -1,0 +1,314 @@
+ 
+!*** MODULE $VSDEF ***
+! +++
+!  Facility:
+! .
+! 	VAX Workstation Virtual Display data structures
+! .
+!  Abstract:
+! .
+! 	This file contains all the Workstation Virtual Display
+! 	data structures.  Various constants are also 
+! 	defined. The data
+! 	definitions are defined to be language independent.
+! .
+!  Environment:
+! .
+! 	VSACP process.
+! .
+! ---
+! .
+! .
+!  Data Block Types
+! .
+literal VS$K_VDB_TYPE_VAL = 251;
+literal VS$K_PBD_TYPE_VAL = 252;
+literal VS$K_PSB_TYPE_VAL = 256;
+!  Sizes
+! .
+literal VS$K_HEADER_SIZE = 8;           !  Doubly-linked Queue header size
+! 					.
+!  VTEM constants
+! 					.
+literal VS$K_VTEM_GENERIC = 0;
+literal VS$K_VTEM_VT100 = 1;
+literal VS$K_VTEM_4014 = 2;
+literal VS$K_INTERNAL = 3;
+literal VS$K_VTEM_NUMBER = 3;           !  Number of emulators, not 
+!     including the INTERNAL type
+literal VS$K_INTERNAL_VD_ID_BASE = 32768; !  Starting ID for Internal VDs
+! 					.
+!  Virtual Display Block -- VDB
+! 					.
+literal VDB$M_GRAPHICS_EXIST = 1;
+literal VDB$M_TEXT_EXIST = 2;
+literal VDB$M_FULL_VIS = 4;
+literal VDB$M_GRAPHICS_IO = 8;
+literal VDB$M_TEXT_IO = 16;
+literal VDB$M_NATIVE_GRAPHICS = 32;
+literal VDB$M_STAGE_VALID = 64;
+literal VDB$M_DISABLED = 128;
+literal VDB$M_VAX_BACKING = 256;
+literal VDB$M_BIT_BLIT = 512;
+literal VDB$M_XON_XOFF = 1024;
+literal VDB$M_PERM = 2048;
+literal VDB$M_SHARE = 4096;
+literal VDB$M_BACKING_DISABLED = 8192;
+literal VDB$M_RECTANGLES_PURGED = 16384;
+literal VDB$m_spares = 32768;
+literal VDB$K_NEITHER_TEXT_NOR_GRAPHICS = 0;
+literal VDB$K_GRAPHICS_ONLY = 1;
+literal VDB$K_TEXT_ONLY = 2;
+literal VDB$K_TEXT_AND_GRAPHICS = 3;
+literal VDB$K_BACKGROUND = 0;
+literal VDB$K_BITBLT = 1;
+literal VDB$K_DRAW_CURVE = 2;
+literal VDB$K_MOVE_TEXT = 3;
+literal VDB$K_PRINT_TEXT = 4;
+literal VDB$K_FIRST_OPCODE = 0;
+literal VDB$K_LAST_OPCODE = 4;
+literal VDB$K_BLOCK_LENGTH = 289;
+macro VDBLOCK = 0,0,0,0 %;
+literal VDB$S_VDBLOCK = 289;
+macro VDB$A_FL = 0,0,32,0 %;
+macro VDB$A_BL = 4,0,32,0 %;
+macro VDB$W_SIZE = 8,0,16,0 %;
+macro VDB$B_TYPE = 10,0,8,0 %;
+macro VDB$B_MODE = 11,0,8,0 %;          !  Emulation code
+macro VDB$R_VDID = 12,0,32,0 %;
+literal VDB$S_VDID = 4;
+macro VDB$_VD_ID = 12,0,32,0 %;
+macro VDB$_ID = 12,0,16,0 %;
+macro VDB$L_UIC = 16,0,32,0 %;          !  UIC of Virt. Disp owner
+macro VDB$R_CHARACS = 20,0,16,0 %;
+literal VDB$S_CHARACS = 2;
+macro VDB$_CHARS = 20,0,16,0 %;         !  Chars
+macro VDB$R_CHARBITS = 20,0,16,0 %;
+literal VDB$S_CHARBITS = 2;
+macro VDB$V_GRAPHICS_EXIST = 20,0,1,0 %; !  1 Gr, 0 No_Gr
+macro VDB$V_TEXT_EXIST = 20,1,1,0 %;    !  1 Text, 0 None
+macro VDB$V_FULL_VIS = 20,2,1,0 %;      !  1 fully visible
+macro VDB$V_GRAPHICS_IO = 20,3,1,0 %;   !  This request
+macro VDB$V_TEXT_IO = 20,4,1,0 %;       !  This request
+macro VDB$V_NATIVE_GRAPHICS = 20,5,1,0 %; !  This request
+macro VDB$V_STAGE_VALID = 20,6,1,0 %;   !  Good stage buffr?
+macro VDB$V_DISABLED = 20,7,1,0 %;      !  screen update disabled?
+macro VDB$V_VAX_BACKING = 20,8,1,0 %;   !  Stage in VAX memory?
+macro VDB$V_BIT_BLIT = 20,9,1,0 %;      !  BITBLT in progress
+macro VDB$V_XON_XOFF = 20,10,1,0 %;     !  1=XOFF   0=XON
+macro VDB$V_PERM = 20,11,1,0 %;         !  1= permanent, 0=temp
+macro VDB$V_SHARE = 20,12,1,0 %;        !  1=shareable,0=non-
+macro VDB$V_BACKING_DISABLED = 20,13,1,0 %; !  1=disabled,0=enabled
+macro VDB$V_RECTANGLES_PURGED = 20,14,1,0 %;
+macro VDB$v_spares = 20,15,1,0 %;
+macro VDB$W_BLOCKS = 22,0,16,1 %;       !  # of reasons for further IO blockage
+macro VDB$W_PROT = 24,0,16,1 %;         !  UIC protection code
+macro VDB$B_TEXT_OR_GRAPHICS = 26,0,8,0 %; !  Indicates whether text or graphics or both
+macro VDB$b_spare1 = 27,0,8,1 %;
+macro VDB$W_BACKGROUND = 28,0,16,1 %;   !  Intensity
+macro VDB$W_FOREGROUND = 30,0,16,1 %;
+macro VDB$A_PBDQFL = 32,0,32,0 %;       !  PBD Queue Head
+macro VDB$A_PBDQBL = 36,0,32,0 %;
+macro VDB$L_GRAPHIC_SIZE = 40,0,32,0 %; ! Size of graphics storage
+macro VDB$A_STAGE = 44,0,32,0 %;        !  Pointer to staging area
+! 
+!  The following queues are provided to put Virtual Display Command
+!  blocks in.  Eventually all operations to the VD screen will use
+!  this mechanism but for now provide both the queues the next area
+!  which is used for the same purpose.
+! 
+macro VDB$A_VDCQFL = 48,0,32,0 %;
+macro VDB$A_VDCQBL = 52,0,32,0 %;
+! 
+!  Address of vstadrive restore queue entry. If backing is disabled
+! 
+macro VDB$A_RESADR = 56,0,32,0 %;
+! 
+!  Define the text cursor offsets, dimensions and controls here
+!  
+macro VDB$R_CURSOR_RECTANGLE = 60,0,0,0 %;
+literal VDB$S_CURSOR_RECTANGLE = 8;
+macro VDB$W_CUR_OFF_X = 60,0,16,1 %;
+macro VDB$W_CUR_OFF_Y = 62,0,16,1 %;
+macro VDB$W_CUR_EXT_X = 64,0,16,1 %;
+macro VDB$W_CUR_EXT_Y = 66,0,16,1 %;
+! 
+!  Define the potentially selectable region of the vd
+! 
+macro VDB$R_REGION_RECTANGLE = 68,0,0,0 %;
+literal VDB$S_REGION_RECTANGLE = 8;
+macro VDB$W_RGN_OFF_X = 68,0,16,1 %;
+macro VDB$W_RGN_OFF_Y = 70,0,16,1 %;
+macro VDB$W_RGN_EXT_X = 72,0,16,1 %;
+macro VDB$W_RGN_EXT_Y = 74,0,16,1 %;
+! 
+!  Define the redisplay rectangle list.  Used by proper text scrolling code
+!  and redisplay vd on <object> routines
+! 
+macro VDB$A_REDISP_RECTANGLES = 76,0,32,0 %;
+macro VDB$L_REDISP_RC_COUNT = 80,0,32,1 %;
+macro VDB$A_REDISP_ROUTINE = 84,0,32,0 %;
+macro VDB$A_REDISP_ARGBLOCK = 88,0,32,0 %;
+macro VDB$A_REGION_DSC = 92,0,32,0 %;
+macro VDB$L_PATHING = 96,0,32,1 %;
+macro VDB$W_PS_OFF_X = 100,0,16,1 %;
+macro VDB$W_PS_OFF_Y = 102,0,16,1 %;
+macro VDB$V_CURSOR_CYCLE = 104,0,1,0 %; !  0 means off and 1 means on
+macro VDB$V_CURSOR_ENABLE = 104,1,1,0 %; !  0 means disabled 1 enabled
+macro VDB$V_REGION_ENABLE = 104,2,1,0 %; !  0 means disabled 1 pot sel
+macro VDB$V_SCROLL_IN_PROGRESS = 104,3,1,0 %; !  1 means we are scrolling
+macro VDB$V_REGION_CYCLE = 104,4,1,0 %; !  0 means off and 1 means on
+!  The following are parameters that are set by routines desiring to 
+!  instruct the display processor to write into the image of a VD on
+!  the screen. The parameters are used by "display_vd_on_tube" when
+!  executing the final command after adding clipping rectangles.
+macro VDB$W_OPCODE = 105,0,16,0 %;      !  Opcode indicating "bitblt", "print", etc.
+macro VDB$W_TXTLEN = 107,0,16,0 %;      !  Bytes in text message
+macro VDB$A_TXTPTR = 109,0,32,0 %;      !  Pointer to text descr
+macro VDB$A_FONT = 113,0,32,0 %;        !  Pointer to font descriptor
+macro VDB$A_CONTROL_STRING = 117,0,32,0 %; !  address of control string
+macro VDB$W_CONTROL_COUNT = 121,0,16,0 %; !  count of control bits
+macro VDB$w_spare2 = 123,0,16,1 %;
+macro VDB$W_INTERCHAR_PAD = 125,0,16,0 %; !  pad between characters
+macro VDB$W_SPACE_PAD = 127,0,16,0 %;   !  pad between spaces
+macro VDB$A_SOURCE = 129,0,32,0 %;      !  Source bitmap descriptor address or source constant
+macro VDB$W_SRC_TYPE = 133,0,16,0 %;    !  Tells whether src is const, bitmap, etc
+macro VDB$W_BG_WIDTH = 135,0,16,0 %;    !  Source width for background operations
+macro VDB$W_BG_HEIGHT = 137,0,16,0 %;   !  Source height for background operations
+macro VDB$W_BG_DEPTH = 139,0,16,0 %;    !  Source planes for background operations
+macro VDB$W_SRC_OFF_X = 141,0,16,0 %;   !  offset of mask in source
+macro VDB$W_SRC_OFF_Y = 143,0,16,0 %;   !  offset of mask in source
+macro VDB$A_MASK_PTR = 145,0,32,0 %;    !  pointer to mask sub-bitmap or rectangle or list of points
+macro VDB$W_MSK_TYPE = 149,0,16,0 %;    !  Tells whether mask is rectangle, bitmap, etc
+macro VDB$w_spare4 = 151,0,16,1 %;
+macro VDB$W_SRC_MSK_X = 153,0,16,0 %;   !  Mask width
+macro VDB$W_SRC_MSK_Y = 155,0,16,0 %;   !  Mask height
+macro VDB$A_DST_BM = 157,0,32,0 %;      !  Destination bitmap address
+macro VDB$W_DST_OFF_X = 161,0,16,0 %;   !  Destination offset
+macro VDB$W_DST_OFF_Y = 163,0,16,0 %;   !  Destination offset
+macro VDB$W_MAP_TYPE = 165,0,16,0 %;    !  Tells whether map is src, srcdst, etc.
+macro VDB$W_MAP_VALUE = 167,0,16,0 %;   !  Value of map to use
+macro VDB$A_PATH = 169,0,32,0 %;        !  Address of path points for draw_curve
+macro VDB$W_PATH_COUNT = 173,0,16,0 %;  !  number of points in path
+macro VDB$w_spare5 = 175,0,16,1 %;
+macro VDB$A_PATTERN = 177,0,32,0 %;     !  Address of pattern descriptor
+macro VDB$W_U_RECTS_COUNT = 181,0,16,0 %; !  Place to store user defined rectangles
+macro VDB$A_U_RECTS_ADDR = 183,0,32,0 %;
+! 
+macro VDB$A_BITMAP_DESCRIPTOR = 187,0,32,0 %; ! pointer to bitmap descriptor
+macro VDB$R_BM_DESC = 191,0,0,0 %;
+literal VDB$S_BM_DESC = 12;
+macro VDB$A_GRAPHIC = 191,0,32,0 %;     !  Pointer to graphics storage bitmap data
+macro VDB$R_DESCRIPTR = 191,0,0,0 %;
+literal VDB$S_DESCRIPTR = 12;
+macro VDB$A_BITMAP = 191,0,32,0 %;      ! address of bitmap data
+macro VDB$W_WIDTH = 195,0,16,0 %;       ! size (x) of vd
+macro VDB$W_HEIGHT = 197,0,16,0 %;      ! size (y) of vd
+macro VDB$W_SIZE_Z = 199,0,16,0 %;      ! size (z) of vd
+macro VDB$W_ADDR_SPACE = 201,0,16,0 %;  ! indicates vax or display memory
+! 
+macro VDB$A_RGN_QFL = 203,0,32,0 %;     !  Pointer to list of regions for vd
+macro VDB$A_RGN_QBL = 207,0,32,0 %;
+macro VDB$A_TS_DOCBLK = 211,0,32,0 %;   !  terminal settings document block adr
+macro VDB$A_HELP_ROUTINE = 215,0,32,0 %; !  help routine
+macro VDB$L_HELP_DATA = 219,0,32,1 %;   !  data to pass to help routine
+!  keep following three together as descriptor
+macro VDB$W_HELP_STR_LEN = 223,0,16,1 %; !  length of help string
+macro VDB$W_HELP_STR_CLASS = 225,0,16,1 %; !  second word of help string desc
+macro VDB$A_HELP_STR_ADR = 227,0,32,0 %; !  address of help string
+!  keep previous three together as descriptor
+macro VDB$B_HELP_STR_BUF = 231,0,0,1 %;
+literal VDB$S_HELP_STR_BUF = 50;
+!  holds help string
+! 
+! 	Put in new rectangle list queues
+! 
+macro VDB$A_RCAQFL = 281,0,32,0 %;
+macro VDB$A_RCAQBL = 285,0,32,0 %;
+!  Menu input buffer section types
+literal MENU_K_ITEM_LIST = 0;           !  section contains menu items
+literal MENU_K_TITLE = 1;               !  section contains menu title
+literal MENU_K_END = 2;                 !  section marks end of buffer
+! 
+!  Menu output block.  This is used for sending data back to the library
+!  regarding a menu virtual display that has just been created.
+! 
+macro mo_block = 0,0,0,0 %;
+literal mob$s_mo_block = 12;
+macro mob$l_vd_id = 0,0,32,1 %;         !  id (unit) of virtual display
+macro mob$l_vd_width = 4,0,32,1 %;      !  width of vd
+macro mob$l_vd_height = 8,0,32,1 %;     !  height of vd
+! 	region data			/* region coordinates follow info
+! 
+!  Region block
+! 
+macro rgn_block = 0,0,0,0 %;
+literal rgn$s_rgn_block = 126;
+macro rgn$A_FL = 0,0,32,0 %;
+macro rgn$A_BL = 4,0,32,0 %;
+macro rgn$W_SIZE = 8,0,16,0 %;
+macro rgn$B_TYPE = 10,0,8,0 %;
+macro rgn$b_spare1 = 11,0,8,1 %;
+!  Keep x, y, width, height together and in order, as they are used
+!  as a rectangle definition.
+! 
+macro rgn$l_x = 12,0,32,1 %;            !  x coordinate of upperleft corner
+macro rgn$l_y = 16,0,32,1 %;            !  y coordinate of upperleft corner
+macro rgn$l_width = 20,0,32,1 %;
+macro rgn$l_height = 24,0,32,1 %;
+macro rgn$a_irp = 28,0,32,0 %;          !  address of outstanding irp
+macro rgn$l_pid = 32,0,32,1 %;          !  process that owns irp
+macro rgn$a_rtn_adr = 36,0,32,0 %;      !  routine to call upon selection
+macro rgn$l_rtn_prm = 40,0,32,1 %;      !  routine parameter for selection
+macro rgn$l_pb_id = 44,0,32,1 %;        !  pb to pop up upon selection
+macro rgn$l_pb_x = 48,0,32,1 %;         !  pb x coordinate to line up with ptr
+macro rgn$l_pb_y = 52,0,32,1 %;         !  pb y coordinate to line up with ptr
+macro rgn$a_help_routine = 56,0,32,0 %; !  help routine
+macro rgn$l_help_data = 60,0,32,1 %;    !  data to pass to help routine
+!  keep following three together as descriptor
+macro rgn$W_HELP_STR_LEN = 64,0,16,1 %; !  length of help string
+macro rgn$W_HELP_STR_CLASS = 66,0,16,1 %; !  second word of help string desc
+macro rgn$A_HELP_STR_ADR = 68,0,32,0 %; !  address of help string
+!  keep previous three together as descriptor
+macro rgn$B_HELP_STR_BUF = 72,0,0,1 %;
+literal rgn$S_HELP_STR_BUF = 50;
+!  holds help string
+macro rgn$l_sel_attribute = 122,0,32,1 %; !  How to show selectability
+! 
+!  Region descriptor block.  This is the block the library uses to communicate
+!  with the acp with.
+! 
+literal rgn_op_k_define = 0;            !  define region
+literal rgn_op_k_delete = 1;            !  delete a region
+literal rgn_op_k_delete_all = 2;        !  delete all of a vd's regions
+literal rgn_op_k_set_selectable = 3;    !  set a region to be selectable
+!  caution: this one is assumed last,
+!  see below
+literal rgn_op_k_last = 3;
+macro rdb_block = 0,0,0,0 %;
+literal rdb$s_rdb_block = 36;
+macro rdb$l_op = 0,0,32,1 %;            !  opcode saying what to do
+macro rdb$l_x = 4,0,32,1 %;             !  x coordinate of upperleft corner
+macro rdb$l_y = 8,0,32,1 %;             !  y coordinate of upperleft corner
+macro rdb$l_width = 12,0,32,1 %;
+macro rdb$l_height = 16,0,32,1 %;
+macro rdb$l_pb_id = 20,0,32,1 %;        !  pb to pop up upon selection
+macro rdb$l_pb_x = 24,0,32,1 %;         !  pb x coordinate to line up with ptr
+macro rdb$l_pb_y = 28,0,32,1 %;         !  pb y coordinate to line up with ptr
+macro rdb$l_sel_attribute = 32,0,32,1 %; !  How to show selectability
+! 					.
+!  Pasteboard Descriptors -- PBD
+! 					.
+literal PBD$K_BLOCK_LENGTH = 16;
+macro PBDBLOCK = 0,0,0,0 %;
+literal PBD$S_PBDBLOCK = 16;
+macro PBD$A_FL = 0,0,32,0 %;
+macro PBD$A_BL = 4,0,32,0 %;
+macro PBD$W_SIZE = 8,0,16,0 %;
+macro PBD$B_TYPE = 10,0,8,0 %;
+macro PBD$b_spare1 = 11,0,8,1 %;
+macro PBD$W_PBID = 12,0,16,0 %;
+macro PBD$W_VDID = 14,0,16,0 %;
+! 					.
+!  End of module $VSDEF
+! 					.

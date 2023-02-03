@@ -1,0 +1,249 @@
+module txtfile (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! File I/O routines.
+
+library 'vsta$library:libmacros';	! symbols like $log_error_and_return
+library 'sys$library:starlet';
+library 'vsta$library:txtsym';
+library 'vsta$library:termio';
+
+forward routine!s . . .
+
+	map_file,			! map entire file into memory
+	unmap_file,			! release mapped file
+	vsta$$search_for_file;		! get some file info without actually
+					! opening it
+
+external routine!s . . .
+
+	vs$$acp_get_vm,
+	vs$$acp_free_vm,
+	vsta$$error_logger;
+
+$vsta_psect;				! PSECT definitions
+
+
+global routine map_file
+!++
+! Functional description:
+!
+!	This procedure reads a specified file into a dynamically allocated
+!	buffer, and stores the resultant buffer length in bytes
+!	and buffer address into addresses specified by the caller.
+!
+! Formal parameters:
+!
+ (
+	FILENAME:ref vector,
+	resultantLengthAddress,
+	resultantBufferAddress,
+	file_chan
+ ) =
+!	FILENAME - address of a descriptor for file name string
+!	resultantLengthAddress - where to store length of buffer
+!	resultantBufferAddress - where to store buffer address
+!	file_chan	       - where to store file channel number
+!
+! Routine value:
+!
+!	true, or whatever failure codes are encountered reading the file,
+!	or allocating buffers
+!
+! Side effects:
+!
+!	If a success return is given, a buffer has been allocated containing
+!	the file's contents
+!
+!--
+
+    begin
+
+    local
+
+	beg_end : vector [2],
+	bufLen,				! length of allocated buffer
+	s;				! status
+
+    own
+	! These ought to be local rather than own, but the $FAB would have
+	! to be done at execution time with a $FAB_INIT, which seems not
+	! to have convenient defaults
+	INFAB: $FAB(			! input file fab
+	    FNM='INFILE',
+	    fop = ufo			! allow mapping
+	    ),
+	INRAB: $RAB(			! input file rab
+		    FAB=INFAB,
+		    MBC=40,		! needed for mapping ?
+		    USZ=512);
+    ! 
+    ! Store filename in input FAB for open operation.  Then open and connect.
+    !
+
+    INFAB[FAB$L_FNA] = .FILENAME[1];	! copy string address
+    INFAB[FAB$B_FNS] = .(FILENAME[0])<0,16>; ! copy string length
+
+    IF NOT (s = $OPEN (FAB=INFAB))
+	THEN return .s;
+!
+! Calculate how many bytes we need to allocate such that we're
+! guaranteed to have enough whole pages.
+!
+	.resultantLengthAddress = .infab[fab$l_alq] * 512 + 511;
+!
+! Allocate the needed memory, tell caller where it is.
+!
+	if not (s = vs$$acp_get_vm (.resultantLengthAddress,
+	    .resultantBufferAddress, 0))
+	then return vsta$$error_logger (.s);
+!
+! initialize vector to show where within allocated memory to map the
+! file such that file begins on page boundary and last available address.
+!
+	beg_end[0] = (..resultantBufferAddress + 511) and not %o'777';
+	beg_end[1] = ..resultantBufferAddress + ..resultantLengthAddress - 1;
+!
+! Tell caller channel file is open on.
+!
+	.file_chan = .infab[fab$l_stv];
+!
+! Map in the entire file.  Why do this rather than reading it in with
+! $read's or $get's ?  A number of reasons:
+!
+! 1)	In anticipation of VERY large font files, such as Japanese
+!	ones, the rms fields that tell $read or $get how many bytes to
+!	read are not necessarily large enough.
+!
+! 2)	Also with large files in mind, mapping instead of reading is
+!	more efficient, since the data doesn't actually have to be read
+!	from the disk until it is USED.
+!
+	if not (s = $crmpsc (
+	    inadr = beg_end[0],
+	    retadr = 0,
+	    acmode = 0,
+	    flags = 0,
+	    gsdnam = 0,
+	    ident = 0,
+	    relpag = 0,
+	    chan = .infab[fab$l_stv],
+	    pagcnt = 0,
+	    vbn = 0,
+	    prot = 0,
+	    pfc = 0
+	    ))
+	then return vsta$$error_logger (.s);
+!
+! Return success code
+!
+	ss$_normal
+
+	end;
+
+global routine unmap_file
+!++
+! Functional description:
+!
+!	Given length and address of a buffer in which a file has been mapped,
+!	release the file.
+!
+! Formal parameters:
+ (
+	file_len,			! length of buffer
+	file_buf,			! address of buffer
+	file_chan			! channel file is open on
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s,
+	    inadr : vector [2];
+!
+! Figure out address range in which file actually got mapped.
+!
+	inadr[0] = (.file_buf + 511) and not %o'777';
+	inadr[1] = ((.file_buf + .file_len) and not %o'777') - 1;
+!
+! Delete and recreate the mapped memory pages so that free_vm will work.
+!
+	if not (s = $cretva (inadr = inadr[0]))
+	then return vsta$$error_logger (.s);
+!
+! Release the channel.
+!
+	if not (s = $dassgn (chan = .file_chan))
+	then return vsta$$error_logger (.s);
+!
+! Release the memory that held the file.
+!
+	if not (s = vs$$acp_free_vm (file_len, file_buf, 0))
+	then return vsta$$error_logger (.s);
+
+	ss$_normal
+
+	end;
+
+global routine vsta$$search_for_file
+!++
+! Functional description:
+!
+!	Given string to parse, fab, namblk, and buffers, link things
+!	together and search for specified file.
+!
+! Formal parameters:
+ (
+	group_len,			! length of file group to parse
+	group_buf : ref vector [,byte],	! address of bytes
+	fab : ref $fab_decl,		! fab to fill in
+	namblk : ref $nam_decl, 	! name block to fill in
+	expstr : ref vector [,byte],	! where to write expanded string
+	resstr : ref vector [,byte]	! where to write resultant string
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    s;
+!
+! Tell the fab what the group name length and address are.
+!
+	fab[fab$b_fns] = .group_len;
+	fab[fab$l_fna] = group_buf[0];
+!
+! Tell the fab where the name block is.
+!
+	fab[fab$l_nam] = namblk[$base];
+	fab[fab$v_nam] = 1;
+!
+! Tell the name block what buffers to use.
+!
+	namblk[nam$b_rss] = namblk[nam$b_ess] = nam$c_maxrss;
+	namblk[nam$l_rsa] = resstr[0];
+	namblk[nam$l_esa] = expstr[0];
+!
+! Initialize the search, check syntax of group name etc.
+!
+	if not (s = $parse (fab = fab[$base]))
+	then return .s;
+!
+! Now get the file identification fields.
+!
+	if not (s = $search (fab = fab[$base]))
+	then return .s;
+
+	ss$_normal
+
+	end;
+
+end
+eludom

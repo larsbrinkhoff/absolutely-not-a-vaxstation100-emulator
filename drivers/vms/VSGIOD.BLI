@@ -1,0 +1,619 @@
+! VSGIOD.BLI - VaxStation GIdis Opcode Decoder, Bliss source
+!
+MODULE VSTA$GID_od(
+    IDENT = 'GIDIS opcode decoder',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!	1.1 - Opcode Decoder - The opcode decoder knows how to unpackage the
+!	Gidis buffers into calls to functional routines. This is where
+!	the numeric value of the opcodes are understood. The opcode
+!	decoder requests the state maintainer for the correct set of
+!	state information for the VDtag, so that the functional
+!	processes, either drawing or reporting, can operate without
+!	concern about the multiple-display nature of this Gidis.
+!
+!	This file provides the following entry points:
+!
+!	VSTA$$GID_Process()
+!	VSTA$$GID_Linked_Process()
+!	VSTA$$GID_Sync()
+!
+! Environment:
+!
+!	Use the VSGIOD require file to declare the routines in this
+!	module.  The routines to execute the Gidis functions must be
+!	available.
+!
+GLOBAL LITERAL GID$$OD_Edit_level = 19;
+!
+!--
+
+LIBRARY 'VSTA$LIBRARY:vsgisf';		! State fetcher structure macros
+LIBRARY 'VSTA$LIBRARY:vsgiops';		! Gidis opcode assignment list
+LIBRARY 'VSTA$LIBRARY:vsgism';		! State maintainer declarations
+LIBRARY 'VSTA$LIBRARY:vsgipp';		! Position Processes declarations
+LIBRARY 'VSTA$LIBRARY:vsgicx';		! Screen addressing declarations
+LIBRARY 'VSTA$LIBRARY:vsgias';		! Appearance selector declarations
+LIBRARY 'VSTA$LIBRARY:vsgipa';		! Pathed operations module
+LIBRARY 'VSTA$LIBRARY:vsgipl';		! Pathless processes declarations
+LIBRARY 'VSTA$LIBRARY:vsgicc';		! Character Cell declarations
+LIBRARY 'VSTA$LIBRARY:vsgial';
+LIBRARY 'VSTA$LIBRARY:libmacros';	! For PSECT definitions
+!REQUIRE 'vsgidebug';
+
+library_file_crock;
+
+EXTERNAL ROUTINE vsta$$error;
+
+$vsta_psect;				! Define PSECTs
+
+!+
+!	VSGIOPS.REQ provides a macro for declaring a table of the Gidis
+!	instruction lengths.  Invoke that macro here to create the table.
+!-
+BIND
+    gidi_inst_lengths = gidis_instruction_length_table: VECTOR[,BYTE];
+!+
+!	gidi_length returns the length of the gidis op-code supplied as a
+!	parameter.
+!-
+MACRO
+    gidi_length(op_code) = (.gidi_inst_lengths[ op_code])%;
+
+FORWARD ROUTINE
+    expecting_instruction,
+    push_arg,
+    do_this_instruction,
+    rel_abs: NOVALUE;
+
+
+!+
+GLOBAL ROUTINE VSTA$$GID_Process(! Process a Gidis buffer
+    VDTag,			! ID tag of VD to write GIDIS in
+    buffer: REF VECTOR[,WORD],	! address of a buffer of GIDIS words
+    length,			! Number of words in the buffer
+    done_routine,		! Routine to call when done
+    done_parameter		! Parameter to pass done routine
+    ) =
+! Routine value:
+!	1 for successful return (ss$_normal)
+!	nosuchvd error for failure, no such VDtag
+! Implicit inputs:
+!	The state manager context, and the opcode decoder state section
+!	of the state fetcher.
+! Implicit outputs:
+!	Update opcode decoder state, results of instruction execution
+! Function:
+!	Process a buffer of Gidis commands for a particular Virtual Display.
+!	Call done routine when done.  Done routine is not called if this
+!	routine returns an error.
+! Algorithm:
+!	Have the state manager set up the correct context for this
+!	virtual display, send each word to the routine designated by
+!	the process_me_next variable, and complete any pending drawing
+!	operations.
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = GID$$SM_Get_state_instance( .VDtag);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    INCR word_counter FROM 0 TO .length-1
+    DO
+	BEGIN	! Process buffer, quit if error occurs.
+	status = (.sf[process_me_next])( .buffer[ .word_counter]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    status = GID$$PA_flush_path();
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    IF .done_routine NEQ 0 THEN (.done_routine)(.done_parameter);
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE VSTA$$GID_Linked_Process(! Process a Gidis buffer
+    VDTag,			! ID tag of VD to write GIDIS in
+    link: REF VECTOR[,LONG],	! Starting address of a linked list of GIDIS
+    length,			! Total Number of words in the buffers
+    done_routine,		! Routine to call when done
+    done_parameter		! Parameter to pass done routine
+    ) =
+! Routine value:
+!	1 for successful return (ss$_normal)
+!	nosuchvd error for failure, no such VDtag
+! Implicit inputs:
+!	The state manager context, and the opcode decoder state section
+!	of the state fetcher.
+! Implicit outputs:
+!	Update opcode decoder state, results of instruction execution
+! Function:
+!	Process a buffer of Gidis commands for a particular Virtual Display.
+!	Call done routine when done.  Done routine is not called if this
+!	routine returns an error.
+!	link[0] is address of gidis buffer.
+!	link[1] is address of next link (same format as this one)
+!	link[2] is length of this buffer, in words.
+! Algorithm:
+!	Have the state manager set up the correct context for this
+!	virtual display, send each word to the routine designated by
+!	the process_me_next variable, and complete any pending drawing
+!	operations.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status,
+	buf_index;		! Index into actual buffers
+    
+
+    status = GID$$SM_Get_state_instance( .VDtag);
+    IF .status
+    THEN!	Good state instance, process the buffer.
+	BEGIN
+	buf_index = 0;
+	INCR word_counter FROM 0 TO .length-1
+	DO
+	    BEGIN	! Process buffer, quit if error occurs.
+	    BIND buffer = .link[0]: REF VECTOR[,WORD];
+
+	    status = (.sf[process_me_next])( .buffer[ .buf_index]);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    buf_index = .buf_index + 1;
+	    IF .buf_index GEQ .link[2]
+	    THEN ! This buffer is used up, link to the next one
+		BEGIN
+		link = .link[1];
+		buf_index = 0;
+		END;
+	    END;
+	status = GID$$PA_flush_path();
+	IF .status
+	THEN
+	    BEGIN
+	    IF .done_routine NEQ 0 THEN (.done_routine)(.done_parameter);
+	    END;
+	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE VSTA$$GID_Sync(	!	Synchronize to expect an instruction
+    VDtag			!	Tag of display to re-synchronize
+    ) =
+! Routine value:
+!	1 (ss$_normal) for success
+!	status code for failure
+! Implicit inputs:
+! Implicit outputs:
+!	State fetcher opcoder decoder state
+! Function:
+!	Force the next word sent to GID_Process to be interpreted as an
+!	instruction, even if there are parameters pending.
+! Algorithm:
+!	Set process_me_next to point to expecting_instruction
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    status = GID$$SM_Get_state_instance( .VDtag);
+    IF .status
+    THEN!	Good state instance, resync the stream
+	BEGIN
+	sf[ process_me_next] = expecting_instruction;
+	END;
+    .status
+    END;
+
+!+
+ROUTINE expecting_instruction(		! process me when expecting one
+    inst_word				! instruction word to decode
+    ) =
+! Routine value:
+!	1 for success, Status code for abortive error
+! Implicit inputs:
+!	Opcode length table
+! Implicit outputs:
+!	this_op_code as the opcode value
+!	this_flags_byte as the high order byte of the opcode
+!	this_op_args as the number of argument words to read
+!	arg_count as 0
+! Function:
+!	Expecting instruction is called for the next word in the input
+!	stream when the word is expected to be an instruction op-code.
+! Algorithm:
+!	It saves the opcode, and sets up to receive any parameters to the
+!	opcode.
+!	The instruction is executed if there are no parameters.
+!	Otherwise, process_me_next is pointed to the push_arg routine.
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = 1;
+    sf[ this_op_code] = .inst_word< 0, 8>;		! Opcode byte
+    sf[ this_flags_byte] = .inst_word< 8,8>;		! Flags byte
+    IF (.sf[ this_op_code] LEQU gidi_last_opcode)
+    THEN ! Opcode has a valid length, set opcode counter
+	BEGIN
+	    sf[ this_op_args] = gidi_length( .sf[ this_op_code])-1;
+	    sf[ arg_count] = 0;
+	    IF .sf[ this_op_args] EQL 0
+	    THEN ! No parameters, so execute the instruction now
+		status = do_this_instruction()
+	    ELSE ! expecting parameters, interpret next word as a parameter
+	        sf[ process_me_next] = push_arg;
+	END;
+    .status
+    END;
+
+
+!+
+ROUTINE push_arg(	! Call with arguments to opcodes
+    this_arg		! Argument to put on argument list
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	Current parameter list and parameter count from state fetcher
+! Implicit outputs:
+!	Updated parameter list and parameter count
+! Function:
+!	Adds an expected parameter to the parameter list for the
+!	pending opcode.  If the last parameter is received, execute the
+!	opcode.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ param_list, .sf[ arg_count]] = .this_arg;
+    sf[ arg_count] = .sf[ arg_count] + 1;
+    IF .sf[ this_op_args] EQL .sf[ arg_count]
+    THEN do_this_instruction( )
+    ELSE 1
+    END;
+
+
+!+
+ROUTINE rel_abs(	! Convert coordinates from relative to absolute
+    relflags,		! Flags byte from opcode
+    X,			! Address of X coordinate word to transfer
+    Y			! Address if Y coordinate word to transfer
+    ) : NOVALUE  =
+! Routine value:
+! Implicit inputs:
+!	Current drawing position
+! Implicit outputs:
+! Function:
+!	Convert an XY pair in a parameter list to be relative the
+!	current position if called for by the flags byte.
+! Algorithm:
+!	If the correct bits are set, add the current position to the
+!	coordinate.
+! Side effects:
+!-
+    BEGIN
+    IF .relflags< 0, 1> THEN (.X)< 0, 16> = .(.X)< 0, 16> + .sf[ x_soft_pos];
+    IF .relflags< 1, 1> THEN (.Y)< 0, 16> = .(.Y)< 0, 16> + .sf[ y_soft_pos];
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$OD_save_state(		!
+    bitmask
+    )		!
+    :  =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+    status = 1;
+    IF .bitmask<0,1> THEN status = GID$$CC_save_state();
+    IF .bitmask<1,1> THEN status = GID$$AS_save_state();
+    IF .bitmask<2,1> THEN status = GID$$AS_save_linear_texture();
+    IF .bitmask<3,1> THEN status = GID$$AS_save_area_texture();
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$OD_restore_state(		!
+    bitmask		!
+    )		!
+    :  =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+    status = 1;
+    IF .bitmask<0,1> THEN status = GID$$CC_restore_state();
+    IF .bitmask<1,1> THEN status = GID$$AS_restore_state();
+    IF .bitmask<2,1> THEN status = GID$$AS_restore_linear_texture();
+    IF .bitmask<3,1> THEN status = GID$$AS_restore_area_texture();
+    .status
+    END;
+
+
+!+
+ROUTINE expecting_pathed_instruction(
+    i		! Gidis word that is expected to be a pathing instruction
+		! or an instruction that can be put in paths, like positions
+    )  =
+! Routine value:
+!	status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	If the instruction word is not a pathable instruction, end the path.
+!	In any case, forward it on to expecting_instruction.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    SELECTONE .i<0,8> OF
+	SET
+	[  0,	! no-op	   		! If a pathable opcode,
+	    gidi_position_op,
+	    gidi_position_push_op,
+	    gidi_position_pop_op,
+	    gidi_vector_op,
+	    gidi_vector_pop_op,
+	    gidi_screen_addressing_op,
+	    gidi_set_color_map_op,
+	    gidi_circum_arc_op,
+	    gidi_center_arc_op,
+	    gidi_curve_begin_open_op,
+	    gidi_curve_begin_closed_op,
+	    gidi_curve_continue_op,
+	    gidi_curve_end_op,
+	    gidi_swap_top_of_stack_op,
+	    gidi_character_op,
+	    gidi_cell_cursor_movement_op,
+	    gidi_report_cell_standard_op,
+	    gidi_save_position_op,
+	    gidi_restore_position_op,
+	    gidi_save_state_op,
+	    gidi_report_position_op,
+	    gidi_filled_poly_begin_op,
+	    gidi_filled_poly_continue_op,
+	    gidi_filled_poly_end_op,
+	    gidi_line_texture_op	! NOTE this opcode may terminate a path
+	   ]: ;				! then do nothing
+	[OTHERWISE]:			! If this is not a pathed instruction
+	    BEGIN
+!	If you change this code, also change the equivalent code in
+!	VSGIAS for GID$$AS_line_texture
+!	    Terminate the path in progress
+	    status = GID$$PA_change_mode( GID$$PA_no_path_in_progress);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    END;
+	TES;
+    expecting_instruction( .i)
+    END;
+
+!+
+ROUTINE do_this_instruction		! Execute the pending opcode
+      =
+! Routine value:
+!	status code
+! Implicit inputs:
+!	From the state fetcher, get the current opcode and parameter
+!	list.
+! Implicit outputs:
+! Function:
+!	Execute the pending Gidis opcode, now that all the parameters
+!	have been received.
+! Algorithm:
+!	CASE the opcode value into the corresponding routine calls.
+! Side effects:
+!	The Gidis operations are performed
+!-
+    BEGIN
+    LOCAL status;
+
+    status = (CASE .sf[ this_op_code]
+    FROM 0 TO gidi_last_opcode OF
+    SET
+    [ gidi_position_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_position( .sf[ param_list, 0], .sf[ param_list, 1])
+	END;
+    [ gidi_report_position_op]:
+	GID$$PP_report_position();
+    [ gidi_position_push_op]:
+	GID$$PP_position_push();
+    [ gidi_position_pop_op]:
+	GID$$PP_position_pop();
+    [ gidi_swap_top_of_stack_op]:
+	GID$$PP_swap_top_of_stack();
+    [ gidi_save_position_op]:
+	GID$$PP_save_position( .sf[ param_list, 0]);
+    [ gidi_restore_position_op]:
+	GID$$PP_restore_position( .sf[ param_list, 0]);
+    [ gidi_screen_addressing_op]:
+	GID$$CX_screen_addressing( .sf[ param_list, 0], .sf[ param_list, 1]);
+    [ gidi_screen_scroll_op]:
+	GID$$PL_screen_scroll( .sf[ param_list, 0], .sf[ param_list, 1]);
+    [ gidi_set_clipping_region_op]:
+	GID$$AS_set_clipping_region(
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2],
+	    .sf[ param_list, 3]);
+    [ gidi_select_writing_color_op]:
+	GID$$AS_select_writing_color( .sf[ param_list, 0]);
+    [ gidi_select_background_color_op]:
+	GID$$AS_select_background_color( .sf[ param_list, 0]);
+    [ gidi_set_writing_mode_op]:
+	GID$$AS_set_writing_mode( .sf[ param_list, 0]);
+    [ gidi_set_pixel_size_op]:
+	GID$$AS_set_pixel_size( .sf[ param_list, 0], .sf[ param_list, 1]);
+    [ gidi_line_texture_op]:
+	GID$$AS_line_texture(
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2]);
+    [ gidi_area_texture_op]:
+	GID$$AS_area_texture(
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2],
+	    .sf[ param_list, 3]);
+    [ gidi_vector_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_vector( .sf[ param_list, 0], .sf[ param_list, 1])
+	END;
+    [ gidi_vector_pop_op]:
+	BEGIN
+	GID$$PA_vector_pop()
+	END;
+    [ gidi_screen_erase_op]:
+	BEGIN
+	GID$$PL_screen_erase()
+	END;
+    [ gidi_curve_begin_open_op]:
+	BEGIN
+	GID$$PA_curve_begin_open()
+	END;
+    [ gidi_curve_begin_closed_op]:
+	BEGIN
+	GID$$PA_curve_begin_closed()
+	END;
+    [ gidi_filled_poly_begin_op]:
+	BEGIN
+	GID$$PA_filled_poly_begin()
+	END;
+    [ gidi_curve_continue_op, gidi_filled_poly_continue_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_curve_continue( .sf[ param_list, 0], .sf[ param_list, 1])
+	END;
+    [ gidi_curve_end_op, gidi_filled_poly_end_op]:
+	BEGIN
+	GID$$PA_curve_end()
+	END;
+    [ gidi_select_alphabet_op]:
+	GID$$CC_select_alphabet( .sf[ param_list, 0]);
+    [ gidi_character_op]:
+	GID$$PA_character( .sf[ param_list, 0]);
+    [ gidi_cell_cursor_movement_op]:
+	GID$$CC_cell_cursor_movement( .sf[ param_list, 0], .sf[ param_list,1]);
+    [ gidi_cell_unit_size_op]:
+	GID$$CC_cell_unit_size( .sf[ param_list, 0], .sf[ param_list,1]);
+    [ gidi_cell_display_size_op]:
+	GID$$CC_cell_display_size( .sf[ param_list, 0], .sf[ param_list,1]);
+    [ gidi_cell_rotation_op]:
+	GID$$CC_cell_rotation( .sf[ param_list, 0]);
+    [ gidi_cell_italic_op]:
+	GID$$CC_cell_italic( .sf[ param_list, 0]);
+    [ gidi_use_named_alphabet_op]:
+	GID$$AL_use_named_alphabet( sf[ param_list, 0]);
+    [ gidi_cell_storage_size_op]:
+	GID$$AL_cell_storage_size(
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2]);
+    [ gidi_load_alphabet_op]:
+	GID$$AL_load_alphabet( .sf[ param_list, 0], sf[ param_list, 1]);
+    [ gidi_save_state_op]:
+	GID$$OD_save_state( .sf[ param_list, 0]);
+    [ gidi_restore_state_op]:
+	GID$$OD_restore_state( .sf[ param_list, 0]);
+    [ gidi_fill_to_X_op]:
+	BEGIN
+	rel_abs(			! Convert X to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);	! Need any second param here
+	GID$$PA_fill_to_X( .sf[ param_list, 0])
+	END;
+    [ gidi_fill_to_Y_op]:
+	BEGIN
+	rel_abs(			! Convert Y to absolute
+	    .sf[ this_flags_byte]^1,	! if needed.
+	    sf[ param_list, 1],		! Need any 1st param here
+	    sf[ param_list, 0]);
+	GID$$PA_fill_to_Y( .sf[ param_list, 0])
+	END;
+    [ gidi_fill_to_XY_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_fill_to_XY( .sf[ param_list, 0],  .sf[ param_list, 1])
+	END;
+    [ gidi_fill_off_op]:
+	GID$$PA_fill_off();
+    [ gidi_circum_arc_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_circum_arc(
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2])
+	END;
+    [ gidi_center_arc_op]:
+	BEGIN
+	rel_abs(			! Convert X and Y to absolute
+	    .sf[ this_flags_byte],	! if needed.
+	    sf[ param_list, 0],
+	    sf[ param_list, 1]);
+	GID$$PA_center_arc( 
+	    .sf[ param_list, 0],
+	    .sf[ param_list, 1],
+	    .sf[ param_list, 2])
+	END;
+    [ gidi_set_number_colors_op]:
+	GID$$AS_set_number_colors( .sf[ param_list, 0]);
+    [ gidi_flood_op]:
+	GID$$PL_flood( .sf[ param_list, 0]);
+    [ gidi_report_cell_standard_op]:
+	GID$$AL_report_cell_standard();
+    [ INRANGE]: 1;
+    [ OUTRANGE]: 1;
+    TES);
+
+    sf[ process_me_next] =
+	(IF .sf[ pathing_mode] EQL GID$$PA_no_path_in_progress
+	THEN expecting_instruction ELSE expecting_pathed_instruction);
+    .status
+    END;
+
+END
+ELUDOM

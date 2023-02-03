@@ -1,0 +1,181 @@
+MODULE VSTA$KBRD;
+
+/*++
+/* FACILITY:
+/*   VAX WORKSTATIONS
+/*
+/* ABSTRACT:
+/*
+/*
+/* ENVIRONMENT:
+/*   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+/*   graphics subsystem.
+/*
+/*---
+/*
+/*
+/*
+/* WGA Move-object-to-keyboard Specific Constants
+/*
+	CONSTANT
+	    vsta$k_kbrd_object_type EQUALS 2;	/*Move data to USART
+	CONSTANT
+	    vsta$k_kbrd_device_dest EQUALS 2;	/*Keyboard is data destination
+/*
+/* LK201 Parameter Limits
+/*
+	CONSTANT
+	    max_kbrd_volume EQUALS 7;		/*Number of autorepeat buffers
+	CONSTANT
+	    max_kbrd_buffer EQUALS 3;		/*Number of autorepeat buffers
+	CONSTANT
+	    max_autorepeat_timeout EQUALS 63;	/*Max. autorepeat timeout
+	CONSTANT
+	    max_autorepeat_interval EQUALS 126;	/*Max. autorepeat interval
+	CONSTANT
+	    max_division EQUALS 14;		/*Max. keyboard divisions
+/*
+/* LK201 Default Settings
+/*
+	CONSTANT
+	    vsta$k_kbrd_default_volume EQUALS 2;/*Default keyboard volume
+	CONSTANT
+	    vsta$k_kbrd_buf0_timeout EQUALS 100;/*Default timeout for buffer 0
+	CONSTANT
+	    vsta$k_kbrd_buf0_interval EQUALS 30;/*Default interval for buffer 0
+	CONSTANT
+	    vsta$k_kbrd_buf1_timeout EQUALS 60; /*Default timeout for buffer 1
+	CONSTANT
+	    vsta$k_kbrd_buf1_interval EQUALS 30;/*Default interval for buffer 1
+	CONSTANT
+	    vsta$k_kbrd_buf2_timeout EQUALS 100;/*Default timeout for buffer 2
+	CONSTANT
+	    vsta$k_kbrd_buf2_interval EQUALS 40;/*Default interval for buffer 2
+	CONSTANT
+	    vsta$k_kbrd_buf3_timeout EQUALS 60; /*Default timeout for buffer 3
+	CONSTANT
+	    vsta$k_kbrd_buf3_interval EQUALS 40;/*Default interval for buffer 3
+/*
+/* LK201 Parameter Possibilities
+/*
+	CONSTANT
+	    vsta$k_kbrd_volume1 EQUALS 7;	/*Lowest possible volume
+	CONSTANT
+	    vsta$k_kbrd_volume2 EQUALS 6;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume3 EQUALS 5;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume4 EQUALS 4;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume5 EQUALS 3;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume6 EQUALS 2;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume7 EQUALS 1;	/*
+	CONSTANT
+	    vsta$k_kbrd_volume8 EQUALS 0;	/*Highest possible volume
+	CONSTANT
+	    vsta$k_kbrd_low_volume EQUALS 7;	/*Lowest keyboard volume
+	CONSTANT
+	    vsta$k_kbrd_high_volume EQUALS 0;	/*Highest keyboard volume
+/*
+	CONSTANT
+	    vsta$m_kbrd_wait_led EQUALS 1;	/*Wait LED bit
+	CONSTANT
+	    vsta$m_kbrd_compose_led EQUALS 2;	/*Compose LED bit
+	CONSTANT
+	    vsta$m_kbrd_lock_led EQUALS 4;	/*Lock LED bit
+	CONSTANT
+	    vsta$m_kbrd_hold_led EQUALS 8;	/*Hold-screen LED bit
+	CONSTANT
+	    vsta$m_kbrd_all_leds EQUALS %xf;	/*All keyboard LEDs mask
+/*	
+	CONSTANT
+	    vsta$k_main_array_division EQUALS 1;/*Main keyboard array division
+	CONSTANT
+	    vsta$k_num_keypad_division EQUALS 2;/*Numeric keypad division
+	CONSTANT
+	    vsta$k_delete_char_division EQUALS 3;/*Delete character division
+	CONSTANT
+	    vsta$k_return_tab_division EQUALS 4;/*Return-tab key division
+	CONSTANT
+	    vsta$k_lock_compose_division EQUALS 5;/*Lock-compose key division
+	CONSTANT
+	    vsta$k_shift_ctrl_division EQUALS 6; /*Shift-control key division
+	CONSTANT
+	    vsta$k_hor_cursor_division EQUALS 7; /*Horizontal cursor division
+	CONSTANT
+	    vsta$k_ver_cursor_division EQUALS 8; /*Vertical cursor division
+	CONSTANT
+	    vsta$k_edit_keypad_division EQUALS 9;/*Edit keypad division
+	CONSTANT
+	    vsta$k_local_func_division EQUALS 10;/*Local function key division
+	CONSTANT
+	    vsta$k_func2_division EQUALS 11;	/*Function key group 2 division
+	CONSTANT
+	    vsta$k_func3_division EQUALS 12;	/*Function key group 3 division
+	CONSTANT
+	    vsta$k_help_menu_division EQUALS 13;/*Help-menu key division
+	CONSTANT
+	    vsta$k_func5_division EQUALS 14;	/*Function key group 5 division
+/*
+	CONSTANT
+	    vsta$k_kbrd_down_only EQUALS 0;	/*Keyboard down-only mode
+	CONSTANT
+	    vsta$k_kbrd_auto_down EQUALS 1;	/*Keyboard autorepeat-down mode
+	CONSTANT
+	    vsta$k_kbrd_up_down EQUALS 3;	/*Keyboard up-down mode
+/*
+/* LK201 Specific Commands
+/*
+	CONSTANT
+	    xmit_inhibit EQUALS %x89;		/*Inhibit keyboard transmission
+	CONSTANT
+	    xmit_resume EQUALS %x8b;		/*Resume keyboard transmission
+	CONSTANT
+	    leds_on EQUALS %x13;		/*Turn on LEDs
+	CONSTANT
+	    leds_off EQUALS %x11;		/*Turn off LEDs
+	CONSTANT
+	    keyclick_enable EQUALS %x1b;	/*Enable keyclick
+	CONSTANT
+	    keyclick_disable EQUALS %x99;	/*Disable keyclick
+	CONSTANT
+	    sound_keyclick EQUALS %x9f;		/*Sound keyclick
+	CONSTANT
+	    bell_enable EQUALS %x23;		/*Enable bell
+	CONSTANT
+	    bell_disable EQUALS %xa1;		/*Disable bell
+	CONSTANT
+	    sound_bell EQUALS %xa7;		/*Sound bell
+	CONSTANT
+	    autorepeat_enable EQUALS %xe3;	/*Enable autorepeat
+	CONSTANT
+	    autorepeat_disable EQUALS %xe1;	/*Disable autorepeat
+	CONSTANT
+	    autorepeat_rate EQUALS %x78;	/*Set autorepeat rate
+	CONSTANT
+	    identify EQUALS %xab;		/*Request keyboard ID
+	CONSTANT
+	    reinitiate EQUALS %xfd;		/*Reinitiate keyboard
+	CONSTANT
+	    init_defaults EQUALS %xd3;		/*Reinstate default settings
+	CONSTANT
+	    test_mode EQUALS %xcb;		/*Put keyboard into test mode
+/*
+/* Keyboard Command Buffer
+/*
+    AGGREGATE kbrd_cmd_buffer STRUCTURE PREFIX vs$kbrd_;
+	iosb1		 WORD UNSIGNED;		/*I/O status block - word 1
+	iosb2		 WORD UNSIGNED;		/*I/O status block - word 2
+	iosb3		 WORD UNSIGNED;		/*I/O status block - word 3
+	iosb4		 WORD UNSIGNED;		/*I/O status block - word 4
+	size		 WORD UNSIGNED;		/*Data block size
+	type		 WORD UNSIGNED;		/*Data block type
+	cmd_buffer	 BYTE UNSIGNED;		/*Keyboard cmd buffer address
+	CONSTANT "block_size" EQUALS .;		/*Length of data block
+	END kbrd_cmd_buffer;
+/* 
+/* End of module VSTA$KBRD
+/*
+    end_module;

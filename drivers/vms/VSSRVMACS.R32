@@ -1,0 +1,76 @@
+! Macros for VSSERVE modules
+!
+
+!
+! Macro to store a filename in a fab.
+!    
+MACRO
+    $store_name_in_fab (strng, fab) =
+	BEGIN
+	fab [FAB$B_FNS] = %CHARCOUNT (strng);
+	fab [FAB$L_FNA] = UPLIT (strng);
+	END %;
+
+! Broadcast a message to the operator
+
+MACRO
+    $tell_opr (mess) =
+	BEGIN
+	EXTERNAL ROUTINE vsta$$srv_deb_broad;
+	vsta$$srv_deb_broad (%ASCID mess)
+	END
+	%,
+
+    $tell_opr_dec (mess,num) =
+	BEGIN
+	EXTERNAL ROUTINE vsta$$srv_tell_opr_dec;
+	vsta$$srv_tell_opr_dec (%ASCID mess, num)
+	END
+	%,
+
+    $tell_opr_hex (mess,num) =
+	BEGIN
+	EXTERNAL ROUTINE vsta$$srv_tell_opr_hex;
+	vsta$$srv_tell_opr_hex (%ASCID mess, num)
+	END
+	%,
+
+    $tell_opr_sts (mess,sts) =
+	BEGIN
+	EXTERNAL ROUTINE vsta$$srv_tell_opr_sts;
+	vsta$$srv_tell_opr_sts (%ASCID mess, sts)
+	END
+	%,
+
+! Debugging macros
+    $print (text) =
+	BEGIN
+	vsta$$srv_deb_broad (%ASCID text)
+	END
+	%,
+    $sline (text) =	!Start line
+	BEGIN
+	line_desc [0] = 0;	!Null string at first
+	vsta$$srv_append_string (%ASCID text, line_desc)
+	END
+	%,
+    $pline =		!Print line
+	BEGIN
+	vsta$$srv_deb_broad (line_desc)
+	END
+	%,
+    $dec (n) =		!Append decimal to string
+	BEGIN
+	vsta$$srv_append_dec (n, line_desc)
+	END
+	%,
+    $hex (n) =		!Append hex to string
+	BEGIN
+	vsta$$srv_append_hex (n, line_desc)
+	END
+	%,
+    $cline (text) =	!Continue a line of text
+	BEGIN
+	vsta$$srv_append_string (%ASCID text, line_desc)
+	END
+	%;

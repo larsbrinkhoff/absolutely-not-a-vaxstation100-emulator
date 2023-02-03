@@ -1,0 +1,813 @@
+! VSGIAL.BLI - VaxStation GIdis ALphabet manager, Bliss source
+!
+MODULE VSTA$GID_al(
+    IDENT = 'GIDIS alphabet manager',
+    ADDRESSING_MODE( NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	Alphabet manager for Gidis
+!	    - Maintains associations between alphabet numbers and locations
+!	    - Provides routines for the following opcodes:
+!		- use_named_alphabet
+!		- cell_storage_size
+!		- load_alphabet
+!	    - Provides services for VSGICC and VSGIAS for
+!		- getting font descriptor addresses from alphabet number, size,
+!		    and rendition.
+!		- getting character widths and heights
+!	
+!	There are GID$K_number_alphabets alphabets.  This module maintains
+!	the tables
+!		sf[ alph_addresses, ...]
+!		sf[ alph_namlengs, ...]
+!	   and	sf[ alph_types, ...].
+!	
+!	The VSGISF literal NUMBER_ALPHABETS controls how many alphabets are
+!	available to each user.
+!	
+!	alph_types are GID$K_user_defined and GID$K_named
+!	
+!	For a user_defined alphabet, the alph_addresses is the address of a
+!	"font instance".
+!	
+!	For a named alphabet, alph_addresses is the address of the
+!	typeface name string, and alph_namlengs is its length.
+!
+! Environment:
+!
+!	To use this module, require VSGIAL.REQ to declare the routines
+!	and symbols.
+!
+!
+!
+GLOBAL LITERAL GID$$AL_Edit_level = 1;
+!
+!--
+
+LIBRARY 'vsta$library:vstasyms';	! symbols like "vsta$k_vaxmem"
+LIBRARY 'VSTA$LIBRARY:VSGISF';		! State fetcher
+LIBRARY 'VSTA$LIBRARY:vsgirm';		! Gidis report manager
+LIBRARY 'VSTA$LIBRARY:vsgicx';		! Coordinate translator
+LIBRARY 'VSTA$LIBRARY:libmacros';	! For PSECT definitions
+
+library_file_crock;
+
+$vsta_psect;
+
+LITERAL		! literals for font change flag
+    GID$K_font_changed = 0,
+    GID$K_font_unchanged = 1;
+
+EXTERNAL ROUTINE		! From TEXTFONT module
+    vs$$post_ast_request,
+    fibreference,
+    fibDereference,
+    VSTA$$TXT_choose_graphics_font;
+
+EXTERNAL ROUTINE
+    VS$$VDS_SOBGTR;
+
+EXTERNAL ROUTINE
+	VS$$ACP_Get_VM,
+	VS$$ACP_Free_VM,
+	VSTA$$Error;
+
+
+		 !--------------------------------------!
+		 ! State Block for Font Instance blocks !
+		 !--------------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+    FIELD font_instance_fields =
+	SET
+	fi_reference_count = longword_scalar,	! Count of the number of things
+						! referencing this block and
+						! the font it refers to.
+	fi_font_header_address = longword_scalar,
+						! header for finding widths
+	fi_font_address = longword_scalar,	! Address for $PRINTTEXT
+	fi_font_location = longword_scalar,	! vsta$k_dispmem for font in
+						! display mem, vsta$k_vaxmem
+						! for cont in vax mem
+	fi_font_len = longword_scalar,		! Length for font deallocation
+						! (User-defined only)
+	fi_fid = longword_scalar,		! font ID for fib(de)Reference
+						! (built-in only)
+	fi_type = byte_scalar			! User defined or built-in.
+	TES;
+
+    LITERAL K_font_instance_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+		   !----------------------------------!
+		   ! State Block for Font Information !
+		   !----------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+!	This block contains the description of a font.  The base address is
+!	the location of the font in WGA format.  This is what
+!	sf[ alph_addresses] points to when sf[ alph_type] is "named".
+
+    FIELD font_fields =
+	SET
+	ff_bitmap = what_follows,
+	    ff_bitmap_pointer = longword_scalar,
+	    ff_bitmap_xdim = word_scalar,
+	    ff_bitmap_ydim = word_scalar,
+	    ff_bitmap_zdim = word_scalar,
+	ff_firstchar = word_scalar,
+	ff_lastchar = word_scalar,
+	ff_leftarray = longword_scalar,
+	ff_baseline = word_scalar,
+	ff_space = word_scalar,
+	ff_width = word_scalar,
+	ff_font_data = what_follows
+	TES;
+
+    LITERAL font_block_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+!+
+GLOBAL ROUTINE GID$$AL_reference_font(
+    font_instance : REF state_instance FIELD( font_instance_fields)
+    )		!
+    =
+! Routine value:
+!	Success code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Add one to the font's reference count.  If the font itself
+!	belongs to text services, fibreference it.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+    status = 1;
+    font_instance[ fi_reference_count] =
+	.font_instance[ fi_reference_count] + 1;
+    IF .font_instance[ fi_type] EQL GID$K_user_defined
+    THEN ! Font is user defined, nothing else is needed
+    ELSE ! Font is a named VS100 font, fibreference it for them
+	BEGIN
+	status = fibReference( .font_instance[ fi_fid] );
+	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_dereference_font(
+    font_instance : REF state_instance FIELD( font_instance_fields)
+    )		!
+    :  =
+! Routine value:
+!	Success code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Declare that a process is done with a font, and decrement
+!	the reference count.  If we are the last process using the font,
+!	deallocate the font instance.
+! Algorithm:
+!	If the font instance refers to a workstation font, also
+!	fibDereference it.
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = 1;
+    IF .font_instance[ fi_type] NEQ GID$K_user_defined
+    THEN ! This is a workstation font, fibDereference it
+	BEGIN
+	vs$$post_ast_request( fibDereference, .font_instance[ fi_fid]);
+!	status = fibDereference( .font_instance[ fi_fid]);
+!	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    IF VS$$VDS_SOBGTR( font_instance[ fi_reference_count])
+    THEN ! We are the last Gidis user of this instance, deallocate it
+	BEGIN
+	IF .font_instance[ fi_type] EQL GID$K_user_defined
+	THEN ! This is user defined, deallocate it
+	    BEGIN
+	    status = VS$$ACP_free_vm( font_instance[ fi_font_len],
+		font_instance[ fi_font_address]);
+	    IF NOT .status THEN RETURN VSTA$$Error( .status);
+	    END;
+	status = VS$$ACP_free_vm( %ref( K_font_instance_size), font_instance);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_char_width(	! Return a character width
+    font : REF state_instance FIELD ( font_fields),
+			! Address of a workstation font
+    index		! Character index for which width is desired
+    ) =
+! Routine value:
+!	Measured character width, in pixels
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Determine the width of a character, in pixels
+! Algorithm:
+!	If font type is fixed-width, return font width, otherwise
+!	return width from leftarray.
+! Side effects:
+!-
+    BEGIN
+      LOCAL
+	leftxtable: REF VECTOR[ ,WORD];
+
+    (IF .font[ ff_width] NEQ 0
+    THEN .font[ ff_width]
+    ELSE ! Font is not fixed width, pick up width from width table
+	BEGIN
+	leftxtable = .font + .font[ ff_leftarray];
+!   Return the difference between the starting X coridinate of this character,
+!   and the starting X coordinate of the next.  Note that fonts are supposed to
+!   contain an extra leftarray element so that lastchar's char has a width.
+	(.leftxtable[ .index - .font[ ff_firstchar] + 1]
+	 - .leftxtable[ .index - .font[ ff_firstchar]])
+	END)
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AL_char_height(	! Return a character height
+    font : REF state_instance FIELD ( font_fields),
+			! Address of a workstation font
+    index		! Character index for which height is desired
+    ) =
+! Routine value:
+!	Measured character height, in pixels
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Determine the height of a character, in pixels
+! Algorithm:
+!	Look at the font bitmap height
+! Side effects:
+!-
+    BEGIN
+    .font[ ff_bitmap_ydim]
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_get_alphabet_font(
+    alph_number,	! IN: Alphabet number to get font for
+    width,		! IN: Desired unit size width in pixels
+    height,		! IN: Desired unit size height in pixels
+    rendition,		! IN: Desired rendition as bit field
+    instance,		! OUT: location to get font instance address
+    font_header_address,! OUT: location of vax memory version of font header
+    font_address,	! OUT: location to get font address for $PRINTTEXT
+    font_location	! OUT: location to get font location (vax or disp)
+    )
+     =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	From the Gidis State:
+!	    sf[ alph_addresses, ...] - Font information for Gidis alphabets.
+!	    sf[ alph_types, ...] - Font information for Gidis alphabets.
+! Implicit outputs:
+! Function:
+!	Produces a font instance for a given alphabet and size.  Also provided
+!	is the print_text font address.  When done with this the provided font
+!	instance, call Dereference_font_instance on the instance.
+!
+!	When using the font asynchronously, be sure to use
+!	Reference_font_instance before, and Dereference after each such use, to
+!	insure that the font is not deallocated while you are using it.  (This
+!	routine implies the first reference to the instance.)
+! Algorithm:
+!	If the alphabet is user-defined, reference the font instance and return
+!	the needed font address and instance.
+!	If the alphabet is not user defined, allocate a font instance block,
+!	and perform a Graphics best fit on the workstation fonts to get the
+!	FIB and address of the applicable font.  Fibreference the chosen font.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	font_instance: REF state_instance FIELD (font_instance_fields),
+	status;
+    status = 1;
+
+!	Verify the the alphabet exist, and if not, use the default alphabet.
+
+    IF (IF .alph_number GTRU (GID$K_Number_alphabets-1)
+	THEN 1	! Alphabet number is out of range
+	ELSE ( .sf[ alph_addresses, .alph_number] EQL 0))
+    THEN      ! Either the alphabet number is out of range, or the alphabet
+	BEGIN ! has not yet been defined, return information for the default.
+	alph_number = 0;
+	END;
+
+!	Based on the alphabet type, either reference and return a user defined
+!	font, or perform the best fit.
+
+    IF .sf[ alph_types, .alph_number] EQL GID$K_user_defined
+    THEN
+	BEGIN ! User defined, get the font from the font address table
+	font_instance = .sf[ alph_addresses, .alph_number];
+	END
+    ELSE
+	BEGIN ! System-wide, do the Graphics best fit to get the font
+	LOCAL
+	    typeface: VECTOR[ 2];
+
+	status = VS$$ACP_get_vm( %ref( K_font_instance_size), font_instance);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	font_instance[ fi_type] = GID$K_named;
+	font_instance[ fi_reference_count] = 0;
+	typeface[ 0] = .sf[ alph_namlengs, .alph_number];
+	typeface[ 1] = .sf[ alph_addresses, .alph_number];
+	status = VSTA$$TXT_choose_graphics_font(
+	    .sf[ display_id],
+	    typeface,
+	    .rendition,
+	    .width,
+	    .height,
+	    font_instance[ fi_fid],
+	    font_instance[ fi_font_header_address],
+	    font_instance[ fi_font_address],
+	    font_instance[ fi_font_location]
+	    );
+	IF NOT .status
+	THEN
+	    BEGIN
+	    VS$$ACP_free_vm( %ref( K_font_instance_size), font_instance);
+	    RETURN VSTA$$Error( .status);
+	    END;
+	END;
+
+    .instance = .font_instance;
+    .font_header_address = .font_instance[ fi_font_header_address];
+    .font_address = .font_instance[ fi_font_address];
+    .font_location = .font_instance[ fi_font_location];
+    status = GID$$AL_reference_font( .font_instance );
+    IF .font_instance[ fi_type] EQL GID$K_named
+    THEN ! Choose has already fibreferenced, so undo the extra reference
+	 ! that was done by AL_reference_font
+	BEGIN
+	fibDereference( .font_instance[ fi_fid] );
+	END;
+    .status
+    END;
+
+
+!+
+ROUTINE load_character_body(
+    font: REF state_instance FIELD (font_fields), ! Address of a font.
+    char,		! Character in the font to define, assumed to be in
+			! range FIRSTCHAR to LASTCHAR, caller should be sure.
+    contents: REF VECTOR[ ,WORD]	! Pattern to define, indexed
+					! so that the top scanline is [0],
+					! and the bottom is [15].  Values from
+					! [0] to [font_height/2-1] are used.
+    ) =
+! Routine value:
+!	Always successful
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Write the pattern into the requested character
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	scanline_offset,	! Number of bytes from the begining of the
+				! bitmap to the begining of the scanline that
+				! we are interested in.
+	byte_offset,		! Number of bytes from the begining of the
+				! scanline to the byte containing the begining
+				! of the character we are interested in.
+	bit_offset,		! Number of bits from the begining of the byte
+				! we are interested in to the begining of the
+				! character we are interested in.
+	width;			! Width of the character we are interested in
+
+    char = .char - .font[ ff_firstchar];	! Adjust for non-chars
+    IF .font[ ff_width] EQL 0
+    THEN ! Not fixed width, get the starting pixel from the leftarray
+	BEGIN
+	LOCAL lefts: REF VECTOR[ ,WORD];
+! We should never get here, but in case user-defined variable width fonts
+! occurs, this will do the right thing anyway.
+	lefts = .font + .font[ ff_leftarray];
+	byte_offset = .lefts[ .char];
+	width = .lefts[ .char+1] - .lefts[ .char];
+	END
+    ELSE ! Font is fixed width, get the starting pixel with a multiply
+	BEGIN
+	byte_offset = .font[ ff_width] * .char;
+	width = .font[ ff_width];
+	END;
+
+    bit_offset = .byte_offset<0,3,0>;     ! Get the distance off-boundary
+    byte_offset = .byte_offset<3,32-3,0>; ! Change from pixel count to byte
+
+!	Compute the width of a scanline in bytes
+
+    scanline_offset = .font[ ff_bitmap_xdim] + 15;
+    scanline_offset = .scanline_offset< 4, 32-4, 0> * 2;
+
+!	Now copy the appropriate bits into the right place in the bitmap
+
+    INCR scan FROM 0 TO .font[ ff_bitmap_ydim] - 1
+    DO ! For each scanline in the character, write pixels to bitmap
+	BEGIN
+	(font[ ff_font_data]
+		+ (.scanline_offset * .scan)
+		+ .byte_offset
+	    )< .bit_offset, .width, 0>
+		= .(contents[ .scan< 1, 32-1, 1>])< 0, .width, 0>;
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AL_delete_alphabet(	! Delete an alphabet by number
+    alphabet			! Alphabet number to delete.  This must be
+				! in the range [1:15], and is NOT CHECKED!
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	Alphabet data from state fetcher:
+!	    sf[ alph_addresses, .alphabet],
+!	    sf[ alph_namlengs, .alphabet],
+!	    sf[ alph_types, .alphabet]
+! Implicit outputs:
+!	Alphabet data from state fetcher for this alphabet is changed
+! Function:
+!	The alphabet associated with the alphabet number provided is
+!	dis-associated from the number, and arrangements are made for the
+!	memory associated with the number to be deallocated as soon as
+!	possible.
+! Algorithm:
+!	If the alphabet is a named alphabet, we deallocate the name buffer.
+!	If the alphabet is user-defined, we dereference the associated font.
+!	In any case, the alphabet state is zeroed.
+! Side effects:
+!	WARNING: if the current alphabet is this alphabet, the current
+!	alphabet remains pointed to the old alphabet.  The Gidis definition
+!	does not expect this to be the case when an alphabet is redefined, so
+!	calling routines should be sure to re-associate the current alphabet
+!	(with de-reference and ???) whenever needed.
+!-
+    BEGIN
+    LOCAL
+	status;
+    status = 1;
+    IF .sf[ alph_addresses, .alphabet] EQL 0
+    THEN	! Alphabet is already deleted, never mind.
+
+    ELSE	! Alphabet does exist, delete it
+	BEGIN
+	IF .sf[ alph_types, .alphabet] EQL GID$K_user_defined
+	THEN	! User defined alphabet, dereference it
+	    BEGIN
+	    status = GID$$AL_dereference_font( .sf[ alph_addresses, .alphabet]);
+	    END
+	ELSE	! Named alphabet, deallocate the name
+	    BEGIN
+	    status= VS$$ACP_Free_VM(
+		sf[ alph_namlengs, .alphabet],
+		sf[ alph_addresses, .alphabet]);
+	    END;
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	END;	! of Alphabet does exist
+    sf[ alph_addresses, .alphabet] = 0;
+    sf[ alph_namlengs, .alphabet] = 0;
+    sf[ alph_types, .alphabet] = 0;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AL_cell_storage_size(
+    width,		! Width of each character in the alphabet, in PIXELS
+    height,		! Height of the alphabet, in PIXELS
+    extent)		! Extent, as index of highest character
+     =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	Alphabet tables, current alphabet sf[ tx_alphabet].
+! Implicit outputs:
+! Function:
+!	Define and allocated the space needed for a user defined alphabet.
+! Algorithm:
+!	Dereference what's there and create a new one.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	alphabet,
+	status;
+    status = 1;
+
+    sf[ tx_need_new_font] = 1;
+    alphabet = .sf[ tx_alphabet];
+
+!	Note: alphabet 0 may not be redefined
+
+    IF (.alphabet GTR 0) AND (.alphabet LEQ (GID$K_Number_alphabets-1))
+    THEN	! Alphabet number is in range, redefine the alphabet
+	BEGIN
+	LOCAL
+	    instance: REF state_instance FIELD (font_instance_fields),
+	    font: REF state_instance FIELD (font_fields),
+	    font_bitmap_size,
+	    leftarray: REF VECTOR[ ,WORD];
+
+	status = GID$$AL_delete_alphabet( .alphabet);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	IF (.extent GTR 31)
+	    AND (.width GTR 0) AND (.width LEQ 16)
+	    AND (.height GTR 0) AND (.height LEQ 16)
+	THEN ! Paramaters are acceptable, create the new alphabet
+	    BEGIN
+
+!	For CT and VT125 similarity, we pretend that we have a 2:1 aspect
+!	ratio.
+
+	    height = .height * 2;
+
+!	Create and fill in the font instance block and the font data
+
+	    sf[ alph_types, .alphabet] = GID$K_user_defined;
+	    status = VS$$ACP_get_vm( %ref( K_font_instance_size), instance);
+	    IF NOT .status THEN RETURN VSTA$$Error( .status);
+	    sf[ alph_addresses, .alphabet] = .instance;
+	    instance[ fi_type] = GID$K_User_defined;
+	    instance[ fi_reference_count] = 1;
+	    font_bitmap_size =
+		( ( ( ( (.extent-30) * .width) + 15) / 8) * .height);
+	    instance[ fi_font_len] = font_block_size + .font_bitmap_size
+!		+ 2 * (.extent - 29) ! This line TEMPORARY, (leftarray)
+		;
+	    status = VS$$ACP_get_vm( instance[ fi_font_len], font);
+	    IF NOT .status THEN RETURN VSTA$$Error( .status);
+	    instance[ fi_font_header_address] = .font;
+	    instance[ fi_font_address] = .font;
+	    instance[ fi_font_location] = vsta$k_vaxmem;
+	    font[ ff_bitmap_pointer] = font[ ff_font_data]
+		- font[ ff_bitmap_pointer];
+	    font[ ff_bitmap_xdim] = .width * (.extent - 30);
+	    font[ ff_bitmap_ydim] = .height;
+	    font[ ff_bitmap_zdim] = 1;
+	    font[ ff_firstchar] = 31;
+	    font[ ff_lastchar] = .extent;
+	    font[ ff_baseline] = .height;
+	    font[ ff_space] = 32;
+	    font[ ff_width] = .width;		! Permanant
+	    font[ ff_leftarray] = 0;		! Permanant
+!	    font[ ff_width] = 0;		! Temporary
+!	    font[ ff_leftarray] = font_block_size + .font_bitmap_size; !TEMP
+
+!	Initialize the leftarray (TEMPORARY, until fixed with fonts work)
+
+!	leftarray =  .font[ ff_leftarray] + .font;	! TEMPORARY
+!	INCR char FROM 0 TO .extent-30 DO
+!	    BEGIN
+!	    leftarray[ .char] = .char*.width;
+!	    END;
+
+!	Make all undefined characters into solid blobs
+
+	    ch$fill( -1,
+		.font_bitmap_size,
+		font[ ff_font_data]);
+
+!	Enter the error blob
+
+	    load_character_body( .font, 31, UPLIT WORD(
+		%B'1010101010101010',	! (1)
+		%B'0101010101010101',	! (2)
+		%B'1010101010101010',	! (3)
+		%B'0101010101010101',	! (4)
+		%B'1010101010101010',	! (5)
+		%B'0101010101010101',	! (6)
+		%B'1010101010101010',	! (7)
+		%B'0101010101010101',	! (8)
+		%B'1010101010101010',	! (9)
+		%B'0101010101010101',	! (10)
+		%B'1010101010101010',	! (11)
+		%B'0101010101010101',	! (12)
+		%B'1010101010101010',	! (13)
+		%B'0101010101010101',	! (14)
+		%B'1010101010101010',	! (15)
+		%B'0101010101010101')	! (16)
+		);
+	    END
+	ELSE	! Parameters are out of range, simply leave alphabet deleted.
+	    ;	! Note that .extent=0 is defined as delete-alphabet.
+	END;
+
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$AL_use_named_alphabet(
+    typeface: REF VECTOR[ ,BYTE]	! 0-terminated typeface name.  Enforced
+					! limit is 32 bytes
+    ) =
+! Routine value:
+!	Success code
+! Implicit inputs:
+!	Alphabet tables is sf
+! Implicit outputs:
+! Function:
+!	Cause the current alphabet to be associated with this named alphabet
+! Algorithm:
+!	Pick the bytes out of the string one at a time, upper case them along
+!	the way.
+! Side effects:
+!-
+    BEGIN
+
+    EXTERNAL ROUTINE STR$Upcase;
+
+    LOCAL
+	alphabet,
+	dest: VECTOR[ 2],
+	source: VECTOR[ 2],
+	status;
+
+    status = 1;
+
+!	Make sure alphabet is in range (note that alphabet 0 cannot be
+!	redefined.
+
+    sf[ tx_need_new_font] = 1;
+    alphabet = .sf[ tx_alphabet];
+    IF (.alphabet GTR 0) AND (.alphabet LEQ (GID$K_Number_alphabets-1))
+    THEN	! Alphabet number is in range, redefine the alphabet
+	BEGIN
+
+!	Delete the old alphabet
+
+	status = GID$$AL_delete_alphabet( .alphabet);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+!	Find out how big the typeface name is
+
+	WHILE .typeface[ .sf[ alph_namlengs, .alphabet]] NEQ 0
+	DO ! Haven't reached EOS yet, increment and check for overflow
+	    BEGIN
+	    IF .sf[ alph_namlengs, .alphabet] GEQ 32 THEN EXITLOOP;
+	    sf[ alph_namlengs, .alphabet] = .sf[ alph_namlengs, .alphabet] + 1;
+	    END;
+
+!	Get that much memory
+
+	status = VS$$ACP_get_vm(
+	    sf[ alph_namlengs, .alphabet],
+	    sf[ alph_addresses, .alphabet]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+
+!	Move in the data
+
+	dest[ 0] = .sf[ alph_namlengs, .alphabet];
+	dest[ 1] = .sf[ alph_addresses, .alphabet];
+	source[ 0] = .sf[ alph_namlengs, .alphabet];
+	source[ 1] = .typeface;
+
+	STR$Upcase( dest, source);
+
+	sf[ alph_types, .alphabet] = GID$K_named;
+	END;
+
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_check_current_alphabet =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Set up current alphabet state information from the current alphabet
+!	number in the state file.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL status;
+
+    status = 1;
+    IF .sf[ tx_need_new_font]
+    THEN ! Something has changed, get a new current font
+	BEGIN
+	IF .sf[ tx_font_instance] NEQ 0 ! There is a current font, deref it
+	THEN GID$$AL_dereference_font( .sf[ tx_font_instance]);
+
+!	Fetch and reference a new font instance.  Get_alphabet_font does both
+
+	status = GID$$AL_get_alphabet_font(
+	    .sf[ tx_alphabet],
+	    .sf[ tx_w_hard_unit],
+	    .sf[ tx_h_hard_unit],
+	    .sf[ tx_rendition],
+	    sf[ tx_font_instance],
+	    sf[ tx_font_header_address],
+	    sf[ tx_font_address],
+	    sf[ tx_font_location]);
+	IF NOT .status THEN RETURN VSTA$$Error( .status);
+	sf[ tx_need_new_font] = 0;	! Reset needs
+	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_load_alphabet(
+    char,				! Character to define
+    contents: REF VECTOR[ ,WORD]	! Contents to define with
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Define a user defined character
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+  	status,
+	font: REF state_instance FIELD (font_fields),
+	current_instance: REF state_instance FIELD (font_instance_fields);
+
+    status = 1;
+    GID$$AL_check_current_alphabet();
+    current_instance = .sf[ tx_font_instance];
+    IF .current_instance[ fi_type] EQL GID$K_user_defined
+    THEN ! Font is okay to redefine
+	BEGIN
+	font = .current_instance[ fi_font_header_address];
+	IF (.char LEQ .font[ ff_lastchar])
+	AND (.char GTR .font[ ff_firstchar])
+	THEN ! Char is okay to define
+	    BEGIN
+	    status = load_character_body(
+		.font,
+		.char,
+		.contents);
+	    END;
+	END;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$AL_report_cell_standard
+	=
+! Routine value:
+!	Status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Report the unit size of the current font
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	font: REF state_instance FIELD (font_fields), ! Address of a font.
+	status;
+
+    status = GID$$AL_check_current_alphabet();
+    IF NOT .status THEN RETURN .status;
+    font = .sf[ tx_font_header_address];
+    GID$$RM_report_word( GID$$CX_unmap_coordinate( .font[ ff_bitmap_ydim]));
+    GID$$RM_report_word(
+	GID$$CX_unmap_coordinate(
+	    GID$$AL_char_width( .font, .font[ ff_space])));
+    .status
+    END;
+
+END
+ELUDOM

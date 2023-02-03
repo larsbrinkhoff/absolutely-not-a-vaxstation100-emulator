@@ -1,0 +1,765 @@
+MODULE VBCONTROL (
+			IDENT = 'Control state of ONYX/ACP'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+!
+!  Handles starting, stopping, link broken, loading microcode, etc.
+!
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!	This module does the "controlling" of VAXstation device state.
+!
+! ENVIRONMENT:
+!
+! VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vs$$ctrl_startup,		!Called when ACP first starts up.
+    exit_idle,			!Does a "wake".
+    exit_idle_actions,		!Process level actions for user hit mouse btn.
+    vs$$ctrl_exit_idle_actions,	!Called when exit-idle AST is gotten.
+    spread_the_word,		! Take VB info buffer and use it.
+    vs$$ctrl_shutdown,		!Called when the ACP is stopped.
+				! (exit handler).
+    link_ast,			!Called when got a LINK ast.
+    vs$$ctrl_load_mic,		!Load the microcode
+    mic_read,			!Read the microcode file
+    get_checksum,
+    get_address,
+    store_code: NOVALUE,
+    load_some_microcode;	!Call VBdriver to load some of the microcode.
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!$string_descriptor
+LIBRARY 'VSTA$LIBRARY:VSTASYMS';
+LIBRARY 'VSTA$LIBRARY:VBDEF';
+LIBRARY 'VSTA$LIBRARY:VSERRORS';
+
+! PSECT Definitions
+!
+
+$vsta_psect;
+
+LITERAL
+    mic_buf_len = 5000;		!Length (bytes) of microcode buffer,
+				! in local storage. This is the largest size
+				! ever passed to "load_object".
+
+GLOBAL
+    vsta$gl_vb_off,		!=0 if we think VB is ON, =1 if VB is OFF.
+    vsta$gl_inuse,		!=1 if ONYX is in use by user.
+    srv$gl_vb_info: BLOCK [VSTA$K_CHR_LENGTH, BYTE],
+    vsta$gb_screen_mbmd: BLOCK [mbmd$S_modified_bmds, BYTE],
+    vsta$a_frame_buffer: INITIAL (vsta$gb_screen_mbmd);
+
+GLOBAL BIND
+    vsta$gl_screen =		srv$gl_vb_info [chr_cnf$l_screen],
+    vsta$gl_screen_size_x =	srv$gl_vb_info [chr_cnf$l_screen_x],
+    vsta$gl_screen_size_y =	srv$gl_vb_info [chr_cnf$l_screen_y],
+    vsta$gl_screen_size_z =	srv$gl_vb_info [chr_cnf$l_screen_z],
+    vsta$gl_frame =		srv$gl_vb_info [chr_cnf$l_frame],
+    vsta$gl_frame_size =	srv$gl_vb_info [chr_cnf$l_frame_size],
+    vsta$gl_program =		srv$gl_vb_info [chr_cnf$l_program],
+    vsta$gl_program_size =	srv$gl_vb_info [chr_cnf$l_program_size],
+    vsta$gl_unibus =		srv$gl_vb_info [chr_cnf$l_unibus],
+    vsta$gl_unibus_size =	srv$gl_vb_info [chr_cnf$l_unibus_size],
+
+    vsta$gl_driver_version =	srv$gl_vb_info [chr_ver$l_driver],
+    vsta$gl_rom_version =	srv$gl_vb_info [chr_ver$l_rom],
+    vsta$gl_dev_type =		srv$gl_vb_info [chr_ver$l_dev_type],
+    vsta$gl_dev_version =	srv$gl_vb_info [chr_ver$l_dev_version],
+    vsta$gl_mcode_version =	srv$gl_vb_info [chr_ver$l_mcode];
+
+OWN
+    ptr,			!For microcode load
+    byte_count,			!For microcode load
+    min_address: INITIAL (-1),
+    max_address: INITIAL (0),
+    device_online_flag;		!Whether or not the device is online
+
+MACRO
+    $get_hex (char) =
+	BEGIN
+	IF char GEQ %C'A'
+	  THEN char-%C'A'+10
+	  ELSE char-%C'0'
+	END %;
+
+EXTERNAL ROUTINE
+    vsta$$drive_init_module,	!Initializes the vstadrive module for operation
+    vsta$$drive_movedisp,	!Move to display memory
+    vsta$$drive_startm,		!Start the microcode
+    vsta$$drive_reset,		!Reset the ONYX
+    vsta$$drive_exit_idle,	!Set exit-idle AST
+    vsta$$drive_link_ast,	!Set Link-ast
+    vsta$$drive_light_on,	!Turn light on and wait
+    vsta$$drive_setmouse,	!Set mouse characteristics
+    vsta$$drive_attach_cursor,	!Attach mouse cursor
+    vsta$$drive_report_to_vb,	!Report info to VB
+    vsta$$drive_get_vb_status,	!Get VB status
+    vsta$$drive_powerup,	!Powerup (go back to mouse icon)
+    vsta$$drive_noop,		!Send a noop to the device
+    vsta$$move_cancel,		!Get out of move mode
+    vsta$$srv_cursor_normal,	!Set cursor shape to "normal".
+    vsta$$srv_start_session,	!Start workstation session
+    vsta$$srv_end_session,	!End workstation session
+    vs$$post_ast_request,	!Do action at process level, not AST level.
+    vs$$acp_usage_trace,
+    vsta$$error,		!Report an error.
+    vsta$$error_logger;
+
+EXTERNAL
+    vs$gl_oem_flags,		!OEM-mode flags
+    vs$gw_vbchan: WORD;		!The VB channel number.
+
+
+GLOBAL ROUTINE vs$$ctrl_startup =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the ACP first starts up, to establish communication
+!	with the VBDRIVER.
+!--
+BEGIN
+LOCAL
+    startup_ok_flag,
+    status;
+!
+! Call the routine to init the vstadrive module
+!
+IF NOT (status =
+    vsta$$drive_init_module ()
+	)
+  THEN RETURN $error (vsta$_ini_drive);
+!
+! Turn the light on. (It may already be on, but this is unlikely since
+! we always tell the VBDRIVER to turn it off every time we exit).
+!
+IF NOT (status =
+    vsta$$drive_light_on (.vs$gw_vbchan)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report the problem
+    RETURN $error (vsta$_light_on);
+    END;
+!
+! Tell VB to "powerup" if we can. If can't, see if it's powered off.
+! If that's not the error, die gracefully.
+!
+IF NOT (status =
+    vsta$$drive_powerup (.vs$gw_vbchan)
+	)
+  THEN
+    BEGIN
+    IF .status EQL SS$_DEVOFFLINE or .status eql ss$_timeout
+      THEN vsta$gl_vb_off = 1		!Turned off-- this is ok, just set flag
+      ELSE
+	BEGIN
+	$system_error (.status);
+	RETURN $error (vsta$_powerup);
+	END;
+    END;
+!
+! Setup AST for exit-idle
+!
+IF NOT .vs$gl_oem_flags THEN
+  IF NOT (status =
+    vsta$$drive_exit_idle (.vs$gw_vbchan, exit_idle)
+	)
+    THEN
+      BEGIN
+      $system_error (.status);		!Report the problem
+      RETURN $error (vsta$_exit_idle);
+      END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE exit_idle =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	AST routine called when the VB driver tells us that the
+!	user pushed the mouse button to start.
+!	  Errors cause the ACP to die gracefully.
+!--
+BEGIN
+
+vsta$gl_vb_off = 0;		!VB must be on!
+IF NOT (vs$$post_ast_request (exit_idle_actions)
+	)
+  THEN $exit ();		!Die gracefully.
+
+vsta$gl_inuse = 1;		!VB is now in use.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE exit_idle_actions =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Process-level routine to start the session when the
+!	user hit the mouse button.
+!--
+BEGIN
+!
+! Try to start up. If we can't, either the routine will have
+! caused the ACP to die gracefully, or it will return a bad status
+! such as "the device is turned off", etc. In this latter case we
+! will simply go back into startup mode.
+!
+IF (NOT (vs$$ctrl_exit_idle_actions (1) )	!1 = user hit mouse btn.
+    )
+  THEN vs$$ctrl_startup ();		!Get back to startup mode
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vs$$ctrl_exit_idle_actions
+!++
+! FUNCTIONAL DESCRIPTION:
+!	At process level, the ACP has now got an "exit-idle" AST.
+!	Reset the ONYX, load the microcode, etc.
+!	Any funny errors cause an $exit.
+! FORMAL PARAMETERS:
+	(user_flag		!=1 if user hit mouse button
+				!=0 if priviledged UETP QIO.
+	) =
+!--
+BEGIN
+MACRO
+   $err_user (params) =
+	BEGIN
+	IF (.user_flag EQL 0)
+	  THEN vsta$$error (params
+	    %IF NOT %NULL (%REMAINING) %THEN , %REMAINING %FI
+			    )
+	  ELSE params
+	END %;
+
+LOCAL
+    mfile_Desc_addr,		!Address of string descriptor to microcode
+    status;
+
+vsta$gl_inuse = 1;		!VB is now IN USE. (UETP session QIO will fail)
+
+IF NOT (status =
+    vsta$$drive_reset (.vs$gw_vbchan)
+	)
+  THEN
+    BEGIN
+    vsta$gl_inuse = 0;
+    RETURN $err_user (.status);		!Can't reset
+    END;				! (should only have "timeout" here).
+!
+! Get information such as version numbers, etc.
+!
+IF NOT (status =
+    vsta$$drive_report_to_vb (.vs$gw_vbchan)	!Tell VB to report info to
+						! the driver.
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+!
+! Now the driver knows. Find out from the driver so WE know.
+!
+IF NOT (status =
+    vsta$$drive_get_vb_status (.vs$gw_vbchan, srv$gl_vb_info)
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+!
+! Make sure we know about the device. Load the microcode file
+!
+(SELECTONE .vsta$gl_dev_type OF
+    SET
+    [VB$K_DT_VS100]:
+	mfile_desc_addr = %ASCID 'VSTA$MICRO:VS100FW.BIN';
+!    [VB$K_DT_VS125]:
+!	mfile_desc_addr = %ASCID 'VSTA$MICRO:VS125FW.BIN';
+!    [VB$K_DT_VS300]:
+!	mfile_desc_addr = %ASCID 'VSTA$MICRO:VS300FW.BIN';
+    [OTHERWISE]:		!For ship, make this a fatal error
+	BEGIN
+	EXTERNAL vsta$_vbdevunk;	!"Unknown device type, assume VS100"
+	vsta$$error_logger (vsta$_vbdevunk);
+	mfile_desc_addr = %ASCID 'VSTA$MICRO:VS100FW.BIN';
+	END;
+    TES
+);
+
+IF NOT (status =
+    vs$$ctrl_load_mic (.mfile_desc_addr)	!Load the microcode
+	)
+  THEN
+    BEGIN
+    vsta$gl_inuse = 0;
+    RETURN .status;			!Should only have "Timeout" here.
+    END;
+
+!
+! Get version numbers again, now that the microcode is loaded!
+!
+IF NOT (status =
+    vsta$$drive_report_to_vb (.vs$gw_vbchan)	!Tell VB to report info to
+						! the driver.
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+!
+! Now the driver knows. Find out from the driver so WE know.
+!
+IF NOT (status =
+    vsta$$drive_get_vb_status (.vs$gw_vbchan, srv$gl_vb_info)
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+
+IF NOT (status =
+    vsta$$drive_setmouse (.vs$gw_vbchan
+			 ,3	!Multiplier
+			 ,1	!Divisor
+			 )
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+
+!
+! Write version numbers of things out to SYS$OUTPUT.
+!
+spread_the_word ();		!Any bad errors exits the ACP.
+
+!
+! Build modified bitmap descriptor for VSTADRIVE.
+!
+vsta$gb_screen_mbmd [mbmd$a_addr] = .vsta$gl_screen;
+vsta$gb_screen_mbmd [mbmd$w_size_x] = .vsta$gl_screen_size_x;
+vsta$gb_screen_mbmd [mbmd$w_size_y] = .vsta$gl_screen_size_y;
+vsta$gb_screen_mbmd [mbmd$w_size_z] = .vsta$gl_screen_size_z;
+vsta$gb_screen_mbmd [mbmd$w_locate] = vsta$K_dispmem;
+
+!
+! We know the ONYX is now on-line. Find out when it goes off-line.
+!
+IF NOT (status =
+    vsta$$drive_link_ast (.vs$gw_vbchan, link_ast)
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN $err_user (.status);
+    END;
+!
+! Now we are ready to put stuff on the screen!
+!
+IF NOT (status =
+    vsta$$srv_start_session (.user_flag)
+	)
+  THEN
+    BEGIN
+    vs$$ctrl_shutdown ();
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE spread_the_word =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Check version numbers to make sure ok (if not, bomb the ACP).
+!	If ok, log them to SYS$OUTPUT.
+!	Note: Must have done a successful REPORT QIO before this
+!	      routine should be called.
+!--
+BEGIN
+LITERAL
+    always_trace = 1;		!Always do usage trace for configuration
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,BYTE],
+    out_desc: VECTOR [2],
+    out_len: WORD,		!Returned by $fao
+    status;
+
+str_desc [1] = str_itself;	!Make a string descriptor.
+str_desc [0] = 256;
+
+out_desc [1] = str_itself;	!And output string descriptor.
+
+IF NOT (status =
+    $fao	(%ASCID 'Configuration:  DRIVER=%X!XW, Rom=!UL, Mcode=%X!XW, DEVTYP=%X!XW, DEVVER=!UL'
+		,out_len
+		,str_desc
+		,.vsta$gl_driver_version	!P1
+		,.vsta$gl_rom_version		!P2
+		,.vsta$gl_mcode_version		!P3
+		,.vsta$gl_dev_type		!P4
+		,.vsta$gl_dev_version		!P5
+		)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_fao);
+    END;
+
+out_desc [0] = .out_len;
+vs$$acp_usage_trace (out_desc,always_trace);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vs$$ctrl_shutdown =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine called when the ACP is shut down.
+!--
+BEGIN
+
+!vsta$$drive_powerup (.vs$gw_vbchan);		!Attempt to get to
+						!"press mouse button to start"
+						! icon.
+
+! Ignore errors - probably timeout because the ONYX is turned off.
+! Let user turn it off then on again.
+
+vsta$gl_inuse = 0;		!ONYX no longer in use.
+
+!
+! Wait for I/O activity to cease. This is the last QIO that will
+! be attempted to the VB device. Of course, if the device/driver
+! is hung then the ACP will now become hung as well.
+!
+vsta$$drive_noop
+		(.vs$gw_vbchan		!Channel
+		,1			!EFN (1 = nowait)
+		,0,0			!ASTADR,ASTPRM
+		);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE link_ast =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	A "link ast" occurred.
+!--
+BEGIN
+
+vsta$gl_vb_off = 1;				!Remember VB is OFF.
+!
+!  Befor posting the end session routine call the move cancel routine
+!  to get out of move mode.  This must be done at AST level because
+!  the ACP in in event flag wait durring move mode.
+!
+vsta$$move_cancel();
+
+vs$$post_ast_request (vsta$$srv_end_session);	!Do end session when
+						! we can.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vs$$ctrl_load_mic
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Loads the microcode
+!	Any funny errors cause an $exit.
+! FORMAL PARAMETERS:
+	(mfile_desc: REF $string_descriptor
+	) =
+!--
+BEGIN
+LOCAL
+    microcode: VECTOR [mic_buf_len, BYTE],
+    mcode_fab: $FAB_DECL,
+    mcode_rab: $RAB_DECL,
+    status;
+
+!
+! Setup the microcode file RMS stuff and open the file
+!
+$fab_init	(FAB = mcode_fab
+		,FNS = .mfile_desc [sd$w_len]
+		,FNA = .mfile_desc [sd$a_adr]
+		);
+$rab_init	(RAB = mcode_rab
+		,FAB = mcode_fab
+		,USZ = 132
+		);
+IF NOT (status =
+     $open	(FAB = mcode_fab)
+	)
+  THEN
+    BEGIN
+    $system_error (.status);		!Report RMS error
+    RETURN $error (vsta$_open_mic
+		,string_type, .mfile_desc
+		);
+    END;
+
+$connect	(RAB = mcode_rab);
+!
+! Read the file and convert to binary format.
+!
+IF NOT (status = 
+    mic_read (mcode_rab, microcode)	!Loads as it goes along, too.
+	)
+  THEN
+    BEGIN
+    $close	(FAB = mcode_fab);
+    $system_error (.status);
+    RETURN $error (vsta$_read_mic
+		,string_type, .mfile_desc
+		);
+    END;
+
+$close	(FAB = mcode_fab);	
+
+IF NOT (status =
+    vsta$$drive_startm	(.vs$gw_vbchan)		!Start the microcode
+	)
+  THEN
+    BEGIN
+    $system_error (.status);
+    RETURN $error (vsta$_startm);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE mic_read
+!++
+! FORMAL PARAMETERS:
+	(rab: REF BLOCK [,BYTE]	!Address of RAB
+	,microcode		!Place where microcode goes
+	) =
+!--
+BEGIN
+LOCAL
+    mic_buff: VECTOR [132,BYTE],
+    address,
+    old_length,			!Length of microcode in buffer.
+    status;
+!
+! Read the file and convert to binary format
+!
+rab [rab$l_ubf] = mic_buff;	!Read into this buffer.
+
+WHILE (status = $get	(RAB = .rab)) DO
+    BEGIN
+    IF (.rab [rab$w_rsz] NEQ 0)
+      THEN
+	BEGIN
+	IF NOT (get_checksum (mic_buff)
+		)
+	  THEN RETURN $error (vsta$_mic_chksum);	!Checksum error.
+	IF (.mic_buff [0] NEQ %C'S')
+	  THEN RETURN $error (vsta$_inv_mic_not_s);
+	(SELECTONE .mic_buff [1] OF
+	    SET
+	    [%C'0']: ;		!Unused S record
+	    [%C'1', %C'2']:	!Microcode data S record
+		BEGIN
+		old_length = .max_address - .min_address + 1;
+		address = get_address (mic_buff);
+		IF ((.min_address GTR .address)		!Backwards..
+			OR
+		   ((.max_address + 1) LSS .address)	!Gap...
+			OR
+		   (.old_length + .byte_count) GTR mic_buf_len) !Buffer too big
+		  THEN
+		    BEGIN
+		    IF NOT (status =
+			load_some_microcode (.microcode)
+			    )
+		      THEN RETURN .status;
+		    END;
+		max_address = MAXU (.max_address, .address + .byte_count - 1);
+		min_address = MINU (.min_address, .address);
+		store_code (.address, mic_buff, .microcode);
+		END;	!1, 2
+	    [%C'9']:		!Exit S record
+		EXITLOOP;
+	    [OTHERWISE]:
+		RETURN $error (vsta$_inv_mic_s);	!"Invalid microcode S record"
+	    TES
+	);
+	END;	! if non-blank record.
+    END;	! while $get succeeds.
+!
+! Better not have gotten an EOF.
+!
+IF NOT .status
+  THEN RETURN $system_error (.status);
+!
+! Load the last bunch.
+!
+IF NOT (status =
+    load_some_microcode (.microcode)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_checksum
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Checks the checksum of each microcode file record.
+! FORMAL PARAMETERS:
+	(mic_buff: REF VECTOR [,BYTE]
+	) =
+! RETURNS:
+!	SS$_NORMAL if ok, 0 if checksum error.
+!--
+BEGIN
+LOCAL
+    checksum: BYTE SIGNED,
+    count;
+
+checksum = 0;
+count = $get_hex (.mic_buff [2]) * 16 + $get_hex (.mic_buff [3]);
+byte_count = .count - 1;
+INCR i FROM 0 TO .count DO
+    checksum =
+	.checksum + $get_hex(.mic_buff [2+.i*2]) * 16 + $get_hex(.mic_buff [3+.i*2]);
+
+IF (.checksum NEQ -1)
+  THEN RETURN 0;
+
+RETURN SS$_NORMAL		!Good checksum, return O.K.
+END;
+
+ROUTINE get_address
+!++
+! FUNCTIONAL DESCRIPTION:
+! FORMAL PARAMETERS:
+	(mic_buff: REF VECTOR [,BYTE]
+	) =
+! IMPLICIT I/O:
+!	max_address, min_address, ptr, byte_count
+!--
+BEGIN
+LOCAL
+    address,
+    count;
+
+address = 0;
+IF (.mic_buff [1] EQL %C'1')
+  THEN
+    BEGIN
+    count = 4;
+    ptr = 8;
+    byte_count = .byte_count - 2;
+    END
+  ELSE
+    BEGIN
+    count = 6;
+    ptr = 10;
+    byte_count = .byte_count - 3;
+    END;
+
+INCR i FROM 4 TO .count+3 DO
+    address = .address * 16 + $get_hex (.mic_buff [.i]);
+
+RETURN .address;
+END;
+
+ROUTINE store_code
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the binary data into the microcode buffer.
+! FORMAL PARAMETERS:
+	(address
+	,mic_buff: REF VECTOR [,BYTE]
+	,microcode: REF VECTOR [,BYTE]
+	) : NOVALUE =
+! IMPLICIT INPUTS:
+!	ptr, byte_count (from "get_address")
+!--
+BEGIN
+LOCAL
+    adr1,
+    byte_value,
+    status;
+
+adr1 = .address - .min_address;
+
+INCR i FROM 0 TO .byte_count - 1 DO
+    BEGIN
+    byte_value = $get_hex (.mic_buff [.ptr]) * 16 + $get_hex (.mic_buff [.ptr+1]);
+    ptr = .ptr + 2;
+    microcode [.adr1 XOR 1] = .byte_value;	!Bytes are backwards in the VAX
+    adr1 = .adr1 + 1
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE load_some_microcode
+!++
+! FORMAL PARAMETERS:
+	(microcode		!Address of converted microcode
+	) =
+! IMPLICIT INPUTS:
+!	min_address, max_address
+!--
+BEGIN
+LOCAL
+    status;
+
+IF ((.min_address EQL -1) AND (.max_address EQL 0))
+  THEN RETURN SS$_NORMAL;
+
+IF NOT (status =
+    vsta$$drive_movedisp
+			(.vs$gw_vbchan			!Channel
+			,.max_address - .min_address + 1 !Length
+			,.microcode			!OBJ
+			,.min_address			!DST
+			)
+	)
+  THEN
+    BEGIN
+    min_address = -1;
+    max_address = 0;
+    $system_error (.status);
+    RETURN $error (vsta$_movdisp);
+    END;
+
+min_address = -1;
+max_address = 0;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

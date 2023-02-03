@@ -1,0 +1,279 @@
+ 
+!*** MODULE $VS ***
+! +++
+!  Facility:
+! 
+! 	VAX Workstation Virtual Display and Physical Screen data structures
+! 
+!  Abstract:
+! 
+! 	This file contains all the Workstation Virtual Display and
+! 	Physical Screen data structures.  Various constants are also 
+! 	defined. The data
+! 	definitions are defined to be language independent.
+! 
+!  Environment:
+! 
+! 	SDAACP process.
+! 
+! ---
+! 	Virtual Screen Service Constants
+literal VSS$K_VS_BLOCK_TYPE = 250;
+literal VSS$K_VP_BLOCK_TYPE = 251;
+literal VSS$K_PS_BLOCK_TYPE = 252;
+! 
+!  Virtual Screen Block -- VSB
+! 
+literal VSS$K_VS_BLOCK_LENGTH = 40;
+FIELD VSS$VS_BLOCK_FIELDSET =
+  SET
+  VSS$A_VS_FL = [0,0,32,0],             !  Forward link to next VS_BLOCK
+  VSS$A_VS_BL = [4,0,32,0],             !  Backward link.
+  VSS$W_VS_SIZE = [8,0,16,0],           !  VMS block size/type info conventions
+  VSS$B_VS_TYPE = [10,0,8,0],           !  Ditto
+  VSS$B_VS_spare1 = [11,0,8,1],         !  Ditto
+  VSS$L_VS_ID = [12,0,32,0],            !  ID of this VS
+  VSS$L_VS_CHAR = [16,0,32,0],          !  Color of this VS
+  VSS$L_VS_TOP = [20,0,32,0],           !  Paste order of topmost VP
+  VSS$A_VS_VP_QUEUE_FL = [24,0,32,0],   !  Forward link into list of Viewports.
+  VSS$A_VS_VP_QUEUE_BL = [28,0,32,0],   !  Backward link.
+  VSS$A_VS_PS_QUEUE_FL = [32,0,32,0],   !  Forward link into list of Physical Screens.
+  VSS$A_VS_PS_QUEUE_BL = [36,0,32,0]    !  Backward link.
+  TES;
+literal VSS$S_VS_BLOCK = 40;
+MACRO VS_BLOCK = BLOCK [VSS$S_VS_BLOCK,byte] FIELD (VSS$VS_BLOCK_FIELDSET) %;
+!  Virtual Screen Viewport queue block
+FIELD VSS$VS_VP_BLOCK_FIELDSET =
+  SET
+  VSS$A_VS_VP_BLOCK_FL = [0,0,32,0],    !  Link to next VS_VP block
+  VSS$A_VS_VP_BLOCK_BL = [4,0,32,0],    !  Backward link
+  VSS$W_VS_VP_BLOCK_SIZE = [8,0,16,0],  !  VMS block conventions
+  VSS$B_VS_VP_BLOCK_TYPE = [10,0,8,0],  !  Ditto
+  VSS$B_VS_VP_BLOCK_SPARE1 = [11,0,8,1], !  Ditto
+  VSS$L_VS_VP_ID = [12,0,32,0],         !  ID of this VP
+  VSS$L_VS_VP_PASTE_ORDER = [16,0,32,0], !  P.O. of this VP
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_VS_VP_X_ORIGIN = [20,0,32,1],   !  Location of this VP in this VS
+  VSS$L_VS_VP_Y_ORIGIN = [24,0,32,1],
+  VSS$L_VS_VP_WIDTH = [28,0,32,1],      !  Cached width for mouse code
+  VSS$L_VS_VP_HEIGHT = [32,0,32,1],     !  Cached height
+! 
+!  End of rectangle block.
+  VSS$A_VS_VP_VIS_SEG_QUEUE_FL = [36,0,32,0], !  List of visible segments.
+  VSS$A_VS_VP_VIS_SEG_QUEUE_BL = [40,0,32,0], !  Backward link into same.
+  VSS$A_VS_VP_OCC_SEG_QUEUE_FL = [44,0,32,0], !  List of occluded segments.
+  VSS$A_VS_VP_OCC_SEG_QUEUE_BL = [48,0,32,0] !  Backward link into same.
+  TES;
+literal VSS$S_VS_VP_BLOCK = 52;
+MACRO VS_VP_BLOCK = BLOCK [VSS$S_VS_VP_BLOCK,byte] FIELD (VSS$VS_VP_BLOCK_FIELDSET) %;
+!  Virtual Screen Viewport block visible segment block.
+literal VSS$K_VS_VP_VIS_SEG_BLK_LEN = 36; !  Overall size of this block
+FIELD VSS$VS_VP_VIS_SEG_BLOCK_FIELDSE =
+  SET
+  VSS$A_VS_VP_VIS_SEG_FL = [0,0,32,0],  !  Link to next.
+  VSS$A_VS_VP_VIS_SEG_BL = [4,0,32,0],  !  Backward link.
+  VSS$W_VS_VP_VIS_SEG_SIZE = [8,0,16,0], !  VMS conventions
+  VSS$B_VS_VP_VIS_SEG_TYPE = [10,0,8,0], !  Ditto
+  VSS$B_VS_VP_VIS_SEG_spare1 = [11,0,8,1], !  Ditto
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_VS_VP_VIS_SEG_X_ORIGIN = [12,0,32,1], !  Location in the VS of this seg.
+  VSS$L_VS_VP_VIS_SEG_Y_ORIGIN = [16,0,32,1], ! 
+  VSS$L_VS_VP_VIS_SEG_LENGTH = [20,0,32,0],
+  VSS$L_VS_VP_VIS_SEG_HEIGHT = [24,0,32,0], !  Size info. for seg.
+! 
+!  End of rectangle block.
+  VSS$A_VS_VP_VIS_SEG_R_Q_FL = [28,0,32,0], !  Q Header for vd rectangles
+  VSS$A_VS_VP_VIS_SEG_R_Q_BL = [32,0,32,0] !  Q Header back link.
+  TES;
+literal VSS$S_VS_VP_VIS_SEG_BLOCK = 36;
+MACRO VS_VP_VIS_SEG_BLOCK = BLOCK [VSS$S_VS_VP_VIS_SEG_BLOCK,byte] FIELD (VSS$VS_VP_VIS_SEG_BLOCK_FIELDSE) %;
+!  Virtual Screen Viewport block occluded segment block.
+literal VSS$K_VS_VP_OCC_SEG_BLK_LEN = 48; !  Overall size of block
+FIELD VSS$VS_VP_OCC_SEG_BLOCK_FIELDSE =
+  SET
+  VSS$A_VS_VP_OCC_SEG_FL = [0,0,32,0],  !  Link to next
+  VSS$A_VS_VP_OCC_SEG_BL = [4,0,32,0],  !  Link to last
+  VSS$W_VS_VP_OCC_SEG_SIZE = [8,0,16,0], !  VMS convention
+  VSS$B_VS_VP_OCC_SEG_TYPE = [10,0,8,0], !  Ditto
+  VSS$B_VS_VP_OCC_SEG_spare1 = [11,0,8,1], !  Ditto
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_VS_VP_OCC_SEG_X_ORIGIN = [12,0,32,1], !  Location in VS of this seg
+  VSS$L_VS_VP_OCC_SEG_Y_ORIGIN = [16,0,32,1],
+  VSS$L_VS_VP_OCC_SEG_LENGTH = [20,0,32,0],
+  VSS$L_VS_VP_OCC_SEG_HEIGHT = [24,0,32,0], !  Size of this seeg
+! 
+!  End of rectangle block.
+  VSS$L_VS_VP_OCC_SEG_ID = [28,0,32,0], !  Occluding VP_ID
+  VSS$A_VS_VP_OCC_SEG_OCC_Q_FL = [32,0,32,0], !  List of occluding VP_IDs,
+  VSS$A_VS_VP_OCC_SEG_OCC_Q_BL = [36,0,32,0], !  See next section
+  VSS$A_VS_VP_OCC_SEG_R_Q_FL = [40,0,32,0], !  Q of VD rectangles
+  VSS$A_VS_VP_OCC_SEG_R_Q_BL = [44,0,32,0] ! 
+  TES;
+literal VSS$S_VS_VP_OCC_SEG_BLOCK = 48;
+MACRO VS_VP_OCC_SEG_BLOCK = BLOCK [VSS$S_VS_VP_OCC_SEG_BLOCK,byte] FIELD (VSS$VS_VP_OCC_SEG_BLOCK_FIELDSE) %;
+!  Next is the list of VP's that occlude an occluded segment.
+!  Virtual Screen Viewport block occluded segment occluded-by block.
+literal VSS$K_OCC_SEG_OCC_BLK_LEN = 16; !  Overall size (Oshkosh)
+FIELD VSS$OCC_SEG_OCC_BLOCK_FIELDSET =
+  SET
+  VSS$A_OCC_SEG_OCC_FL = [0,0,32,0],    !  Link to next
+  VSS$A_OCC_SEG_OCC_BL = [4,0,32,0],    !  Link to last
+  VSS$W_OCC_SEG_OCC_SIZE = [8,0,16,0],  !  VMS...
+  VSS$B_OCC_SEG_OCC_TYPE = [10,0,8,0],  !  Ditto
+  VSS$B_OCC_SEG_OCC_spare1 = [11,0,8,1], !  Ditto
+  VSS$L_OCC_SEG_OCC_VP_ID = [12,0,32,0] !  VP_ID
+  TES;
+literal VSS$S_OCC_SEG_OCC_BLOCK = 16;
+MACRO OCC_SEG_OCC_BLOCK = BLOCK [VSS$S_OCC_SEG_OCC_BLOCK,byte] FIELD (VSS$OCC_SEG_OCC_BLOCK_FIELDSET) %;
+! 
+!  Viewport Visible Segment Visible Rectangle Block (
+! 	(Visible segments have no occluded rectangles)
+literal VSS$K_VIS_R_BLK_LEN = 32;       !  Overall size of this block
+FIELD VSS$VIS_R_BLOCK_FIELDSET =
+  SET
+  VSS$A_VIS_R_FL = [0,0,32,0],          !  Link to next
+  VSS$A_VIS_R_BL = [4,0,32,0],          !  Link to last
+  VSS$W_VIS_R_SIZE = [8,0,16,0],        !  VMS convention
+  VSS$B_VIS_R_TYPE = [10,0,8,0],        !  Ditto
+  VSS$B_VIS_R_spare1 = [11,0,8,1],      !  Ditto
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_VIS_R_X_ORIGIN = [12,0,32,1],   !  VP coordinate location of this reect.
+  VSS$L_VIS_R_Y_ORIGIN = [16,0,32,1],
+  VSS$L_VIS_R_LENGTH = [20,0,32,0],
+  VSS$L_VIS_R_HEIGHT = [24,0,32,0],     !  Size info for this rectangle.
+! 
+!  End of rectangle block.
+  VSS$L_VIS_R_VD_ID = [28,0,32,0]       !  VD owning this R.
+  TES;
+literal VSS$S_VIS_R_BLOCK = 32;
+MACRO VIS_R_BLOCK = BLOCK [VSS$S_VIS_R_BLOCK,byte] FIELD (VSS$VIS_R_BLOCK_FIELDSET) %;
+! 
+!  Viewport occluded Segment occluded Rectangle Block (
+! 	(occluded segments have no visible rectangles)
+literal VSS$K_OCC_R_BLK_LEN = 32;
+FIELD VSS$OCC_R_BLOCK_FIELDSET =
+  SET
+  VSS$A_OCC_R_FL = [0,0,32,0],          !  Link to next
+  VSS$A_OCC_R_BL = [4,0,32,0],          !  Link to last
+  VSS$W_OCC_R_SIZE = [8,0,16,0],        !  VMS convention
+  VSS$B_OCC_R_TYPE = [10,0,8,0],        !  Ditto
+  VSS$B_OCC_R_spare1 = [11,0,8,1],      !  Ditto
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_OCC_R_X_ORIGIN = [12,0,32,1],   !  VP coordinate location of this rectangle.
+  VSS$L_OCC_R_Y_ORIGIN = [16,0,32,1],
+  VSS$L_OCC_R_LENGTH = [20,0,32,0],
+  VSS$L_OCC_R_HEIGHT = [24,0,32,0],     !  Size info for this rectangle
+! 
+!  End of rectangle block.
+  VSS$L_OCC_R_VD_ID = [28,0,32,0]       !  VD owning this R.
+  TES;
+literal VSS$S_OCC_R_BLOCK = 32;
+MACRO OCC_R_BLOCK = BLOCK [VSS$S_OCC_R_BLOCK,byte] FIELD (VSS$OCC_R_BLOCK_FIELDSET) %;
+! 
+!  Virtual Screen's Physical Screen queue block
+literal VSS$K_VS_PS_BLOCK_LENGTH = 24;  !  Overall size of this block.
+FIELD VSS$VS_PS_BLOCK_FIELDSET =
+  SET
+  VSS$A_VS_PS_BLOCK_FL = [0,0,32,0],    !  Link to next
+  VSS$A_VS_PS_BLOCK_BL = [4,0,32,0],    !  Link to last
+  VSS$W_VS_PS_BLOCK_SIZE = [8,0,16,0],  !  VMS convention
+  VSS$B_VS_PS_BLOCK_TYPE = [10,0,8,0],  !  Ditto
+  VSS$B_VS_PS_BLOCK_SPARE1 = [11,0,8,1], !  Ditto
+  VSS$L_VS_PS_ID = [12,0,32,0],         !  ID of this PS
+  VSS$L_VS_PS_X_ORIGIN = [16,0,32,1],   !  VS coordinate origin of this PS
+  VSS$L_VS_PS_Y_ORIGIN = [20,0,32,1]
+  TES;
+literal VSS$S_VS_PS_BLOCK = 24;
+MACRO VS_PS_BLOCK = BLOCK [VSS$S_VS_PS_BLOCK,byte] FIELD (VSS$VS_PS_BLOCK_FIELDSET) %;
+! 
+!  Viewport Data Block
+! 
+FIELD VSS$VP_BLOCK_FIELDSET =
+  SET
+  VSS$A_VP_FL = [0,0,32,0],             !  Link to next
+  VSS$A_VP_BL = [4,0,32,0],             !  Link to last
+  VSS$W_VP_SIZE = [8,0,16,0],           !  Three entries for VMS block structure.
+  VSS$B_VP_TYPE = [10,0,8,0],
+  VSS$B_VP_spare1 = [11,0,8,1],
+  VSS$L_VP_ID = [12,0,32,0],            !  This VP's ID
+  VSS$L_VP_WINDOW_ID = [16,0,32,0],     !  ID of window in this VP.
+  VSS$L_VP_VS_ID = [20,0,32,0],         !  ID of VS this VP is on.
+  VSS$L_VP_VS_VP_PTR = [24,0,32,0],     !  Pointer to VS_VP.
+  VSS$L_VP_HEIGHT = [28,0,32,0],        !  X and Y coordinates are found in
+  VSS$L_VP_LENGTH = [32,0,32,0],        !  each VS's VS_VP block for this VP.
+  VSS$L_VP_CHAR = [36,0,32,0],          ! 
+  VSS$L_VP_COLOR = [40,0,32,0],         !  Makes life easier for removals.
+  VSS$L_VP_STATE = [44,0,32,0],         !  
+  VSS$A_VP_HELP_ROUTINE = [48,0,32,0],  !  help routine
+  VSS$L_VP_HELP_DATA = [52,0,32,1],     !  data to pass to help routine
+  VSS$L_VP_POPUP_PB = [56,0,32,1]       !  id of popped up pasteboard
+  TES;
+literal VSS$S_VP_BLOCK = 60;
+MACRO VP_BLOCK = BLOCK [VSS$S_VP_BLOCK,byte] FIELD (VSS$VP_BLOCK_FIELDSET) %;
+! 
+!  Physical Screen Data structure -- Physical Screen Block (PS_BLOCK)
+! 
+literal VSS$K_PS_BLOCK_LENGTH = 80;     !  Overall size. 
+FIELD VSS$PS_BLOCK_FIELDSET =
+  SET
+  VSS$A_PS_FL = [0,0,32,0],             !  Link to next
+  VSS$A_PS_BL = [4,0,32,0],             !  Link to last
+  VSS$W_PS_SIZE = [8,0,16,0],           !  Three entries for a standard block.
+  VSS$B_PS_TYPE = [10,0,8,0],
+  VSS$B_PS_spare1 = [11,0,8,1],
+  VSS$L_PS_ID = [12,0,32,0],            !  ID of this PS
+  VSS$L_PS_CHAR = [16,0,32,0],          !  Not used by anything yet...
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_PS_X_ORIGIN = [20,0,32,1],      !  This is probably redunant with info-
+  VSS$L_PS_Y_ORIGIN = [24,0,32,1],      !  stored in the VS_PS block.
+  VSS$L_PS_LENGTH = [28,0,32,0],
+  VSS$L_PS_HEIGHT = [32,0,32,0],        !  Size info for this PS
+! 
+!  End of rectangle block.
+  VSS$L_PS_VS_ID = [36,0,32,0],         !  VS that this PS is on.
+  VSS$A_PS_VIS_R_QUEUE_FL = [40,0,32,0], !  Queue of VD rectangles
+  VSS$A_PS_VIS_R_QUEUE_BL = [44,0,32,0],
+  VSS$L_PS_MOUSE_PB_ID = [48,0,32,1],   !  pb mouse is in
+  VSS$L_PS_MOUSE_VP_ID = [52,0,32,1],   !  vp mouse is in
+  VSS$L_PS_MOUSE_VD_ID = [56,0,32,1],   !  vd mouse is in
+  VSS$L_PS_SEL_VD_ID = [60,0,32,1],     !  also vd mouse is in, IF mouse is in a rgn
+  VSS$L_PS_SEL_X = [64,0,32,1],         !  origin x coordinate for region mouse is in
+  VSS$L_PS_SEL_Y = [68,0,32,1],         !  origin y coordinate for region mouse is in
+  VSS$A_PS_HELP_ROUTINE = [72,0,32,0],  !  help routine
+  VSS$L_PS_HELP_DATA = [76,0,32,1]      !  data to pass to help routine
+  TES;
+literal VSS$S_PS_BLOCK = 80;
+MACRO PS_BLOCK = BLOCK [VSS$S_PS_BLOCK,byte] FIELD (VSS$PS_BLOCK_FIELDSET) %;
+! 
+!  Physical Screen Visible Rectangle Block -- (PS_VIS_R_BLOCK)
+! 
+literal VSS$K_PS_VIS_R_BLK_LEN = 36;
+FIELD VSS$PS_VIS_R_BLOCK_FIELDSET =
+  SET
+  VSS$A_PS_VIS_R_FL = [0,0,32,0],       !  Link to next.
+  VSS$A_PS_VIS_R_BL = [4,0,32,0],       !  Link to last.
+  VSS$W_PS_VIS_R_SIZE = [8,0,16,0],     !  VMS convention
+  VSS$B_PS_VIS_R_TYPE = [10,0,8,0],     !  Ditto
+  VSS$B_PS_VIS_R_spare1 = [11,0,8,1],   !  Ditto
+!  Rectangle block, keep together and in order !
+! 
+  VSS$L_PS_VIS_R_X_ORIGIN = [12,0,32,1], !  Location in PS coordinates.
+  VSS$L_PS_VIS_R_Y_ORIGIN = [16,0,32,1],
+  VSS$L_PS_VIS_R_LENGTH = [20,0,32,0],
+  VSS$L_PS_VIS_R_HEIGHT = [24,0,32,0],  !  Size info.
+! 
+!  End of rectangle block.
+  VSS$L_PS_VIS_R_VD_ID = [28,0,32,0],   !  VD owning this R.
+  VSS$L_PS_VIS_R_VP_ID = [32,0,32,0]    !  VP owning this R.
+  TES;
+literal VSS$S_PS_VIS_R_BLOCK = 36;
+MACRO PS_VIS_R_BLOCK = BLOCK [VSS$S_PS_VIS_R_BLOCK,byte] FIELD (VSS$PS_VIS_R_BLOCK_FIELDSET) %;
+! 
+!  End of module $VS
+! 

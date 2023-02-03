@@ -1,0 +1,816 @@
+MODULE VS$SRV_EDIT (
+			IDENT = 'HI SERVER Editable fields'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+!
+!  Handles the editing of editable fields
+!
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!	This module does editable fields.
+!
+! ENVIRONMENT:
+!
+! VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$edit_one,			!Prepare to edit a one-line field
+    vsta$$edit_update,			!Field being edited was updated by
+					! program action.
+    setup_font,				!Setup font parameters
+    handle_char,			!handle character (non-ast level)
+    handle_timeout,
+    handle_rubout,
+    handle_ctrl_u,
+    handle_tab,
+    handle_eol,
+    handle_escape_seq,
+    printable_char,
+    non_printable_char,
+    vsta$$edit_yank_actions,		!Perform actions when user selects
+					! another field before we are finished.
+    end_of_field,			!Field ended - clear typeahead
+					! and call user's end routine.
+    cursor_up,				!Put up cursor
+    cursor_down,			!Take down cursor
+    vsta$$edit_end;			!End session actions
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols and macros
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';
+
+! DEFINE PSECTS AND DATA
+!
+
+$vsta_psect;
+
+GLOBAL
+   vs$gl_e_vkb_id;		!VKB-id of the field being edited.
+
+OWN
+   read_again_flag,		!Set to 1 if we should read again
+   e_vd_id,			!Vd-id
+   e_line,			!Which line
+   e_lineheight,		!Height of this line
+   e_cursor_width,		!Computed cursor width (.6 * line height)
+   e_linestart,			!Y-start position of this line
+   e_field,			!Which field   
+   e_field_width,		!Width of field
+   e_buf_desc: VECTOR [2],	!Buf desc.
+   strng_addr: REF VECTOR [,BYTE],	!To insert chars into the string
+   e_flags,			!Current edit flags
+   e_curr_len_adr,		!Address of Current length
+   e_timeout,			!Timeout parameter
+   e_delim_type_addr,		!Where to put delim type
+   e_routin,			!Routine to call when field is done
+   e_cur_start_pos,		!Cursor starting position (x)
+   e_cur_end_pos,		!Cursor ending position (x)
+   breaktable: VECTOR [8]	!READ break table (all characters are
+		INITIAL (rep 8 of (-1)),	!terminators)
+   read_char: VECTOR [6,BYTE],	!The character(s) read in
+   one_char, !:BYTE,		!The character to echo
+   one_char_desc: VECTOR [2]
+		INITIAL (1, one_char),
+   iosb_addr: VECTOR [4,WORD];	!IOSB returned by read routine
+
+EXTERNAL ROUTINE
+   vs$$read_vkb,		!Internal VKB read routine
+   vs$$vkb_cancel_read,		!Cancel an outstanding read request.
+   vsta$$srv_attach_kbd,	!Attach the keyboard
+   vs$$txt_setTypeface,		!Set typeface
+   vs$$txt_setTypesize,		!Set typesize
+   vs$$txt_set_rendition,	!Set rendition
+   vs$$txt_DeleteCharacters,	!Delete characters in field
+   vs$$txt_InsertText,		!Insert text into field
+   vs$$txt_measure_Text,	!Measure a text field
+   vsta$$vds_turn_cursor_on,	!Start a cursor
+   vsta$$vds_turn_cursor_off,	!Stop a cursor
+   vsta$$kbrd_sound_bell,	!Ring the bell
+   vsta$$error;			!Log error.
+
+EXTERNAL
+   vs$gw_vbchan: WORD;		!VB channel number; used for ringing bell.
+
+
+GLOBAL ROUTINE vsta$$edit_one
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Prepares to edit one field. Attaches the keyboard.
+! FORMAL PARAMETERS:
+	(kbd_id
+	,vd_id
+	,line			!Number of line
+	,lineheight		!Height of line
+	,linestart_y		!Y position on VD where the line starts.
+	,field_id
+	,field_width
+	,buffer_desc: REF VECTOR [2]	!Descriptor to buffer
+	,flags			!Flags
+	,curr_len		!Current # of characters in buffer
+	,delim_type		!Output -- Type of delimiter
+	,routin			!Routine to call when field finished.
+	,typeface_desc		!Optional input: typeface descriptor.
+	,typesize		!optional input: typesize.
+	,rendition_off		!optional input: rendition bits to turn off.
+	,rendition_on		!optional input: rendition bits to turn on.
+	,timeout		!optional input: Timeout parameter
+	) =
+!--
+BEGIN
+LOCAL
+    same_kbd_flag,		!=1 if attaching to same KBD as we had.
+    last_e_vkb_id,
+    asked_typeface_desc,
+    asked_typesize,
+    asked_rendition_off,
+    asked_rendition_on,
+    func,			!IO function code to use.
+    status;
+
+last_e_vkb_id = .vs$gl_e_vkb_id;
+vs$gl_e_vkb_id = 0;		!So "attach kbd" doesn't call us...
+!
+! Attach keyboard. Do not light any "kbd" indicator.
+!
+IF NOT (status =
+    vsta$$srv_attach_kbd (.kbd_id, 0)
+	)
+  THEN RETURN .status;
+
+vs$gl_e_vkb_id = .last_e_vkb_id;	!So the cancel stuff will work..
+
+!
+! End the last field, if any.
+!
+IF (.last_e_vkb_id EQL .kbd_id)
+  THEN same_kbd_flag = 1
+  ELSE same_kbd_flag = 0;
+
+IF (.e_vd_id NEQ 0)
+  THEN vsta$$edit_yank_actions (.same_kbd_flag); !Yanked out of last field
+!
+! Remember the info
+!
+vs$gl_e_vkb_id = .kbd_id;
+e_vd_id = .vd_id;
+e_line = .line;
+e_lineheight = .lineheight;
+e_linestart = .linestart_y;
+e_field = .field_id;
+e_field_width = .field_width;
+e_buf_desc [0] = .buffer_desc [0];
+e_buf_desc [1] = .buffer_desc [1];
+strng_addr = .buffer_desc [1];		!Get addr of string
+e_flags = .flags;
+e_timeout = .timeout;
+e_curr_len_adr = .curr_len;
+e_delim_type_addr = .delim_type;
+e_routin = .routin;
+!
+! Compute cursor width = .6 * line height
+!
+e_cursor_width = (.e_lineheight * 6) / 10;
+IF (.e_cursor_width EQL 0)
+  THEN e_cursor_width = 1;
+
+!
+! Set typeface, etc. if user requested it.
+!
+asked_typeface_desc = .typeface_desc;
+asked_typesize = .typesize;
+asked_rendition_off = .rendition_off;
+asked_rendition_on = .rendition_on;
+
+IF NOT (status =
+    setup_font
+		(.asked_typeface_desc
+		,.asked_typesize
+		,.asked_rendition_off
+		,.asked_rendition_on
+		)
+	)
+  THEN RETURN .status;
+!
+! Put a cursor in the field
+!
+cursor_up ();
+!
+! Set up initial read, unless it's the same keyboard.
+!
+func = IO$_READPBLK + IO$M_ESCAPE;
+IF (.e_timeout NEQ 0)
+  THEN func = IO$_READPBLK + IO$M_ESCAPE + IO$M_TIMED;
+
+IF NOT (.same_kbd_flag)
+  THEN
+    IF NOT vs$$read_vkb
+		(.vs$gl_e_vkb_id	!VKB, or PB id
+		,.func			! Function code (like PASSALL)
+		,read_char		!Buffer address
+		,6			!Buffer size
+		,.e_timeout		!TIMEOUT
+		,breaktable		! Terminator characters
+		,0			! Prompt string (none)
+		,0			! Prompt size (none)
+		,handle_char		! Completion routine (process level)
+		)
+      THEN RETURN $error (vsta$_readvkb);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$edit_update
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The field we were editing has been updated. We assume that the
+! length of the string has been updated, and the proper typeface, etc
+! has been set. Delete the cursor, delete the characters now in the
+! field, write the new string, and then put up the cursor at the
+! new position.
+! FORMAL PARAMETERS:
+	(str_desc		!Updated string
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+cursor_down ();
+
+!
+! Delete the old string in the field.
+!
+IF NOT vs$$txt_deleteCharacters
+		(.e_vd_id	!id
+		,.e_line	!line
+		,.e_field	!field
+		,1		!Character to delete
+		,0		!ALL of 'em
+		)
+  THEN RETURN $bug (vsta$_delchs);	!"?Can't delete characters"
+
+!
+! Write the updated string in the field.
+!
+IF NOT vs$$txt_insertText
+		(.e_vd_id
+		,.str_desc		!The string to insert
+		,.e_line
+		,.e_field
+		,1			!At the beginning
+		)
+  THEN
+    BEGIN
+    cursor_up ();		!Put up cursor where it was before.
+    RETURN $error (vsta$_writet
+		,string_type, %ASCID 'updated editable string'
+		);
+    END;
+
+cursor_up ();		!Put up cursor at new place
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE setup_font
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Calls set-typeface, etc. if user requested it.
+! FORMAL PARAMETERS:
+	(asked_typeface		!Descriptor
+	,asked_typesize
+	,asked_rendition_off
+	,asked_rendition_on
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.asked_typeface NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_setTypeface
+		(.e_vd_id
+		,.asked_typeface
+		)
+      THEN RETURN $error	(vsta$_settf
+				,string_type, .asked_typeface
+				);
+    END;
+
+IF (.asked_typesize NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_setTypesize
+		(.e_vd_id
+		,.asked_typesize
+		)
+      THEN RETURN $error	(vsta$_setts);
+    END;
+
+IF ((.asked_rendition_off NEQ 0) OR (.asked_rendition_on NEQ 0))
+  THEN
+    BEGIN
+    IF NOT vs$$txt_set_rendition
+		(.e_vd_id
+		,.asked_rendition_off
+		,.asked_rendition_on
+		)
+      THEN RETURN $error	(vsta$_setrend);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_char (IOSB1,IOSB2,IOSB3,IOSB4) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Handle character typed in an editable field.
+!--
+BEGIN
+
+	LOCAL
+
+	    func,		!Function code for read
+	    status;
+
+	label
+
+	    analysis;
+!
+! First check for race condition - user hit character just as we
+! were completing the field.
+!
+IF (.e_vd_id EQL 0)
+  THEN RETURN SS$_NORMAL;		!Stop reading this kbd.
+
+IF NOT .iosb1
+  THEN			! Read from VKB was unsuccessful
+    analysis:
+    BEGIN
+    IF (.iosb1 EQL SS$_ABORT)
+      THEN RETURN SS$_NORMAL;		! Read was cancelled.
+    IF (.iosb1 EQL SS$_TIMEOUT)
+      THEN
+	BEGIN
+	handle_timeout ();
+	RETURN SS$_NORMAL
+	END;
+!
+! If user types a strange escape sequence, such as "ctrl/1 ctrl/2 ctrl/3
+! ctrl/4", or "escape [ 0000000 . . .(three hundred 0's)",
+! pretend we got good status.  Without this check, such scenarios
+! cause a console error and the field ceases to echo characters.
+!
+    IF .iosb1 eql ss$_badescape or .iosb1 eql ss$_partescape
+	then leave analysis;
+!
+! We don't understand the error, so log it and return.
+!
+    return $bug		(vsta$_rea_vkb_iosb
+			,integer_type, .iosb1
+			);
+    END;
+
+(SELECTONE (.read_char[0]) OF
+    SET
+    [%O'177']:		!Rubout
+	handle_rubout ();
+    [%O'25']:		!Control-U
+	handle_ctrl_u ();
+    [%O'3']:		!Control-C
+	handle_ctrl_u ();
+    [%O'30']:		!Control-X
+	handle_ctrl_u ();
+    [%O'31']:		!Control-Y
+	handle_ctrl_u ();
+    [%O'11']:		!Tab
+	handle_tab ();
+    [%O'15']:		!CRLF
+	handle_eol ();
+    [%C' ' TO %C'~']:
+	printable_char ();
+    [%X'A1' TO %X'FE']:
+	printable_char ();
+    [%O'33',%O'233']:		!ESCAPE (%O233 is the equiv. of "<ESC>[")
+	handle_escape_seq ();
+    [OTHERWISE]:
+	non_printable_char ();
+    TES
+);
+
+IF (NOT (.read_again_flag)) THEN RETURN SS$_NORMAL;	!No more reading!
+
+!
+! Not done yet. Read more characters.
+!
+func = IO$_READPBLK + IO$M_ESCAPE;
+IF (.e_timeout NEQ 0)
+  THEN func = IO$_READPBLK + IO$M_ESCAPE + IO$M_TIMED;
+
+IF NOT vs$$read_vkb
+		(.vs$gl_e_vkb_id	!VKB, or PB id
+		,.func			! Function code (PASSALL)
+		,read_char		!Buffer address
+		,6			!Buffer size
+		,.e_timeout		!TIMEOUT
+		,breaktable		! Terminator characters
+		,0			! Prompt string (none)
+		,0			! Prompt size (none)
+		,handle_char		! Completion routine (process level)
+		)
+  THEN RETURN $error	(vsta$_readvkb);
+
+RETURN SS$_NORMAL;
+END;
+
+ROUTINE handle_eol =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	EOL on field
+!--
+BEGIN
+!
+! Clear "read_again_flag".
+!
+read_again_flag = 0;		!Done reading.
+.e_delim_type_addr = vsta$K_edit_delim_end;	!Normal end to field.
+end_of_field ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_timeout =
+!++
+! FUNCTIONAL DESCRIPTION:
+!--
+BEGIN
+
+read_again_flag = 0;		!Done reading.
+.e_delim_type_addr = vsta$K_edit_delim_timeout;	!Timed out.
+end_of_field ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_tab =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Tab in field
+!--
+BEGIN
+
+read_again_flag = 0;
+.e_delim_type_addr = vsta$K_edit_delim_end;	!Normal end to field.
+end_of_field ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE non_printable_char =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Handle non-printable character in field.
+!--
+BEGIN
+
+read_again_flag = 1;		!Just ignore it; read again.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_escape_seq =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Got an escape sequence.
+!--
+BEGIN
+
+read_again_flag = 1;		!Just ignore it; read again.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE printable_char =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Printable character in field. Echo it if we can.
+!--
+BEGIN
+LOCAL
+    txt_x,
+    txt_y,
+    status;
+
+read_again_flag = 1;		!Always want to read again.
+!
+! If there is no room, do nothing.
+!
+IF (..e_curr_len_adr EQL .e_buf_desc [0])
+  THEN
+    BEGIN
+    vsta$$kbrd_sound_bell (.vs$gw_vbchan);	! Ring the bell
+    RETURN SS$_NORMAL
+    END;
+
+strng_addr [..e_curr_len_adr] = .read_char[0];	!Append the character
+					! to our internal buffer
+IF NOT vs$$txt_measure_text
+		(.e_vd_id
+		,..e_curr_len_adr + 1	!Length of (new) string
+		,.strng_addr		!Address of string
+		,0, 0			!Use current typeface,
+		,0, 0			!Typesize,
+		,0, 0			!Rendition,
+		,txt_x			!return x dimension here
+		,txt_y			!Return y dimension here
+		)
+  THEN RETURN $error (vsta$_meastxt_for
+			,string_type, %ASCID 'measuring updated input string'
+			);
+IF (.txt_x GEQ .e_field_width)	!Note: Fields usually start at 1!
+  THEN
+    BEGIN
+    vsta$$kbrd_sound_bell (.vs$gw_vbchan);	! Ring the bell
+    cursor_up ();			!Put up cursor where it was before
+    RETURN SS$_NORMAL
+    END;
+
+!
+! Insert char.
+!
+one_char = .read_char;
+
+cursor_down ();
+IF NOT vs$$txt_insertText
+		(.e_vd_id
+		,one_char_desc		!The string to insert
+		,.e_line
+		,.e_field
+		,..e_curr_len_adr + 1	!Insert here
+		)
+  THEN
+    BEGIN
+    cursor_up ();		!Put up cursor where it was before.
+    RETURN $error	(vsta$_writet		!"Can't write .."
+			,string_type, %ASCID 'updated input string'
+			);
+    END;
+
+.e_curr_len_adr = ..e_curr_len_adr + 1;	!Bump # chars in field
+cursor_up ();			!Put up new cursor.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_rubout =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Rubout typed in field - delete one character.
+!--
+BEGIN
+LOCAL
+    status;
+
+read_again_flag = 1;
+IF (..e_curr_len_adr EQL 0)
+  THEN RETURN SS$_NORMAL;	!Do nothing if no chars in field
+!
+! Delete the last character in the field
+!
+cursor_down ();			! Take down the cursor
+IF NOT vs$$txt_deleteCharacters
+		(.e_vd_id	!id
+		,.e_line	!line
+		,.e_field	!field
+		,..e_curr_len_adr	!Character to delete
+		,1			!Just one
+		)
+  THEN
+    BEGIN
+    cursor_up ();
+    RETURN $bug	(vsta$_delchs);	!"Can't delete characters"
+    END;
+!
+! Set internal buffer length down by 1
+!
+.e_curr_len_adr = ..e_curr_len_adr - 1;
+
+cursor_up ();			!Put up cursor in new place
+RETURN SS$_NORMAL
+END;
+
+ROUTINE handle_ctrl_u =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Control_U typed in field - delete all characters.
+!--
+BEGIN
+LOCAL
+    status;
+
+read_again_flag = 1;		!Not the end, yet.
+IF (..e_curr_len_adr EQL 0)
+  THEN RETURN SS$_NORMAL;	!Do nothing if no chars in field.
+
+!
+! Delete all characters in the field.
+!
+cursor_down ();			!Take down the cursor
+IF NOT vs$$txt_deleteCharacters
+		(.e_vd_id	!id
+		,.e_line	!line
+		,.e_field	!Field
+		,1		!All chars, starting at 1
+		,..e_curr_len_adr	!# chars to delete (all of them)
+		)
+  THEN
+    BEGIN
+    cursor_up ();
+    RETURN $bug (vsta$_delchs);	!"Can't delete characters"
+    END;
+!
+! Delete characters in the user's internal buffer.
+!
+.e_curr_len_adr = 0;		!No chars there now.
+cursor_up ();			!Put cursor up at first position
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$edit_yank_actions
+!++
+! FUNCTIONAL DESCRIPTION:
+!	User selected another field, and we were yanked out of this one.
+!	We must cancel our read request to the first keyboard.
+!	and call user's routine with delim = "yank".
+!	 This routine should be called AFTER the new keyboard is attached.
+! FORMAL PARAMETERS:
+	(same_kbd_flag		!If = 1, don't cancel read request to 1st kbd.
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! Cancel read request to first keyboard.
+!
+IF (NOT (.same_kbd_flag))
+  THEN vs$$vkb_cancel_read (.vs$gl_e_vkb_id,0);
+
+.e_delim_type_addr = vsta$K_edit_delim_yank;	!Yanked out of last field
+end_of_field ();			!End that last field.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE end_of_field =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The field ended. Delete typeahead buffer and call user's end routine.
+!--
+BEGIN
+!
+! Delete typeahead.
+!
+
+!
+! Delete cursor
+!
+cursor_down ();		!Delete cursor from current field
+
+e_vd_id = 0;		!Note that the field ended.
+vs$gl_e_vkb_id = 0;	! . .
+IF (.e_routin NEQ 0)
+  THEN (.e_routin) ();	!Call user's end routine, if one was specified
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cursor_up =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Put a cursor in the field.
+! IMPLICIT INPUTS:
+!	e_curr_len_addr - address of num. chars in field
+!	e_field_width - size of field
+!	e_field - start of field
+!	e_lineheight - height of cursor 
+!	e_linestart - y start position of line (and cursor)
+!	e_cursor_width - width of cursor
+!	e_flags AND vsta$K_edit_center
+!--
+BEGIN
+LOCAL
+    cur_str_width,
+    junk,
+    status;
+!
+! Measure the width of the current string. It is assumed to be
+! in the current typeface.
+!
+IF (..e_curr_len_adr LEQ 0)
+  THEN
+    cur_str_width = 0
+  ELSE
+    BEGIN
+    IF NOT vs$$txt_measure_Text
+		(.e_vd_id		!VD-id
+		,..e_curr_len_adr	!Length of string
+		,.strng_addr		!Address of string
+		,0, 0			!Use current typeface,
+		,0, 0			!Typesize,
+		,0, 0			!Rendition,
+		,cur_str_width		!Return width here
+		,junk			!Return height here
+		)
+      THEN RETURN $error (vsta$_meastxt_for
+			,string_type, %ASCID 'editable field text'
+			);
+    END;
+!
+! Calculate end position of cursor. If past end of field, adjust.
+!
+IF ((.e_flags AND vsta$K_edit_center) NEQ 0)
+  THEN
+    e_cur_end_pos = .e_field + .e_cursor_width + (.cur_str_width / 2)
+			+ (.e_field_width / 2) + 1	!Centered field
+  ELSE
+    e_cur_end_pos = .e_field + .e_cursor_width + .cur_str_width;
+
+IF (.e_cur_end_pos GEQ (.e_field + .e_field_width))
+  THEN e_cur_end_pos = .e_field + .e_field_width - 1;
+e_cur_start_pos = .e_cur_end_pos - .e_cursor_width;
+!
+! Put it up
+!
+IF NOT vsta$$vds_turn_cursor_on
+		(.e_vd_id
+		,.e_cur_start_pos
+		,.e_linestart
+		,.e_cursor_width
+		,.e_lineheight
+		)
+  THEN RETURN $error (vsta$_curon);	!"Can't turn cursor on"
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE cursor_down =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Remove cursor from field.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT vsta$$vds_turn_cursor_off
+		(.e_vd_id
+		)
+  THEN RETURN $error (vsta$_curoff);	!"Can't turn cursor off"
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$edit_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	End session actions for the edit module.
+!	Side effect-- the keyboard is detached from everything.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If a field was being edited, then cancel the read request.
+! Don't bother doing "yank actions" however-- there is no need
+! to call the read finish routine.
+!
+IF (.vs$gl_e_vkb_id NEQ 0)
+  THEN
+    BEGIN
+    vs$$vkb_cancel_read (.vs$gl_e_vkb_id,0);
+    vs$gl_e_vkb_id = 0;
+    END;
+
+e_vd_id = 0;		!Now, not editing any virtual display.
+
+!
+! Leave other variables alone-- their value doesn't matter.
+!
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

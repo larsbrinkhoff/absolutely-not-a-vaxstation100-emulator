@@ -1,0 +1,442 @@
+%title 'vsta$dmm -- Display memory management'
+MODULE vsta$dmm (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! Display memory management services
+!
+!---
+!
+!		$INCLUDE SECTION$
+!
+library 'SYS$LIBRARY:LIB';
+library 'VSTA$LIBRARY:LIBMACROS';
+
+!
+!		$PSECT SECTION$
+!
+$vsta_psect;
+
+
+!
+!		$ROUTINE SECTION$
+!
+forward routine!s
+	 VSTA$$DMM_INIT
+	,VSTA$$DMM_SESSION_END
+	,VSTA$$DMM_GET_MEM
+	,VSTA$$DMM_FREE_MEM
+	,VSTA$$DMM_GET_MAPPED_MEM
+	,VSTA$$DMM_FREE_MAPPED_MEM
+	;
+
+!
+!		$EXTERNAL SECTION$
+!
+external routine!s
+	 VSTA$$DRIVE_MAP_BLOCK			! Map region to unibus
+	,VSTA$$DRIVE_UNMAP_BLOCK		! Unmaps region to unibus
+	,VSTA$$DRIVE_INIT_SESSION		! Init unibus map
+	,VSTA$$DRIVE_PIO_CLEANUP		! Clean up PIO requests
+	,VS$$ACP_GET_VM				! Get acp memory
+	,VS$$ACP_FREE_VM			! Free acp memory
+	;
+
+external!s
+	 VS$GW_VBCHAN				! Channel to device
+	,VSTA$GL_SCREEN				! Address of screen mem
+	,VSTA$GL_FRAME				! Address of frame mem
+	,VSTA$GL_FRAME_SIZE			! Size of available frame mem
+	;
+
+builtin!s
+	 insque					! insert queue instruction
+	,remque					! remove queue instruction
+	;
+
+!
+!		$DATA SECTION$
+!
+literal!s
+	 DMM$K_AVAIL_SIZES = 4
+	;
+
+bind!s
+	 DMM$LV_SIZE_TABLE = uplit ( 32, 128, 1024, 1 ^ 31 - 1)
+				: vector [,long]
+	,DMM$WV_AMNT_OF_SIZE = uplit word ( 16 ,12, 3, 0)
+				: vector [,word]
+	;
+
+own!s
+	 DMM_FREE_PTR	
+	,DMM_MIN	
+	,DMM_SIZE
+	,DMM$L_RESERVED		: initial (2 * %X'1CB00')
+	,DMM$L_CACHE_ALLOC8D	: initial (0)
+	,DMM$A_CACHE_MEM	: ref vector [,long]
+	,DMM$L_CACHE_SIZE	: initial (10*512)	
+	,DMM$QV_DEVMEM		: vector [ DMM$K_AVAIL_SIZES*2, long]
+	,DMM$L_INSFMCNT		: initial (0)
+	;
+
+!
+!  Data Definitions
+!
+!
+!   DMM_FREE_PTR	Pointer to the free display memory
+!   DMM_MIN		Address of the first byte of available display mem
+!   DMM_SIZE		Amount of available device memory
+!
+!   DMM$L_RESERVED	Amount of display memory reserved (not available for
+!			allocation.  Used by VP mover for the ONYX.)
+!
+!   DMM$A_CACHE_MEM	Address of the device unibus memory cache.
+!   DMM$L_CACHE_SIZE	Size to make the device device memory cache.
+!
+!   DMM$L_CACHE_ALLOC8D True if virtual memory for cache is allocated.
+!
+!   DMM$K_AVAIL_SIZES	Number of available memory packet sizes
+!   DMM$LV_SIZE_TABLE	Table of available packet sizes indicies size
+!   DMM$WV_AMNT_OF_SIZE Table of the number of packets to allocate each
+!			packet size.
+!   DMM$QV_DEVMEM	Packet queue vector indexed by size*2
+!   DMM$L_INSFMCNT	Count of cache misses.
+!   
+!
+
+!
+!		$MACRO SECTION$
+!
+macro!s
+	!
+	!  Macro to convert bytes asked for to index into the available
+	!  size table.
+	!
+	 $CTVBI( BYTES) =
+		(
+		incr I from 0 to DMM$K_AVAIL_SIZES - 1
+		do 
+			if BYTES leq .DMM$LV_SIZE_TABLE [ .I]
+			then EXITLOOP .I
+		)%
+	;
+
+
+%sbttl 'VSTA$$DMM_INIT -- Initialize display memory data base'
+GLOBAL ROUTINE VSTA$$DMM_INIT =
+!++
+!  Functional Description:
+!
+!---Routine to initialize device memory managment services.  Must be called
+!   Before any operations to screen can occure.  Should always be called 
+!---by only called at session startup 
+!
+!--
+begin
+
+	
+local
+	 BLKPTR: ref vector [,long]
+	,S
+	;
+
+
+	DMM_FREE_PTR = 0;		!  All memory is available
+
+!
+!  Start the available memory after the reserved portion
+!
+	DMM_MIN = .VSTA$GL_FRAME + .DMM$L_RESERVED;
+
+!
+!  Determine the amount of available display mem for dynamic allocation
+!  That is the frame size minus the amount reserved for special purposes
+!  
+	DMM_SIZE = .VSTA$GL_FRAME_SIZE - .DMM$l_RESERVED;
+
+
+
+!
+!  Call the drive routine to initialize its memory map
+!
+	VSTA$$DRIVE_INIT_SESSION( .VS$GW_VBCHAN);
+
+!
+!  Get virtual memory to be mapped to unibus.  If it has already been obtained
+!  then just map the memory to the unibus again. (Assums that it has been
+!  unmapped from before).
+!
+	if .DMM$L_CACHE_ALLOC8D
+	then begin	! Cache memory has already been allocated
+		!
+		!  Call vstadrive to map a 10 page memory unit to
+		!  unibus for  device operations.  Don't check for failure since
+		!  all it would mean is that the data would have to mapped and locked
+		!  at I/O time.
+		!
+		VSTA$$DRIVE_MAP_BLOCK( .VS$GW_VBCHAN,
+				.DMM$L_CACHE_SIZE, .DMM$A_CACHE_MEM);
+
+		return SS$_NORMAL;
+
+	     end;	! End if cache memory already obtained.
+
+	if not (S = VS$$ACP_GET_VM( DMM$L_CACHE_SIZE, DMM$A_CACHE_MEM, 0))
+	then return .S;
+
+	DMM$L_CACHE_ALLOC8D = 1;
+
+!
+!  Call vstadrive to map a 10 page memory unit to
+!  unibus for  device operations.  Don't check for failure since
+!  all it would mean is that the data would have to mapped and locked
+!  at I/O time.
+!
+	VSTA$$DRIVE_MAP_BLOCK( .VS$GW_VBCHAN, .DMM$L_CACHE_SIZE, 
+					.DMM$A_CACHE_MEM);
+
+!
+!  Set up the device memory queues
+!
+
+	BLKPTR = .DMM$A_CACHE_MEM;
+
+	decr I from DMM$K_AVAIL_SIZES - 1 to 0
+	do begin	!  Loop for each size needed
+
+		!
+		!  Init queue base
+		!
+		DMM$QV_DEVMEM [ .I * 2] = DMM$QV_DEVMEM [ .I * 2];
+		DMM$QV_DEVMEM [ .I * 2 + 1] = DMM$QV_DEVMEM [ .I * 2];
+
+		!
+		!  Loop for the desired number of packets for this size
+		!
+		incr J from 0 to .DMM$WV_AMNT_OF_SIZE [ .I] - 1
+		do begin	! Getting number of packets for this size
+			!
+			!  Is there enough space in the block for the next
+			!  packet.  If not just return.
+			!
+			if (BLKPTR [0] + .DMM$LV_SIZE_TABLE [ .I]) gtr
+			   (DMM$A_CACHE_MEM [0] + .DMM$L_CACHE_SIZE)
+			then EXITLOOP;
+			
+			!
+			!  Link in the next packet into the queue
+			!
+			INSQUE( BLKPTR [0], .DMM$QV_DEVMEM [ .I * 2 + 1]);
+
+			!
+			!  Update the block pointer
+			!
+			BLKPTR = .BLKPTR + .DMM$LV_SIZE_TABLE [ .I];
+
+		   end;		! End of getting packets for size
+
+	     end;		! End of loop for each size needed.
+
+	return SS$_NORMAL;
+end;
+
+
+%sbttl 'VSTA$$DMM_SESSION_END -- Clean up for end session'
+GLOBAL ROUTINE VSTA$$DMM_SESSION_END =
+!++
+!  Functional Description:
+!
+!---Routine to initialize device memory managment services.  Should be called
+!---at session end in order to free resources to the system.
+!
+!--
+begin
+
+!
+!  If cache is not allocated then just return normally
+!
+	if not .DMM$L_CACHE_ALLOC8D
+	then return SS$_NORMAL;
+
+!
+!  Call the drive routine to unmap the unibus memory it may have mapped.
+!
+	VSTA$$DRIVE_UNMAP_BLOCK( .VS$GW_VBCHAN, .DMM$L_CACHE_SIZE, 
+					.DMM$A_CACHE_MEM);
+
+!
+!  Say cache is gone then make it gone. Order used to avoid driver interaction.
+!
+	DMM$L_CACHE_ALLOC8D = 0;
+	return 	VS$$ACP_FREE_VM( DMM$l_CACHE_SIZE, DMM$A_CACHE_MEM, 0 );
+
+end;
+
+
+%sbttl 'VSTA$$DMM_GET_MEM -- Get display memory routine'
+GLOBAL ROUTINE VSTA$$DMM_GET_MEM(
+				 BYTES_ADDR	! Address of # of bytes to get
+				,BASE_ADDR	! Address to return addr of bytes
+				) =
+!++
+!  Functional Description:
+!
+!---Display memory allocator
+!
+!--
+begin
+
+!
+!  Call VSTADRIVE to post process any requests that may be using PIO
+!
+	VSTA$$DRIVE_PIO_CLEANUP();
+
+!
+!  Check to see if there is any more space available
+!
+	if (.DMM_FREE_PTR + .DMM_MIN + ..BYTES_ADDR) 
+	   gtr (.DMM_MIN + .DMM_SIZE - 1) 
+	then return SS$_INSFMEM;
+
+!
+!  If so return the address of this space
+!
+	.BASE_ADDR = .DMM_FREE_PTR + .DMM_MIN;
+
+!
+!  Advance the pointer to the available space.
+!
+	DMM_FREE_PTR = .DMM_FREE_PTR + ..BYTES_ADDR;
+
+	return SS$_NORMAL;
+end;
+
+
+%sbttl 'VSTA$$DMM_FREE_MEM -- Get display memory routine'
+GLOBAL ROUTINE VSTA$$DMM_FREE_MEM(
+				 BYTES_ADDR	! Address of # of bytes to get
+				,BASE_ADDR	! Address to return addr of bytes
+				) =
+!++
+!  Functional Description:
+!
+!--
+begin
+!
+!  For now do nothing
+!
+	return SS$_NORMAL;
+end;
+
+
+
+
+
+%sbttl 'VSTA$$DMM_GET_MAPPED_MEM -- Allocate memory mapped to unibus'
+GLOBAL ROUTINE VSTA$$DMM_GET_MAPPED_MEM(
+					 BYTES_ADDR
+					,BASE_ADDR
+					) =
+!++
+!  Functional Description:
+!
+!---This routine allocates pre-mapped device data memory
+!
+!--
+begin
+
+local
+	 I
+	;
+
+!
+!  If no bytes asked for then just return.
+!
+	if ..BYTES_ADDR leq 0
+	then return SS$_NORMAL;
+
+!
+!  Determine the index into the size table for this size request.
+!
+	I = $CTVBI( ..BYTES_ADDR);
+
+
+!
+!  REmove the packet from the queue.  If the queue was empty then
+!  get ACP virtual memory.
+!
+	if (not .DMM$L_CACHE_ALLOC8D) or
+	   (remque( .DMM$QV_DEVMEM[ .I ^ 1], .BASE_ADDR))
+	then begin	! If no packet available
+		!
+		!  Increment the insuficient memory count
+		!
+		DMM$L_INSFMCNT = .DMM$L_INSFMCNT + 1;
+
+		!
+		!  Return the status of the get virtual memory.
+		!
+		return VS$$ACP_GET_VM( .BYTES_ADDR, .BASE_ADDR, 0);
+
+	     end;	! End if no packet available
+
+	return SS$_NORMAL;
+end;
+
+
+
+
+%sbttl 'VSTA$$DMM_FREE_MAPPED_MEM -- Allocate memory mapped to unibus'
+GLOBAL ROUTINE VSTA$$DMM_FREE_MAPPED_MEM(
+					 BYTES_ADDR
+					,BASE_ADDR
+					) =
+!++
+!  Functional Description:
+!
+!---This routine de-allocates pre-mapped device data memory
+!
+!--
+begin
+
+local
+	 I
+	;
+
+!
+!  If no bytes asked for then just return.
+!
+	if ..BYTES_ADDR leq 0
+	then return SS$_NORMAL;
+
+!
+!  First determine if this block is part of the device memory cache.  If it 
+!  is not then just give it back to ACP memory.
+!
+	if (.DMM$L_CACHE_ALLOC8D) and
+	   (..BASE_ADDR geq .DMM$A_CACHE_MEM) and
+	   (..BASE_ADDR lss (.DMM$A_CACHE_MEM + .DMM$L_CACHE_SIZE))
+	then begin	! If block is section of cache
+		!
+		!  Determine the index of the size vector to put packet back
+		!  note that this index multiplied by 2 indicates the
+		!  queue base index.
+		!
+		I = $CTVBI( ..BYTES_ADDR);
+
+		insque( ..BASE_ADDR, .DMM$QV_DEVMEM [ .I ^ 1]);
+
+	     end	! If block is not in section of cache.
+
+	else return VS$$ACP_FREE_VM( .BYTES_ADDR, .BASE_ADDR, 0);
+
+	return SS$_NORMAL;
+end;
+
+END
+ELUDOM

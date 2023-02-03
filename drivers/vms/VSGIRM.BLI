@@ -1,0 +1,196 @@
+! VSGIRM.BLI - VaxStation GIdis Report Manager, Bliss source
+!
+MODULE VSTA$GID_vsgirm(
+    IDENT = 'GIDIS report manager',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+! Environment:
+!
+!
+GLOBAL LITERAL GID$$RM_Edit_level = 3;
+!
+!--
+LIBRARY 'VSTA$LIBRARY:vsgisf';		! State fetcher component
+LIBRARY 'VSTA$LIBRARY:vsgism';		! To get get_state_instance
+LIBRARY 'VSTA$LIBRARY:libmacros';	! For PSECT definitions
+
+library_file_crock;
+
+$vsta_psect;
+
+LIBRARY 'sys$library:starlet';
+
+EXTERNAL ROUTINE
+    vsta$$error,
+    vs$$acp_get_vm,
+    vs$$acp_free_vm;
+
+LITERAL report_buffer_limit = 20;! Number of words to store in a report buffer
+
+COMPILETIME
+    state_file_size = 0;
+
+FIELD
+    report_buffer_fields =
+	SET
+	rb_next = longword_scalar,	! Address of next report buffer, or 0
+	rb_used = longword_scalar,	! Number of words used in this buffer
+	rb_data = word_vector( report_buffer_limit) ! Space for report data
+	TES;
+
+LITERAL report_buffer_allocation = state_file_size;
+			! Number of bytes to allocate when making a buffer
+UNDECLARE state_file_size;
+
+
+!+
+GLOBAL ROUTINE GID$$RM_report_word(
+    word_to_report		! Data to return to caller
+    )  =
+! Routine value:
+!	Success status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Queues a report word to the output stream
+! Algorithm:
+!	Put the word in the next free location in the report buffer list
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	buffer_address: REF state_instance FIELD (report_buffer_fields),
+	buffer_address_address,		! Address of the buffer_address source
+	status;
+
+    status = 1;
+    buffer_address_address = sf[ report_buffer_address];
+    WHILE 1 DO	!	Link to next report buffer with space in it
+	BEGIN
+	IF ..buffer_address_address EQL 0
+	THEN ! No memory allocated for this buffer, get some and initialize it
+	    BEGIN
+	    status = vs$$acp_Get_vm(
+		%ref( report_buffer_allocation),
+		.buffer_address_address);
+	    buffer_address = ..buffer_address_address;
+	    buffer_address[ rb_next] = 0;
+	    buffer_address[ rb_used] = 0;
+	    END;
+	buffer_address = ..buffer_address_address;
+	IF .buffer_address[ rb_used] LSS report_buffer_limit THEN EXITLOOP;
+	buffer_address_address = buffer_address[ rb_next];
+	END;
+    buffer_address[ rb_data, .buffer_address[ rb_used]] = .word_to_report;
+    buffer_address[ rb_used] = .buffer_address[ rb_used] + 1;
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$RM_dispose_buffers =
+! Routine value:
+!	status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Eliminate the report buffers, freeing up any dynamic memory.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    ROUTINE dispose_buffer( buffer_address_address) =
+    ! buffer_address_address is the address of a location that contains
+    ! the address of a report buffer to dispose.  It will recurse to
+    ! dispose of the next buffer.
+	BEGIN
+	LOCAL
+	    status,
+	    buffer_address: REF state_instance
+			    FIELD (report_buffer_fields);
+
+	status = 1;
+	IF ..buffer_address_address NEQ 0
+	THEN ! This buffer really is allocated.  Deallocate it's next, and then 
+	    BEGIN	! deallocate it
+	    buffer_address = ..buffer_address_address;
+	    dispose_buffer( buffer_address[ rb_next]);
+	    status = vs$$acp_Free_vm(
+		%ref( report_buffer_allocation),
+		.buffer_address_address);
+	    .buffer_address_address = 0;
+	    END;
+	.status
+	END;
+
+    dispose_buffer( sf[ report_buffer_address])
+    END;
+
+
+!+
+GLOBAL ROUTINE VSTA$$GID_report(! Get report information
+    vdtag,			! ID of display to report from
+    buffer: REF VECTOR[, WORD],	! Address of buffer to report into
+    length,			! Size, in words, of available space in buffer
+    actual_length		! Size, in words, of actula space used
+    ) =
+! Routine value:
+!	Success code
+! Implicit inputs:
+!	Report buffer information in Gidis state for this virtual display
+! Implicit outputs:
+!	Reported data is removed from this display's buffers
+! Function:
+!	The buffer provided is loaded with whatever information is pending
+!	from accumulated report opcodes.
+! Algorithm:
+!	Take words from the report buffers until one of:
+!	    1) We run out of data
+!	    2) We run out of buffer space in the callers buffer.
+!	If we exhaust one of our report buffers, it will be deallocated.
+!	We assume that if a buffer is there, it has at least 1 word of data
+!	in it.  If the last word is used, we dispose of it immediately.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	buffer_address: REF state_instance FIELD (report_buffer_fields),
+	status;
+
+    status = GID$$SM_get_state_instance( .VDtag);
+    IF NOT .status THEN RETURN VSTA$$Error( .status);
+    INCR i FROM 0 TO .length-1 DO
+	BEGIN
+	buffer_address = .sf[ report_buffer_address];
+	IF .buffer_address EQL 0
+	THEN
+	    BEGIN
+	    .actual_length = .i; ! Out of data return is .i;
+	    RETURN .status;
+	    END;
+	buffer[ .i] = .buffer_address[ rb_data, .sf[ used_report_offset]];
+	sf[ used_report_offset] = .sf[ used_report_offset] + 1;
+	IF .sf[ used_report_offset] GEQ .buffer_address[ rb_used]
+	THEN ! This buffer is used up, go to next one (if any) or return
+	    BEGIN
+	    sf[ report_buffer_address] = .buffer_address[ rb_next];
+	    sf[ used_report_offset] = 0;
+	    status = vs$$acp_Free_vm(
+		%ref( report_buffer_allocation),
+		buffer_address);
+	    IF NOT .status THEN RETURN .status;
+	    END;
+	END;
+    .actual_length = .length;	! Caller's buffer full exit returns .length
+    .status
+    END;
+
+
+END
+ELUDOM

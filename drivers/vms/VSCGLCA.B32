@@ -1,0 +1,606 @@
+MODULE vsta$cgl_calls (ADDRESSING_MODE (EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL)) =
+BEGIN
+!-----------------------------------------------------------------------------
+!  VSCGLCA.PAS - CGL direct call library for vaxstations 
+!
+!-----------------------------------------------------------------------------}
+
+EXTERNAL ROUTINE!S
+	 CGL
+	;
+
+!
+! PSECTS
+!
+PSECT
+	CODE   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	PLIT   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	OWN    = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	GLOBAL = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL));
+
+
+GLOBAL ROUTINE CGL$move_abs_2(x,y ):=
+
+begin
+  CGL(%ref(1),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$move_rel_2(dx,dy ):=
+
+begin
+  CGL(%ref(2),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_current_position( x,y ):=
+
+begin
+  CGL(%ref(3),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$line_abs_2(x,y ):=
+
+begin
+  CGL(%ref(4),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$line_rel_2(dx,dy ):=
+
+begin
+  CGL(%ref(5),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$polyline_abs_2( x,y,n ):=
+
+begin
+  CGL(%ref(6),.x,.y,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$polyline_rel_2( dx,dy,  n ):=
+
+begin
+  CGL(%ref(7),.dx,.dy,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$polygon_abs_2( x,y , n ):=
+
+begin
+  CGL(%ref(8),.x,.y,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$polygon_rel_2( dx,dy , n ):=
+
+begin
+  CGL(%ref(9),.dx,.dy,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$rectangle_abs_2(x,y ):=
+
+begin
+  CGL(%ref(10),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$rectangle_rel_2(dx,dy ):=
+
+begin
+  CGL(%ref(11),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$set_linestyle(n,p,m ):=
+
+begin
+  CGL(%ref(12),.n,.p,.m)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_linestyle( n,p,m ):=
+
+begin
+  CGL(%ref(13),.n,.p,.m)
+end;
+
+
+GLOBAL ROUTINE CGL$set_linewidth(dx,dy ):=
+
+begin
+  CGL(%ref(14),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_linewidth( dx,dy ):=
+
+begin
+  CGL(%ref(15),.dx,.dy)
+end;
+
+GLOBAL ROUTINE CGL$text(s,n ):=
+
+begin
+  CGL(%ref(16),.s,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_text_extent(n,dx,dy ):=
+
+begin
+  CGL(%ref(17),.n,.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$set_font(n ):=
+
+begin
+  CGL(%ref(18),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_font( n ):=
+
+begin
+  CGL(%ref(19),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_charsize(w,h ):=
+
+begin
+  CGL(%ref(20),.w,.h)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_charsize( w,h ):=
+
+begin
+  CGL(%ref(21),.w,.h)
+end;
+
+
+GLOBAL ROUTINE CGL$set_charpath(a,m ):=
+
+begin
+  CGL(%ref(22),.a,.m)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_charpath( a,m ):=
+
+begin
+  CGL(%ref(23),.a,.m)
+end;
+
+
+GLOBAL ROUTINE CGL$set_charspace(dx,dy ):=
+
+begin
+  CGL(%ref(24),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_charspace( dx,dy ):=
+
+begin
+  CGL(%ref(25),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$set_charjust(h,v ):=
+
+begin
+  CGL(%ref(26),.h,.v)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_charjust( h,v ):=
+
+begin
+  CGL(%ref(27),.h,.v)
+end;
+
+
+GLOBAL ROUTINE CGL$set_charitalic(a ):=
+
+begin
+  CGL(%ref(28),.a)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_charitalic( a ):=
+
+begin
+  CGL(%ref(29),.a)
+end;
+
+
+GLOBAL ROUTINE CGL$set_font_size(n,dx,dy ):=
+
+begin
+  CGL(%ref(30),.n,.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_font_size( n,dx,dy ):=
+
+begin
+  CGL(%ref(31),.n,.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$load_char(c,m):=
+
+begin
+  CGL(%ref(32),.c,.m)
+end;
+
+GLOBAL ROUTINE CGL$marker_abs_2(x,y ):=
+
+begin
+  CGL(%ref(33),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$marker_rel_2(dx,dy ):=
+
+begin
+  CGL(%ref(34),.dx,.dy)
+end;
+
+
+GLOBAL ROUTINE CGL$polymarker_abs_2( x,y , n ):=
+
+begin
+  CGL(%ref(35),.x,.y,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$polymarker_rel_2( dx,dy , n ):=
+
+begin
+  CGL(%ref(36),.dx,.dy,.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_marker_symbol(n,c ):=
+
+begin
+  CGL(%ref(37),.n,.c)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_marker_symbol( n,c ):=
+
+begin
+  CGL(%ref(38),.n,.c)
+end;
+
+GLOBAL ROUTINE CGL$arc_abs_2(x,y,a ):=
+
+begin
+  CGL(%ref(39),.x,.y,.a)
+end;
+
+
+GLOBAL ROUTINE CGL$arc_rel_2(dx,dy,a ):=
+
+begin
+  CGL(%ref(40),.dx,.dy,.a)
+end;
+
+
+GLOBAL ROUTINE CGL$curve_abs_2( x,y , n,b ):=
+
+begin
+  CGL(%ref(41),.x,.y,.n,.b)
+end;
+
+
+GLOBAL ROUTINE CGL$curve_rel_2( dx,dy , n,b ):=
+
+begin
+  CGL(%ref(42),.dx,.dy,.n,.b)
+end;
+
+GLOBAL ROUTINE CGL$set_writing_index(n ):=
+
+begin
+  CGL(%ref(60),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_writing_index( n ):=
+
+begin
+  CGL(%ref(61),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_background_index(n ):=
+
+begin
+  CGL(%ref(62),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_background_index( n ):=
+
+begin
+  CGL(%ref(63),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_color_map( c ):=
+
+begin
+  CGL(%ref(64),.c)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_color_map( c ):=
+
+begin
+  CGL(%ref(65),.c)
+end;
+
+
+GLOBAL ROUTINE CGL$set_color_map_entry(n,c):=
+
+begin
+  CGL(%ref(66),.n,.c)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_color_map_entry(n,c):=
+
+begin
+  CGL(%ref(67),.n,.c)
+end;
+
+
+GLOBAL ROUTINE CGL$set_writing_planes(n ):=
+
+begin
+  CGL(%ref(68),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_writing_planes( n ):=
+
+begin
+  CGL(%ref(69),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_writing_mode(n ):=
+
+begin
+  CGL(%ref(70),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_writing_mode( n ):=
+
+begin
+  CGL(%ref(71),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_global_attributes( i,r):=
+
+begin
+  CGL(%ref(72),.i,.r)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_global_attributes( i,r):=
+
+begin
+  CGL(%ref(73),.i,.r)
+end;
+
+GLOBAL ROUTINE CGL$set_fill_mode(n ):=
+
+begin
+  CGL(%ref(74),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_fill_mode( n ):=
+
+begin
+  CGL(%ref(75),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_fill_entity(x,y ):=
+
+begin
+  CGL(%ref(76),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_fill_entity( x,y ):=
+
+begin
+  CGL(%ref(77),.x,.y)
+end;
+
+
+GLOBAL ROUTINE CGL$set_fill_char(n,c,wm,hm ):=
+
+begin
+  CGL(%ref(78),.n,.c,.wm,.hm)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_fill_char( n,c,wm,hm ):=
+
+begin
+  CGL(%ref(79),.n,.c,.wm,.hm)
+end;
+
+GLOBAL ROUTINE CGL$set_window(xmin,xmax,ymin,ymax ):=
+
+begin
+  CGL(%ref(80),.xmin,.xmax,.ymin,.ymax)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_window( xmin,xmax,ymin,ymax ):=
+
+begin
+  CGL(%ref(81),.xmin,.xmax,.ymin,.ymax)
+end;
+
+
+GLOBAL ROUTINE CGL$set_viewport_2(xmin,xmax,ymin,ymax ):=
+
+begin
+  CGL(%ref(82),.xmin,.xmax,.ymin,.ymax)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_viewport_2( xmin,xmax,ymin,ymax ):=
+
+begin
+  CGL(%ref(83),.xmin,.xmax,.ymin,.ymax)
+end;
+
+
+GLOBAL ROUTINE CGL$set_window_clipping(n ):=
+
+begin
+  CGL(%ref(84),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_window_clipping( n ):=
+
+begin
+  CGL(%ref(85),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$set_origin(n ):=
+
+begin
+  CGL(%ref(86),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$inquire_origin( n ):=
+
+begin
+  CGL(%ref(87),.n)
+end;
+
+
+GLOBAL ROUTINE CGL$erase_viewport:=
+
+begin
+  CGL(%ref(88))
+end;
+
+
+GLOBAL ROUTINE CGL$scroll(dx,dy ):=
+
+begin
+  CGL(%ref(89),.dx,.dy)
+end;
+
+GLOBAL ROUTINE CGL$initialize_core:=
+
+begin
+  CGL(%ref(90))
+end;
+
+
+GLOBAL ROUTINE CGL$terminate_core:=
+
+begin
+  CGL(%ref(91))
+end;
+
+
+GLOBAL ROUTINE CGL$new_frame:=
+
+begin
+  CGL(%ref(92))
+end;
+
+
+GLOBAL ROUTINE CGL$report_most_recent_error( f,e ):=
+
+begin
+  CGL(%ref(93),.f,.e)
+end;
+
+
+GLOBAL ROUTINE CGL$print(xmin,xmax,ymin,ymax,xoff,yoff ):=
+
+begin
+  CGL(%ref(94),.xmin,.ymax,.ymin,.ymax,.xoff,.yoff)
+end;
+
+
+GLOBAL ROUTINE CGL$CGL_wait(s ):=
+
+begin
+  CGL(%ref(95),.s)
+end;
+
+GLOBAL ROUTINE CGL$start_command_cluster:=
+
+begin
+
+  EXTERNAL LITERAL vsta$_obsolete;
+  RETURN vsta$_obsolete
+
+end;
+
+GLOBAL ROUTINE CGL$end_command_cluster:=
+
+begin
+
+  EXTERNAL LITERAL vsta$_obsolete;
+  RETURN vsta$_obsolete
+
+end;
+
+GLOBAL ROUTINE CGL$set_control_update:=
+
+begin
+  CGL(%ref(96))
+end;
+
+GLOBAL ROUTINE CGL$set_normal_update:=
+
+begin
+  CGL(%ref(97))
+end;
+
+GLOBAL ROUTINE CGL$update:=
+
+begin
+  CGL(%ref(98))
+end;
+
+
+
+
+
+END
+ELUDOM

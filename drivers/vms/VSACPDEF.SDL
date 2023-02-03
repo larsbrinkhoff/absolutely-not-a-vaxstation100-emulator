@@ -1,0 +1,700 @@
+module $VSACPDEF;
+
+/*+++
+/* Facility:
+/*.
+/*	VAX Workstation ACPcontrol and VDDRIVER routines
+/*.
+/* Abstract:
+/*.
+/*	This file contains all the Workstation ACP control and the VDDRIVER
+/*	( pseudo-device driver) data structures.  Various constants are also 
+/*	defined. The data
+/*	definitions are defined to be language independent.
+/*.
+/* Environment:
+/*.
+/*	VSACP process.
+/*.
+/*.
+/*---
+
+/*.
+/* Internal Constants
+/*.
+	#UCB$K_TT_LENGTH = 308;
+
+
+/*.
+/* Data Block Types
+/*.
+
+
+	constant RX_TYPE      equals 123
+		prefix VS$;
+	constant VB_DEVICE    equals 124
+		prefix VS$;
+	constant VC_DEVICE    equals 125
+		prefix VS$;
+	constant ACP_TYPE     equals 126
+		prefix VS$;
+	constant VSX_TYPE     equals 127
+		prefix VS$;
+
+/*.
+/* Device Types 
+/****************	Remove these when VMS defines them in $DCDEF	****
+/*.
+
+/*	constant VS100	equals 40
+/*		prefix DT$	tag "";
+/*	constant VS125	equals 41
+/*		prefix DT$	tag "";
+/*	constant VS300	equals 42
+/*		prefix DT$	tag "";
+	constant TEK4014 equals 42
+		prefix DT$	tag "";
+
+/*.
+/* Sizes
+/*.
+	constant TTY_WB_DATA equals 48
+		prefix VS$;		/* Size of Write block header
+	constant TTY_RB_DATA equals 80
+		prefix VS$;		/* Size of Read block header
+	constant TTY_DATA equals 12
+		prefix VS$;		/* Size of data block header
+
+/*.
+/*  Numbers of things
+/*.
+	constant VD_MAX equals 128
+		prefix VS$;		/* Maximum no. of VDs on the system
+	constant VB_MAX equals 50
+		prefix VS$;		/* Maximum no. of VBs on the system
+	constant VC_MAX equals 50
+		prefix VS$;		/* Maximum no. of VCs on the system
+	constant VD_DUMMY_FDTS equals 10
+		prefix VS$;		/* No. of dummy VD FDT rtns for padding
+
+/*.
+/*  Random things
+/*.
+	constant VD_UIC equals %x10007
+		prefix VS$;		/* Default virtual display/ACP owner
+	constant VD_PROT equals 0
+		prefix VS$;		/* Default virtual display protection
+	constant SMALL_VTEM_BUF equals 4
+		prefix VS$;		/* Max. small packet size for VTEM data
+	constant VTEM_HEAD_SIZE equals 12
+		prefix VS$;		/* VTEM packet header size for VTEM data
+/*.
+/* Keyboard things
+/*.
+	constant CTRL_KEY equals %xaf;
+	constant CPSLCK_KEY equals %xb0;
+	constant SHIFT_KEY equals %xae;
+	constant ALL_UPS_KEY equals %xb3;
+	constant METRONOME_KEY equals %xb4;
+	constant TOTAL_KEYS equals 256;
+	constant UNUSED_KEYS equals 86;
+	constant KEY_ENTRIES equals (TOTAL_KEYS - UNUSED_KEYS);
+/*
+	constant KB_LEVEL_1 equals 1;
+	constant KB_LEVEL_2 equals 2;
+/*
+	constant HELP_KEY equals %x7c prefix VS$;
+	constant MENU_KEY equals %x7d prefix VS$;
+	constant CR equals 13 prefix VS$;
+	constant CRLF equals %xa0d prefix VS$;
+	constant ESC equals 27 prefix VS$;
+	constant BS equals 8 prefix VS$;
+	constant LF equals 10 prefix VS$;
+	constant DELETE equals 127 prefix VS$;
+	constant CTRL_Q equals 17 prefix VS$;
+	constant CTRL_S equals 19 prefix VS$;
+	constant ESC_LB equals %x5b1b prefix VS$;
+	constant CSI equals 155 prefix VS$;
+	constant SS3 equals 143 prefix VS$;
+	constant F11 equals 23 prefix VS$;
+	constant F12 equals 24 prefix VS$;
+	constant F13 equals 25 prefix VS$;
+/*
+	constant MODE_TABLE_SIZE equals 2*(16*10+7) prefix VS$;
+	constant MAX_MODE_TABLES equals 17 prefix VS$;
+	constant TABLE_LIST_SIZE equals 4*VS$K_MAX_MODE_TABLES prefix VS$;
+	constant ALL_MODE_SIZE equals VS$K_MODE_TABLE_SIZE*VS$K_MAX_MODE_TABLES
+		prefix VS$;
+	constant SYMBOL_TABLE_SIZE equals 2*(109*6+1) prefix VS$;
+	constant SYMBOL_LIST_SIZE equals VS$K_TABLE_LIST_SIZE prefix VS$;
+	constant ALL_SYMBOL_SIZE equals
+	  VS$K_SYMBOL_TABLE_SIZE*(VS$K_MAX_MODE_TABLES-1) prefix VS$;
+	constant NRC_SIZE equals 256 prefix VS$;
+	constant DEAD_INDEX equals (VS$K_MAX_MODE_TABLES-1) prefix VS$;
+/*
+	aggregate UNENCODED_FLAGS structure prefix KB$;
+		KEYCODE		bitfield length 8;	/* Actual LK201 keycode
+		UP_DOWN		bitfield	mask;	/* Up/down indicator
+		CAPS_LOCK	bitfield	mask;	/* CAPS lock pressed
+		SHIFT		bitfield	mask;	/* Shift key pressed
+		CONTROL		bitfield	mask;	/* Ctrl key pressed
+		COMPOSE		bitfield	mask;	/* Compose key pressed
+		DELETE		bitfield	mask;	/* Marked for delete
+		TRANSLATED	bitfield	mask;	/* Already translated
+	end UNENCODED_FLAGS;
+/*
+	aggregate ENCODED_FLAGS structure prefix KBT$;
+		KEYCODE		bitfield length 8;	/* Translated keycode
+		UNUSED		bitfield length 4;	/* Unused bits
+		IGNORE		bitfield	mask;	/* Ignore indicator
+		SYMBOL		bitfield	mask;	/* Symbol indicator
+		DEAD		bitfield	mask;	/* Dead diacritical key
+		SPECIAL		bitfield	mask;	/* Requires expansion
+	end ENCODED_FLAGS;
+/*.
+/* Unsolicited Input Types
+/*.
+	constant(
+		UNSOLIC_DATA,
+		CTRLC,
+		CTRLY
+		) equals 0 increment 1 prefix VSX$;
+
+	constant	MESS_UNSOL equals 2
+		prefix VSX$;			/* Number of UIO types
+/*.
+/* SDA object manipulation
+/*.
+	constant(
+		NORMAL,
+		SLIDE,
+		POP_TO_TOP
+		) equals 0 increment 1 prefix VS$;
+/*
+/* The PBFLAGS in vsacpdef are used interchangably with the PB_CHARS ones in
+/* vsvdspb.  It would be nice if one set were eliminated, but until then,
+/* make sure that you keep symbols the same value that have the same meaning.
+/* For instance, PERM_PB must be the same value as PB_PERM etc.
+/*
+	aggregate PBFLAGS structure prefix VS$;		/* In VSX$W_PB_FLAGS
+		PERM_PB		bitfield	mask;
+		VKB		bitfield	mask;
+		VTB		bitfield	mask;
+		TERM		bitfield	mask;
+	end PBFLAGS;
+
+	aggregate VDCHARS structure prefix VS$;		/* In VSX$W_VD_CHARS
+		PERM_VD		bitfield	mask;
+		SHARE_VD	bitfield	mask;
+	end VDCHARS;
+
+/*		.
+/* IO codes.  When defining new ones, the strategy for picking values is
+/* to avoid overlapping existing functions that already mean something for
+/* virtual displays.  For instance, don't use 48 since that means WRITEVBLK,
+/* whose meaning we can't change.  (See STARLET.REQ for list of codes.)
+/*		.
+/* The following codes are privileged (require PHY_IO, DIAGNOSE)
+/*
+	constant (	IO$_BROADCAST,		/* 16 overlaps READTRACKD
+			IO$_ACTIVATE,		/* 17 overlaps AVAILABLE
+			IO$_DEACTIVATE,		/* 18
+			IO$_VTEMDATA,		/* 19
+			IO$_VSTAHI		/* 20
+		)
+				equals 16 increment 1;
+/*
+/* The following codes are non-privileged and do NOT conflict with any VMS
+/* or VSTA function codes (IO$_LOGICAL < code <= IO$_VIRTUAL).
+/*
+	constant IO$_VSTAPTR equals 52;		/* 
+	constant IO$_READ_VKB equals 60;	/* 
+	constant IO$_WRITE_GRAPHICS equals 61;	/* 
+	constant IO$_WRITE_VD equals 62;	/* 
+	constant IO$_CREATE_MENU equals 63;	/* 
+/*
+/* Define VSTA function code modifiers
+/*
+	aggregate IOCODES structure prefix IO$;
+		reserved bitfield	length 6; /* Function code
+		TEXT	bitfield	mask;
+		skip	bitfield	length 1;
+		SW	bitfield	mask;
+		GRAPHICS bitfield	mask;
+		VD	bitfield	mask;
+		PB	bitfield	mask;
+		W	bitfield	mask;
+		VP	bitfield	mask;
+		VS	bitfield	mask;
+		PS	bitfield	mask;
+	end IOCODES;
+
+	aggregate IOCODES2 structure prefix IO$;
+		reserv2 	bitfield	length 6; /* Function code
+		VKB		bitfield	mask;
+		VTB		bitfield	mask;
+		TRANS_TABLE	bitfield	mask;
+		SPARE_MODS2	bitfield length 3;
+		VKB_CHAR	bitfield	mask;
+		VD_CANCEL	bitfield	mask;
+	end IOCODES2;
+
+	aggregate IOCODES3 structure prefix IO$;
+		reserv3 	bitfield	length 6; /* Function code
+		MOUSE		bitfield	mask;
+		TABLET		bitfield	mask;
+		MOVE_AST	bitfield	mask;
+		BUTTON_AST	bitfield	mask;
+		BOUNDARY_AST	bitfield	mask;
+		PTR_INFO	bitfield	mask;
+		SPARE_MODS3	bitfield length 4;
+	end IOCODES3;
+
+	aggregate IOCODES4 structure prefix IO$;
+		reserv4 	bitfield	length 6; /* Function code
+		VD_INTERNAL	bitfield	mask;
+		VD_NEWSYM	bitfield	mask;
+		VD_SPKEY	bitfield	mask;
+		VD_HOLD		bitfield	mask;
+		VD_OEM		bitfield	mask;
+		VD_NOTICE	bitfield	mask;
+		VD_TRANS_TABLE	bitfield	mask;
+		VD_SYMBOL_TABLE	bitfield	mask;
+		VD_NRC_TABLE	bitfield	mask;
+		VD_GIN		bitfield	mask;
+	end IOCODES4;
+
+	aggregate TTYSTATE structure prefix VS$;
+	ST_VKB		bitfield	mask;
+	ST_DEL		bitfield	mask;
+	ST_POINTER	bitfield	mask;	/* Matches TTY...CURSOR
+	ST_CONTROL	bitfield	mask;	/* Matches TTY...CH_LOWER
+	ST_ERRBLOCK	bitfield	mask;
+	ST_MODIFY	bitfield	mask;	/* Matches TTY...DMA
+	ST_WRITE	bitfield	mask;
+	ST_BRDCST	bitfield	mask;
+	res3		bitfield	length 1;
+	ST_VD		bitfield	mask;
+	ST_READ		bitfield	mask;	/* Matches TTY...READ
+	ST_PB		bitfield	mask;
+	ST_W		bitfield	mask;
+	ST_VP		bitfield	mask;
+	ST_VS		bitfield	mask;
+	ST_PS		bitfield	mask;
+	end TTYSTATE;
+
+
+/*.
+/* TMBU PID list structure
+/*.
+	aggregate PID_TMBU structure prefix TMBU$;
+		EPID		longword unsigned;	/*Internal PID
+		MBX_UNIT	word unsigned;		/*Term. mbx unit no.
+	    constant LEN equals .;
+	end PID_TMBU;
+/*.
+/* VD Controller fields
+/*.
+	aggregate VD_CTRL_BLOCK structure prefix CTRL$;
+		ACTIVE_UCB	address;		/*Active UCB on ctrl
+		TTABLE		longword unsigned;	/*Translation table ID
+		TTABLE		address;		/*Translation table adr.
+		TTABLE_LIST	byte unsigned dimension VS$K_TABLE_LIST_SIZE;
+		SYMBOL_TABLE	address;		/*Symbol table adr.
+		SYMBOL_LIST	byte unsigned dimension VS$K_SYMBOL_LIST_SIZE;
+		NRC_TABLE	address;		/*NRC table adr.
+		STATUS_FIELD	 union;
+		  STATUS	 word unsigned;		/*VD controller state
+		  STATUS_BITS	 structure;
+		    OEM		 bitfield	mask;	/*OEM mode in effect
+		    EXTRA	 bitfield length 7 mask;/*For future DEC abuse
+		  end STATUS_BITS;
+		end STATUS_FIELD;
+	    constant LEN equals .;
+	end VD_CTRL_BLOCK;
+/*.
+/* VD UCB extension fields
+/*.
+	constant UCB$K_VD_MAX_TYPAHD equals 64;		/*32 16-bit entries
+	constant UCB$K_VD_MAX_TYPIDX equals ((UCB$K_VD_MAX_TYPAHD/2) - 3);
+	constant UCB$K_VD_MAX_OUTDAT equals 24;		/*Output data buffer
+	constant VS$K_MAX_IRP_CNT equals 10;		/*Max. outstanding IRPs
+
+	aggregate VD_UCB_BLOCK structure prefix UCB$;
+		VD_SYS_DEFINED	byte unsigned dimension #UCB$K_TT_LENGTH;
+
+		VD_ID		longword unsigned;
+		VD_EMULATOR	longword unsigned;
+		VD_CTRL		address;
+		VD_TYPAHD	byte unsigned dimension UCB$K_VD_MAX_TYPAHD;
+		VD_OUT_CNT	longword unsigned;
+		VD_OUTDAT	byte unsigned dimension UCB$K_VD_MAX_OUTDAT;
+		VD_SYMBOL_SHIFT	longword unsigned;
+		VD_SYMBOL_LOWER	longword unsigned;
+		VD_DEAD		byte unsigned;
+		VD_STATUS_FIELD	 union;
+		  VD_STATUS	 word unsigned;		/*Virtual device state
+		  VD_STATUS_BITS	 structure;
+		    VD_ABORT	 bitfield	mask;	/*Abort output bit
+		    VD_XOFF	 bitfield	mask;	/*XOFF state bit
+		    VD_FORK_ACT	 bitfield	mask;	/*Fork active bit
+		    VD_LOADTT_IP bitfield	mask;	/*Load in progress bit
+		    VD_DATA_AVAIL bitfield	mask;	/*Data available bit
+		    VD_INPUT_IP	 bitfield	mask;	/*Input scan in progress
+/*
+/* NOTE: The following bits are position dependent. Do not modify the number of
+/*	 bits above. Also, do not modify the order below or introduce any new
+/*	 bits in between the existing ones.
+/*
+		    VD_LEVEL	 bitfield	mask length 4; /*Level 1/2 conformance
+		    VD_EIGHTBIT	 bitfield	mask;	/*Native eight-bit/seven-bit
+		    VD_KEYPAD	 bitfield	mask;	/*Keypad application mode
+		    VD_CURSOR_KEY  bitfield	mask;	/*Cursor key mode
+		    VD_VT52	 bitfield	mask;	/*VT52 mode
+		    VD_NEW_LINE	 bitfield	mask;	/*New-line mode
+/*
+		    VD_GIN	 bitfield	mask;	/*TEK GIN mode
+		  end VD_STATUS_BITS;
+		end VD_STATUS_FIELD;
+		VD_IRP_CNT	longword unsigned;
+	    constant VD_LEN equals .;
+	end VD_UCB_BLOCK;
+
+/*					.
+/* Vax Station Transport Buffer  --  VSX
+/*					.
+aggregate VSXBLOCK structure prefix VSX$;
+	UIC		longword unsigned;
+	ID		word unsigned;
+	spare1		word;
+	SIZE		word unsigned;
+	TYPE		byte unsigned;
+	spare2		byte;
+	constant HDR_LEN equals .;
+	VSXDEPENDENT	union;
+	   	VSXVD structure;
+			VD_MODE		word unsigned;
+			VD_CHARS	word unsigned;
+			VD_BACKGROUND	word unsigned;
+			VD_FOREGROUND	word unsigned;
+			VD_HEIGHT	word unsigned;
+			VD_WIDTH	word unsigned;
+			VD_DEPTH	word unsigned;
+			VD_BIT_PLANES	word unsigned;
+			VD_LINE_HITE	word unsigned;
+			VD_COLS_NORM	word unsigned;
+			VD_COLS_WIDE	word unsigned;
+			VD_ROWS		word unsigned;
+			VD_TEXT_CODE	word unsigned;
+			VD_PROTECTION	word unsigned;
+		end VSXVD;
+		VSXPB structure;
+			PB_COLOR_SPEC	word unsigned;
+			PB_COLOR	word unsigned;
+			PB_WIDTH	word unsigned;
+			PB_HEIGHT	word unsigned;
+			PB_FLAGS	longword unsigned;
+			PB_PROTECTION	word unsigned;
+			spare8		word;
+			spare9		longword;
+			spare10		longword;
+			spare11		longword;
+		end VSXPB;
+		VSXW structure;
+			W_X0		word;
+			W_Y0		word;
+			W_DX		word unsigned;
+			W_DY		word unsigned;
+			W_PB_ID		word unsigned;
+			W_VP_ID		word unsigned;
+			W_NAME_LEN	word unsigned;
+			constant W_NAME_POS equals .;
+			W_NAME		byte;
+			w_spare3	byte;
+			w_spare5	longword;
+			w_spare6	longword;
+			w_spare7	longword;
+		end VSXW;
+		VSXVP structure;
+			VP_X0		word;
+			VP_Y0		word;
+			VP_DX		word unsigned;
+			VP_DY		word unsigned;
+			VP_W_ID		word unsigned;
+			VP_VS_ID	word unsigned;
+			VP_BASE		word unsigned;
+			vp_spare3	word;
+			vp_spare4	longword;
+			vp_spare5	longword;
+			vp_spare6	longword;
+		end VSXVP;
+		VSXVS structure;
+			VS_COLOR	word unsigned;
+			vs_spare1	word;
+			vs_spare2	longword;
+			vs_spare3	longword;
+			vs_spare4	longword;
+			vs_spare5	longword;
+			vs_spare6	longword;
+			vs_spare7	longword;
+		end VSXVS;
+		VSXPS structure;
+			PS_DEV_TYPE	word unsigned;
+			PS_UNIT		word unsigned;
+			PS_X0		word unsigned;
+			PS_Y0		word unsigned;
+			PS_VS_ID	word unsigned;
+			ps_spare2	word;
+			PS_DX		word;
+			PS_DY		word;
+			ps_spare4	longword;
+			ps_spare5	longword;
+			ps_spare6	longword;
+		end VSXPS;
+		VSXVKB structure;
+			VKB_STATE_BITS	longword unsigned;
+			VKB_TRANS_TABLE	longword unsigned;
+			VKB_DEVDEPEND	longword unsigned;
+			VKB_MOD_STATES	longword unsigned;
+			vkb_spare1	longword;
+			vkb_spare2	longword;
+			vkb_spare3	longword;
+		end VSXVKB;
+		VSXCHARS structure;
+			VD_CHAR		quadword unsigned;
+			VD_CHAR2	longword unsigned;
+			ch_spare2	quadword;
+			ch_spare3	quadword;
+		end VSXCHARS;
+		VSXCTRL structure;
+			CTRL_SUBJECT_ID	word unsigned;
+			CTRL_OBJECT_ID	word unsigned;
+			CTRL_X0		word;
+			CTRL_Y0		word;
+			CTRL_STACKING	word unsigned;
+		end VSXCTRL;
+		VSXPTR structure;
+			PTR_X0		longword;
+			PTR_Y0		longword;
+			PTR_DX		longword unsigned;
+			PTR_DT		longword unsigned;
+			PTR_UP_MASK	longword unsigned;
+			PTR_DOWN_MASK	longword unsigned;
+			PTR_PB_ID	longword;
+		end VSXPTR;
+	constant DATA_LEN equals .;
+				/* This symbol will be used during the
+				/* compilation of vddriver.mar to
+				/* guarantee that the longest block
+				/* defined up above does not hit
+				/* the data used by the system.
+	end VSXDEPENDENT;
+end VSXBLOCK;
+
+/*					.
+/* VAX Station User Buffer structures  --  VSU
+/*					.
+aggregate VSUBLOCK structure prefix VSU$;
+	VSUDEPENDENT	union;
+	   	VSUVD structure;
+			VD_MODE		word unsigned;
+			VD_CHARS	word unsigned;
+			VD_BACKGROUND	word unsigned;
+			VD_FOREGROUND	word unsigned;
+			VD_HEIGHT	word unsigned;
+			VD_WIDTH	word unsigned;
+			VD_DEPTH	word unsigned;
+			VD_BIT_PLANES	word unsigned;
+			VD_LINE_HITE	word unsigned;
+			VD_COLS_NORM	word unsigned;
+			VD_COLS_WIDE	word unsigned;
+			VD_ROWS		word unsigned;
+			VD_TEXT_CODE	word unsigned;
+			VD_PROTECTION	word unsigned;
+		end VSUVD;
+		VSUPB structure;
+			PB_COLOR_SPEC	word unsigned;
+			PB_COLOR	word unsigned;
+			PB_WIDTH	word unsigned;
+			PB_HEIGHT	word unsigned;
+			PB_FLAGS	longword unsigned;
+			PB_PROTECTION	word unsigned;
+			spare8		word;
+			spare9		longword;
+			spare10		longword;
+			spare11		longword;
+		end VSUPB;
+		VSUW structure;
+			W_X0		word;
+			W_Y0		word;
+			W_DX		word unsigned;
+			W_DY		word unsigned;
+			W_PB_ID		word unsigned;
+			W_VP_ID		word unsigned;
+			W_NAME_LEN	word unsigned;
+			constant W_NAME_POS equals .;
+			W_NAME		byte;
+			w_spare3	byte;
+			w_spare5	longword;
+			w_spare6	longword;
+			w_spare7	longword;
+		end VSUW;
+		VSUVP structure;
+			VP_X0		word;
+			VP_Y0		word;
+			VP_DX		word unsigned;
+			VP_DY		word unsigned;
+			VP_W_ID		word unsigned;
+			VP_VS_ID	word unsigned;
+			VP_BASE		word unsigned;
+			vp_spare3	word;
+			vp_spare4	longword;
+			vp_spare5	longword;
+			vp_spare6	longword;
+		end VSUVP;
+		VSUVS structure;
+			VS_COLOR	word unsigned;
+			vs_spare1	word;
+			vs_spare2	longword;
+			vs_spare3	longword;
+			vs_spare4	longword;
+			vs_spare5	longword;
+			vs_spare6	longword;
+			vs_spare7	longword;
+		end VSUVS;
+		VSUPS structure;
+			PS_DEV_TYPE	word unsigned;
+			PS_UNIT		word unsigned;
+			PS_X0		word unsigned;
+			PS_Y0		word unsigned;
+			PS_VS_ID	word unsigned;
+			ps_spare2	word;
+			PS_DX		word;
+			PS_DY		word;
+			ps_spare4	longword;
+			ps_spare5	longword;
+			ps_spare6	longword;
+		end VSUPS;
+		VSUVKB structure;
+			VKB_STATE_BITS	longword unsigned;
+			VKB_TRANS_TABLE	longword unsigned;
+			VKB_DEVDEPEND	longword unsigned;
+			VKB_MOD_STATES	longword unsigned;
+			vkb_spare1	longword;
+			vkb_spare2	longword;
+			vkb_spare3	longword;
+		end VSUVKB;
+		VSUCHARS structure;
+			VD_CHAR		quadword unsigned;
+			VD_CHAR2	longword unsigned;
+			ch_spare2	quadword;
+			ch_spare3	quadword;
+		end VSUCHARS;
+		VSUCTRL structure;
+			CTRL_SUBJECT_ID	word unsigned;
+			CTRL_OBJECT_ID	word unsigned;
+			CTRL_X0		word;
+			CTRL_Y0		word;
+			CTRL_STACKING	word unsigned;
+		end VSUCTRL;
+		VSUPTR structure;
+			PTR_X0		longword;
+			PTR_Y0		longword;
+			PTR_DX		longword unsigned;
+			PTR_DT		longword unsigned;
+			PTR_UP_MASK	longword unsigned;
+			PTR_DOWN_MASK	longword unsigned;
+			PTR_PB_ID	longword unsigned;
+		end VSUPTR;
+	end VSUDEPENDENT;
+end VSUBLOCK;
+
+/*					.
+/* Read Extension Block -- RX
+/*					.
+aggregate RXBLOCK structure prefix RX$;
+	NXT		address;
+	PROMPT_UVA	address;
+	SIZE		word unsigned;
+	TYPE		byte unsigned;
+	rx_spare1	byte;
+	BREAK_TABLE	longword unsigned;
+	BT2		longword unsigned;
+	BT3		longword unsigned;
+	BT4		longword unsigned;
+	BT5		longword unsigned;
+	BT6		longword unsigned;
+	BT7		longword unsigned;
+	BT8		longword unsigned;
+	REGION		longword unsigned;
+	LINE		word unsigned;
+	FIELD		word unsigned;
+	PROMPT_SIZE	word unsigned;
+	PB_ID		word unsigned;
+	PROMPT		byte unsigned;
+end RXBLOCK;
+
+/*
+/* Define font weight structure.  The code assumes that this structure
+/* completely fits in the low 31 bits of a longword, such that two of them
+/* can be quickly compared with simple arithmetic, so be careful not to
+/* expand this too much !
+/*
+/* For the same reason, the code also assumes that the more important
+/* weightings are in the more significant bits, so be careful about order.
+/*
+	aggregate font_weight structure prefix fw$;
+	    fits	bitfield;	/* On if font fits on line
+	    alg_rend	bitfield;	/* On if only mismatched rendition bits
+					/* are algorithmically generatable
+					/* renditions
+	    rend	bitfield;	/* On if all renditions match
+	    typesize	bitfield length 8;
+					/* 100 - difference in type size
+	    typeface 	bitfield;	/* On if typeface matches exactly
+	end font_weight;
+
+/*
+/* Define virtual memory block.  The block contains bookkeeping as well
+/* as actual memory for caller usage.
+/*
+/* The bookkeeping allows us to determine:
+/*
+/*	1)  whether callers clobber memory before or after their allocated
+/*	    portion.
+/*	2)  whether callers neglect to free memory (checked at end of session)
+/*
+	aggregate vm_block structure prefix vm$;
+					/* --- Caution ! ---
+					/* "first_adr" MUST end up with a value
+					/* divisible by 4, due to some usages
+					/* which depend on their memory buffers
+					/* aligned on words or longwords.
+	flink		address;	/* Forward link to another memory blk
+	blink		address;	/* Backward link to another memory blk
+	caller_pc	address;	/* PC of requestor for this memory
+	callr_callr_pc	address;	/* PC of caller of requestor for memory
+	clr_clr_clr_pc	address;	/* PC of caller of caller of requestor
+	cl_cl_cl_cl_pc	address;	/* Hopefully four is enough for
+					/* diagnosis
+	hdr_len		longword;	/* Number of bytes of mem requested.
+	constant first_adr equals .;	/* Caller's usable portion
+					/* --- Caution ! ---
+					/* "first_adr" MUST end up with a value
+					/* divisible by 4, due to some usages
+					/* which depend on their memory buffers
+					/* aligned on words or longwords.
+	/*
+	/* The following fields are prefixed with "end_" to remind programmers
+	/* that these must be accessed by adding the caller's buffer size.
+	/* They float beyond that buffer.
+	/*
+	end_tlr_len	longword;	/* Number of bytes of mem requested.
+					/* This item floats just after usable
+					/* portion to catch callers that write
+					/* beyond their usable portion
+	end vm_block;
+/*					.
+/* End of module $VSDEF
+/*					.
+end_module;

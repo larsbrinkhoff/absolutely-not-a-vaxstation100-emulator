@@ -1,0 +1,1910 @@
+MODULE VS$SRV_MENU (
+			IDENT = 'HI SERVER Menus and Text module'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module handles menus and text for the human interface.
+! It sets up most of the popup-pasteboards used by the human inteface.
+!
+
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_menu_setup,		!Setup the menus and message file
+    startup_message_file,		! Open and checkout the message file
+    vsta$$srv_menu_cleanup,		!Cleanup menus, close message file.
+    set_srv_menu_selectable,		! Set region selectable and set help
+    vsta$$srv_get_help_keyword,		! Get help keyword for vd and region
+    vsta$$srv_get_message_text,		!Return text of a message number
+    inner_get_message_text,
+    get_main_menu_pb,			!get PB for main menu.
+    get_term_menu_pb,			!get PB for the terminal menu
+    get_vp_menu_pb,			!get PB for a viewport menu
+    get_ts_menu_pb,			!get PB for terminal settings menu
+    get_oc_main_pb,			!get PB for main menu "other choices"
+    get_help_menu_pb,
+    get_prof_menu_pb,
+    get_notice_menu_pb,
+    get_auth_menu_pb,			!menu for the authorization form
+    get_end_sess_confirm,		!Get PB for end session confirmation
+					! menu.
+    get_menu_pb,			!Get PB for an arbitrary menu.
+    null_routine,			!Routine called when "no" selected
+					! in the confirm menu.
+    delete_menu;			!Delete a menu.
+
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:DOCFILE';
+LIBRARY 'VSTA$LIBRARY:VSTAMF';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! Symbols like $BASE
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Termtype symbols
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application symbols
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!vs$m_vkb
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vsta$$srv_open_a_doc,		!Open a document or mess file, read
+					! in header
+    vsta$$srv_read_doc_block,		!Read a block of a document
+    vsta$$srv_close_a_doc,		!Close a document file
+    vsta$$srv_disp_help_kwd,		!Display a HELP keyword
+    vsta$$srv_pop_current_vp_to_top,	!Pop current vp to top
+    vsta$$srv_sink_currnt_vp_to_btm,	!Sink current vp to bottom
+    vs$$vds_create_vd,			!Create a VD
+    vs$$vds_delete_vd,			!Delete a VD
+    vs$$vds_create_pb,			!Create a PB
+    vs$$vds_delete_pb,			!Delete a pasteboard
+    vs$$vds_paste_vd_to_pb,		!Paste a VD to a pasteboard
+    vs$$vds_create_term_window,		!Create a term window (no VP)
+    vsta$$create_menu,			!Create a menu
+    vsta$$rgn_define_region,		!Define a region
+    vsta$$rgn_set_region_selectable,	!Set a region selectable
+    vsta$$set_pb_help,			!Set help routine if user on PB
+    vsta$$srv_sel_move_vp,		!Called if "MOVE" is selected
+					! for any screen object.
+    vsta$$srv_sel_store,		!Called if "Done" is selected
+					! for any screen object.
+    vsta$$srv_create_not_logged_in,	!Routine to create not logged-in term.
+    vsta$$srv_create_logged_in,		!Routine to create logged-in term.
+    vsta$$srv_Logout_job,		!User selected "logout job"
+    vsta$$srv_toggle_hi_appear,		!Toggle appear/disappear footer and
+					! symbol bar.
+    vsta$$srv_notice_clear,		!Clear notices document.
+    vsta$$srv_end_session,		!End workstation session
+    vsta$$error,			!Report an error
+    vsta$$ts_menu_selection,		!Where to go to do terminal settings
+    vsta$$ts_reset,			!Reset terminal
+    vsta$$srv_print_white_doc,		!Print a white background document
+    vsta$$srv_print_user_vp,		!Print a user's viewport
+    vsta$$srv_print_term,		!print contents of emulated terminal
+    vsta$$ts_settings_done;		!Where to go on "done" item in settings
+
+EXTERNAL
+    vs$gl_pid,			!PId of the application program doing the QIO
+    srv_gl_ignore_delw;		!Ignore the deletion of a window.
+
+GLOBAL
+    vsta$gl_notice1_mess_desc: VECTOR [2],	!String descriptor to "catch-
+    vsta$gl_notice1_text: VECTOR [128,BYTE],	! all human interface error"
+    srv$gl_main_menu: hi_menu_block,
+    srv$gl_oc_menu: hi_menu_block,	!"other choices" in main menu
+    srv$gl_ts_menu: hi_menu_block,	!Terminal settings menu
+    srv$gl_term_menu: hi_menu_block,
+    srv$gl_vp_menu: hi_menu_block,
+    srv$gl_prof_menu: hi_menu_block,
+    srv$gl_help_menu: hi_menu_block,
+    srv$gl_notice_menu: hi_menu_block,
+    srv$gl_auth_menu: hi_menu_block;
+
+OWN
+    confirm_end_sess_menu: hi_menu_block,
+
+!
+! Storage for menu titles and items for site's language.
+!
+    lang_mess_fab: $FAB	(FAC = <BIO,GET>
+			,MRS = 512
+			,RFM = FIX
+			),
+    lang_mess_ph_block,			!Current message page hdr block in core
+    lang_curr_mess_mfp: REF mf_page_block,	!Current message page in core
+    lang_curr_mess_hdr: mf_header_block,
+    lang_mess_ph: BLOCK [512,BYTE],	!Current in-core message hdr block
+    lang_mess_data: BLOCK [512,BYTE],	!Current in-core message data block
+!
+! Storage for help keywords for menus.
+!    
+    mnuhlp_mess_fab: $FAB
+			(FAC = <BIO,GET>
+			,MRS = 512
+			,RFM = FIX
+			),
+    mnuhlp_mess_ph_block,		!Current message page hdr block in core
+    mnuhlp_curr_mess_mfp: REF mf_page_block,	!Current message page in core
+    mnuhlp_curr_mess_hdr: mf_header_block,
+    mnuhlp_mess_ph: BLOCK [512,BYTE],	!Current in-core message hdr block
+    mnuhlp_mess_data: BLOCK [512,BYTE];	!Current in-core message data block
+
+!
+! Macro to store a filename in a fab.
+!    
+MACRO
+    $store_name_in_fab (strng, fab) =
+	BEGIN
+	fab [FAB$B_FNS] = %CHARCOUNT (strng);
+	fab [FAB$L_FNA] = UPLIT (strng);
+	END %;
+
+
+GLOBAL ROUTINE vsta$$srv_menu_setup
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read in initial message file and setup the menus
+!	and various other popup-pasteboards used by the human interface.
+! FORMAL PARAMETERS:
+	(language
+	) =
+BEGIN
+LOCAL
+    len_returned,		!By "get_message_text"
+    status;
+
+!
+! Get filename of the message file.
+!
+(SELECTONE (.language) OF
+    SET
+    [doc_lang$K_english]:
+	$store_name_in_fab ('VSTA$HILIB:MFENG.MF', lang_mess_fab);
+    [doc_lang$K_french]:
+	$store_name_in_fab ('VSTA$HILIB:MFFRE.MF', lang_mess_fab);
+    [doc_lang$K_german]:
+	$store_name_in_fab ('VSTA$HILIB:MFGER.MF', lang_mess_fab);
+    [OTHERWISE]:		!?don't know, use English
+	$store_name_in_fab ('VSTA$HILIB:MFENG.MF', lang_mess_fab);
+    TES
+);
+!
+! Open the message file and read in the header block and first
+! directory block
+!
+	startup_message_file (
+	    .language,
+	    lang_mess_fab,		! specify items to initialize . . .
+	    lang_curr_mess_mfp,
+	    lang_curr_mess_hdr[$base],
+	    lang_mess_ph[$base],
+	    lang_mess_ph_block,
+	    lang_mess_data[$base]
+	    );
+!
+! Initialize name of menu help file.
+!
+	$store_name_in_fab (
+	    'vsta$hilib:mfhlp.mf',
+	    mnuhlp_mess_fab
+	    );
+!
+! Open the menu help keyword file.
+!
+	startup_message_file (
+	    doc_lang$k_help,		! special language designator for help
+	    mnuhlp_mess_fab,		! specify items to initialize . . .
+	    mnuhlp_curr_mess_mfp,
+	    mnuhlp_curr_mess_hdr[$base],
+	    mnuhlp_mess_ph[$base],
+	    mnuhlp_mess_ph_block,
+	    mnuhlp_mess_data[$base]
+	    );
+!
+! Get descriptor to message 1, and put in global variable.
+!
+vsta$gl_notice1_mess_desc [0] = 128;
+vsta$gl_notice1_mess_desc [1] = vsta$gl_notice1_text;
+
+IF NOT (status =
+    vsta$$srv_get_message_Text
+		(1
+		,vsta$gl_notice1_mess_desc
+		,len_returned
+		)
+	)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 1
+			);
+
+vsta$gl_notice1_mess_desc [0] = .len_returned;
+
+!
+! Create menus needed before authorization.
+!
+IF NOT get_auth_menu_pb ()
+  THEN $error (vsta$_hi_menu
+		,string_type, %ASCID 'Authorization form'
+		);
+!
+! Initialize the menus which we avoid actually creating until they are
+! used.  This allows start-session to be appreciably faster.
+
+srv$gl_help_menu[hmb$l_vd] = 0;
+srv$gl_term_menu[hmb$l_vd] = 0;
+srv$gl_vp_menu[hmb$l_vd] = 0;
+srv$gl_ts_menu[hmb$l_vd] = 0;
+srv$gl_prof_menu[hmb$l_vd] = 0;
+srv$gl_notice_menu[hmb$l_vd] = 0;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE startup_message_file
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads in the initial stuff for the message file
+! FORMAL PARAMETERS:
+	(
+	language,			! which language file to read in
+	mess_fab : REF BLOCK [,BYTE],	! address of fab
+	curr_mess_mfp_adr,		! address into which to write block adr
+	curr_mess_hdr : REF mf_header_block,	! address of header block
+	mess_ph : REF BLOCK [512, BYTE],! address of in-core header block
+	mess_ph_block_adr,		! address to receive block number
+	mess_data : REF BLOCK [512, BYTE] ! address of buffer
+	) =
+!--
+BEGIN
+LOCAL
+    file_name_Desc: VECTOR [2],	!Descriptor to filename for error msgs
+    buffr: BLOCK [512,BYTE],
+    status;
+
+BIND
+!
+! Get addresses into which data will be written.
+!
+    mess_ph_block = .mess_ph_block_adr,
+    curr_mess_mfp = .curr_mess_mfp_adr : ref mf_page_block;
+
+file_name_desc [0] = .mess_fab [fab$b_fns];	!Get filename
+file_name_Desc [1] = .mess_fab [fab$l_fna];	! descriptor in case of error
+
+IF NOT vsta$$srv_open_a_doc (.mess_fab)
+  THEN RETURN $error (vsta$_open_mess
+			,string_type, file_name_desc
+			);
+
+! Read header and make sure it is ok
+IF NOT (status = vsta$$srv_read_doc_block (.mess_fab, 1, buffr))
+  THEN $log_error_and_return (.status);
+!	RETURN $error (vsta$_mess_inv
+!			,string_type, file_name_desc
+!			);
+
+!
+! Copy message header to our place
+!
+CH$MOVE	(mfh$S_mf_header_block
+	,buffr
+	,curr_mess_hdr[$base]
+	);
+
+IF (.curr_mess_hdr [mfh$l_sanity] NEQ %X'55561010')
+  THEN RETURN $error (vsta$_mess_inv	!"invalid message file"
+			,string_type, file_name_desc
+			);
+
+IF (.curr_mess_hdr [mfh$l_language_key] NEQ .language)
+  THEN RETURN $error (vsta$_mess_wrolan	!"Wrong language in message file !AC"
+			,string_type, file_name_desc
+			);
+
+IF (.curr_mess_hdr [mfh$l_version] NEQ 1)
+  THEN RETURN $error (vsta$_mess_wrover	!"Wrong version number in message file"
+			,string_type, file_name_desc
+			);
+!
+! Read in 1st header block
+!
+IF NOT (status =
+    vsta$$srv_read_doc_block (.mess_fab, 2, mess_ph[$base])
+	)
+  THEN $log_error_and_return (.status);
+!
+mess_ph_block = 2;		!Current message page hdr block in core
+!
+! Read in a block of actual message text.
+!
+curr_mess_mfp = mess_ph[$base];
+IF NOT (status =
+    vsta$$srv_read_doc_block (.mess_fab, 2 + .curr_mess_hdr [mfh$l_num_hdr_blks], mess_data[$base])
+	)
+  THEN $log_error_and_return (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_menu_cleanup =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the message file and deletes all the menus.
+!	Called at end session, or when the user changes his language
+!	in the profile.
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Delete the menus.
+!
+delete_menu (srv$gl_main_menu);
+delete_menu (srv$gl_oc_menu);
+delete_menu (srv$gl_term_menu);
+delete_menu (srv$gl_vp_menu);
+delete_menu (srv$gl_prof_menu);
+delete_menu (srv$gl_help_menu);
+delete_menu (srv$gl_notice_menu);
+delete_menu (srv$gl_ts_menu);
+delete_menu (srv$gl_auth_menu);
+delete_menu (confirm_end_sess_menu);
+
+!
+! Close the message files.
+!
+vsta$$srv_close_a_doc (lang_mess_fab);
+vsta$$srv_close_a_doc (mnuhlp_mess_fab);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_get_message_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns text string for a message
+! FORMAL PARAMETERS:
+	(message_number
+	,mess_desc: REF VECTOR [2]
+	,mess_len
+	) =
+!--
+BEGIN
+LOCAL
+    num_chars,
+    mftxtb: REF mf_txt_block,	!Ptr to mf txt block when found
+    status;
+!
+! If message_number is not found, return "** Bad message number **"
+! and status = SS$_BADPARAM
+!
+IF NOT (status =
+    inner_get_message_text (
+	.message_number,
+	lang_mess_fab,
+	lang_curr_mess_mfp,
+	lang_curr_mess_hdr[$base],
+	lang_mess_ph[$base],
+	lang_mess_ph_block,
+	lang_mess_data[$base],
+	mftxtb
+	))
+  THEN
+    BEGIN
+    num_chars = MIN (.mess_desc [0], %CHARCOUNT ('** Bad message number **'));
+    CH$MOVE	(.num_chars
+		,UPLIT ('** Bad message number **')
+		,.mess_desc [1]
+		);
+    .mess_len = .num_chars;
+    RETURN SS$_BADPARAM
+    END;
+!
+! Alright, text block returned in mftxtb
+! Return the text string itself.
+!
+num_chars = MIN (.mess_desc [0], .mftxtb [mft$w_size]);	!Return as much as can
+CH$MOVE	(.num_chars
+	,.mftxtb + mft$K_hdr_size
+	,.mess_desc [1]
+	);				! Copy the string itself
+
+.mess_len = .num_chars;			! Return length
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_srv_menu_selectable
+!++
+! Functional description:
+!
+!	Perform a standard set-region-selectable, but also associate a help
+!	keyword with the region, such that later when the mouse is on the
+!	region and the user hits the help key, the right help page will appear.
+!
+! Formal parameters:
+ (
+	vd_id,			! Which vd's region is being set
+	rgn_x,			! Coordinates of region being set
+	rgn_y,
+	rtn_adr,		! routine to call when region is selected or 0
+	rtn_prm,		! parameter to pass to routine when called
+	pb_id,			! pasteboard to pop up, 0 for none
+	pb_x,			! coordinates of pb that should coincide . . .
+	pb_y,			! . . . with mouse when it pops up
+	message_number		! number for looking up help keyword.
+ ) =
+!
+!--
+
+BEGIN
+LOCAL
+    s;
+!
+! Do the standard selectability setup.
+!
+IF NOT vsta$$rgn_set_region_selectable
+		(.vd_id		! Which vd's region is being set
+		,.rgn_x		! Coordinates of region being set
+		,.rgn_y
+		,.rtn_adr	! routine to call when region is selected or 0
+		,.rtn_prm	! parameter to pass to routine when called
+		,.pb_id		! pasteboard to pop up, 0 for none
+		,.pb_x		! coordinates of pb that should coincide . . .
+		,.pb_y		! . . . with mouse when it pops up
+		,vsta$K_sel_text ! Selectable attribute for text
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+!
+! Associate a help page with the region.
+!
+IF NOT (s = vsta$$srv_get_help_keyword (
+	    .message_number,	! which help keyword to look up
+	    .vd_id,		! which vd's region to associate it with
+	    .rgn_x,		! which region on the vd to associate it with
+	    .rgn_y
+	    ))
+  THEN RETURN .s;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE vsta$$srv_get_help_keyword
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets help keyword for a vd's region.
+! FORMAL PARAMETERS:
+	(message_number
+	,vd_id			! which virtual display
+	,rgn_x			! coordinates of region on display IF
+				! NON-NEGATIVE.  If NEGATIVE, the help
+				! becomes associated with the vd rather
+				! than a particular region
+	,rgn_y
+	) =
+!--
+BEGIN
+LOCAL
+    mnuhlptxtb : ref mf_txt_block,	! ptr to mf menu help keyword block
+    status;
+!
+! Get menu item help keyword.
+!
+IF NOT (status =
+    inner_get_message_text (
+	.message_number,
+	mnuhlp_mess_fab,
+	mnuhlp_curr_mess_mfp,
+	mnuhlp_curr_mess_hdr[$base],
+	mnuhlp_mess_ph[$base],
+	mnuhlp_mess_ph_block,
+	mnuhlp_mess_data[$base],
+	mnuhlptxtb
+	))
+  THEN RETURN .status;
+!
+! If a non-negative region x coordinate was
+! supplied, we associate the help with a region.  Otherwise, we associate
+! it with a display.
+!
+IF .rgn_x GEQ 0
+  THEN
+    BEGIN
+    IF NOT (status =
+	$ertn (vsta$$set_rgn_help_string)
+		(.vd_id		! which virtual display is menu
+		,.rgn_x		! coordinates of menu region
+		,.rgn_y
+		,vsta$$srv_disp_help_kwd
+				! routine that puts help page up
+		,.mnuhlptxtb[mft$w_size]
+				! number of characters in string
+		,.mnuhlptxtb + mft$k_hdr_size
+				! where text resides in block
+		)
+	    )
+      THEN RETURN .status;
+    END
+  ELSE
+    BEGIN
+    IF NOT (status =
+	$ertn (vsta$$set_vd_help_string)
+		(.vd_id		! which virtual display is menu
+		,vsta$$srv_disp_help_kwd
+				! routine that puts help page up
+		,.mnuhlptxtb[mft$w_size]
+				! number of characters in string
+		,.mnuhlptxtb + mft$k_hdr_size
+				! where text resides in block
+		)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE inner_get_message_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Return text for message number.
+! FORMAL PARAMETERS:
+	(message_number,
+	mess_fab,			! address of fab
+	curr_mess_mfp_adr,		! address into which to write block adr
+	curr_mess_hdr : ref mf_header_block,	! address of header block
+	mess_ph : ref block [512, byte],! address of in-core header block
+	mess_ph_block_adr,		! address to receive block number
+	mess_data : ref block [512, byte],	! address of buffer
+	mstxtb_addr		!Returned address of message text block
+	) =
+!--
+BEGIN
+LITERAL
+    num_entries_per_block = 512 / mfp$S_mf_page_block;
+LOCAL
+    buffr: BLOCK [512,byte],
+    mfpgb: REF mf_page_block,	!Ptr to page block
+    mftxtb: REF mf_txt_block,	!ptr to text block (when found)
+    blknum,			!Block number to read in
+    status;
+
+BIND
+!
+! Get addresses into which data will be written.
+!
+    mess_ph_block = .mess_ph_block_adr,
+    curr_mess_mfp = .curr_mess_mfp_adr : ref mf_page_block;
+!
+! Get the block with the message in core.
+!
+! First, see if we already have the right message block in core.
+!
+IF ((.message_number GEQ .curr_mess_mfp [mfp$w_first])
+		AND
+	(.message_number LEQ .curr_mess_mfp [mfp$w_last]))
+  THEN
+    BEGIN			!It is; find it and return addr.
+    mftxtb = mess_data[$base];	!Point to first txtblock
+    WHILE 1 DO
+	BEGIN
+	IF (.mftxtb [mft$w_link] GTR .message_number)
+	  THEN RETURN SS$_BADPARAM;	!Not there..
+	IF (.mftxtb [mft$w_link] EQL .message_number)
+	  THEN
+	    BEGIN
+	    .mstxtb_addr = .mftxtb;
+	    RETURN SS$_NORMAL
+	    END;
+	mftxtb = .mftxtb + mft$S_mf_txt_block + .mftxtb [mft$w_size];
+	IF (.mftxtb GTR (mess_data[$base] + 511))
+	  THEN RETURN SS$_BADPARAM;
+	END;
+    END;
+!
+! Not the block in core now. See if the current in-core message
+! hdr block contains a ptr to the message.
+!
+mfpgb = mess_ph[$base];		!Point to first mfb
+WHILE 1 DO			!Maybe we're too far ahead..
+    BEGIN
+    IF (.message_number GEQ .mfpgb [mfp$w_first])
+      THEN EXITLOOP
+      ELSE
+	BEGIN			!Go back a block if we can
+	IF (.mess_ph_block EQL 2)
+	  THEN RETURN SS$_BADPARAM;		!Message too small
+	mess_ph_block = .mess_ph_block - 1;	!Can go back a block
+	IF NOT (status =
+	    vsta$$srv_read_doc_block (
+		.mess_fab,
+		.mess_ph_block,
+		mess_ph[$base]
+		))
+	  THEN RETURN .status;
+	END
+    END;
+!
+! Search for the entry.
+!
+WHILE 1 DO				!Stop when find entry or return error
+    BEGIN
+    IF (.message_number LEQ .mfpgb [mfp$w_last])
+      THEN EXITLOOP;			!Found the entry
+    mfpgb = .mfpgb + mfp$S_mf_page_block;	!Go to next entry
+    IF (.mfpgb GTR (mess_ph[$base] + 511))
+      THEN
+	BEGIN				!Read in next hdr block if possible..
+	IF ((.mess_ph_block - 1) EQL .curr_mess_hdr [mfh$l_num_hdr_blks])
+	  THEN RETURN SS$_BADPARAM;	!Message not found
+	mess_ph_block = .mess_ph_block + 1;
+	IF NOT (status =
+	    vsta$$srv_read_doc_block (
+		.mess_fab,
+		.mess_ph_block,
+		mess_ph[$base])
+		)
+	  THEN RETURN .status;
+	mfpgb = mess_ph[$base];
+	END;
+  !
+  ! Ok, mfpgb points to a valid entry.
+  !
+    IF (.mfpgb [mfp$w_first] EQL 0)
+      THEN RETURN SS$_BADPARAM;		!Message not found if entries end.
+    IF (.message_number LSS .mfpgb [mfp$w_first])
+      THEN RETURN SS$_BADPARAM;		!Message in middle of skipped msgs.
+    END;
+!
+! We have the entry. compute the block number and read it in.
+!
+blknum = 2 + .curr_mess_hdr [mfh$l_num_hdr_blks] +
+	(.mess_ph_block - 2) * num_entries_per_block +
+	(.mfpgb - mess_ph[$base]) / mfp$S_mf_page_block;
+
+IF NOT (status =
+    vsta$$srv_read_doc_block (.mess_fab, .blknum, mess_data[$base])
+	)
+  THEN RETURN .status;
+curr_mess_mfp = .mfpgb;	!Remember the range of messages we have
+				!in core.
+!
+! We have the block in core. Find the entry and return it.
+!
+mftxtb = mess_data[$base];	!Point to first txtblock
+WHILE 1 DO
+    BEGIN
+    IF (.mftxtb [mft$w_link] GTR .message_number)
+      THEN RETURN SS$_BADPARAM;	!Not there..
+    IF (.mftxtb [mft$w_link] EQL .message_number)
+      THEN
+	BEGIN
+	.mstxtb_addr = .mftxtb;
+	RETURN SS$_NORMAL
+	END;
+    mftxtb = .mftxtb + mft$S_mf_txt_block + .mftxtb [mft$w_size];
+    IF (.mftxtb GTR (mess_data[$base] + 511))
+      THEN RETURN SS$_BADPARAM;
+    END;
+!
+! Can't get here...
+!
+RETURN SS$_NORMAL
+END;
+
+global ROUTINE get_main_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the main menu PB and store in in "srv$gl_main_menu_pb".
+!--
+BEGIN
+LITERAL
+    first_item_number = 101,
+    num_items = 9;		!# items in main menu changed frm 5-9 *RR*
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 100.
+!
+IF NOT vsta$$srv_get_message_text
+		(100			!"Main menu" in english
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 100
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_main_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make the regions selectable.
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_main_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (		! action routine names
+			vsta$$srv_create_logged_in,	!vt100 - standard 
+			vsta$$srv_create_logged_in,	!vt100 - small	
+			vsta$$srv_create_logged_in,	!vt100 - tall	
+			vsta$$srv_create_logged_in,	!vt100 - wide	
+			vsta$$srv_create_logged_in,	!TEK4014
+			vsta$$srv_toggle_hi_appear,	!move this HERE 
+			0,
+			0,
+			vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,.VECTOR[ UPLIT (		! action routine params
+			vsta$k_termtype_vt100,	
+			vsta$k_termtype_vt100_small,
+			vsta$k_termtype_vt100_tall, 
+			vsta$k_termtype_vt100_wide, 
+			vsta$K_termtype_tek4014,
+			0,			! HI_toggle HERE
+			0,
+			0,
+			%ASCID 'Main menu'
+			) , .i - 1]
+		,SELECTONE .i OF		! popup pasteboard id
+		    SET
+		    [1]:0;
+		    [2]:0;	
+		    [3]:0;	
+		    [4]:0;	
+		    [5]:0;
+		    [6]:0;			! HI_toggle HERE
+		    [7]:.srv$gl_oc_menu [hmb$l_pb];
+		    [8]:.confirm_end_sess_menu [hmb$l_pb];
+		    [9]:0;
+		    TES
+		,SELECTONE .i OF		! popup pasteboard x
+		    SET
+		    [1]:0;
+		    [2]:0;	
+		    [3]:0;	
+		    [4]:0;	
+		    [5]:0;	
+		    [6]:0;			! HI_toggle HERE 
+		    [7]:.srv$gl_oc_menu [hmb$w_def_x];	!other choice-x
+		    [8]:.srv$gl_oc_menu [hmb$w_def_x];	!end-session-x same
+		    [9]:0;
+		    TES
+		,SELECTONE .i OF		! popup pasteboard y
+		    SET
+		    [1]:0;
+		    [2]:0;	
+		    [3]:0;	
+		    [4]:0;	
+		    [5]:0;	
+		    [6]:0;			! HI_toggle HERE 
+		    [7]:.srv$gl_oc_menu [hmb$w_def_y];	! other choice y coord
+		    [8]:.srv$gl_oc_menu [hmb$w_def_y];	! end-session y same
+		    [9]:0;
+		    TES
+		,first_item_number + .i - 1		! help keyword number
+		);
+    END;	!INCR i FROM 1 to num-items
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_term_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the terminal action menu PB and store in "srv$gl_term_menu_pb".
+!--
+BEGIN
+LITERAL
+    first_item_number = 201,
+    num_items = 9;		!# items in terminal menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 200.
+!
+IF NOT vsta$$srv_get_message_text
+		(200			!"Terminal action menu" in English.
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 200
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_term_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_term_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (			! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_sel_store,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_logout_job,
+		    vsta$$ts_menu_selection,
+		    vsta$$ts_reset,
+		    vsta$$srv_print_term,
+		    vsta$$srv_disp_help_kwd
+		    ), .i - 1]
+		,.VECTOR[ UPLIT (			! action routine params
+		    1				!Attach kbd when pop to top
+		    ,0, 0, 0, 0, 0, 0, 0
+		    ,%ASCID 'Terminal action menu'	! ASTPRM for HELP
+			) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!Incr loop to set regions selectable.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_vp_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the viewport action menu PB and store in "srv$gl_vp_menu_pb".
+!_-
+BEGIN
+LITERAL
+    first_item_number = 251,
+    num_items = 7;		!# items in viewport menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    saved_pid,				!Pid of application program
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 250.
+!
+IF NOT vsta$$srv_get_message_text
+		(250			!"Viewport action menu" in english
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 250
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+saved_pid = .vs$gl_pid;
+vs$gl_pid = 0;				!Set to 0 so passes protection checks
+status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_vp_menu		!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		);
+vs$gl_pid = .saved_pid;			!Restore user's pid
+IF NOT .status THEN RETURN .status;	!** sigh **
+
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_vp_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (			! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_sel_store,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_logout_job,
+		    vsta$$srv_print_user_vp,
+		    vsta$$srv_disp_help_kwd
+		    )
+		    , .i - 1]
+		,.VECTOR[ UPLIT			! action routine params
+		    (1				!Attach kbd on pop to top
+		    ,0, 0, 0, 0, 0
+		    ,%ASCID 'Viewport action menu' ! ASTPRM for HELP
+		    ), .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!Incr loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_ts_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the terminal settings border popup menu.
+!_-
+BEGIN
+LITERAL
+    first_item_number = 301,
+    num_items = 6;		!# items in settings menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 300.
+!
+IF NOT vsta$$srv_get_message_text
+		(300
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 300
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_ts_menu		!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;	
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_ts_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (			! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$ts_settings_done,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_print_white_doc,
+		    vsta$$srv_disp_help_kwd
+		    ), .i - 1]
+		,.VECTOR[ UPLIT			! action routine params
+		    (0				!Don't attach kbd on pop
+		    ,0, 0, 0, 0
+		    ,%ASCID 'Terminal settings menu'	! ASTPRM for HELP
+		    ) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!Incr Loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_oc_main_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the "other choices" menu PB and store in "srv$gl_oc_menu".
+!_-
+BEGIN
+LITERAL
+    first_item_number = 151,
+    num_items = 6;		!# items in menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 150.
+!
+IF NOT vsta$$srv_get_message_text
+		(150			!Other main menu choices
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 150
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_oc_menu		!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_oc_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (			! action routine names
+		    vsta$$srv_create_not_logged_in,	! vt100 - standard 
+		    vsta$$srv_create_not_logged_in,	! vt100 - small	   
+		    vsta$$srv_create_not_logged_in,	! vt100 - tall	   
+		    vsta$$srv_create_not_logged_in,	! vt100 - wide	   
+		    vsta$$srv_create_not_logged_in,	! TEK4014
+		    vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,.VECTOR[ UPLIT (			! action routine params
+		    vsta$k_termtype_vt100,		! vt100 - standard 
+		    vsta$k_termtype_vt100_small,	! vt100 - small	   
+		    vsta$k_termtype_vt100_tall,		! vt100 - tall	   
+		    vsta$k_termtype_vt100_wide,		! vt100 - wide	   
+		    vsta$K_termtype_tek4014,
+		    %ascid 'Auxiliary main menu'
+			) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;		!Incr loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_help_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create the HELP document menu.
+!--
+BEGIN
+LITERAL
+    first_item_number = 801,
+    num_items = 6;			!# items in help menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 800.
+!
+IF NOT vsta$$srv_get_message_text
+		(800		!"HELP menu" in English
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 800
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_help_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_help_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (		! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_sel_store,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_print_white_doc,
+		    vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,.VECTOR[ UPLIT (		! action routine params
+		    0,				!Don't attach kbd on pop
+		    0, 0, 0, 0,
+		    %ASCID 'Definitions'	! help routine param
+			) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;		!INCR loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_prof_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create the PROFILE document menu.
+!--
+BEGIN
+LITERAL
+    first_item_number = 601,
+    num_items = 6;		!# items in profile menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 600.
+!
+IF NOT vsta$$srv_get_message_text
+		(600			!"Profile menu" in english
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 600
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_prof_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_prof_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (		! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_sel_store,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_print_white_doc,
+		    vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,.VECTOR[ UPLIT (		! action routine params
+		    0,				!Don't attach kbd on pop
+		    0, 0, 0, 0,
+		    %ASCID 'Profile menu'	! help routine param
+			) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!INCR loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_notice_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create the notices document menu.
+!--
+BEGIN
+LITERAL
+    first_item_number = 401,
+    num_items = 7;		!# items in notices menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 400.
+!
+IF NOT vsta$$srv_get_message_text
+		(400			!"Notices menu" in english
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 400
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_notice_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_notice_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (		! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_sel_store,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_notice_clear,
+		    vsta$$srv_print_white_doc,
+		    vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,.VECTOR[ UPLIT (		! action routine params
+		    0,				!Don't attach kbd on pop
+		    0, 0, 0, 0, 0,
+		    %ASCID 'Notices menu'	! help routine param
+			) , .i - 1]
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!INCR loop
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_auth_menu_pb =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create the authorization form menu.
+!--
+BEGIN
+LITERAL
+    first_item_number = 1101,
+    num_items = 5;		!# items in authorization menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 1100.
+!
+IF NOT vsta$$srv_get_message_text
+		(1100			!"Authorization menu" in english
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 1100
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,srv$gl_auth_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.srv$gl_auth_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (			! action routine names
+		    vsta$$srv_pop_current_vp_to_top,
+		    vsta$$srv_sink_currnt_vp_to_btm,
+		    vsta$$srv_end_session,
+		    vsta$$srv_sel_move_vp,
+		    vsta$$srv_disp_help_kwd
+			) , .i - 1]
+		,%ASCID 'Authorization form'	! help routine param
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;	!INCR loop
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE get_end_sess_confirm =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get the popup-pb for end session
+! IMPLICIT OUTPUTS:
+!	confirm_end_sess_menu: menu_block
+!--
+BEGIN
+LITERAL
+    first_item_number = 1001,
+    num_items = 2;		!# items in confirm menu
+LOCAL
+    xbuf: VECTOR [num_items + 1],
+    ybuf: VECTOR [num_items + 1],
+    total_str: VECTOR [128* num_items, BYTE],	!Space for strings
+    str_desc: VECTOR [2 * num_items],	!Space for string descriptors
+    str_desc_ptr: REF VECTOR [2],	!Ptr to current str_desc
+    title_str: VECTOR [128,BYTE],
+    title_str_desc: VECTOR [2],		!Descriptor to title string
+    in_vector: VECTOR [1 + num_items],	!Ptrs to str_desc's
+    str_len_returned,
+    status;
+
+in_vector [0] = num_items;
+title_str_desc [0] = 128;
+title_str_desc [1] = title_str;
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc [(.i - 1) * 2] = 128;
+    str_desc [(.i - 1) * 2 + 1] = total_str + (128 * (.i - 1));
+    in_vector [.i] = str_desc [(2 * (.i - 1))];
+    END;
+!
+! Get title string = 1000.
+!
+IF NOT vsta$$srv_get_message_text
+		(1000			!"Confirm workstation session?"
+		,title_str_desc
+		,str_len_returned
+		)
+  THEN RETURN $error (vsta$_msgtxt
+			,integer_type, 1000
+			);
+
+title_str_desc [0] = .str_len_returned;
+!
+! Get menu items
+!
+INCR i FROM 1 TO num_items DO
+    BEGIN
+    str_desc_ptr = str_desc [2 * (.i - 1)];
+    IF NOT vsta$$srv_get_message_text
+		(first_item_number + .i - 1
+		,.str_desc_ptr		!String desc.
+		,str_len_returned
+		)
+      THEN RETURN $error (vsta$_msgtxt
+			,integer_type, first_item_number + .i - 1
+			);
+    str_desc_ptr [0] = .str_len_returned;
+    END;
+!
+! Go get the menu and pasteboard.
+!
+IF NOT (status =
+    get_menu_pb	(title_str_desc		!Title
+		,in_vector		!Address of array of strings
+		,confirm_end_sess_menu	!hi-menu-block
+		,xbuf			!Write regions here
+		,ybuf
+		,first_item_number - 1	!Help for neutral space on menu
+		)
+	)
+  THEN RETURN .status;			!** sigh **
+!
+! Make items selectable..
+!
+INCR I FROM 1 TO num_items DO
+    BEGIN
+    status = set_srv_menu_selectable
+		(.confirm_end_sess_menu [hmb$l_vd]
+		,.xbuf [.i]
+		,.ybuf [.i]
+		,.VECTOR[ UPLIT (		! action routine names
+		    vsta$$srv_end_session,
+		    null_routine
+			), .i - 1]
+		,0				! help routine param
+		,0, 0, 0			! No Popup PB
+		,first_item_number + .i - 1	! help keyword number
+		);
+    END;		!INCR loop
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_menu_pb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to get an arbitrary menu PB. Paste it on a PB
+!	(for a pop-up PB) and return the PB-id to caller.
+! FORMAL PARAMETERS:
+	(title_desc: REF VECTOR [2]
+	,item_array: REF VECTOR		!List of items (first is #)
+	,hi_menu_blk: REF hi_menu_block	!Write info here
+	,xbuf: REF VECTOR		!Write x's of regions here
+	,ybuf: REF VECTOR		!Write y's of regions here
+	,help_num			!Number for menu help
+	) =
+!--
+BEGIN
+LOCAL
+    menu_x_size,
+    menu_y_size,
+    status;
+!
+! Go create a menu.
+!
+IF NOT (status =
+    vsta$$create_menu
+		(.title_desc
+		,.item_array
+		,0		!UIC
+		,hi_menu_blk [hmb$l_vd] !Returned vd-id
+		,menu_x_size	!Place to return menu width
+		,menu_y_size	!Place to return menu height
+		,.xbuf		!Write region info here
+		,.ybuf		!. .
+		,1		!"internal VD" please.
+		)
+	)
+  THEN RETURN .status;
+!
+! Create a pasteboard for the menu
+!
+IF NOT vs$$vds_create_pb
+		(hi_menu_blk [hmb$l_pb]	!Return pb-id here
+		,1		!Owned by ACP
+		,vsta$K_color_black
+		,.menu_x_size	!Same size as the menu VD
+		,.menu_y_size
+		,0		!UIC
+		,1		!Permanent
+		,vsta$k_default_protection
+				!Protection
+		)
+  THEN RETURN $error (vsta$_crepb_for
+			,string_type, %ASCID 'menu'
+			);
+!
+! Paste the VD to the PB
+!
+IF NOT vs$$vds_paste_vd_to_pb
+		(.hi_menu_blk [hmb$l_pb]
+		,.hi_menu_blk [hmb$l_vd]
+		,0		!Paste at (0,0)
+		,0
+		,0		!on top
+		)
+  THEN RETURN $error (vsta$_paste_what
+			,string_type, %ASCID 'menu VD'
+			,string_type, %ASCID 'PB'
+			);
+!
+! Associate a help page with the menu.  This is the help that is presented
+! to the user when neutral space on the menu is being pointed to when the
+! HELP key is pressed, as opposed to space belonging to some particular
+! menu item.
+!
+IF NOT (status = vsta$$srv_get_help_keyword
+		(.help_num		! which help keyword to look up
+		,.hi_menu_blk [hmb$l_vd]
+					! which vd to associate it with
+		,-1			! -1 means vd itself, not some region
+		)
+	)
+  THEN $log_error_and_return (.status);
+!
+! Return info to caller.
+!
+hi_menu_blk [hmb$w_width] = .menu_x_size;
+hi_menu_blk [hmb$w_height] = .menu_y_size;
+hi_menu_blk [hmb$w_def_x] = .menu_x_size / 2;
+hi_menu_blk [hmb$w_def_y] = .ybuf [1] + (.ybuf [2] - .ybuf [1])/2;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE null_routine = BEGIN RETURN SS$_NORMAL END;
+
+ROUTINE delete_menu
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete SDA objects created for a menu.
+! FORMAL PARAMETERS:
+	(mb: REF hi_menu_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! To zap a menu, all we have to do is to delete the virtual display
+! and pasteboard. Incase there is a window, we tell the VSS module to
+! ignore its deletion.
+!
+IF (.mb [hmb$l_vd] NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.mb [hmb$l_vd]);
+    mb [hmb$l_vd] = 0;
+    END;
+
+IF (.mb [hmb$l_pb] NEQ 0)
+  THEN
+    BEGIN
+    srv_gl_ignore_delw = 1;		!Incase there is a window...
+    vs$$vds_delete_pb (.mb [hmb$l_pb]);
+    mb [hmb$l_pb] = 0;
+    srv_gl_ignore_delw = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

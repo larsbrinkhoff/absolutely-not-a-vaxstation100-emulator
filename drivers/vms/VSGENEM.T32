@@ -1,0 +1,44 @@
+ 
+!*** MODULE VS$GENERIC_EMULATOR ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+!    This module contains all the routines and data structures relevent to
+!    dealing with the VAXstation Generic Terminal as an entity in the context of
+!    a VAX workstation running the associated workstation display software;
+!    an implementation of the System Display Architecture.
+! 
+!    Operations have been provided to allow the manipulation of text within
+!    the generic terminal device. This module assumes that the device specified
+!    is indeed a generic terminal and that the checking has been performed
+!    elsewhere.
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+! 
+!  Define constants
+! 
+literal vs$vtem_k_max_vds = 256;        ! Max. number of VD's
+! 
+!  Native display data structure definition
+! 
+literal vs$vtem_k_ndb_length = 8;       ! lENGTH OF nd BLOCK
+FIELD vs$vtem_native_display_block_FI =
+  SET
+  vs$vtem_w_char_height = [0,0,16,0],   ! cHARACTER HEIGHT
+  vs$vtem_w_number_of_rows = [2,0,16,0], ! nUMBER OF ROWS IN DISPLAY
+  vs$vtem_l_curr_position = [4,0,32,0]  ! cURRENT POSITION ON DISPLAY
+  TES;
+literal vs$vtem_s_native_display_block = 8;
+MACRO native_display_block = BLOCK [vs$vtem_s_native_display_block,byte] FIELD (vs$vtem_native_display_block_FI) %;
+! 
+!  End of module VS$GENERIC_EMULATOR
+! 

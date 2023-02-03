@@ -1,0 +1,1070 @@
+MODULE VSTA$SYMB (
+		IDENT = 'HI SERVER Symbol Method'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)) =
+			! Allows the user to compose characters
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module supports the "Symbol method" for composing characters
+! that don't appear on a keyboard key, such as "e" with accent grave.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$symb_init,			! Init routine.
+    write_symb_vd,			! Write the initial symbol VD.
+    vsta$$symb_end,			! End session actions.
+    vsta$$hi_new_symbols,		! Display new mapping of Keyboard
+    vsta$$hi_null_symbols_input,	! Undefined function key was struck.
+    vsta$$hi_bad_seed,			! An undefined seed was typed.
+    vsta$$symb_appear,			! Display the menu.
+    vsta$$symb_disappear,		! Undisplay the menu.
+    write_text_field;			! Write the text field for a key.
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Symbols like $error
+LIBRARY 'VSTA$LIBRARY:VSVDSPB';
+LIBRARY 'VSTA$LIBRARY:VSSRVSYMB';
+library 'vsta$library:vstagbl';		!Symbols like
+					!"vsta$k_default_protection"
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!Colors, etc.
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+GLOBAL
+    vsta$gl_symb_start_y,		!Where the symbol bar starts
+					! distance down from top to put
+					! symbol bar.
+    vsta$gl_symbol_vp_id,
+    srv$gl_symb_vd_id,			!Vd-id.
+    srv$gl_menu_key_region_x,
+    srv$gl_menu_key_region_y,
+    srv$gl_menu_key_region_width,
+    srv$gl_menu_key_region_height;
+
+OWN					! Own storage for this module
+    symb_pb_id,				!Pasteboard id.
+    symb_window_id,			!Window id.
+    symb$seed_character,		! Seed character from user
+    symb$fnkeys_field_start: VECTOR[25], ! Function key text fields.
+    symb_fnkey_legend: VECTOR[20];	!to keep track of redundant writing
+
+LITERAL
+    symb_vd_height = 30,		!How high the VD is
+    frame = 2,				!Width of frame around the VD
+    symb_pb_height = symb_vd_height + (2 * frame), !PB height
+    space_from_bottom = 4;		!# pixels from bottom of screen to
+					! bottom of the symbol bar.
+
+EXTERNAL
+    srv_vs_id,				!Virtual screen id
+    vs$gl_oem_flags,			!OEM mode flags
+    vsta$gl_screen_size_y,		!Height of the screen
+    srv_gl_ignore_delw,			!flag that says window is an HI window.
+    srv$gl_auth_menu: hi_menu_block;	!Authorization form menu.
+
+EXTERNAL ROUTINE
+    vs$$vds_synchronize_vd,		! Perform queueing for vd operations
+    vsta$$error,
+    vs$$vss_create_vp,			! VSS create VP routine.
+    vs$$vss_delete_vp,			! VSS delete VP routine.
+    vsta$$report_free_vm_error,
+    vsta$$rgn_define_region,		! Define region
+    vs$$acp_free_vm,
+    vs$$vds_create_pb,			!Create a pasteboard
+    vs$$vds_delete_pb,			!Delete a pasteboard
+    vs$$vds_create_term_window,		!Create window on PB
+    vs$$vds_create_vd,			!Create a virtual display
+    vs$$vds_delete_vd,			!Delete a virtual display
+    vs$$vds_paste_vd_to_pb,		!Paste VD to PB
+    vs$$txt_addLines,			!Add text lines to VD
+    vs$$txt_defineFont,			!Define a font
+    vs$$txt_setTypeface,		! . .
+    vs$$txt_setWritingColor,		! . .
+    vs$$txt_setBackgroundColor,		! . .
+    vs$$txt_deleteField,		! Delete the default field
+    vs$$txt_defineField,		! Define a field
+    vs$$txt_set_field_format,		! Set the "format" of a field
+    vs$$txt_writetext,			! . .
+    vsta$$nat_draw_curve,		!Native graphics to virtual display
+    vsta$$rgn_define_region,		!Define a region
+    vsta$$rgn_delete_region,		!Delete a region
+    vsta$$rgn_set_region_selectable,	!Make a region selectable
+    vsta$$srv_help_icon_selected,	!Called when the HELP key is selected
+    vsta$$srv_disp_help_kwd;		! Specify help page
+
+
+GLOBAL ROUTINE vsta$$symb_init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!     This is a routine that gets called to initialize the SYMBOL
+! mechanism.  It creates the SDA objects (PB, VD's, Windows, VP's)
+! for  the  symbol choice display. It also creates the text fields
+! used  to  define the keys on the screen. A key is seperated from
+! the  background  only by the fact that the text background color
+! is different from the background. This should be set up to mimic
+! the colors of the shipped keyboards.
+!
+!--
+
+BEGIN
+LOCAL
+    width,
+    fnkey_field_width,		! Width of the text field that describes a key.
+    gap_width,			! Width of vertical lines between keys
+    total_width_of_gaps,
+    total_width_of_keys;
+
+gap_width = 2;				! Distance between keys in pixels
+total_width_of_gaps = .gap_width * 23;	! 23 interkey gaps total...
+fnkey_field_width = 30;			! How wide each key position is
+total_width_of_keys = 25 * .fnkey_field_width; ! 25 Keys
+width = (.total_width_of_gaps + .total_width_of_keys) + (2 * frame);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create the VD for the display.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_create_vd
+		(symb_vd_height
+		,.width
+		,1			!Single bitplane
+		,vsta$K_color_ht8	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3			!Internal VD
+		,2			!indicate Text only
+		,0			!UIC
+		,1			!Permanent
+		,0			!Protection
+		,srv$gl_symb_vd_id	!Place to put VD-id
+		,%ascid 'Special function keypad'
+					!Help keyword
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'Function key display.'
+			);
+
+IF NOT write_symb_vd (.width, symb_vd_height, .gap_width, .fnkey_field_width)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.srv$gl_symb_vd_id);
+    srv$gl_symb_vd_id = 0;
+    RETURN $error	(vsta$_writet	!"Can't write.."
+			,string_type, %ASCID 'initial Function Key display.'
+			);
+    END;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create the PB for the display.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_create_pb
+		(symb_pb_id		!Address of returned id
+		,1			!Not user-owned
+		,vsta$K_color_black	!Color
+		,.width + (2 * frame)	!Width
+		,symb_vd_height + (2 * frame)
+					!height
+		,0			!Owned by the ACP
+		,vs$vds_m_pb_perm	! Permanent
+		,vsta$k_default_protection
+					!Default protection
+		)
+  THEN RETURN $error	(vsta$_crepb_for
+			,string_type, %ASCID 'Function key display.'
+			);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Paste the VD to the PB
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+IF NOT vs$$vds_paste_vd_to_pb
+		(.symb_pb_id		!PB-id
+		,.srv$gl_symb_vd_id	!VD-id
+		,frame			!X
+		,frame			!Y
+		,0			!On top
+		)
+  THEN RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'Function key VD'
+			,string_type, %ASCID 'Function key PB'
+			);
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Put a window over the pasteboard.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+IF NOT vs$$vds_create_term_window
+		(.symb_pb_id		!Pasteboard id
+		,symb_window_id		!Module-wide storage for window id.
+		,%REF (0)		!Name desc.
+		,0			!x-origin
+		,0			!Y-origin
+		,.width + (2 * frame)	!Width -- to be same as PB.
+		,symb_pb_height		!height
+		)
+  THEN RETURN $error	(vsta$_crewin_for	!"Can't create window for.."
+			,string_type, %ASCID 'Function key display.'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_symb_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does the text calls to write the initial symbol bar VD.
+! FORMAL PARAMETERS:
+	(width		!width of VD
+	,height		!height of VD
+	,gap_width
+	,fnkey_field_width
+	) =
+!--
+BEGIN
+LITERAL
+    ff_center = 2;		! Field format is "Center".
+
+LOCAL
+    fnkey_number,
+    space_used_so_far,		! Pixels taken up by previously defined fields.
+    string: VECTOR [2];
+
+
+IF NOT vs$$txt_addLines
+		(.srv$gl_symb_vd_id
+		,1		!Number of text lines
+		,28		!Height of line
+		)
+  THEN RETURN $error (vsta$_addlines);	! Bubbles up to caller in this module.
+
+!
+! Set text writing color and background color
+!
+IF NOT vs$$txt_setWritingColor
+		(.srv$gl_symb_vd_id
+		,vsta$K_color_black
+		)
+  THEN RETURN $error (vsta$_settxtwrc);
+
+IF NOT vs$$txt_setBackgroundColor
+		(.srv$gl_symb_vd_id
+		,vsta$K_color_white
+		)
+  THEN RETURN $error (vsta$_settxtbkc);
+
+IF NOT vs$$txt_setTypeface
+		(.srv$gl_symb_vd_id
+		,%ASCID 'SYMBOL_FONT'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'SYMBOL_FONT'
+			);
+!
+! Delete the default text field.
+!
+IF NOT vs$$txt_deleteField
+		(.srv$gl_symb_vd_id
+		,1
+		,1
+		)
+  THEN RETURN $error (vsta$_deldeffld);
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Here we will define the text fields.
+! There is one for each function key.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+space_used_so_far = 1;			! So that we will use pixel 1 to start.
+string [0] = 1;				! Initialize the descriptor's length
+string [1] = fnkey_number;		! Initialize the descriptor's pointer
+
+INCR loop_counter from 1 to 5 DO
+BEGIN ! INCR loop for first 5 keys.
+!
+! Create text fields
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,.fnkey_field_width	!Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+!
+! Define a region on each symbol box, so if help is requested for the box,
+! we can give the correct help.
+!
+IF NOT vsta$$rgn_define_region
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	! starts as far over as text field
+		,0			! starts at top of sole line on vd
+		,.fnkey_field_width	! as wide as text field
+		,.height		! as high as text field
+		,%ascid 'Typing special symbols'
+					! specify help keyword for region
+		)
+  THEN RETURN $error (vsta$_defrgn);
+!
+! Stuff field starting postion into the global vector for later write actions.
+!
+symb$fnkeys_field_start[.loop_counter] = .space_used_so_far;
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1		! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center	! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+! We make the first 5 keys blank to begin with. 0 is the index of the blank
+! key.
+fnkey_number = 0; 	! No offset needed; value will be 1 to 5.
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	!Field start position
+		,string		!The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+		,string_type, %ASCID 'one of the first five Function Keys.'
+			);
+
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+symb_fnkey_legend[.loop_counter-1] = .fnkey_number;  ! keep track of
+						     ! fnkey_legend
+
+END;	! INCR loop for first 5 keys.
+
+! Now, we space over the first wide gap between function keys.
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+
+INCR loop_counter from 1 to 5 DO
+BEGIN ! INCR loop for second 5 keys.
+!
+! Create text fields
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,.fnkey_field_width	!Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+! Stuff field starting postion into the global vector for later write actions.
+symb$fnkeys_field_start[.loop_counter+5] = .space_used_so_far; ! Offset by 5 keys
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center		! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+! Get the current value of the loop counter into the location that will be
+! used as the character code to be written into this key's image.  This is
+! serendipitous: the loop counter reflects which function key we are dealing
+! with and can be used as the font index as well.
+
+fnkey_number = .loop_counter + 5; 	!  The second 5 keys = 1 to 6.
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	!Field start position
+		,string		!The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+		,string_type, %ASCID 'one of the second five Function Keys.'
+			);
+
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+symb_fnkey_legend [5+.loop_counter-1] = .fnkey_number;  ! keep track of
+						     ! fnkey_legend
+
+
+END;	! INCR loop for second 5 keys.
+
+! Now, we space over the second wide gap between function keys.
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+
+INCR loop_counter from 1 to 4 DO
+BEGIN ! INCR loop for third group (4 keys)
+!
+! Create text fields
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,.fnkey_field_width	!Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+! Stuff field starting postion into the global vector for later write actions.
+symb$fnkeys_field_start[.loop_counter+10] = .space_used_so_far; ! Offset by 10 keys.
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center		! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+! Get the current value of the loop counter into the location that will be
+! used as the character code to be written into this key's image.  This is
+! serendipitous: the loop counter reflects which function key we are dealing
+! with and can be used as the font index as well.
+fnkey_number = .loop_counter+10; 	! Offset to start with F11
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	!Field start position
+		,string		!The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+		,string_type, %ASCID 'one of the third group of Function Keys.'
+			);
+
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+symb_fnkey_legend[10+.loop_counter-1] = .fnkey_number;  ! keep track of
+							! fnkey_legend
+
+
+END;	! INCR loop for the third group (4 keys)
+
+! Now, we space over the third wide gap between function keys.
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! HELP key.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create text field
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,.fnkey_field_width	!Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+! Stuff field starting postion into the global vector for later write actions.
+symb$fnkeys_field_start [15] = .space_used_so_far;
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center		! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+!~~~~~~
+!
+! Define a region on the VD that can be made selectable.
+!
+IF NOT vsta$$rgn_define_region
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far+2	!X
+		,frame+2		!Y
+		,.fnkey_field_width-4
+		,(symb_pb_height - 4*frame)-4
+		)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far+2	!The region at the above coordinates.
+		,frame+2
+		,vsta$$srv_help_icon_selected
+		,0		!No ASTPRM needed
+		,0, 0, 0	!No popup-pasteboard
+		,vsta$K_sel_area	!Selectability attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+!~~~~~~
+
+
+fnkey_number = 15; 	! Place font index of the HELP symbol into string.
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	!Field start position
+		,string		!The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Help key.'
+			);
+
+space_used_so_far = .space_used_so_far + .fnkey_field_width + (2 * .gap_width);
+
+symb_fnkey_legend[14] = .fnkey_number;  ! keep track of
+					! fnkey_legend
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Menu key.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Create text field
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,(2 * .fnkey_field_width) !Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+! Stuff field starting postion into the global vector for later write actions.
+symb$fnkeys_field_start [16] = .space_used_so_far;
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center		! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+!~~~~~~
+!
+! Define a region on the VD that can be made selectable.
+!
+srv$gl_menu_key_region_x = .space_used_so_far + 2;
+srv$gl_menu_key_region_y = frame + 2;
+srv$gl_menu_key_region_width = (2 * .fnkey_field_width) -4;
+srv$gl_menu_key_region_height = (symb_pb_height - 4*frame) -4;
+
+IF NOT vsta$$rgn_define_region
+		(.srv$gl_symb_vd_id
+	    	,.srv$gl_menu_key_region_x
+		,.srv$gl_menu_key_region_y
+		,.srv$gl_menu_key_region_width
+		,.srv$gl_menu_key_region_height
+		)
+  THEN RETURN $error (vsta$_defrgn);
+
+IF NOT vsta$$rgn_set_region_selectable
+		(.srv$gl_symb_vd_id
+		,.srv$gl_menu_key_region_x
+		,.srv$gl_menu_key_region_y
+		,vsta$$srv_disp_help_kwd	! routine to call.
+		,%ASCID 'Authorization form'	! keyword for finding page.
+		,0, 0, 0	!No popup-pasteboard
+		,vsta$K_sel_area	!Selectability attribute
+		)
+  THEN RETURN $error (vsta$_setrgnsel);
+
+!~~~~~~
+fnkey_number = 16; 	! Place index of MENU symbol into string descriptor.
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	! Field start position
+		,string		! The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Menu key.'
+			);
+
+! The Menu key is the width of two standard keys, plus the gap between them.
+! N.B. The Menu key in the font is only the width of two standard keys. 
+space_used_so_far = .space_used_so_far + (2 * .fnkey_field_width) + .gap_width;
+
+symb_fnkey_legend[15] = .fnkey_number;  ! keep track of
+					! fnkey_legend
+
+
+! This is the gap between the HELP, DO group and the last function key group.
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+
+INCR loop_counter from 1 to 4 DO
+
+BEGIN ! INCR loop for last group (4 keys)
+!
+! Create text fields
+!
+IF NOT vs$$txt_defineField
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! field start
+		,.fnkey_field_width	!Width
+		)
+  THEN RETURN $error (vsta$_deffld);
+
+! Stuff field starting postion into the global vector for later write actions.
+symb$fnkeys_field_start [.loop_counter + 16] = .space_used_so_far;
+! Help and Menu are considered function keys too... Thus the 16 above.
+
+IF NOT vs$$txt_set_field_format
+		(.srv$gl_symb_vd_id
+		,1			! Line
+		,.space_used_so_far	! Field begining.
+		,ff_center		! Format
+		)
+  THEN RETURN $error (vsta$_setfldfmt);
+
+! Get the current value of the loop counter into the location that will be
+! used as the character code to be written into this key's image.  This is
+! serendipitous: the loop counter reflects which function key we are dealing
+! with and can be used as the font index as well.
+fnkey_number = .loop_counter+16; 	! HELP and MENU are 16 and 17.
+
+! Write the text
+IF NOT write_text_field
+		(.srv$gl_symb_vd_id
+		,.space_used_so_far	!Field start position
+		,string			!The string to write
+		)
+  THEN RETURN $error	(vsta$_writet
+		,string_type, %ASCID 'one of the last four Function Keys.'
+			);
+
+space_used_so_far = .space_used_so_far + .fnkey_field_width + .gap_width;
+
+symb_fnkey_legend[16+.loop_counter-1] = .fnkey_number;  ! keep track of
+							! fnkey_legend
+
+END;	! INCR loop for the last group (4 keys)
+
+RETURN SS$_NORMAL;	!return success
+END;	! of entire routine vsta$$symb_init
+
+GLOBAL ROUTINE vsta$$symb_end =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	End session actions for the symbol key module.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF (.srv$gl_symb_vd_id NEQ 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.srv$gl_symb_vd_id);
+    srv$gl_symb_vd_id = 0;
+    END;
+
+IF (.symb_pb_id NEQ 0)
+  THEN
+    BEGIN
+    srv_gl_ignore_delw = 1;	!Ignore delete of HI window
+    vs$$vds_delete_pb (.symb_pb_id);
+    symb_pb_id = 0;
+    srv_gl_ignore_delw = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$HI_new_symbols
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Relabels the first five function keys on the screen.
+!
+! FORMAL PARAMETERS:
+	(pointer: REF VECTOR[6,WORD,SIGNED]
+	) =
+!
+!--
+BEGIN
+LOCAL
+    temp,		! Longword holder for zero extended word values.
+    descriptor: VECTOR [2,LONG],
+    status;
+
+descriptor [0] = 1; 	! One character to the string here.
+descriptor [1] = temp;
+
+INCR loop_counter from 1 to 5 DO	! INCR loop for first 5 keys.
+    BEGIN
+
+    temp = .pointer[.loop_counter];	! Make sure we get zero extended.
+  ! 0 means undefined, print a blank key.  Index 0 is a blank key.
+  ! -1 means print the MORE... key symbol in this position.
+    IF .temp EQL -1 THEN temp = 21;	! Font index for MORE... key.
+
+    IF .temp NEQ .symb_fnkey_legend[.loop_counter-1] !keep track fnkeys
+      THEN
+	BEGIN					! keep track fnkeys
+	symb_fnkey_legend[.loop_counter-1] = .temp;	! keep track fnkeys
+
+	IF NOT vs$$txt_writeText
+			(.srv$gl_symb_vd_id
+			,descriptor
+			,1
+			,.symb$fnkeys_field_start [.loop_counter]
+			,1
+			)
+	  THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'Can''t write new a new symbol to symbol key display.'
+				);
+
+	END;		! keep track of fnkeys
+
+    END;	! INCR loop for first 5 keys.
+
+RETURN SS$_NORMAL;
+END;		! of routine vsta$$HI_new_symbols
+
+GLOBAL ROUTINE vsta$$symb_display_level_1 =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Relabels the third group function keys on the screen.
+!
+!--
+BEGIN
+LOCAL
+    temp,	! Longword holder for character code values.
+    descriptor: VECTOR[2,LONG];
+
+LITERAL	
+    esc = 24,
+    bs = 22,
+    lf = 23;
+
+descriptor[0] = 1; ! One character to the string here.
+descriptor[1] = temp;
+
+! Blank the first part of the function key row. 
+temp = 0;	! Character code for the blank keytop.
+INCR loop_counter from 1 to 10 DO
+    BEGIN ! INCR loop
+    IF .temp neq .symb_fnkey_legend[.loop_counter-1] !keep track fnkeys
+      THEN
+	BEGIN					! keep track fnkeys
+	symb_fnkey_legend[.loop_counter-1] = .temp;	! keep track fnkeys
+
+
+	IF NOT vs$$txt_writeText
+			(.srv$gl_symb_vd_id
+			,descriptor
+			,1
+			,.symb$fnkeys_field_start [.loop_counter]
+			,1
+			)
+	  THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'blank symbol keys (1-5)'
+				);
+
+	END;		!Keep track of fnkeys
+    END;	! INCR loop
+
+
+! *** Print ESC label on FnKey number 11 ***
+
+temp = ESC;
+
+IF .temp neq .symb_fnkey_legend[10]
+  THEN
+    BEGIN
+    symb_fnkey_legend[10] = .temp;			! keep track fnkeys
+
+    IF NOT vs$$txt_writeText
+		(.srv$gl_symb_vd_id
+		,descriptor
+		,1
+		,.symb$fnkeys_field_start [11]	! Key number
+		,1
+		)
+      THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'ESCAPE key'
+				);
+    END;
+
+! *** Print BS label (Backspace) on FnKey number 12 ***
+
+temp = BS;
+
+IF .temp NEQ .symb_fnkey_legend[11]
+  THEN
+    BEGIN
+    symb_fnkey_legend[11] = .temp;		! keep track fnkeys
+
+    IF NOT vs$$txt_writeText
+			(.srv$gl_symb_vd_id
+			,descriptor
+			,1
+			,.symb$fnkeys_field_start[12]	! Key number
+			,1
+			)
+      THEN RETURN $error	(vsta$_writet
+			,string_type, %ASCID 'Backspace key'
+			);
+     END;
+
+! *** Print LF label on FnKey number 13 ***
+
+temp = LF;
+
+IF .temp NEQ .symb_fnkey_legend[12]
+  THEN
+    BEGIN
+    symb_fnkey_legend[12] = .temp;			! keep track fnkeys
+
+    IF NOT vs$$txt_writeText
+		(.srv$gl_symb_vd_id
+		,descriptor
+		,1
+		,.symb$fnkeys_field_start [13]	! Key number
+		,1
+		)
+      THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'LineFeed key'
+				);
+    END;
+
+! *** Print blank for FnKey number 14 ***
+
+temp = 0;	! Zero is the font index of the blank key.
+
+IF .temp NEQ .symb_fnkey_legend[13]
+  THEN
+    BEGIN
+    symb_fnkey_legend[13] = .temp;			! keep track fnkeys
+
+    IF NOT vs$$txt_writeText
+		(.srv$gl_symb_vd_id
+		,descriptor
+		,1
+		,.symb$fnkeys_field_start [14]	! Key number
+		,1
+		)
+      THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'a blank F14 key'
+				);
+    END;
+
+! *** Skipping HELP (15) and MENU (16) keys here...
+
+! *** Blank the second part of the function key row. 
+
+temp = 0;	! Character code for the blank keytop.
+
+INCR loop_counter from 17 to 20 DO
+    BEGIN ! INCR loop
+    IF .temp NEQ .symb_fnkey_legend[.loop_counter-1]
+      THEN
+	BEGIN
+	symb_fnkey_legend[.loop_counter-1] = .temp;	! keep track fnkeys
+
+	IF NOT vs$$txt_writeText
+			(.srv$gl_symb_vd_id
+			,descriptor
+			,1
+			,.symb$fnkeys_field_start [.loop_counter]
+			,1
+			)
+	  THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'blank F17 thru F20'
+				);
+	END;
+    END;	! INCR loop
+
+RETURN SS$_NORMAL;
+END;		! of routine vsta$$symb_display_level_1
+
+GLOBAL ROUTINE vsta$$symb_remove_level_1 =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Relabels the third group function keys on the screen.
+!
+!--
+BEGIN
+LOCAL
+    temp,	! Longword holder for character code values.
+    descriptor: VECTOR[2,LONG],
+    status;
+
+descriptor [0] = 1; ! One character to the string here.
+descriptor [1] = temp;
+
+INCR loop_counter from 6 to 20 DO
+    BEGIN ! INCR loop
+    temp = .loop_counter;
+
+    IF .temp NEQ .symb_fnkey_legend[.loop_counter-1]
+      THEN
+	BEGIN
+	symb_fnkey_legend[.loop_counter-1] = .temp;	! keep track fnkeys
+
+	IF NOT vs$$txt_writeText
+			(.srv$gl_symb_vd_id
+			,descriptor
+			,1
+			,.symb$fnkeys_field_start [.loop_counter]
+			,1
+			)
+	  THEN RETURN $error	(vsta$_writet
+				,string_type, %ASCID 'a "level 2" function Key'
+				);
+	END;
+
+    END;	! INCR loop
+
+RETURN SS$_NORMAL;
+END;		! of routine vsta$$symb_remove_level_1
+
+GLOBAL ROUTINE vsta$$hi_null_symbols_input =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does nothing yet.  Called if an undefined function key is struck.
+!--
+BEGIN
+LOCAL
+    status;
+
+status=status;
+
+RETURN SS$_NORMAL;
+END;		! of routine vsta$$hi_null_symbols_input
+
+GLOBAL ROUTINE vsta$$hi_bad_seed =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Does nothing yet.  Called if a bad seed key is struck.
+!--
+BEGIN
+LOCAL
+    status;
+
+status=status;
+RETURN SS$_NORMAL;
+END;		! of routine vsta$$hi_bad_seed
+
+GLOBAL ROUTINE vsta$$symb_appear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Displays the symbol bar.
+!
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Certain OEM-mode operations don't require the symbol bar
+!
+IF .vs$gl_oem_flags
+  THEN RETURN SS$_NORMAL;
+
+vsta$gl_symb_start_y = .vsta$gl_screen_size_y - symb_pb_height
+			- space_from_bottom;
+
+IF NOT (status =
+    vs$$vss_create_vp			!Create viewport..
+		(.symb_window_id	!Module-wide storage for window id.
+		,.srv_vs_id		!Virtual screen id
+		,vsta$gl_symbol_vp_id	!Addr of Returned vp id
+		,84			!VS X coordinate
+		,.vsta$gl_symb_start_y	!VS Y coordinate
+		,0			!Put it on top
+		)
+	)
+  THEN
+    BEGIN
+    RETURN $error(vsta$_crevp_for,string_type,
+		%ASCID 'Function Key display.')
+    END;
+
+RETURN SS$_NORMAL
+END;		! of routine vsta$$symb_appear
+
+GLOBAL ROUTINE vsta$$symb_disappear =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Removes the symbol bar from the screen.
+!
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vs$$vss_delete_vp			! Delete viewport...
+		(.vsta$gl_symbol_vp_id	! ACP-wide storage for VP_ID
+		)
+	)
+  THEN
+    BEGIN
+    RETURN $error(vsta$_vpnotdel)
+    END;
+
+vsta$gl_symb_start_y = .vsta$gl_screen_size_y;	!It's "just off the screen".
+RETURN SS$_NORMAL
+END;		! of routine vsta$$symb_disappear
+
+ROUTINE write_text_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write text into field, synchronized.
+! FORMAL PARAMETERS:
+	(vd_id
+	,start_pos
+	,name_desc: REF VECTOR [2]
+	) =
+!
+! RETURN VALUES:
+!
+!--
+BEGIN
+LOCAL
+    status;
+
+IF not (status =
+    vs$$vds_synchronize_vd (
+			.vd_id		!VDID
+			,0		! IRP address
+			,vs$$txt_writeText
+			,.vd_id
+			,.name_desc
+			,1		!Linenumber
+			,.start_pos	!Position
+			,1		!Character position
+			)
+   )
+  THEN
+    BEGIN
+    RETURN $log_error_and_return(.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

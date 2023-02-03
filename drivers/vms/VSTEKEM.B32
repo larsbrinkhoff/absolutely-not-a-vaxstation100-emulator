@@ -1,0 +1,4492 @@
+MODULE VSTA$TEK (
+                      IDENT = 'TEK4014_EMULATOR',
+                      ADDRESSING_MODE (EXTERNAL = GENERAL,
+                                       NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Virtual Terminal Emulator (VTEM) for the tektronix 4014 terminal
+!
+! ABSTRACT:
+! 
+! This module contains the routines needed to emulate the tek4014 terminal in
+! the context of a VAX workstation running the associated workstation display
+! software; specifically, an implementation of the System Display Architecture.
+!
+! The database is maintained according to each tek4014 terminal being emulated.
+! For each such terminal a database instance is allocated in memory.  Each
+! instance contains all the states, modes, environmental settings and buffers
+! associated with an individual tek4014 terminal.  No data with the exception
+! of local counters and literals are kept in the body of the code.  Therefore
+! the code itself is re-entrant, and can reside in shared memory.  Only the
+! individual tek4014's are not re-enterable.
+!
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---Generally this module performs two basic tasks: 1) Decodes information
+!   in tek4014 format and 2) generates the Gidis operations necessary to 
+!   perform the operations.  Through-out the processing of an output buffer
+!   gidis commands are generated and put into a holding buffer which is sent
+!---when the output buffer is depleted or when the gidis holding buffer is full.
+!
+! ENVIRONMENT:
+!
+! VAXstation: 780, 750 or 730 running VMS with at least one ONYX or OPAL graphics
+! subsystem.
+!
+!--
+
+!
+! 		$INCLUDE SECTION$
+!
+LIBRARY 'vsta$library:libmacros';	!Symbols like $log_error_and_return
+LIBRARY 'vsta$library:vstamacs';
+LIBRARY 'vsta$library:vstekem';         !tek4014 database definition
+LIBRARY 'vsta$library:vstadef';		!Vsta$k_vaxmem or vsta$k_dispmem
+LIBRARY 'vsta$library:txtsym';		!Text database symbols
+LIBRARY 'vsta$library:vsvdsvd';         !get the virtual display symbols
+LIBRARY 'vsta$library:vsacpdef';        !get ACP symbols
+LIBRARY 'vsta$library:vstaterm';	!get terminal symbols
+LIBRARY 'vsta$library:VSTAGBL';		!Common VSTA global symbols
+LIBRARY 'SYS$LIBRARY:STARLET';          !for dynamic memory allocation
+
+!
+!		$PSECT SECTION$
+!
+$vsta_psect;
+!
+!		$PROGRAM SECTION$
+!
+FORWARD ROUTINE!S
+      
+	!
+	!  Define the module control procedures
+	!
+	 VSTA$$TEK_SETTINGS_EXIST	!Set whether settings exist
+	,VSTA$$TEK_INIT_MODULE		!Initialize module for session
+	,VSTA$$TEK_CREATE		!Create an emulated tek4014
+	,VSTA$$TEK_DELETE		!Delete an emulated tek4014
+	,VSTA$$TEK_WRITE		!Write to an emulated tek4014
+	,VSTA$$TEK_SET_CHARS		!Change the characteristics
+	,VSTA$$TEK_GET_CHARS		!Inquire the characteristics
+
+	!
+	!  Define the internal action procedures
+	!
+	,tk$$emu_clean_up:       NOVALUE!deletes vd's pb's and memory for 4014
+	,tk$$emu_init_fonts
+	,tk$$emu_init_tek4014:   NOVALUE!initializes data base for tek4014   
+	,tk$$emu_find_tek4014:          !finds in list the tek4014 with vd_id
+	,tk$$emu_write_tek4014:	 NOVALUE!for output decoding to 4014
+	,tk$$emu_esc_seq:        NOVALUE!performs escape code actions
+	,tk$$emu_control_char:   NOVALUE!performs actions for a control character
+	,tk$$emu_display_char:   NOVALUE!controls the display of a character
+	,tk$$emu_display_vector: NOVALUE!constructs vector address and writes it
+	,tk$$emu_increme_plot:   NOVALUE!simulates incremental plot mode
+	,tk$$emu_line_feed:      NOVALUE!performs the action of a line feed
+	,tk$$emu_carriage_ret:   NOVALUE!performs the action of a carriage return
+	,tk$$emu_back_space:     NOVALUE!performs a back space action
+	,tk$$emu_up_line:        NOVALUE!performs a virtical line feed
+
+	,tk$$emu_clear_screen
+	,tk$$emu_flush_print
+	,tk$$emu_flush_draw
+
+	!
+	!  Define the clean up procedures
+	!	
+	,tk$$emu_nat_draw_complete
+	,tk$$emu_nat_text_complete
+
+	!
+	!  Declare the terminal settings procedures
+	!
+	,vsta$$tek_reset		!Call internal reset routine
+	,vsta$$tek_set_cr_lf		!Set or Clear <cr><lf> mode
+	,vsta$$tek_set_lf_cr		!Set or Clear <lf><cr> mode
+	,vsta$$tek_set_gin_term		!Declare gin mode terminator
+	,vsta$$tek_set_del_loy		!Set or Clear del_loy mode
+	,vsta$$tek_set_hold_mode	!Set or Clear margin mode
+	,vsta$$tek_set_bytesize		!Set 7bit or 8bit text mode
+	,vsta$$tek_get_backcolor	!Get background color
+	;
+
+
+!
+!  Temporary
+!
+GLOBAL BIND ROUTINE
+	 VS$$VTEM_TEK4014_CREATE	= VSTA$$TEK_CREATE
+	,VS$$VTEM_TEK4014_DELETE	= VSTA$$TEK_DELETE
+	,VSTA$$VTEM_TEK4014_WRITE	= VSTA$$TEK_WRITE
+	,VSTA$$VTEM_TEK4014_SET_CHARS	= VSTA$$TEK_SET_CHARS
+	,VSTA$$VTEM_TEK4014_GET_CHARS	= VSTA$$TEK_GET_CHARS
+	;
+
+!
+!		$EXTERNAL SECTION$
+!
+EXTERNAL ROUTINE!s			!routines for the emulator but external
+					!to this file
+
+	 tk$$ftr_create_footer
+	,tk$$ftr_reset_allfields
+	,tk$$ftr_rel_margin
+	,tk$$ftr_indicate_page_full
+	,tk$$ftr_set_field
+	,tk$$ftr_margin_setting
+	,tk$$cur_start_alpha
+	,tk$$cur_stop_alpha
+	,tk$$cur_start_crosshairs
+	,tk$$cur_stop_crosshairs
+	,tk$$cur_keyboard_translator
+	,tk$$cur_generate_gin
+	,tk$$cur_button_procedure
+	,vsta$$mouse_set_button_ast
+	;
+
+EXTERNAL ROUTINE!S			!other routines used by emulator.
+
+	 vs$$acp_get_vm
+	,vs$$acp_free_vm
+	,vs$$acp_gin_mode
+	,vs$$vds_create_vd
+	,vs$$vds_delete_vd
+	,vs$$vds_create_pb
+	,vs$$vds_delete_pb
+	,vs$$vds_paste_vd_to_pb
+	,vs$$vds_paste_pb_to_pb
+	,vs$$vds_vd_set_xon_xoff
+	,vs$$vds_create_term_window
+	,vs$$vds_delete_window
+	,vs$$set_vkb_output
+	,vs$$set_vkb_char
+	,vs$$txt_get_font_address	! Get the address of font and fib id
+	,vsta$$srv_term_created
+	,vsta$$emul_create_bezel
+	,vsta$$error
+	,vsta$$dmm_get_mapped_mem	! Allocates memory from unibus cache
+	,vsta$$dmm_free_mapped_mem	! Deallocates mem from unibus cache
+	,vsta$$kernel_call
+	,vsta$$ts_update_settings	! Updates the settings for on screen
+	,findfib			! Get fib address given fib id
+	,fibDereference			! Dereference the fib
+	,get_lens_and_adrs
+	,vsta$$kbrd_sound_bell
+	;
+
+
+
+
+!
+! External symbols
+!
+EXTERNAL
+	 srv$gl_tek_cr_lf
+	,srv$gl_tek_lf_cr
+	,srv$gl_tek_delvalid
+	,srv$gl_tek_addchars
+	,srv$gl_tek_stopout
+	,srv$gl_tek_bytesize
+	,vs$gl_acp_pid		!Process id of us
+	,vs$gl_pid		!Process id of requestor
+	,vs$gw_vbchan
+	,vsta$gl_keyboard	! --> selected kbd & legend type 
+	;
+
+EXTERNAL LITERAL
+	 prof$k_tek_addc_none
+	,prof$k_tek_addc_cr
+	,prof$k_tek_addc_creot
+	,prof$K_tek_marginoff
+	,prof$K_tek_margin1
+	,prof$K_tek_margin2
+	,prof$k_tek_7bit
+	,prof$k_tek_8bit
+	;
+
+!
+! BUILT-IN queue operations
+!
+BUILTIN insque,                         !Q insertion command
+        remque;                         !Q deletion command
+!----------------------------------------
+! MODULE DATA REQUIREMENTS
+!----------------------------------------
+
+
+!-----------------------------------------
+!  define constant arrays for 1) cell display size 2)cell unit size and 
+!  3) screen coordinates for top of text (dependent on sizes)
+!  NOTE: No constant should be altered here all constants are indirectly
+!  referenced from the SDL file.
+!-----------------------------------------
+BIND
+	tek_x_cds = PLIT(tk$k_cdsx1,tk$k_cdsx2,tk$k_cdsx3,tk$k_cdsx4):
+                    VECTOR [4,LONG],
+        tek_y_cds = PLIT(tk$k_cdsy1,tk$k_cdsy2,tk$k_cdsy3,tk$k_cdsy4):
+                    VECTOR [4,LONG],
+	tek_x_cus = PLIT(tk$k_cdsx1,tk$k_cdsx2,tk$k_cdsx3,tk$k_cdsx4):
+                    VECTOR [4,LONG],
+        tek_y_cus = PLIT(tk$k_cdsy1,tk$k_cdsy2,tk$k_cdsy3,tk$k_cdsy4):
+                    VECTOR [4,LONG],
+	tek_x_ccm = PLIT(tk$k_ccmx1,tk$k_ccmx2,tk$k_ccmx3,tk$k_ccmx4):
+                    VECTOR [4,LONG],
+        tek_y_ccm = PLIT(tk$k_ccmy1,tk$k_ccmy2,tk$k_ccmy3,tk$k_ccmy4):
+                    VECTOR [4,LONG],
+         char_top = PLIT(tk$k_top1,tk$k_top2,tk$k_top3,tk$k_top4):
+                    VECTOR [4,LONG],
+           margin = PLIT(tk$k_margin_1,tk$k_margin_2):
+                    VECTOR [2,LONG];
+
+
+LITERAL relx = %X'0100',                !sets relative x flag in gidis command
+        rely = %X'0200';                !sets relative y flag in gidis command
+
+
+!
+!			$DATA SECTION$
+!
+OWN     
+	 tk$q_base		: VECTOR [2,LONG] 
+					INITIAL (REP 2 of (tk$q_base[0]))
+	,tk$wv_path_addr	: REF VECTOR [,WORD] 		INITIAL (0)
+	,tk$w_path_count	: WORD				INITIAL (0)
+	,tk$w_path_max		: WORD 				INITIAL (512)
+	,tk$bv_text_addr	: REF VECTOR [,BYTE] 		INITIAL (0)
+	,tk$w_text_count	: REF VECTOR [,WORD] 		INITIAL (0)
+	,tk$wv_ctrl_addr	: REF VECTOR [,WORD,SIGNED] 	INITIAL (0)
+	,tk$w_ctrl_count	: REF VECTOR [,WORD] 		INITIAL (0)
+	,tk$w_text_exist	: 				INITIAL (0)
+	,tk$w_vect_exist	:				INITIAL (0)
+	,tk$w_text_hrd_x	: WORD
+	,tk$w_text_hrd_y	: WORD
+	,tk$wv_text_offset	: VECTOR [2,WORD]
+	,tk$w_fonts_defined	: WORD				INITIAL (0)
+	,tk$lv_fnt_bm_dsc	: VECTOR [8,LONG]
+	,tk$wv_fnt_size		: VECTOR [8,WORD]
+	!
+	!  the ctrl count + text count must not add up to more than 1kb
+	!
+	,tk$w_ctrl_max_count	:				INITIAL (450)
+	,tk$w_text_max_count	:				INITIAL (90)
+	,tk$w_x_factor		:				INITIAL (40)
+	;
+
+BIND
+	 tk$w_text_dox	= tk$wv_text_offset [0]
+	,tk$w_text_doy	= tk$wv_text_offset [1]
+	;
+
+
+
+!
+!		$MACRO SECTION$
+!
+MACRO   
+	 $CLEAR(bitfld) = bitfld = 0%
+	,$SET(bitfld) = bitfld = 1%
+	,$HEXD(A1,A2) = % !**** TEST ONLY hex_dump(A1,A2)%
+	,$CURRENT_CDSY = .tek_y_cds[.id[tk$w_text_size]]%
+	,$CURRENT_CDSX = .tek_x_cds[.id[tk$w_text_size]]%
+	,$CURRENT_CUSX = .tek_x_cus[.id[tk$w_text_size]]%
+	,$CURRENT_CUSY = .tek_y_cus[.id[tk$w_text_size]]%
+	,$CURRENT_CCMX = .tek_x_ccm[.id[tk$w_text_size]]%
+	,$CURRENT_CCMY = .tek_y_ccm[.id[tk$w_text_size]]%
+	,$CURRENT_CHARTOP = .char_top[.id[tk$w_text_size]]%
+	,$CURRENT_MARGIN = .margin[ .id[tk$v_margin_bit]]%
+	,$REPORT_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 (vsta$$error(status)))%
+	,$ENTERALPHA = 
+		(
+		 $POSY( .id [tk$w_beam_y_address] - $CURRENT_CDSY + 
+		 	.TK$W_X_FACTOR)
+		)%
+	,$LEAVEALPHA = 
+		(
+		 $POSY( .id [tk$w_beam_y_address] + $CURRENT_CDSY - 
+		 	.TK$W_X_FACTOR)
+		)%
+	,$POS( logx, logy) =
+		(
+		 id [tk$w_beam_x_address] = logx;
+		 id [tk$w_beam_y_address] = logy;
+		)%
+	,$POSX( logx) =
+		(
+		 id [tk$w_beam_x_address] = logx;
+		)%
+	,$POSY( logy) =
+		(
+		 id [tk$w_beam_y_address] = logy;
+		)%
+	!
+	!  Define macros to draw and move.  These now use VaxSTAtion native
+	!  graphics.  To make them Gidis based just substitute in the 
+	!  gidis commands:
+	!
+	,$MOVETO( log_x, log_y) =
+		(
+		!
+		!  If this is not the first point in the path then check to
+		!  see if the last point was a move.  If so then just over
+		!  write that move with the next.
+		!
+		!IF .tk$w_path_count GEQ 3
+		!THEN IF .tk$wv_path_addr [ .tk$w_path_count - 1] EQL 2	!  Is a move command
+		!     THEN tk$w_path_count = .tk$w_path_count - 3;
+
+		!
+		!  If path is full then flush it
+		!
+		IF .tk$w_path_count GEQ (.tk$w_path_max - 3)
+		THEN tk$$emu_flush_draw( .id);
+
+
+
+		tk$wv_path_addr [.tk$w_path_count] = 
+					((log_x + tk$k_x_boarder)*
+					  .id [tk$w_screen_vd_x]) /
+					  tk$k_tek_x_screen;
+
+		tk$wv_path_addr [.tk$w_path_count + 1] = 
+					((log_y + tk$k_y_boarder)*
+					  .id [tk$w_screen_vd_y]) /
+					  tk$k_tek_y_screen;
+
+		tk$wv_path_addr [.tk$w_path_count + 2] = 2;
+
+		tk$w_path_count = .tk$w_path_count + 3;
+
+			     
+		)%     
+	,$DRAWTO( log_x, log_y) =
+		(
+		!
+		!  If path is full then flush it
+		!
+		IF .tk$w_path_count GEQ (.tk$w_path_max - 3)
+		THEN tk$$emu_flush_draw( .id);
+
+
+
+		tk$wv_path_addr [.tk$w_path_count] = 
+					((log_x + tk$k_x_boarder)*
+					  .id [tk$w_screen_vd_x]) /
+					  tk$k_tek_x_screen;
+
+		tk$wv_path_addr [.tk$w_path_count + 1] = 
+					((log_y + tk$k_y_boarder)*
+					  .id [tk$w_screen_vd_y]) /
+					  tk$k_tek_y_screen;
+
+		tk$wv_path_addr [.tk$w_path_count + 2] = %X'20';
+
+		tk$w_path_count = .tk$w_path_count + 3;
+
+			     
+		)%     
+	!
+	!  Define VaxStation Native Graphics dependent code macros
+	!  To make this a Gidis only based system then make the
+	!  $native_xxx macros null...
+	!
+	,$NATIVE_INIT = 
+		(
+		!
+		!  Get a path buffer if one does not already exist
+		!
+		IF .tk$wv_path_addr EQL 0 
+		THEN VSTA$$DMM_GET_MAPPED_MEM( %ref( 1024), tk$wv_path_addr);
+		
+		!
+		!  Initialize the count 
+		!
+		tk$w_path_count = 0;
+
+		!
+		!  MOve to the current position  if in graph mode
+		!
+		IF .id [tk$l_mode] NEQ tk$k_alpha
+		THEN $MOVETO( .id [tk$w_beam_x_address], 
+				.id [tk$w_beam_y_address]);
+		)%
+
+	,$NATIVE_FLUSH =
+		(
+		!
+		!  If there is more than one point in the path then draw
+		!  them otherwise just ignore it.
+		!
+		IF .tk$w_path_count GTR 5
+		THEN BEGIN
+
+			$VSTADRAW(
+				 SOURCE	= 1
+				,MSKTYP	= vsta$k_msk_rectangle
+				,MASK	= id [tk$w_line_width]
+				,DST	= .id [tk$l_fullview_vd_id]
+				,PTHNUM	= .tk$w_path_count/3
+				,PTHADR = tk$wv_path_addr [0]
+				,PATBLK = id [tk$w_ptn_count]
+				,PATSTA = id [tk$w_ptn_state]
+				,ASTADR = tk$$emu_nat_draw_complete
+				,ASTPRM	= tk$wv_path_addr [0]
+				);
+
+			!
+			!  Clear the path count and the pointer to the path
+			!
+			tk$w_path_count = 0;
+			tk$wv_path_addr = 0;
+		     END;
+		)%
+	,$NATIVE_CLEAN =
+		(
+		!
+		!  If the path addr is not zero then a path was allocated
+		!  but not used so deallocated it now
+		!
+		IF .tk$wv_path_addr NEQ 0
+		THEN BEGIN
+			VSTA$$DMM_FREE_MAPPED_MEM( 
+							 %ref (1024)
+							,tk$wv_path_addr
+						);
+			tk$wv_path_addr = 0;
+		     END;
+		)%
+
+	;
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_settings_exist
+!++
+! Functional description:
+!
+!	Human interface calls this routine to announce to us that this
+!	terminal does or does not have a settings form inexistence.  When
+!	programs change settings via escape sequences, we use the bit
+!	to decide whether we need to call the human interface back to
+!	update the settings form.
+!
+! Formal parameters:
+ (
+	vd_id,				! which terminal is involved
+	exists_flag			! 1 if settings exist
+ ) =
+!
+!--
+	BEGIN
+
+	LOCAL
+	    id : REF tek_blk,
+	    s;
+!
+! Find database associated with this terminal.
+! For now, we quietly return if we can't find it.  Such would be the
+! case during logout, during which we get called after terminal has
+! gone away.
+!
+	IF NOT (s = tk$$emu_find_tek4014 (.vd_id, id))
+	THEN RETURN ss$_normal;
+!
+! Set the existence bit accordingly.
+!
+	id[tk$v_settings_exist] = .exists_flag;
+
+	ss$_normal
+
+	END;
+
+
+
+
+
+GLOBAL ROUTINE VSTA$$TEK_INIT_MODULE =
+!++
+! Functional Description
+!
+!  This routine initializes the global data regions for the tek4014 emulator.
+!  Note that this routine is meant to be independent of the rest of the
+!  ACP.  It can be call at any time.
+!
+!--
+BEGIN
+
+!
+!  Mark the fib definitions as undefined
+!
+tk$w_fonts_defined = 0;
+
+RETURN ss$_normal;
+END;
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE VSTA$$TEK_CREATE
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine controls the creation of a virtual tek4014 terminal. It calls
+!   for 1) allocation of memory for a database entry describing the status of a
+!   tek4014 2) allocation of a virtual display form the Virtual Display Service
+!   2a) allocation of a pasteboard, 2b) creation of a window, 2c) attaching
+!   virtual display to pasteboard, 3) initialization of the database 
+!   entry previously allocated and 4) de-allocation of all resources in the
+!---event that an allocation request fails.
+!
+! FORMAL PARAMETERS:
+!
+      (virtual_display_id               !output: id assigned to dst display
+      ,display_x_res 			!input: virtual display x dimension
+      ,display_y_res			!input: virtual display y dimension
+      ,display_z_res			!input: virtual display z dimension
+      ,char_bits                        !input: characteristics bit values
+      ,char_mask                        !input: bits to use 
+      ,uic	                        !input: uic passed to VDS Create routine
+      ,chars				!input: Permanent, Shareable characteristics
+      ,protection			!input: UIC protection code
+      ,nam_desc): =			!input: Terminal name descriptor
+!
+! IMPLICIT INPUTS: NONE
+!
+! IMPLICIT OUTPUTS: NONE
+!
+! ROUTINE VALUE:
+!
+!---Returns "ss$_normal" if successful, or error status returned by vs$$acp_GET_VM,
+!---VDS Create_vd, or any other routines called.
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS:
+!
+!---Calls initialize_tek4014
+!   Calls VSTA$$GID_CREATE
+!---Dynamic memory is allocated and initialized for tek4014 initial state
+!
+!--
+BEGIN    
+
+LOCAL 
+	 id:        REF tek_blk INITIAL (0)
+	,pb_char
+	,status
+	;
+
+
+!---------------------------------
+!  allocate dynamic memory for terminal state information
+!---------------------------------
+IF NOT (status = vs$$acp_GET_VM
+      (%REF (tk$s_tek_blk)    !allocate for device data instance
+      ,id))
+THEN BEGIN
+	vsta$$error(.status);
+	$RETURN_ERROR(vsta$_cntallotkdt)
+     END;
+
+
+!
+!  Temporary
+!
+display_x_res = tk$k_tek_display_x;
+display_y_res = tk$k_tek_display_y;
+
+!
+!  Initialize the object id fields
+!
+id [tk$v_page_full] = 0;
+id [tk$a_forward_link] = 0;
+id [tk$l_fullview_vd_id] = 0;
+id [tk$l_fullview_w_id] = 0;
+id [tk$l_footer_vd_id] = 0;
+id [tk$l_bezel_vd_id] = 0;
+id [tk$l_fullview_pb_id] = 0;
+id [tk$l_footer_pb_id] = 0;
+id [tk$l_tek_pb_id] = 0;
+
+!---------------------------------
+!  insert data entry into tek list
+!---------------------------------
+insque(id[tk$a_forward_link],tk$q_base[0]);
+
+
+!---------------------------------
+!  store the virtual display size (x,y) in data area
+!---------------------------------
+id [tk$w_screen_vd_x] = .display_x_res;
+id [tk$w_screen_vd_y] = .display_y_res;
+display_z_res = 1;	
+
+!---------------------------------------------------------------------------
+!  create virtual display for fullview view of terminal screen
+!---------------------------------------------------------------------------
+IF NOT VS$$VDS_CREATE_VD      !create virtual display
+      (.display_y_res                   !pass resolution
+      ,.display_x_res
+      ,.display_z_res
+      ,tk$k_background                  !set background 
+      ,tk$k_foreground                  !set foreground
+      ,vs$k_vtem_4014			!for a tek4014
+      ,vdb$k_text_and_graphics		!for graphics only
+      ,.uic                             !pass user code
+      ,.chars				!Permanence,Shareable characteristics
+      ,.protection			!UIC protection code
+      ,id[tk$l_fullview_vd_id]          !return the virtual display id
+      ,%ascid 'TEK 4014 terminal'	!Help keyword
+      ,tk$k_tek_rows			!Number of rows
+      ,tk$k_tek_columns)		!Number of columns
+THEN BEGIN                              !<-1>
+
+!---------------------------------------
+!  if failure then de-allocate memory
+!---------------------------------------
+
+tk$$emu_clean_up(.id,
+                 .uic);
+$RETURN_ERROR(vsta$_cntcretkbdyvd);
+
+END;
+
+IF NOT vsta$$emul_create_bezel(
+				 .display_x_res
+				,.display_y_res
+				,id [tk$l_bezel_vd_id]
+				,id [tk$l_bezel_width]
+				,id [tk$l_bezel_height]
+				,id [tk$l_black_line_height]
+				,%ascid 'TEK 4014 terminal'
+			      )
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);	
+	$RETURN_ERROR(vsta$_cntcretkbzl);
+	
+     END;
+id [tk$l_pb_width] = .display_x_res + 2*.id [tk$l_bezel_width];
+id [tk$l_pb_height] = .display_y_res + 2*.id [tk$l_bezel_height] +
+			.id [tk$l_black_line_height] + tk$k_footer_vd_y;
+
+!---------------------------------------------------------------------------
+!  create virtual display for footer
+!---------------------------------------------------------------------------
+IF NOT VS$$VDS_CREATE_VD      !create virtual display
+      (tk$k_footer_vd_y
+      ,.id [tk$l_pb_width]		!pass resolution
+      ,.display_z_res
+      ,tk$k_footer_back			!set background 
+      ,tk$k_foreground                  !set foreground
+      ,3				!for a tek4014
+      ,vdb$k_text_and_graphics          !for both text and graphics
+      ,.uic                             !pass user code
+      ,.chars				!Permanence,Shareable characteristics
+      ,.protection			!UIC protection code
+      ,id[tk$l_footer_vd_id]		!return the virtual display id
+      ,%ascid 'Lower 4014 terminal control bar'
+					!for HELP button.
+      )
+
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkftrvd);
+
+     END;
+
+!----------------------------------------
+!  create pasteboard for entire tektronix terminal
+!----------------------------------------
+if ((.chars and VS$M_PERM_VD) neq 0) 	then pb_char = vs$m_perm_pb
+					else pb_char = 0;
+IF NOT vs$$vds_create_pb
+       (id [tk$l_tek_pb_id],
+	0,	! User-owned
+        1,
+        .id [tk$l_pb_width],
+        .id [tk$l_pb_height],
+        .uic,
+	.pb_char + vs$m_vkb + vs$m_term,
+				!Don't let pb go away until terminal
+				!is deleted
+	$protection (owner='R')
+				!Let owner read pasteboard but let only us
+				!do other things.
+	)
+!-------------------------------------------
+!  if failure then undo previous allocations
+!-------------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkstapb);
+
+     END;
+
+!----------------------------------------
+!  create pasteboard for fullview display
+!----------------------------------------
+IF NOT vs$$vds_create_pb
+       (id [tk$l_fullview_pb_id],
+        0,	! User-owned
+        1,
+        .display_x_res,
+        .display_y_res,
+        .uic,
+	.pb_char + vs$m_term,	!Permanent or temporary, as the VD
+	vsta$k_default_protection
+				!Protected against malicious deletion
+	)
+
+
+!-------------------------------------------
+!  if failure then undo previous allocations
+!-------------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkbdypb);
+
+     END;
+
+!----------------------------------------
+!  create pasteboard for footer of tektronix 
+!----------------------------------------
+IF NOT vs$$vds_create_pb
+       (id [tk$l_footer_pb_id],
+        0,	! User-owned
+        1,
+        .id [tk$l_pb_width],
+        tk$k_footer_vd_y,
+        .uic,
+	.pb_char + vs$m_term,	!Permanent or temporary, as the VD
+	vsta$k_default_protection
+	)			!Protect pasteboard against maliciousness
+
+!-------------------------------------------
+!  if failure then undo previous allocations
+!-------------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkftrpb);
+
+     END;
+
+!---------------------------------------
+!  attach virtual display to pasteboard for fullview display
+!---------------------------------------
+IF NOT VS$$VDS_PASTE_VD_TO_PB
+       (.id [tk$l_fullview_pb_id],
+        .id [tk$l_fullview_vd_id],
+        0,
+        0,
+	0,
+	.vs$gl_acp_pid)			! We're doing it, not user
+
+!---------------------------------------
+!  if failure then undo
+!---------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntpsttkbdyvd);
+
+     END;
+!---------------------------------------
+!  inform gidis to create database for fullview vd
+!---------------------------------------
+!IF NOT VSTA$$GID_CREATE            !inform Gidis of created VD
+!      (.id[tk$l_fullview_vd_id])         !for dst
+!
+!--------------------------------------
+!  if Gidis create fails then undo
+!--------------------------------------
+!THEN BEGIN                                !undo all allocation
+!
+!	tk$$emu_clean_up(.id,
+!	                 .uic);
+!	$RETURN_ERROR(vsta$_cntcretkgid);
+!
+!     END;
+!
+
+!--------------------------------------
+!  return the virtual display id 
+!  and call routine to initialize the database and virtual display
+!--------------------------------------
+.virtual_display_id = .id[tk$l_fullview_vd_id];
+
+!--------------------------------------
+!  initialize the operation status longword
+!--------------------------------------
+id [tk$l_operation_status] = ss$_normal;
+
+                                         !add database instance to list
+tk$$emu_init_tek4014                       !initialize data instance
+      (.id[tk$l_fullview_vd_id]
+      ,.id                               !instance at address (id)
+      ,.char_bits                        !characteristics to turn on
+      ,.char_mask);                      !characteristics to turn off
+
+!--------------------------------------
+!  if initial gidis write failed ie operation_status <> 1
+!  then undo allocations and return error
+!--------------------------------------
+IF NOT .id [tk$l_operation_status]
+THEN BEGIN
+	
+	tk$$emu_clean_up(.id,
+        	         .uic
+			);
+	$RETURN_ERROR(vsta$_cntinittk);
+
+     END;
+
+id [tk$w_footer_vd_x] = .display_x_res;
+id [tk$w_footer_vd_y] = tk$k_footer_vd_y;
+
+!--------------------------------------
+!  set up footer
+!--------------------------------------
+IF NOT tk$$ftr_create_footer(.id)
+THEN BEGIN
+	
+	tk$$emu_clean_up(.id,
+        	         .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkftr);
+
+     END;
+
+!---------------------------------------
+!  attach footer virtual display to pasteboard 
+!---------------------------------------
+IF NOT VS$$VDS_PASTE_VD_TO_PB
+       (.id [tk$l_footer_pb_id],
+        .id [tk$l_footer_vd_id],
+        0,
+        0,
+	0,
+	.vs$gl_acp_pid			!We're doing it, not user
+	)
+                                         !leave boarder between screen and
+                                         !footer
+
+!---------------------------------------
+!  if failure then undo
+!---------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntpsttkftrvd);
+
+     END;
+
+!---------------------------------------
+!  attach bezel virtual display to pasteboard 
+!---------------------------------------
+IF NOT VS$$VDS_PASTE_VD_TO_PB
+       (.id [tk$l_tek_pb_id],
+        .id [tk$l_bezel_vd_id],
+        0,
+        0,
+	0,
+	.vs$gl_acp_pid			!say WE'RE doing it
+	)
+                                         !leave boarder between screen and
+                                         !footer
+
+!---------------------------------------
+!  if failure then undo
+!---------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+        		 .uic
+		);
+	$RETURN_ERROR(vsta$_cntpsttkbzlvd);
+
+END;
+
+!---------------------------------------
+!  paste footer and screen pasteboards on the main terminal pasteboard
+!---------------------------------------
+IF NOT vs$$vds_paste_pb_to_pb(
+					 .id [tk$l_tek_pb_id]
+					,.id [tk$l_fullview_pb_id]
+					,.id [tk$l_bezel_width]
+					,.id [tk$l_bezel_height]
+					,.vs$gl_acp_pid
+					)
+
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntpsttkbdypb);
+
+     END;
+
+!---------------------------------------
+!  paste footer and screen pasteboards on the main terminal pasteboard
+!---------------------------------------
+IF NOT vs$$vds_paste_pb_to_pb(
+					 .id [tk$l_tek_pb_id]
+					,.id [tk$l_footer_pb_id]
+					,0
+					,.id [tk$l_pb_height] - 
+						tk$k_footer_vd_y
+					,.vs$gl_acp_pid
+					)
+
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntpsttkftrpb);
+
+     END;
+
+!-------------------------------------------
+!  create window for fullview display
+!------------------------------------------
+IF NOT vs$$vds_create_term_window
+       (.id[tk$l_tek_pb_id],         !send pasteboard id
+         id[tk$l_fullview_w_id],          !return window id
+         .nam_desc,			  !Name descr address
+         0,                               !x = 0
+         0,                               !y = 0
+         .id [tk$l_pb_width],
+         .id [tk$l_pb_height])
+
+
+!---------------------------------------  
+!  if failure then undo all allocations
+!---------------------------------------
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	$RETURN_ERROR(vsta$_cntcretkw);
+
+     END;
+
+!---------------------------------------
+!  Attach keyboard to pasteboard and send its address of write routine
+!---------------------------------------
+IF NOT vs$$set_vkb_output(
+					 .id [tk$l_tek_pb_id]
+					,.id [tk$l_fullview_vd_id]
+					,.id
+					,vsta$$vtem_tek4014_write
+					,tk$$cur_keyboard_translator
+					,.vsta$gl_keyboard	
+					,.vs$gl_acp_pid
+				   ) 
+THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	
+	$RETURN_ERROR(vsta$_cntsettkvkb);
+
+     END;
+
+
+!
+!  Call the routine to set the bytesize for the keyboard
+!
+IF NOT vsta$$tek_set_bytesize( .id [tk$l_fullview_vd_id], .id [tk$w_bytesize])
+THEN BEGIN
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	
+	$RETURN_ERROR(vsta$_cntsettkvkb);
+     END;
+!
+! Make the terminal appear on the screen!
+!
+IF NOT (status = vsta$$srv_term_created
+			(.id [tk$l_fullview_w_id]	!window-id
+			,.id [tk$l_pb_width]		!X-Extent of window
+			,.id [tk$l_pb_height]		!y-extent of window
+			,.id [tk$l_fullview_vd_id]	!vd-id of body
+			,.id [tk$l_tek_pb_id]		!pb-id
+			,vsta$k_termtype_tek4014	!ttype
+			,.vs$gl_pid			!Process id of creator
+			,.id [tk$l_bezel_vd_id]		!bezel vd-id.
+			) 
+	)
+  THEN BEGIN
+
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+!
+! If the human interface tried to create a process and that failed (environment
+! error), do not call vsta$$error, because the HI would have sent a message
+! to the NOTICES document.
+!
+	IF (.status EQL SS$_NOSLOT)
+	THEN RETURN  .status;
+
+	$RETURN_ERROR(vsta$_cntcretkterm);
+
+     END;
+
+
+!
+!  Call the init fonts routine to get font addresses if they have not
+!  been gotten before.
+!
+IF NOT tk$$emu_init_fonts()
+THEN BEGIN
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	
+	$RETURN_ERROR(vsta$_cntsettkvkb);
+     END;
+
+!-----------------------------------------------------------
+!  start alpha cursor
+!-----------------------------------------------------------
+tk$$cur_start_alpha(.id);
+
+!
+!  Set mouse button ast for gin mode Remember this is a library routine so all 
+!  parameters sent by reference
+!
+!!VSTA$$MOUSE_SET_BUTTON_AST(
+!	 .id [tk$l_fullview_pb_id]
+!	,3
+!	,id [tk$l_mouse_ast_buffer]
+!	,id [tk$l_mouse_ast_iosb]
+!	,tk$$cur_button_procedure
+!	,.id [tk$l_fullview_vd_id]
+!	,0
+!	,0
+!	,1
+!			 );
+!
+
+!
+! Say there's no settings form yet for this tektronics.
+!
+	id[tk$v_settings_exist] = 0;
+
+RETURN ss$_normal                        !return normal signal
+
+END;                                     !<-0>
+
+
+
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE VSTA$$TEK_DELETE
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine controls the deletion of the specified tek4014.  Its actions
+!   include 1) de-allocation of memory, 2) deletion of all virtual displays
+!   with associated pasteboards and windows, and 3) returns a failure code if
+!---de-allocation fails or virtual terminal not found.
+!
+! FORMAL PARAMETERS:
+!
+      (virtual_display_id,              !input: id of display to find and delete
+       uic):=                           !input: uic associated to this display
+!
+! IMPLICIT INPUTS: NONE
+!
+! IMPLICIT OUTPUTS: NONE
+!
+! ROUTINE VALUE:
+!
+!---Returns "ss$_normal" if succesful, or error status if virtual terminal
+!---not found or if de-allocation fails.
+!
+! COMPLETION CODES:
+!
+! SIDE EFFECTS:
+!
+!---Dynamic memory is de-allocated and delete of vd's, pb's and windows occure
+!
+!--
+BEGIN
+
+LOCAL id: REF tek_blk,
+     status;
+
+!----------------------------------------
+!  find the virtual terminal with this id
+!----------------------------------------
+IF tk$$emu_find_tek4014
+   (.virtual_display_id,                  !send the id to search for
+    id)                                  !return the pointer to database
+
+THEN BEGIN
+
+	!----------------------------------------
+	!  if in alpha mode must first stop alpha cursor before deleting everything
+	!----------------------------------------
+	IF .id [tk$l_mode] EQL tk$k_alpha 
+	THEN tk$$cur_stop_alpha(.id);
+	
+	
+	!------------------------------------------------------------------------
+	!  if found then de-allocate all resources
+	!------------------------------------------------------------------------
+	tk$$emu_clean_up(.id,
+	                 .uic
+			);
+	
+
+     END
+ELSE
+     $RETURN_ERROR(vsta$_nosuchtk);
+
+
+return ss$_normal
+
+END;
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_chars
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine finds the data base for the specified virtual terminal
+!   and sets certain characteristics of the display.  No phisical display
+!---adjustments are performed in this routine
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 virtual_display_id	! vd id
+	,straps			! Straps (mask) to be set
+	,settings		! Setting values to assign (bitfield)
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!  "ss$_normal" if terminal was found
+!  "ss$_nosuchdev" if terminal was not found
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---The only action of this routine is adjust the data base no other routines
+!---are called from it
+!
+!--
+BEGIN
+
+LOCAL 
+	 on_bits: WORD
+	,off_bits: WORD
+	,id: REF tek_blk 
+	;
+
+!--------------------------------------
+!  look for specified terminal if not found then return status
+!--------------------------------------
+IF NOT tk$$emu_find_tek4014(.virtual_display_id,id)
+THEN $RETURN_ERROR(vsta$_tksetchafai);
+
+on_bits = .settings AND .straps;
+off_bits = NOT (.settings XOR .straps);
+
+!
+!  Update the csw in the tek data base
+!
+id [tk$w_char_status_word] = .id [tk$w_char_status_word] OR .on_bits;
+id [tk$w_char_status_word] = .id [tk$w_char_status_word] AND .off_bits;
+
+!
+! If settings form is showing, update it.
+!
+IF .id [tk$v_settings_exist]
+THEN vsta$$ts_update_settings (.id[tk$l_fullview_vd_id], -1);
+
+RETURN ss$_normal
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_get_chars
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine inputs the virtual display id. number and returns the value
+!---of the characteristics status word to the caller.  
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 virtual_display_id		!input: receive the target id
+	,settings 			!output: Where to write the cur setting
+	):= 
+	
+!
+!  IMPLICIT IMPUTS: NONE
+!  
+!  IMPLICIT OUTPUTS: NONE
+!
+!  ROUTINE VALUE:
+!
+!---If the virtual terminal associated with the virtual display id then 
+!---a ss$_nosuchdev is returned otherwise ss$_normal
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:  STATES OR DATA IS CHANGED BY CALLING THIS ROUTINE
+!
+!--
+BEGIN
+
+LOCAL 
+	 id: REF tek_blk
+	;
+
+IF NOT tk$$emu_find_tek4014(.virtual_display_id,id)
+THEN $RETURN_ERROR(vsta$_nosuchtk);
+
+
+!
+!  Return the current tek settings
+!
+.settings = .id [tk$w_char_status_word];
+
+RETURN ss$_normal
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$emu_clean_up                 
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine deletes all vd's, pb's, windows, and memory for a emulated
+!   tek4014.  It checks to see to what extent the terminal had been established
+!---and deletes only the things all-ready allocated
+!
+! FORMAL PARAMETERS:
+        (
+	 id: REF tek_blk 		!input: recieve pointer to database
+        ,uic                            !input: get user code
+	):
+! IMPLICIT INPUTS: 
+!
+!---If any of the id fields are 0 it means that the VD OR PB have not been
+!---created yet so don't try to delete them
+!
+! IMPLICIT OUTPUTS: NONE
+!
+! RETURN VALUE:
+         NOVALUE = 
+! 
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS:
+!
+!---vd's, pb's, windows, or dynamic memory are de-allocated
+!
+BEGIN
+
+
+IF .id EQL 0
+THEN RETURN;
+
+IF .id [tk$l_fullview_w_id] NEQ 0
+THEN VS$$VDS_DELETE_WINDOW(.id[tk$l_fullview_w_id], .vs$gl_acp_pid);
+
+!IF .id [tk$l_fullview_vd_id] NEQ 0
+!THEN VSTA$$GID_DISPOSE
+!      (.id[tk$l_fullview_vd_id]);
+
+IF .id [tk$l_footer_pb_id] NEQ 0
+THEN VS$$VDS_DELETE_PB 
+      (.id[tk$l_footer_pb_id], .vs$gl_acp_pid);
+
+IF .id [tk$l_fullview_pb_id] NEQ 0
+THEN VS$$VDS_DELETE_PB 
+      (.id[tk$l_fullview_pb_id], .vs$gl_acp_pid);
+
+IF .id [tk$l_tek_pb_id] NEQ 0
+THEN VS$$VDS_DELETE_PB 
+      (.id[tk$l_tek_pb_id], .vs$gl_acp_pid);
+
+IF .id [tk$l_footer_vd_id] NEQ 0
+THEN VS$$VDS_DELETE_VD
+      (.id[tk$l_footer_vd_id], 0, .vs$gl_acp_pid);
+
+IF .id [tk$l_fullview_vd_id] NEQ 0
+THEN VS$$VDS_DELETE_VD
+      (.id[tk$l_fullview_vd_id], 0, .vs$gl_acp_pid);
+
+IF .id [tk$l_bezel_vd_id] NEQ 0
+THEN VS$$VDS_DELETE_VD
+      (.id [tk$l_bezel_vd_id], 0, .vs$gl_acp_pid);
+ 
+IF .id [tk$a_forward_link] NEQ 0
+THEN remque(id[tk$a_forward_link],id[tk$a_forward_link]);
+                              
+!
+!  If the terminal is currently in the page full mode then deallocate the
+!  page full backlog
+!
+IF .id [tk$v_page_full] 
+THEN vs$$acp_free_vm(
+		 id [tk$l_page_full_backlog_bcnt]
+		,id [tk$a_page_full_backlog]
+		,0
+		    );
+
+vs$$acp_FREE_VM
+      (%REF (tk$s_tek_blk)
+      ,id);
+
+END;
+
+
+
+ROUTINE tk$$emu_init_fonts =
+!++
+! Functional Description
+!
+!  This routine gets the addresses of the fonts needed for the 4014 and
+!  save them in module wide vector (from smallest to largest)
+!
+!--
+BEGIN
+
+LOCAL
+	 fib_adr	: REF fib
+	,fib_id
+	,s
+	,i
+	;
+
+!
+!  See if fonts are defined
+!
+IF NOT .tk$w_fonts_defined
+THEN BEGIN
+
+	i = 0;
+
+	!
+	!  Get the address of the font descriptor and the font image block id
+	!
+	IF NOT (s = vs$$txt_get_font_address(
+				 0			! No vd_id system font
+				,%ASCID 'KILTER'	! Fixed width
+				,14			! Size
+				,0			! No rendition
+				,tk$lv_fnt_bm_dsc [ .i]	! Return addr of font
+				,fib_id			! REturn addr fib
+				))
+	THEN RETURN .s;
+
+	!
+	!  Note that get font address increments the font reference count
+	!  So call font dereference.
+	!
+	fibDereference ( .fib_id);
+
+	!
+	!  Get the address of the font image block
+	!
+	IF NOT (s = findfib( .fib_id, fib_adr, 0))
+	THEN RETURN .s;
+
+	!
+	!  If the font resides in display mem then save the address in
+	!  in the font descriptor 
+	!
+	IF .fib_adr [ fib_display_adr] NEQ 0
+	THEN BEGIN
+		tk$lv_fnt_bm_dsc [ .i] = .fib_adr [ fib_display_adr];
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_dispmem;
+	     END
+	ELSE BEGIN
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_vaxmem;
+	     END;
+
+	!
+	!  Store the size of this font defined in the word vector on
+	!  even entries
+	!
+	tk$wv_fnt_size [ .i] = 8;
+	tk$wv_fnt_size [ .i + 1] = 15;
+
+	!
+	!  Point to the next font descriptor
+	!
+	i = .i + 2;
+
+	!
+	!  Get the address of the font descriptor and the font image block id
+	!
+	IF NOT (s = vs$$txt_get_font_address(
+				 0
+				,%ASCID 'KILTER'
+				,14
+				,0
+				,tk$lv_fnt_bm_dsc [ .i]
+				,fib_id
+				))
+	THEN RETURN .s;
+
+	!
+	!  Note that get font address increments the font reference count
+	!  So call font dereference.
+	!
+	fibDereference ( .fib_id);
+
+	!
+	!  Get the address of the font image block
+	!
+	IF NOT (s = findfib( .fib_id, fib_adr, 0))
+	THEN RETURN .s;
+
+	!
+	!  If the font resides in display mem then save the address in
+	!  in the font descriptor 
+	!
+	IF .fib_adr [ fib_display_adr] NEQ 0
+	THEN BEGIN
+		tk$lv_fnt_bm_dsc [ .i] = .fib_adr [ fib_display_adr];
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_dispmem;
+	     END
+	ELSE BEGIN
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_vaxmem;
+	     END;
+
+	!
+	!  Store the size of this font defined in the word vector on
+	!  even entries
+	!
+	tk$wv_fnt_size [ .i] = 8;
+	tk$wv_fnt_size [ .i + 1] = 15;
+
+	
+	!
+	!  Point to next larger font descriptor
+	!
+	i = .i + 2;
+
+	!
+	!  Get the address of the font descriptor and the font image block id
+	!
+	IF NOT (s = vs$$txt_get_font_address(
+				 0
+				,%ASCID 'KILTER_CONDENSED'
+				,12
+				,0
+				,tk$lv_fnt_bm_dsc [ .i]
+				,fib_id
+				))
+	THEN RETURN .s;
+
+	!
+	!  Note that get font address increments the font reference count
+	!  So call font dereference.
+	!
+	fibDereference ( .fib_id);
+
+	!
+	!  Get the address of the font image block
+	!
+	IF NOT (s = findfib( .fib_id, fib_adr, 0))
+	THEN RETURN .s;
+
+	!
+	!  If the font resides in display mem then save the address in
+	!  in the font descriptor 
+	!
+	IF .fib_adr [ fib_display_adr] NEQ 0
+	THEN BEGIN
+		tk$lv_fnt_bm_dsc [ .i] = .fib_adr [ fib_display_adr];
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_dispmem;
+	     END
+	ELSE BEGIN
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_vaxmem;
+	     END;
+
+	!
+	!  Store the size of this font defined in the word vector on
+	!  even entries
+	!
+	tk$wv_fnt_size [ .i] = 7;
+	tk$wv_fnt_size [ .i + 1] = 13;
+
+
+	!
+	!  Point to next larger font descriptor
+	!
+
+	i = .i + 2;
+
+	!
+	!  Get the address of the font descriptor and the font image block id
+	!
+	IF NOT (s = vs$$txt_get_font_address(
+				 0
+				,%ASCID 'KILTER'
+				,10
+				,0
+				,tk$lv_fnt_bm_dsc [ .i]
+				,fib_id
+				))
+	THEN RETURN .s;
+
+	!
+	!  Note that get font address increments the font reference count
+	!  So call font dereference.
+	!
+	fibDereference ( .fib_id);
+
+	!
+	!  Get the address of the font image block
+	!
+	IF NOT (s = findfib( .fib_id, fib_adr, 0))
+	THEN RETURN .s;
+
+	!
+	!  If the font resides in display mem then save the address in
+	!  in the font descriptor 
+	!
+	IF .fib_adr [ fib_display_adr] NEQ 0
+	THEN BEGIN
+		tk$lv_fnt_bm_dsc [ .i] = .fib_adr [ fib_display_adr];
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_dispmem;
+	     END
+	ELSE BEGIN
+		tk$lv_fnt_bm_dsc [ .i + 1] = vsta$k_vaxmem;
+	     END;
+
+	!
+	!  Store the size of this font defined in the word vector on
+	!  even entries
+	!
+	tk$wv_fnt_size [ .i] = 7;
+	tk$wv_fnt_size [ .i + 1] = 11;
+
+
+	
+     END;
+
+tk$w_fonts_defined = 1;
+
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+GLOBAL ROUTINE tk$$emu_init_tek4014               
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine initializes the database instance for a tek4014.  I do not
+!   store a reset version of the tek4014 data because of the relatively few
+!---states to be set.
+!
+! FORMAL PARAMETERS:
+!
+      (
+       virtual_display_id		 !input: display id assign by vd_create
+      ,id: REF tek_blk 			 !input: pointer to database instance
+      ,char_bits                         !input: characteristic bits
+      ,char_mask                         !input: characteristics to be affected
+      ): NOVALUE =
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!---The database is set to all values simulating a reset tek4014.
+!
+! COMPLETION CODES: Bad status if no such tek4014 exists
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 on_bits
+	,off_bits
+	;
+
+
+
+!--------------------------------
+!  initialize modes and states
+!--------------------------------
+id [tk$l_mode] = tk$k_alpha;
+id [tk$b_status_byte] = tk$k_initial_status;
+
+!--------------------------------
+!  initialize status word
+!--------------------------------
+id [tk$w_char_status_word] = 0;
+
+on_bits = .char_bits AND .char_mask;
+off_bits = NOT (.on_bits XOR .char_mask);
+
+id [tk$w_char_status_word] = .id [tk$w_char_status_word] OR .on_bits;
+id [tk$w_char_status_word] = .id [tk$w_char_status_word] AND .off_bits;
+
+!
+!  Define some temporary default terminal characteristics
+!
+id [tk$v_auto_lf_cr] = .srv$gl_tek_cr_lf;
+id [tk$v_auto_cr_lf] = .srv$gl_tek_lf_cr;
+id [tk$v_del_loy] = .srv$gl_tek_delvalid;
+SELECTONE .srv$gl_tek_addchars 
+OF SET
+	[prof$k_tek_addc_none]: id [tk$v_creot_enabled] = 0; 
+	[prof$k_tek_addc_cr]:	
+		BEGIN
+			id [tk$v_creot_enabled] = 1;
+			id [tk$v_auto_creot] = 0;
+		END; 
+	[prof$k_tek_addc_creot]: 
+		BEGIN
+			id [tk$v_creot_enabled] = 1;
+			id [tk$v_auto_creot] = 1;
+		END; 
+   TES;
+
+!
+!  Now set the margin switch to the default according to profile
+!
+SELECTONE .srv$gl_tek_stopout OF SET
+	[prof$k_tek_marginoff]: BEGIN
+		$CLEAR ( id [tk$v_margin_2]);
+		$CLEAR ( id [tk$v_margin_on]);
+		END;
+	[prof$k_tek_margin1]:  BEGIN
+		$CLEAR ( id [tk$v_margin_2]);
+		$SET ( id [tk$v_margin_on]);
+		END;
+	[prof$k_tek_margin2]:  BEGIN
+		$SET ( id [tk$v_margin_on]);
+		$SET ( id [tk$v_margin_2]);
+		END;
+  TES;
+
+!
+!  Get the profile default bytesize for the tek4014.  Will this 4014 support
+!  8bit or only 7bit text
+!
+id [tk$w_bytesize] = .srv$gl_tek_bytesize;
+
+id [tk$w_write_mode] = tk$k_normal;
+id [tk$w_vector_mode] = tk$k_normal;
+id [tk$w_text_size] = largest;
+id [tk$w_increme_command] = 0;			! Indicate movement default
+
+!---------------------------------------
+!  set graphics beam trackers and coordinate information
+!---------------------------------------
+id [tk$w_graph_x] = tk$k_screen_log_left;
+id [tk$w_graph_y] = tk$k_screen_log_top;
+id [tk$w_graph_xt]= 0;
+id [tk$w_graph_yt]= tk$k_tek_y_addressing;
+id [tk$w_address_state] = start;
+
+!---------------------------------------
+!  set crosshairs trackers
+!---------------------------------------
+id [tk$l_xhairs_x] = tk$k_gin_start_x;
+id [tk$l_xhairs_y] = tk$k_gin_start_y;
+
+!
+!  This indicates that a mouse move ast is not outstanding
+!
+$CLEAR(id [tk$v_mouse_select_down]);
+
+!---------------------------------------
+!  no lce, margin 1, cr's not ignored, no bypass, and not page full
+!---------------------------------------
+$CLEAR(id [tk$v_lce_flag]);
+$CLEAR(id [tk$v_margin_bit]);
+$CLEAR(id [tk$v_cr_ignore]);
+$CLEAR(id [tk$v_bypass_cond]);
+$CLEAR(id [tk$v_page_full]);
+
+
+!---------------------------------------
+!  initialize the keyboard translation buffer
+!---------------------------------------
+id [tk$l_vkbtran_buffer_index] = -1;
+id [tk$l_vkbtran_buffer_ptr] = 0;
+
+
+!
+!  initialize beam tracker note: beam is actually pointing at top of text cell
+!  the address indicates the location of the lower left corner of the cell
+!
+$POS( tk$k_margin_1, $CURRENT_CHARTOP);
+
+!
+!  Set up native graphics vector variables
+!
+id [tk$w_ptn_count] = 0;
+
+!
+!  Map and initialize the pattern state and line width info
+!
+BEGIN
+	BIND 	 state = id [tk$w_ptn_state]: VECTOR [,WORD]
+		,width = id [tk$w_line_width]: VECTOR [,WORD]
+		;
+
+	state [0] = 0;
+	state [1] = 0;
+
+	width [0] = 1;
+	width [1] = 1;
+
+END;
+
+
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$emu_find_tek4014
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine performs a linear search of the list containing all tek4014
+!   virtual terminals and returns the address of data instance if it has
+!---the specified virtual display id otherwise it returns an error status
+!
+! FORMAL PARAMETERS:
+!
+      (virtual_display_id,              !receive the vd id
+       returned_id):=                   !return the database address
+!
+! IMPLICIT INPUTS: NONE
+!
+! IMPLICIT OUTPUTS: NONE
+!
+! ROUTINE VALUE:
+!
+!---Returns 1 if the search is successful, or "ss$_nosuchdev" if
+!---the virtual terminal is not found.
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+LOCAL 
+	 id: REF tek_blk
+	;
+
+id = .tk$q_base[0];
+
+!---------------------------------------------------------
+!  loop to find tek4014: quit when .id points back to base
+!---------------------------------------------------------
+UNTIL .id EQL tk$q_base[0] DO BEGIN
+
+!---------------------------------------------------------
+!  if the correct id is found then return it and end loop
+!---------------------------------------------------------
+IF .id[tk$l_fullview_vd_id] EQL .virtual_display_id THEN BEGIN
+
+.returned_id = .id;                     !send back location of database instance
+RETURN ss$_normal                       !return success
+
+END;
+
+!-------------------------------
+!  look at next tek4014 entry
+!-------------------------------
+id = .id[tk$a_forward_link];           
+
+END;                                    
+
+!-----------------------------------------------
+!  END UNTIL LOOP if drop thru then return error
+!-----------------------------------------------
+RETURN ss$_nosuchdev                   
+
+END;
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE VSTA$$TEK_WRITE
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine recieves a buffer of length "length" and takes each of its
+!   bytes, which represent an output streem to a real tek4014, and translates
+!   them into 1) database adjustments, 2) display adjustments or 3) reports
+!   on screen status.  All text, vectors and graphic input are considered to
+!---be display adjustments.  
+!
+!  FORMAL PARAMETERS:
+!
+       (virtual_display_id,            !input: id of display to be effected
+        buffer_address,                !input: contains tek4014 output codes
+        buffer_length):=               !input: length of buffer (bytes)
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---This routine can fail only if the virtual display asked for is not in the
+!---the tek4014 list.  If this is the case, ss$_nosuchdev is returned
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---CALLS tk$$emu_find_tek4014
+!---CALLS write_tek4014
+!   
+!--
+BEGIN
+
+LOCAL id: REF tek_blk,              	!pointer to database
+      status;                           !return status from find_4014
+
+
+!---------------------------------------
+!  find virtual display with this specified id: if not return status.
+!---------------------------------------
+IF NOT (status=tk$$emu_find_tek4014              
+       (.virtual_display_id,         
+        id)) 
+
+THEN RETURN .status;
+
+!
+!  If the page full indicator is set then call the footer function
+!  to perform a margin release
+!
+IF .id [tk$v_page_full] 
+THEN tk$$ftr_rel_margin( .id);
+
+!--------------------------------------
+!  call process to output to tek4014 
+!--------------------------------------
+tk$$emu_write_tek4014
+       (.id,                             !address of data entry for this tek4014
+        .buffer_address,                 !address of output buffer
+        .buffer_length);                 !byte count for buffer
+
+
+
+RETURN ss$_normal                        !all is well so normal return
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$emu_write_tek4014
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives the pointer to the database found in
+!   VSTA$$VTEM_TEK4014_WRITE the output buffer and acts as a controller for
+!   the output decoding.  All output codes are separated into 1) escape sequence
+!   2) control character or 3) mode dependent output.  In each case the appr-
+!---priate decoder process is called
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk,           !input: pointer to database entry for this 4014
+        buffer_address,                  !input: address of output buffer
+        buffer_length):                  !input: count of bytes in buffer
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  ROUTINE VALUE: 
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---calls tk$$emu_esc_seq
+!   calls tk$$emu_control_char
+!   calls tk$$emu_display_char
+!   calls tk$$emu_display_vector
+!   The buffer is transfered to the command buffer of the device byte at a time
+!---just befor each byte is examined
+!
+!--
+BEGIN
+
+LOCAL 
+	 output_byte: UNSIGNED BYTE
+	,buffer_pointer
+	,i
+	;
+
+BIND 
+	 x = id [tk$w_graph_xt]: WORD
+	,y = id [tk$w_graph_yt]: WORD
+!	,gidis_buffer = id [tk$w_gidis_buffer]: VECTOR [,WORD]
+	;
+
+
+!
+!  Indicate that text nor graphics yet exist for this output
+!
+tk$w_text_exist = 0;
+
+!
+!  If we are using native graphics for vectors then this macro will
+!  get memory for a NG path and initialize with a move operation.
+!
+$NATIVE_INIT;
+
+!
+!  If alpha mode then stop alpha cursor
+!
+IF .id [tk$l_mode] EQL tk$k_alpha 
+THEN tk$$cur_stop_alpha(.id);
+
+buffer_pointer = .buffer_address;
+
+!
+!  LOOP to process all bytes in the output stream.
+!
+i = 0;
+
+WHILE 1
+DO BEGIN
+
+	IF (i = .i + 1) GTR .buffer_length
+	THEN EXITLOOP;
+
+	!
+	!  put input code into temporary variable: Don't strip off 8th
+	!  bit yet.
+	!
+	output_byte = CH$RCHAR_A( buffer_pointer);
+
+
+	!--------------------------------------
+	!  if LCE is set then must accept an esc sequence
+	!--------------------------------------
+	IF .id [tk$v_lce_flag] 
+	THEN
+		BEGIN
+		tk$$emu_esc_seq(.id,                    !Pass the tek id
+				.output_byte AND 127);  !Send byte without bit8
+		END
+	ELSE 
+
+	!--------------------------------------
+	!  if this is a control character then process it reguardless of mode
+	!--------------------------------------
+		BEGIN
+		IF (.output_byte AND 127 ) LSSU 32 	!yeah, well you can't 
+		THEN tk$$emu_control_char(		!tell it's a control 
+			 .id				!char unless you take away the 8th bit
+			,.output_byte AND 127		!Send byte without bit8
+					)
+
+		ELSE BEGIN
+			!-------------------------------------
+			!  send output code to the appropriate routine depending on terminal mode
+			!-------------------------------------
+			CASE .id [tk$l_mode] FROM tk$k_alpha TO tk$k_incr OF
+          
+			SET
+
+			[tk$k_alpha]: 
+				!
+				!  CHECK BYPASS CONDITION IF SET THEN IGNORE ANY FURTHER OUTPUT
+				!
+				IF NOT .id [tk$v_bypass_cond] 
+				THEN tk$$emu_display_char(
+					 .id
+					,.output_byte
+						);
+
+   
+			[tk$k_point,tk$k_spec_point]:
+
+					tk$$emu_display_vector(
+						 .id
+						,.output_byte AND 127
+							);
+
+			[tk$k_gin]:   ;
+   
+			[tk$k_incr]:   	tk$$emu_increme_plot(
+						 .id
+						,.output_byte AND 127
+							);
+
+
+			[tk$k_graph]:
+			!
+			!  Loop thru the characters until we are no longer
+			!  in graphics mode
+			!
+			WHILE 1
+			DO BEGIN
+
+
+			!-----------------------------------------
+			!  if special point plot then first byte of transmission is an intencity setting
+			!-----------------------------------------
+			CASE .output_byte<5,2> FROM 0 TO 3 OF
+
+			SET
+
+
+			[0]:
+
+			BEGIN		! Begin control sequence during graph
+			!
+			!  This must be a control code.
+			!
+			tk$$emu_control_char( .id, .output_byte AND 127);
+
+			!
+			!  Get next byte if at end of input or lce set then
+			!  exit loop.
+			!
+			WHILE .id [tk$v_lce_flag]
+			DO BEGIN	! While in esc seq and graph mode
+
+				IF (i = .i + 1) GTR .buffer_length
+				THEN EXITLOOP;
+
+				!
+				!  put input code into temporary variable: Don't strip off 8th
+				!  bit yet.
+				!
+				output_byte = CH$RCHAR_A( buffer_pointer);
+
+				tk$$emu_esc_seq( .id, .output_byte AND 127);
+
+			   END;	! End of in escape seq during graph mode
+
+			END;	! End control sequence during graph mode
+
+			[1]: 	! Hix or Hiy encountered
+			!
+			!  if code is hix or hiy then must look at address state to determine which
+			!  it is and then overwrite the old value.
+			!
+
+			     IF .id[tk$w_address_state] GTR hiy 
+			     THEN x<9,5> = .output_byte<0,5>
+			     ELSE y<9,5> = .output_byte<0,5>;
+
+			[2]: 
+			BEGIN	! Lox encountered vector finished
+     
+			     x<4,5> = .output_byte<0,5>;
+
+			!
+			!  must remember that addressing is upside down from tektronix so adjust
+			!
+			     id [tk$w_graph_y] = tk$k_tek_y_addressing - .y;
+			     id [tk$w_graph_x] = .x;
+
+			!
+			!  If this is a dark vector then move to the point
+			!  otherwise draw to the point
+			!
+			     IF .id [tk$v_dark_vector]
+			     THEN BEGIN
+					$MOVETO( .id [tk$w_graph_x],
+							.id [tk$w_graph_y]);
+					$CLEAR( id [tk$v_dark_vector]);
+				  END
+			     ELSE 
+					$DRAWTO( .id[ tk$w_graph_x],
+							.id [tk$w_graph_y]);
+
+			!
+			!  Update the tek beam tracker
+			!
+			! Always position after the draw command.  This is 
+			! necessary because if a path flush occurs then we 
+			! must have a history of where the beam was
+			! before the draw.
+			!
+			     $POS( .id [tk$w_graph_x] , .id [tk$w_graph_y]);
+
+			     id [tk$w_address_state] = start;
+     
+			     END;	! End lox encountered vector finished
+
+		      	!
+			!  if this is a low y then overwrite the old value. This creates
+			!  no problem with EGM address since low y must be sent if the
+			!  extra byte is sent
+			!
+			[3]: BEGIN	! Loy encountered
+	
+			     IF (.output_byte EQL cc$k_del) AND (NOT .id [tk$v_del_loy])
+			     THEN RETURN;
+			     y<4,5> = .output_byte<0,5>;
+			     id[tk$w_address_state] = loy;
+
+			     END;	! Loy encountered
+
+			TES;
+
+
+			!
+			!  If we are no longer in graph mode then
+			!  exit the graph mode loop
+			!
+			IF .id [tk$l_mode] NEQ tk$k_graph
+			THEN EXITLOOP;
+
+			!
+			!  Incriment counter an check to see if at end of buf.
+			!
+			IF (i = .i + 1) GTR .buffer_length
+			THEN EXITLOOP;
+
+			!
+			!  put input code into temporary variable: Don't strip off 8th
+			!  bit yet.
+			!
+			output_byte = CH$RCHAR_A( buffer_pointer);
+
+			END;	!  End of graph mode  !
+
+			TES;
+
+		      END;
+		     END;	! End non control character !
+	!
+	!  Check to see if page full condition has occured. This applies
+	!  to control characters as well as straight text.
+	!
+	IF .id [tk$v_page_full]
+	THEN BEGIN
+		!
+		!  If page full has occured then note that the
+		!  only way to end this condition is with user
+		!  intervention.  First get enough memory to
+		!  store the remainder of the buffer being
+		!  processed.
+		!
+		BIND bcnt = id [tk$l_page_full_backlog_bcnt];
+
+		bcnt = .buffer_length - .i;
+
+		IF ( .bcnt GTR 0 ) THEN
+		    BEGIN
+		    VS$$ACP_GET_VM(
+			 bcnt
+			,id [tk$a_page_full_backlog]
+			,0
+				);
+		    CH$MOVE(
+			 .bcnt
+			,.buffer_pointer
+			,.id [tk$a_page_full_backlog]
+			);
+		    END;
+
+		tk$$emu_flush_draw( .id);
+		tk$$emu_flush_print( .id);
+
+		!
+		!  if alpha mode then restart alpha cursor
+		!
+		IF .id [tk$l_mode] EQL tk$k_alpha 
+		THEN tk$$cur_start_alpha(.id);
+	
+		!
+		!  Set xoff for this vd allow for no more
+		!  output 
+		!
+		VS$$VDS_VD_SET_XON_XOFF( 
+			 .id [tk$l_fullview_vd_id]
+			,1		! xoff
+					);
+
+		!
+		!  Show the page full attribute
+		!
+		TK$$FTR_INDICATE_PAGE_FULL( .id);
+
+		RETURN .id [tk$l_operation_status];
+
+	     END;	! End of page full encountered !
+
+   END;		! End of loop to process all bytes of output !
+
+!
+!  Flush the draw and print buffers
+!
+tk$$emu_flush_draw( .id);
+tk$$emu_flush_print( .id);
+
+!
+!  Get rid of any unused path resources for VaxStation native graphics
+!
+$NATIVE_CLEAN;
+
+
+!
+!  if alpha mode then restart alpha cursor
+!
+IF .id [tk$l_mode] EQL tk$k_alpha 
+THEN tk$$cur_start_alpha(.id);
+
+
+END;                        
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$emu_esc_seq
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine receives the output code from the write routine and performs
+!   a look up to see what escape sequence it is and calls the appropriate
+!   action routine to accomplish the task of simulating the responce of the
+!---real tek4014.
+!
+!  FORMAL PARAMETERS:
+!  
+       (id: REF tek_blk,  		!input: pointer to database of this tek4014
+        code_byte: UNSIGNED BYTE):      !input: the byte to be examined
+!  
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE = 
+!  
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---calls a number of action routines (for display adjustment) and makes
+!---changes to the database for the terminal indicated by id
+!
+!--
+BEGIN
+
+LOCAL size;
+
+!--------------------------------------
+!  Clear the lce status
+!--------------------------------------
+$CLEAR(id [tk$v_lce_flag]);
+
+!--------------------------------------
+!  Catigorize code_byte according to its division by 32
+!--------------------------------------
+!CASE (.code_byte / 32) 
+CASE (.code_byte ^ -5) FROM 0 TO 3 OF
+
+SET
+
+!--------------------------------------
+!  code_byte less than 32 then its a control character
+!--------------------------------------
+[0]: CASE .code_byte FROM cc$k_nul TO cc$k_us OF 
+     
+     SET
+     [cc$k_nul,cc$k_lf,cc$k_esc]: $SET(id [tk$v_lce_flag]);
+     
+     !----------------------------------------
+     ! <esc><enq> wants to generate graphic input data so call routine
+     ! ends gin mode if it exists.
+     !----------------------------------------
+     [cc$k_enq]: BEGIN
+		   $SET(id [tk$v_bypass_cond]);
+		   IF .id [tk$l_mode] EQL tk$k_gin 
+		   THEN BEGIN
+			tk$$cur_generate_gin(.id,0);
+			tk$$cur_stop_crosshairs(.id);
+			vsta$$kernel_call(
+					 vs$$acp_gin_mode
+					,.id [tk$l_fullview_vd_id]
+					,0
+					);
+			id [tk$l_mode] = tk$k_alpha;
+			END
+		   ELSE
+			tk$$cur_generate_gin(.id,1);
+
+		 END;			
+
+     [cc$k_bel]: BEGIN
+			$CLEAR(id [tk$v_cr_ignore]);
+			VSTA$$KBRD_SOUND_BELL( .VS$GW_VBCHAN);
+		 END;
+
+
+     [cc$k_bs] : IF .id [tk$l_mode] EQL tk$k_alpha
+		 THEN tk$$emu_back_space(.id);
+		 
+     [cc$k_ht] : IF .id [tk$l_mode] EQL tk$k_alpha
+		 THEN tk$$emu_display_char(.id,32);
+ 
+     [cc$k_vt] : IF .id [tk$l_mode] EQL tk$k_alpha
+		 THEN tk$$emu_up_line(.id);
+
+!---------------------------------------
+!  FORM FEED: GO TO ALPHA MODE AND CLEAR SCREEN, BYPASS IS CLEARED
+!---------------------------------------
+     [cc$k_ff] : BEGIN
+                 
+		 !
+		 !  If we are in gin mode then cancel crosshairs cursors and
+		 !  tell acp.
+		 !
+		 IF .id [tk$l_mode] EQL tk$k_gin
+		 THEN BEGIN
+		    tk$$cur_stop_crosshairs(.id);
+		    vsta$$kernel_call(
+				 vs$$acp_gin_mode
+				,.id [tk$l_fullview_vd_id]
+				,0
+				);
+		    END;
+
+		 tk$$emu_flush_draw( .id);
+		 tk$$emu_flush_print( .id);
+		 tk$$emu_clear_screen( .id);
+
+                 id [tk$l_mode] = tk$k_alpha;
+
+
+                 $CLEAR(id [tk$v_bypass_cond]);
+                 $CLEAR(id [tk$v_margin_bit]);
+
+		 $POS( .margin [0], $CURRENT_CHARTOP);
+
+                 END;                 
+
+     [cc$k_etb]: ;
+     [cc$k_can]: $SET(id [tk$v_bypass_cond]);
+
+!-----------------------------------------
+!  start gin mode with crosshair cursors
+!-----------------------------------------
+     [cc$k_sub]: BEGIN
+
+		 !
+		 !  If we are already in gin mode then just return
+		 !
+		 IF .id [tk$l_mode] NEQ tk$k_gin
+		 THEN BEGIN
+	                 $SET(id [tk$v_bypass_cond]);
+	                 id [tk$l_mode] = tk$k_gin;
+			 tk$$cur_start_crosshairs(.id);
+			!
+			! inform acp of gin mode
+			!
+			vsta$$kernel_call(
+				 vs$$acp_gin_mode
+				,.id [tk$l_fullview_vd_id]
+				,1
+				);
+		      END;
+                 END;
+
+!-----------------------------------------
+!  GO TO SPECIAL POINT PLOT MODE: STARTING BEAM ADDRESS SET TO GRAPH ADDRESS
+!-----------------------------------------
+     [cc$k_fs] : BEGIN
+ 
+
+		!
+		!  Path flush and reset pattern
+		!
+		TK$$EMU_FLUSH_DRAW( .id);
+		id [tk$w_ptn_count] = 0;
+		id [tk$w_ptn_mult] = 1;
+
+		 $POS(  .id[tk$w_graph_x], .id[tk$w_graph_y]);
+
+                 id [tk$l_mode] = tk$k_spec_point;
+        
+                 END;
+
+!----------------------------------------
+!  GO TO GRAPH MODE IF IN GRAPH OR ALPHA MODES 
+!  ANY OTHER SOURCE MODE NOT PERMISSABLE
+!----------------------------------------
+     [cc$k_gs] : BEGIN
+
+                 IF .id[tk$l_mode] EQL tk$k_alpha THEN BEGIN
+                 
+                 id [tk$l_mode] = tk$k_graph;
+                 $SET(id [tk$v_dark_vector]);
+!----------------------------------------
+!  must restore the old graph mode address
+!----------------------------------------
+
+		 $POS(  .id[tk$w_graph_x], .id[tk$w_graph_y]);
+
+                 END
+!---------------------------------------
+!  IF ALLREADY IN GRAPH MODE THEN JUST SET DARK VECTOR
+!---------------------------------------
+                 ELSE IF .id [tk$l_mode] EQL tk$k_graph THEN
+                 $SET(id [tk$v_dark_vector]);
+		id[tk$w_address_state] = start;
+
+                 END;
+
+!-------------------------------------------
+!  GO TO INCRIMENTAL PLOT MODE: STARTING ADDRESS = OLD GRAPH STARTING ADDRESS
+!  NOT PERMISSABLE FROM GIN MODE
+!-------------------------------------------
+     [cc$k_rs] : BEGIN
+              
+		IF .id [tk$l_mode] EQL tk$k_gin THEN RETURN;
+
+!-------------------------------------------
+!  If was in alpha mode then must adjust beam for character height
+!-------------------------------------------
+		IF .id [tk$l_mode] EQL tk$k_alpha 
+		THEN $LEAVEALPHA;
+
+		!
+		!  Path flush and reset pattern
+		!
+		TK$$EMU_FLUSH_DRAW( .id);
+		id [tk$w_ptn_count] = 0;
+		id [tk$w_ptn_mult] = 1;
+	
+		!
+		!  When entering incr mode then we must make sure we have
+		!  moved to the starting point.
+		!
+		$MOVETO( .id [tk$w_beam_x_address], .id [tk$w_beam_y_address]);
+
+                id [tk$l_mode] = tk$k_incr;
+
+                END;
+
+!-------------------------------------------
+!  go to alpha mode adjust beam for character height
+!-------------------------------------------
+     [cc$k_us] : BEGIN
+
+!
+!  If we are already in alpha mode then don't do anything
+! 
+ 
+		 IF (.id [tk$l_mode] EQL tk$k_gin) OR
+		    (.id [tk$l_mode] EQL tk$k_alpha)
+		 THEN RETURN;
+
+	         $CLEAR(id [tk$v_bypass_cond]);
+
+		 !
+		 ! Adjust the beam position down by the character height
+		 !
+		 $ENTERALPHA;
+
+                 id [tk$l_mode] = tk$k_alpha;
+              
+		id[tk$w_address_state] = start;
+                 END;
+
+     [cc$k_cr] : BEGIN
+                  
+                 $SET(id [tk$v_lce_flag]);
+                 $SET(id [tk$v_cr_ignore]);
+
+                 END;
+
+     [INRANGE]:  BEGIN
+		 $CLEAR(id [tk$v_lce_flag]);
+		 $CLEAR(id [tk$v_cr_ignore]);
+		 END;
+     TES;
+
+!-----------------------------------------
+!  IF code_byte in next range of ascii code then check to see if
+!  it is a character size command or if it is <esc> ? in replacement
+!  of DEL (in the situation DEL cannot be used for LOY
+!-----------------------------------------
+[1]: CASE .code_byte FROM %C'8' TO %C'?' OF
+ 
+     SET
+
+     [%C'?']  : IF .id [tk$l_mode] EQL tk$k_graph
+	        THEN tk$$emu_display_vector(.id,cc$k_del);
+
+     [%C'8',%C'9',%C';',%C':']: BEGIN
+
+!
+!  Flush the current contents of the text backlog
+!
+		TK$$EMU_FLUSH_PRINT( .id);
+                
+!-----------------------------------------
+!  note that .code_byte-%C'8' indicates the size text to be used
+!-----------------------------------------
+                
+                size = .code_byte - %C'8';
+                id[tk$w_text_size] = .size;
+
+		IF .id [tk$l_mode] EQL tk$k_alpha
+		THEN BEGIN
+                
+!-----------------------------------------
+!  TRACK beam up to adjust for different height characters
+!-----------------------------------------
+			$POSY ( .id[tk$w_beam_y_address] + $CURRENT_CCMY -
+	                                          .tek_y_ccm[.size]);
+
+		     END;
+
+                END; 
+
+     [INRANGE]:;
+     [OUTRANGE]:;
+
+     TES;
+
+!-----------------------------------------
+!  There is no escape sequence using the next 32 ascii codes
+!-----------------------------------------
+[2]: ;
+[3]: BEGIN
+
+!-----------------------------------------
+!  .code_byte/8 = 12 : normal vectors      : set pixel size
+!  .code_byte/8 = 13 : defocused vectors   : set pixel size 
+!  .code_byte/8 = 14 : write-thru vectors  : set pixel size and writing mode
+!-----------------------------------------
+!     CASE (.code_byte/8) 
+     CASE (.code_byte ^ -3) FROM 12 TO 14 OF
+
+     SET
+ 
+     [12]:     
+	   BEGIN 
+		BIND 	 width = id [tk$w_line_width]: VECTOR [,WORD]
+			;
+
+		tk$$emu_flush_draw( .id);
+
+		width [0] = 1;
+		width [1] = 1;
+	   END;
+
+     [13]:      
+	   BEGIN 
+		BIND 	 width = id [tk$w_line_width]: VECTOR [,WORD]
+			;
+
+		tk$$emu_flush_draw( .id);
+
+		width [0] = 2;
+		width [1] = 2;
+	   END;
+
+     [14]:      
+	   BEGIN 
+		BIND 	 width = id [tk$w_line_width]: VECTOR [,WORD]
+			;
+
+		tk$$emu_flush_draw( .id);
+
+		width [0] = 1;
+		width [1] = 1;
+	   END;
+
+!-----------------------------------------
+!   <esc><del> sets lce condition
+!   filter out outrange values here
+!-----------------------------------------
+     [OUTRANGE]:BEGIN
+
+                IF .code_byte EQLU cc$k_del THEN
+                   $SET(id [tk$v_lce_flag]);
+
+                RETURN
+
+                END;
+     TES;
+
+!-----------------------------------------
+! .code_byte MOD 8 = 0 : NORMAL VECTORS
+! .code_byte MOD 8 = 1 : DOTTED VECTORS
+! .code_byte MOD 8 = 2 : DOT-DASHED VECTORS
+! .code_byte MOD 8 = 3 : LONG DASHED VECTORS
+! .code_byte MOD 8 = 4 : SHORT DASHED VECTORS
+!------------------------------------------
+!     CASE (.code_byte MOD 8) 
+     CASE .code_byte<0,3> FROM 0 TO 7 OF
+
+     SET
+
+
+     [1]: 
+	  BEGIN
+		tk$$emu_flush_draw( .id);
+		id [tk$w_pattern] = %O'104210';
+		id [tk$w_ptn_count] = 16;
+		id [tk$w_ptn_mult] = 1;
+	  END;
+
+     [2]:       
+	  BEGIN
+		tk$$emu_flush_draw( .id);
+		id [tk$w_pattern] = %X'9FF';
+		id [tk$w_ptn_count] = 14;
+		id [tk$w_ptn_mult] = 1;
+	  END;
+
+     [3]:       
+
+	  BEGIN
+		tk$$emu_flush_draw( .id);
+		id [tk$w_pattern] = %O'170360';
+		id [tk$w_ptn_count] = 16;
+		id [tk$w_ptn_mult] = 1;
+	  END;
+
+     [4]:       
+
+	  BEGIN
+		tk$$emu_flush_draw( .id);
+		id [tk$w_pattern] = %X'1E';
+		id [tk$w_ptn_count] = 5;
+		id [tk$w_ptn_mult] = 2;
+	  END;
+
+     [INRANGE]: 
+
+	  BEGIN
+		tk$$emu_flush_draw( .id);
+		id [tk$w_ptn_count] = 0;
+		id [tk$w_ptn_mult] = 1;
+	  END;
+
+     TES;
+
+     END;
+
+TES;
+                
+END;
+
+
+
+
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_control_char
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine determines which control character is currently being examined
+!   and calls for the appropriate database adjustment or display change.  The
+!---action performed depends upon the present state of the terminal
+!
+!  NOTE:
+!
+!---Refer to the functional specs. to determine the action of each control 
+!---character.
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk,          !input: pointer to database entry for this terminal
+        code_byte: BYTE):               !input: contains the byte of output code
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---calls for display adjustments or database adjustments as well as placing
+!---status information into the input buffer if directed to.
+!
+!--
+BEGIN
+
+CASE .code_byte FROM cc$k_nul TO cc$k_us OF
+
+SET
+
+[cc$k_bel]: BEGIN
+	    $CLEAR(id [tk$v_cr_ignore]);
+	    $CLEAR(id [tk$v_bypass_cond]);
+	    VSTA$$KBRD_SOUND_BELL( .VS$GW_VBCHAN);
+	    END;
+
+[cc$k_bs] : IF (.id [tk$l_mode] EQL tk$k_alpha) AND (NOT .id[tk$v_bypass_cond])
+	    THEN tk$$emu_back_space(.id);
+
+[cc$k_ht] : IF (.id [tk$l_mode] EQL tk$k_alpha) AND (NOT .id[tk$v_bypass_cond])
+	    THEN tk$$emu_display_char(.id,32);
+
+!-----------------------------------------
+!  line feed to be processed. If strap option in effect then
+!  call for carriage return as well
+!-----------------------------------------
+[cc$k_lf] : BEGIN
+
+	    $CLEAR(id [tk$v_bypass_cond]);
+            tk$$emu_line_feed(.id);
+            IF .id[tk$v_auto_cr_lf] THEN 
+               tk$$emu_carriage_ret(.id);
+
+            END;
+
+[cc$k_vt] : IF (.id [tk$l_mode] EQL tk$k_alpha) AND (NOT .id[tk$v_bypass_cond])
+	    THEN tk$$emu_up_line(.id);
+
+!----------------------------------------
+!  preform a carriage return. If strap option in effect then also perform
+!  line feed
+!----------------------------------------
+[cc$k_cr] : BEGIN
+
+	    $CLEAR(id [tk$v_bypass_cond]);
+            tk$$emu_carriage_ret(.id);
+            IF .id[tk$v_auto_lf_cr] THEN
+               tk$$emu_line_feed(.id)
+            END;
+
+[cc$k_esc]: $SET(id [tk$v_lce_flag]);
+[cc$k_fs] : BEGIN
+!----------------------------------------------
+!  GO TO POINT PLOT MODE
+!  IF STARTING ADDRESS IS GIVEN BY LAST GRAPH MODE BEAM ADDRESS
+!  CHECK TO SEE IF THIS IS A PERMISSABLE MODE CHANGE
+!----------------------------------------------
+	    IF (.id [tk$l_mode] NEQ tk$k_alpha) AND
+	       (.id [tk$l_mode] NEQ tk$k_graph) THEN RETURN
+
+
+	!
+	!  Path flush and reset pattern
+	!
+	TK$$EMU_FLUSH_DRAW( .id);
+	id [tk$w_ptn_count] = 0;
+	id [tk$w_ptn_mult] = 1;
+
+	    $POS ( .id[tk$w_graph_x], .id[tk$w_graph_y]);
+
+!-----------------------------------------------
+!  set for point plot mode implemented through the normal graphics routine
+!-----------------------------------------------
+	    $CLEAR(id [tk$v_bypass_cond]);
+            id [tk$l_mode] = tk$k_point;
+
+            END;
+!----------------------------------------
+!  SET MODE TO GRAPH: PERMISSABLE ONLY IF PRESENTLY IN ALPHA OR GRAPH MODES
+!----------------------------------------
+[cc$k_gs] : BEGIN
+
+                 IF .id[tk$l_mode] EQL tk$k_alpha 
+		 THEN BEGIN
+                 
+!			 tk$$emu_flush_paths( .id);
+
+	                 id [tk$l_mode] = tk$k_graph;
+	                 $SET(id [tk$v_dark_vector]);
+!----------------------------------------
+!  must restore the old graph mode address
+!----------------------------------------
+
+			$POS ( .id[tk$w_graph_x], .id[tk$w_graph_y]);
+
+	              END
+!---------------------------------------
+!  IF ALLREADY IN GRAPH MODE THEN JUST SET DARK VECTOR
+!---------------------------------------
+                 ELSE IF .id [tk$l_mode] EQL tk$k_graph THEN
+                 $SET(id [tk$v_dark_vector]);
+
+		id[tk$w_address_state] = start;
+
+            END;
+
+
+[cc$k_rs] : BEGIN
+
+	    $CLEAR(id [tk$v_bypass_cond]);
+
+!----------------------------------------------
+!  GO TO INCRIMENTAL PLOT MODE: STARTING POINT SET BY GRAPH MODE BEAM ADDRESS
+!  NOT PERMISSABLE IF FROM GIN MODE
+!----------------------------------------------
+	    IF .id [tk$l_mode] EQL tk$k_gin THEN RETURN;
+
+!----------------------------------------------
+!  ADJUST FOR CHARACTER HEIGHT IF FROM ALPHA MODE
+!----------------------------------------------
+	    IF .id [tk$l_mode] EQL tk$k_alpha 
+	    THEN BEGIN
+
+		 $LEAVEALPHA;
+
+		 END;
+
+	!
+	!  Path flush and reset pattern
+	!
+	TK$$EMU_FLUSH_DRAW( .id);
+	id [tk$w_ptn_count] = 0;
+	id [tk$w_ptn_mult] = 1;
+
+	    !
+	    !  When entering incr mode then we must make sure we have
+	    !  moved to the starting point.
+	    !
+	    $MOVETO( .id [tk$w_beam_x_address], .id [tk$w_beam_y_address]);
+
+            id [tk$l_mode] = tk$k_incr;
+
+            END;
+
+!
+!  go to alpha mode adjust beam for character height
+!  NOT PERMISSABLE FROM GIN MODE
+!
+     [cc$k_us] : BEGIN
+
+!
+!  If we are already in alpha mode then don't do anything
+! 
+ 
+		 IF (.id [tk$l_mode] EQL tk$k_gin) OR
+		    (.id [tk$l_mode] EQL tk$k_alpha)
+		 THEN RETURN;
+
+	         $CLEAR(id [tk$v_bypass_cond]);
+
+		 !
+		 ! Adjust the beam position down by the character height
+		 !
+		 $ENTERALPHA;
+
+                 id [tk$l_mode] = tk$k_alpha;
+              
+		id[tk$w_address_state] = start;
+                 END;
+
+
+[INRANGE]: ;
+
+TES;
+
+END;
+
+
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_display_char
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives the specified character and controls all the actions
+!   necessary to move the cursor and display the character.  From this point
+!   the flow of alpha information is no longer contiguous - that is, line feed
+!---and carriage return are explicitly inserted when an end of line in encountered
+!
+!  FORMAL PARAMETERS:
+!
+      (id: REF tek_blk,           !pointer to database entry for this 4014
+       code_byte: BYTE):                !contains the character to be displayed
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---In the process of displaying a character several things must be done
+!   1) the cursor must be moved, 2) a check for end of line and end of page
+!   must be done and 3) a call to the native print text performs the actual
+!---writing of the character
+!
+!--
+BEGIN
+
+
+LOCAL
+	 new_text_hrd_x		: WORD SIGNED
+	,new_text_hrd_y		: WORD SIGNED
+	;
+
+!
+!  If we are in 7bit text mode then strip off 8th bit
+!
+IF .id [tk$w_bytesize] EQL prof$k_tek_7bit
+THEN code_byte = .code_byte AND 127;
+
+
+!
+!  If the character is a delete then just ignore
+!
+IF (.code_byte AND 127 ) EQL 127
+THEN RETURN;
+
+!
+!  Transform the logical position into the new hard position
+!
+new_text_hrd_x = ((.id [tk$w_beam_x_address] + tk$k_x_boarder)*
+			.id [tk$w_screen_vd_x]) / tk$k_tek_x_screen;
+
+new_text_hrd_y = ((.id [tk$w_beam_y_address] + tk$k_y_boarder)*
+			.id [tk$w_screen_vd_y]) / tk$k_tek_y_screen;
+
+!
+!  Ckeck to see if there is enough room in the text and control string buffers
+!
+IF (.tk$w_text_count GEQ .tk$w_text_max_count) OR
+   (.tk$w_ctrl_count + 5 GTR .tk$w_ctrl_max_count)
+THEN tk$$emu_flush_print( .id);
+
+!
+!  If no text has been encountered durring the current output then we
+!  must prepare new text and control string buffers
+!
+IF NOT .tk$w_text_exist
+THEN BEGIN	! If text does not yet exist for this output
+	!
+	!  Allocate space for the text and control strings
+	!
+	VSTA$$DMM_GET_MAPPED_MEM( %ref( 1024), tk$bv_text_addr);
+	
+	!
+	!  Start the control string after the text in the buffer
+	!
+	tk$wv_ctrl_addr = tk$bv_text_addr [ .tk$w_text_max_count];
+
+	tk$w_text_count = 0;
+
+	!
+	!  Initialize the text destination offsets
+	!
+	tk$w_text_dox = .new_text_hrd_x;
+	tk$w_text_doy = .new_text_hrd_y;
+
+	!
+	!  Now put in the output 1 opcode into the control string
+	!
+	tk$wv_ctrl_addr [ 0] = 0;
+	tk$wv_ctrl_addr [ 1] = 1;
+
+	!
+	!  Update the control string count
+	!
+	tk$w_ctrl_count = 2;
+
+	!
+	!  Indicate that text now exist
+	!
+	tk$w_text_exist = 1;
+
+     END	! If text does not already exist for this output
+ELSE BEGIN	! If text does exist for this output
+	!
+	!  Check to see if position adjustment is necessary
+	!
+	IF ((.tk$w_text_hrd_x + .tk$wv_fnt_size [ .id [ tk$w_text_size] * 2]) 
+		NEQ .new_text_hrd_x) OR
+	   (.tk$w_text_hrd_y NEQ .new_text_hrd_y)
+	THEN BEGIN	! Text position needs adjustment
+		!
+		!  Adjust opcode
+		!
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count] = 3;
+
+		!
+		!  Add text width to current hrd position and subtract it from
+		!  the new hrd position
+		!
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count + 1] = 
+			.new_text_hrd_x - 
+			(.tk$wv_fnt_size [ .id [tk$w_text_size] * 2] + 
+			.tk$w_text_hrd_x);
+		
+		!
+		!  Subtract the old hrd y from the new
+		!
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count + 2] = 
+			.new_text_hrd_y - .tk$w_text_hrd_y;
+
+
+		!
+		!  Now put in the output 1 opcode into the control string
+		!
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count + 3] = 0;
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count + 4] = 1;
+
+		!
+		!  Update the control string count
+		!
+		tk$w_ctrl_count = .tk$w_ctrl_count + 5;
+
+	     END	! Text position needs adjustment
+	ELSE
+		!
+		!  Else if no adjustment needed then just increase the
+		!  count on the last outn command
+		! 
+		tk$wv_ctrl_addr [ .tk$w_ctrl_count - 1] = 
+			.tk$wv_ctrl_addr [ .tk$w_ctrl_count - 1] + 1;
+
+     END;		! Text already exist for this output
+
+
+!
+!  Put the character code into the text buffer
+!
+tk$bv_text_addr [ .tk$w_text_count] = .code_byte;
+
+!
+!  Update the text count 
+!
+tk$w_text_count = .tk$w_text_count + 1;
+
+!
+!  Now our new text hard position becomes our stored text position
+!
+tk$w_text_hrd_x = .new_text_hrd_x;
+tk$w_text_hrd_y = .new_text_hrd_y;
+
+!
+!  track beam for this character 
+!
+$POSX ( .id[tk$w_beam_x_address] + $CURRENT_CCMX);
+
+
+!
+!  If at end of line then must automatic line-feed carriage-return
+!
+IF ($CURRENT_CUSX + .id[tk$w_beam_x_address]) GEQ tk$k_screen_log_right
+THEN BEGIN	! If at end of line
+
+	tk$$emu_line_feed(.id);
+	tk$$emu_carriage_ret(.id);
+
+     END; 	! End of at end of line condition
+
+END;		! End of display character
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_display_vector
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine uses the code_byte as input to an address grammer in order to
+!   allow for all posible short-hand ways of addressing the terminal in graph
+!   mode.  When a LOX is received an accept state is reached and the vector is
+!---drawn.
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk,          !get pointer to database entry for tek4014
+        code_byte: BYTE):               !the current byte of a vector address
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  ROUTINE VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---When ever an eccept state is reached a vector is drawn.  
+!
+!--
+BEGIN
+
+BIND x = id [tk$w_graph_xt]: WORD,
+     y = id [tk$w_graph_yt]: WORD;
+
+
+!-----------------------------------------
+!  if special point plot then first byte of transmission is an intencity setting
+!-----------------------------------------
+IF (.id[tk$l_mode] EQL tk$k_spec_point) AND 
+   (.id[tk$w_address_state] EQL start) 
+THEN BEGIN
+
+     id [tk$w_address_state] = hiy;
+     RETURN;
+
+     END;
+!
+!  This is a safe substitute for division because we never deal with
+!  negative numbers
+!
+CASE (.code_byte ^ -5) FROM 1 TO 3 OF
+
+SET
+
+!------------------------------------------
+!  if code is hix or hiy then must look at address state to determine which
+!  it is and then overwrite the old value.
+!------------------------------------------
+[1]: BEGIN
+
+     IF .id[tk$w_address_state] GTR hiy 
+     THEN BEGIN
+
+          x<9,5> = .code_byte<0,5>;
+          id [tk$w_address_state] = hix;
+
+          END
+     ELSE BEGIN
+
+          y<9,5> = .code_byte<0,5>;
+          id [tk$w_address_state] = hiy;
+
+          END;
+     END;
+
+[2]: BEGIN
+     
+     x<4,5> = .code_byte<0,5>;
+!--------------------------------------------
+!  must remember that addressing is upside down from tektronix so adjust
+!--------------------------------------------
+     id [tk$w_graph_y] = tk$k_tek_y_addressing - .y + tk$k_y_boarder;
+     id [tk$w_graph_x] = .x + tk$k_x_boarder;
+
+     IF .id[tk$l_mode] EQL tk$k_graph
+     THEN IF .id [tk$v_dark_vector]
+	  THEN BEGIN 
+			$MOVETO( .id [tk$w_graph_x], .id [tk$w_graph_y]);
+			$CLEAR( id [tk$v_dark_vector]);
+	       END
+	  ELSE BEGIN
+			$DRAWTO( .id [tk$w_graph_x], .id [tk$w_graph_y]);
+	       END
+ 
+     ELSE IF (.id[tk$l_mode] EQL tk$k_point) OR
+             (.id[tk$l_mode] EQL tk$k_spec_point)
+	  THEN BEGIN
+
+			$MOVETO( .id [tk$w_graph_x], .id [tk$w_graph_y]);
+			$DRAWTO( .id [tk$w_graph_x], .id [tk$w_graph_y]);
+
+	       END;
+!
+! Always position after the draw command.  This is necessary because if
+! a path flush occurs then we must have a history of where the beam was
+! before the draw.
+!
+
+     $POS ( .id [tk$w_graph_x] , .id [tk$w_graph_y]);
+
+     id [tk$w_address_state] = start;
+     
+     END;     
+
+!--------------------------------------------
+!  if this is a low y then overwrite the old value. This creates
+!  no problem with EGM address since low y must be sent if the
+!  extra byte is sent
+!--------------------------------------------
+[3]: BEGIN
+
+     IF (.code_byte EQL cc$k_del) AND (NOT .id [tk$v_del_loy])
+     THEN RETURN;
+     y<4,5> = .code_byte<0,5>;
+     id[tk$w_address_state] = loy;
+
+     END;
+
+TES;
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_increme_plot
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine recieves output codes sent during the incremental plot mode.
+!   and produces the gidis code necessary to perform this type of plotting. 
+!---For now any codes not of directional type will be ignored.  
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk,		!recieve pointer to database
+        code_byte):                     !recieve byte of output code
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---The produced will make beam movements of (+/-4,+/-4) in relative
+!---cordinates.  
+!
+!--
+BEGIN
+
+LOCAL x_dist,y_dist: WORD;
+
+!---------------------------------------
+!  If this is a beam off command then put the position op into the command field
+!---------------------------------------
+IF .code_byte EQL %C' ' 
+THEN BEGIN
+	!
+	!  This is a pen up command
+	!
+	id[tk$w_increme_command] = 0;
+
+	RETURN;
+
+END;
+
+!---------------------------------------
+!  If this is a beam on command then put the vector op into the command field
+!---------------------------------------
+IF .code_byte EQL %C'P' 
+THEN BEGIN
+	!
+	! This is a pen down command
+	!
+	id[tk$w_increme_command] = 1;
+
+	RETURN;
+
+END;
+
+!---initialize movement fields to 0
+x_dist = 0;
+y_dist = 0;
+
+!---------------------------------------
+!  Use a transfer vector to perform the appropriate move or draw
+!---------------------------------------
+CASE .code_byte FROM %C'A' TO %C'J' OF
+
+SET
+
+	[%C'A']:  x_dist =  4;
+	[%C'B']:  x_dist = -4;
+	[%C'D']:  y_dist = -4;
+	[%C'H']:  y_dist =  4;
+	[%C'E']:  BEGIN
+         
+	          x_dist =  4;
+	          y_dist = -4;
+
+	          END;
+	[%C'F']:  BEGIN
+
+	          x_dist = -4;
+	          y_dist = -4;
+	
+	          END;
+	[%C'I']:  BEGIN
+
+	          x_dist =  4;
+	          y_dist =  4;
+
+	          END;
+	[%C'J']:  BEGIN
+ 
+	          x_dist = -4;
+	          y_dist =  4;
+
+	          END;
+	[INRANGE]: RETURN;
+	[OUTRANGE]:RETURN;
+
+TES;
+
+!-----------------------------------
+!  track the writing beam
+!-----------------------------------
+
+
+IF .id [ tk$w_increme_command] EQL 0
+THEN $MOVETO( .id [tk$w_beam_x_address], .id [tk$w_beam_y_address])
+ELSE $DRAWTO( .id [tk$w_beam_x_address], .id [tk$w_beam_y_address]);
+
+!
+! Always position after the draw command.  This is necessary because if
+! a path flush occurs then we must have a history of where the beam was
+! before the draw.
+!
+$POS( .id[tk$w_beam_x_address] + .x_dist, .id[tk$w_beam_y_address] + .y_dist);
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_back_space
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine creates the native code necessary to simulate a back space
+!   of the tek4014.  For now no reverse wrap around is not used.  If the
+!---cursor gets to the left margin it then stops
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---None for now although if wrap around is performed then special commands
+!---may have to be used
+!
+!--
+BEGIN
+
+!------------------------------------------
+!  check to see if at left margin.  If so then just return for now
+!------------------------------------------
+IF (.id[tk$w_beam_x_address] - $CURRENT_CCMX) LSS $CURRENT_MARGIN
+
+THEN BEGIN
+
+     $POSX ( $CURRENT_MARGIN);
+
+     RETURN
+
+     END;
+
+$POSX (.id [tk$w_beam_x_address] - $CURRENT_CCMX);
+
+END;
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_up_line
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine produces the native code necessary to perform an up-line
+!   action of the tek4014.  For now no wrap around is performed so if
+!---cursor reaches top it just stays there
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):              !recieve pointer to database
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---None for now but margin switches and special processing will be necessary
+!---if wrap around is performed
+!
+!--
+BEGIN
+
+!--------------------------------------------
+!  check to see if at top of screen
+!--------------------------------------------
+IF (.id[tk$w_beam_y_address] - $CURRENT_CCMY) LSS $CURRENT_CHARTOP 
+THEN BEGIN
+
+     $POSY ( $CURRENT_CHARTOP);
+
+     RETURN;
+
+     END;
+
+
+$POSY ( .id [tk$w_beam_y_address] - $CURRENT_CCMY);
+
+END;
+
+
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_line_feed
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine produces the native code necessary to perform a line feed 
+!   action.  It must determine if the beam is already at the bottom of the
+!   screen and wrap it around to the top if it is.  Line spacing is also
+!   variable by one pixel and the pattern for the line spacing is used to
+!---deside if the extra pixel is added.
+!
+!  FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):       !input the database pointer
+!
+!  IMPLICIT INPUTS:  
+!
+!---This routine examines the screen beam location to see if at bottom of display
+!   tek_y_cds is the cell display size y dimension: also the line feed size in
+!---the normal case.
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---native code is produced and put into the native buffer.  If already at bottom
+!---of screen then must move to top line of screen
+!
+!--
+BEGIN
+
+!
+!  If we are not in alpha mode then just return
+!
+IF .id [tk$l_mode] NEQ tk$k_alpha
+THEN RETURN;
+
+!------------------------------------------
+!  if at bottom of screen then move to top at other margin
+!------------------------------------------
+IF (.id[tk$w_beam_y_address]+$CURRENT_CCMY*2) GTR  tk$k_screen_log_bottom
+THEN BEGIN
+
+	IF .id[tk$v_margin_bit] 	! We are currently in margin 2
+	THEN BEGIN
+
+		IF .id [tk$w_beam_x_address] GEQ tk$k_margin_2
+		THEN $POS ( .id [tk$w_beam_x_address]-tk$k_margin_2+tk$k_margin_1,
+				 $CURRENT_CHARTOP)
+		ELSE $POS ( tk$k_margin_1, $CURRENT_CHARTOP);
+
+		!
+		! Check to see if we are to signal page full
+		!
+		IF (.id[tk$v_margin_2]) AND (.id[tk$v_margin_on])
+		THEN $SET(id[tk$v_page_full]);
+
+	     END	! End of switch to margin 1 !
+	ELSE BEGIN
+		!
+		!  If x geq than margin 2 then don't adjust x.  If x lss than
+		!  margin 2 then adjust x by distance between margin 2 and
+		!  margin 1.
+		!
+		IF .id [tk$w_beam_x_address] LSS tk$k_margin_2
+		THEN $POSX (
+				tk$k_margin_2 - tk$k_margin_1 +
+				.id[tk$w_beam_x_address]
+			   );
+
+
+		$POSY ( $CURRENT_CHARTOP);
+
+		!
+		! Check to see if we are to set page full
+		!
+		IF (NOT .id[tk$v_margin_2]) AND (.id[tk$v_margin_on])
+		THEN $SET(id[tk$v_page_full]);
+
+	END;	! End of switch to margin 2 !
+
+	!
+	! Switch margin bit
+	!
+	id[tk$v_margin_bit] = NOT .id[tk$v_margin_bit];
+
+     END	! End of code to switch margins and set page full !
+
+ELSE BEGIN
+	!
+	!  normal case is to move down one line 
+	!
+	$POSY( .id[tk$w_beam_y_address] + $CURRENT_CCMY);
+
+    END;	! End of normal line feed !
+
+END; 		! End of line feed routine !
+
+
+
+
+
+
+
+
+ROUTINE tk$$emu_carriage_ret
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine produces the native code necessary to simulate the action
+!   of a line feed on a real tek4014.  A line feed will clear any graphic
+!   modes that exist causing an undefined margin page full status and cause
+!---the alpha cursor to move to the left margin.
+!
+! FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):     !pointer to database for this tek4014
+!
+! IMPLICIT INPUTS: NONE
+!
+! IMPLICIT OUTPUTS: NONE
+!
+! RETURN VALUE:
+!
+       NOVALUE =
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS:
+!
+!---This routine may make mode changes in the emulator from graph to alpha
+!
+!--
+BEGIN
+
+!-------------------------------------
+!  if not in alpha mode then go to alpha mode and adjust beam for character
+!  height.
+!-------------------------------------
+IF .id [tk$l_mode] NEQ tk$k_alpha 
+THEN BEGIN
+
+	!-------------------------------------
+	!  CHECK to see if we are in Gin mode If so then exit gin mode and cont
+	!-------------------------------------
+	IF .id[tk$l_mode] EQL tk$k_gin
+	THEN BEGIN
+	    tk$$cur_stop_crosshairs(.id);
+	    !
+	    ! inform acp of gin mode reset
+	    !
+	    vsta$$kernel_call(
+				 vs$$acp_gin_mode
+				,.id [tk$l_fullview_vd_id]
+				,0
+				);
+	    END;
+
+	!-------------------------------------
+	!  CHECK TO SEE IF GRAPH BEAM IS ABOVE TOP OF SCREEN IF SO THEN MOVE TO TOP
+	!-------------------------------------
+	IF .id[tk$w_beam_y_address] LSS ($CURRENT_CHARTOP+$CURRENT_CCMY)
+	THEN BEGIN
+
+	     $POSY ( $CURRENT_CHARTOP);
+
+	     id[tk$l_mode] = tk$k_alpha;
+
+	     END
+	ELSE BEGIN
+
+	     $ENTERALPHA;
+
+	     id[tk$l_mode] = tk$k_alpha;
+
+     	     END;
+
+     END;
+
+$POSX ( $CURRENT_MARGIN);
+
+RETURN
+
+END;
+
+
+
+
+
+
+
+!GLOBAL ROUTINE tk$$emu_queue_gidis
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine takes an unspecified number of arguments and adds them to the
+!   end of the gidis buffer.  If the buffer will not fit that number then it
+!---is transmitted to Gidis via the gid_process entry routine
+!
+! FORMAL PARAMETERS:
+!
+!       (id: REF tek_blk):      !pointer to database of this tek4014
+!
+! IMPLICIT INPUTS:
+!
+!---This routine has only one formal argument, but it accepts an arbitrary 
+!   number of arguments given by the argument count pointed to by AP register.
+!---Starting from the second argument it transfers argument count - 1 argments.
+!
+! IMPLICIT OUTPUT: NONE
+!
+! RETURN VALUE: 
+!
+!       NOVALUE =
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS:
+!
+!---The gidis buffer is transmitted to Gidis if it is too full to add the
+!---parameters sent to this routine.
+!
+!BEGIN
+!
+!
+!BUILTIN ACTUALCOUNT,ACTUALPARAMETER;
+!
+!BIND
+!      gidis_buffer = id [tk$w_gidis_buffer]:
+!                     VECTOR [tk$k_gidis_buffer_max,WORD];
+!
+!---------------------------------------
+!   check to see if gidis buffer is full if so then send it to gidis
+!---------------------------------------
+!IF (.id [tk$l_gidis_buffer_index]+ACTUALCOUNT()) GEQ tk$k_gidis_buffer_max 
+!THEN BEGIN
+!
+!id [tk$l_operation_status] = tk$$emu_flush_paths(.id);
+!
+!END;
+!
+!--------------------------------------
+!   Loop go move all actual passed arguments to the gidis buffer
+!--------------------------------------
+!INCR i FROM 2 TO  ACTUALCOUNT() DO BEGIN
+!
+!id [tk$l_gidis_buffer_index] = .id [tk$l_gidis_buffer_index] + 1;
+!gidis_buffer[.id [tk$l_gidis_buffer_index]] = ACTUALPARAMETER(.i);
+!
+!END;
+!END;
+
+
+
+GLOBAL ROUTINE tk$$emu_clear_screen
+!++
+! Functional Description
+!
+!  This routine call the native copy area to clear the tek screen
+!
+! FORMAL PARAMETERS:
+!
+       (id: REF tek_blk) :=      !pointer to database of this tek4014
+!--
+BEGIN
+
+RETURN
+	$VSTACOPY(
+			 SOURCE = 0
+			,DST	= .id [tk$l_fullview_vd_id]
+		);
+
+END;
+
+
+
+
+GLOBAL ROUTINE tk$$emu_flush_print
+!++
+! Functional Description
+!
+!  This routine call native text routines to flush the built up text buffers
+!  for the current output
+!
+! FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):=	!pointer to database of this tek4014
+!--
+BEGIN
+
+LOCAL
+	 s
+	,text_desc		: VECTOR [2,LONG]
+	;
+!
+!  Is there a text buffer to be flushed?  If not then just return normal
+!
+IF NOT .tk$w_text_exist 
+THEN RETURN ss$_normal;
+
+text_desc [0] = .tk$w_text_count;
+text_desc [1] = tk$bv_text_addr [0];
+
+!
+!  Now call the native text routine to print the text
+!
+s = $VSTAPRINT(
+		 SOURCE	= 1
+		,MSKTYP	= vsta$k_msk_font_bitmap
+		,MASK	= tk$lv_fnt_bm_dsc [ .id [tk$w_text_size] * 2]
+		,DST	= .id [tk$l_fullview_vd_id]
+		,DSTOFF	= tk$wv_text_offset
+		,TXTDSC	= text_desc
+		,CTRNUM	= .tk$w_ctrl_count
+		,CTRADR	= tk$wv_ctrl_addr [0]
+		,ASTADR = tk$$emu_nat_text_complete
+		,ASTPRM = tk$bv_text_addr [0]
+	);
+
+
+tk$w_text_exist = 0;
+
+IF NOT .s
+THEN RETURN .s;
+
+RETURN ss$_normal;
+END;
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$emu_flush_draw
+!++
+! Functional Description:
+!
+!  This routine will flush any built up draw path
+!
+! FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):=	!pointer to database of this tek4014
+!--
+BEGIN
+
+LOCAL
+	 s
+	;
+
+!
+!  If there is more than one point in the path then draw them
+!  otherwise just ignore it.
+!
+	IF .tk$w_path_count GTR 5
+	THEN BEGIN
+
+		s = $VSTADRAW(
+			 SOURCE	= 1
+			,MSKTYP	= vsta$k_msk_rectangle
+			,MASK	= id [tk$w_line_width]
+			,DST	= .id [tk$l_fullview_vd_id]
+			,PTHNUM	= .tk$w_path_count/3
+			,PTHADR = tk$wv_path_addr [0]
+			,PATBLK = id [tk$w_ptn_count]
+			,PATSTA = id [tk$w_ptn_state]
+			,ASTADR = tk$$emu_nat_draw_complete
+			,ASTPRM	= tk$wv_path_addr [0]
+			);
+
+	!
+	!  Clear the path count and the pointer to the path
+	!
+		tk$w_path_count = 0;
+		tk$wv_path_addr = 0;
+
+	!
+	!  Init a new path for the VAxstation native graphics
+	!
+		$NATIVE_INIT;
+
+		RETURN .s;
+
+	     END;			! End if draw is necessary
+
+RETURN ss$_normal;
+END;
+
+
+
+
+GLOBAL ROUTINE tk$$emu_flush_paths
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine flushes the native buffer to the native draw entry routine
+!
+! FORMAL PARAMETERS:
+!
+       (id: REF tek_blk):=      !pointer to database of this tek4014
+!
+! IMPLICIT INPUTS: NONE
+!
+! IMPLICIT OUTPUT: NONE
+!
+! RETURN VALUE: 
+!
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS:
+!
+!
+BEGIN
+
+
+LOCAL
+	 status
+	;
+
+!
+!  Send Vaxstation native path if there is any
+!
+tk$$emu_flush_draw( .id);
+tk$$emu_flush_print( .id);
+
+RETURN .status;
+
+END; ! end of tk$$emu_flush_paths !
+
+
+ROUTINE tk$$emu_nat_text_complete( text_addr) =
+!
+!  Whan print text is complete then deallocate the text and control buffer
+!
+BEGIN
+
+VSTA$$DMM_FREE_MAPPED_MEM( %ref( 1024), text_addr);
+
+RETURN ss$_normal;
+
+END;
+
+
+ROUTINE tk$$emu_nat_draw_complete( path_addr) =
+!
+!
+!  When draw is complete then deallocate the path buffer
+!
+!
+BEGIN
+
+VSTA$$DMM_FREE_MAPPED_MEM( %ref( 1024), path_addr);
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_reset
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This resets the database instance for a tek4014.  
+!
+! FORMAL PARAMETERS:
+!
+      (
+       virtual_display_id		 !input: display id assign by vd_create
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!---The database is set to all values simulating a reset tek4014.
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+!
+!  If alpha mode then stop alpha cursor
+!
+IF .id [tk$l_mode] EQL tk$k_alpha 
+THEN tk$$cur_stop_alpha(.id);
+
+
+!
+!  Call the initialize routine with the same display size and 
+!  characteristics
+!
+tk$$emu_init_tek4014( 
+			 .virtual_display_id
+			,.id
+			,0
+			,0
+		     );
+!
+!  Reset footer fields
+!
+tk$$ftr_reset_allfields ( .id );
+!
+!  if alpha mode then restart alpha cursor
+!
+IF .id [tk$l_mode] EQL tk$k_alpha 
+THEN tk$$cur_start_alpha(.id);
+ 
+RETURN ss$_normal;
+
+END;
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_cr_lf
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine will set or reset the automatic lf with cr flag.  If set
+!---a lf will be automatic with cr.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,on_off
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+id [tk$v_auto_lf_cr] = .on_off;
+ 
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_lf_cr
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine will set or reset the automatic cr with lf flag.  If set
+!---a cr will be automatic with lf.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,on_off
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+id [tk$v_auto_cr_lf] = .on_off;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_gin_term
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine sets up the gin terminator.  When GIN data is transmitted
+!---one of 3 terminator options can be specified.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,gin_term
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+SELECTONE .gin_term
+OF SET
+	[prof$k_tek_addc_none]: id [tk$v_creot_enabled] = 0; 
+	[prof$k_tek_addc_cr]:	
+		BEGIN
+			id [tk$v_creot_enabled] = 1;
+			id [tk$v_auto_creot] = 0;
+		END; 
+	[prof$k_tek_addc_creot]: 
+		BEGIN
+			id [tk$v_creot_enabled] = 1;
+			id [tk$v_auto_creot] = 1;
+		END; 
+
+   TES;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_del_loy
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine sets or resets the del implies loy flag.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,on_off
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+id [tk$v_del_loy] = .on_off;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_hold_mode
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine sets or resets the option to set or reset the page full
+!   hold screen mechanism.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,on_off
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+!
+!  Now set the margin switch to the default according to profile
+!
+TK$$FTR_MARGIN_SETTING( .id, .on_off);
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+GLOBAL ROUTINE vsta$$tek_set_bytesize
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!---This routine sets or resets the option to have tek4014 text be 8bit
+!   or 7bit.  When set to 8bit then the 4014 will support the DEC multinational
+!---character set.
+!
+! FORMAL PARAMETERS:
+!
+      (
+	 virtual_display_id		 !input: display id assign by vd_create
+	,byte_size
+      ):=
+!
+! IMPLICIT INPUTS: NONE
+! 
+! IMPLICIT OUTPUTS: NONE
+!
+! COMPLETION CODES: NONE
+!
+! SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 id: REF tek_blk
+	,status
+	;
+
+!
+!  find tek data base with the specified vd id: if not return status.
+!
+IF NOT (status=tk$$emu_find_tek4014 (
+			 .virtual_display_id
+			,id)) 
+THEN RETURN .status;
+
+!
+!  Store the new bytesize in the data table
+!
+id [tk$w_bytesize] = .byte_size;
+
+!  
+!  Set the keyboard into 7bit/level 1 or 8bit/level 2
+!
+IF .byte_size EQL prof$k_tek_7bit
+THEN
+	RETURN vs$$set_vkb_char(
+			 .id [tk$l_tek_pb_id]		! VKB id
+			,vsta$m_level OR 
+				vsta$m_eightbit		! What modes to set
+			,vsta$k_vkb_level_1 AND 
+				(NOT vsta$m_eightbit)	! Set 7bit mode level1
+			,.vs$gl_acp_pid			! Say it's us
+				);
+
+RETURN vs$$set_vkb_char(
+		 .id [tk$l_tek_pb_id]		! VKB id
+		,vsta$m_level OR 
+			vsta$m_eightbit		! What modes to set
+		,vsta$k_vkb_level_2 AND 
+			vsta$m_eightbit		! Set 7bit mode level1
+		,.vs$gl_acp_pid			! Say it's us
+			);
+
+END;	! End of vsta$$tek_set_bytesize
+
+
+GLOBAL ROUTINE vsta$$tek_get_backcolor
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Return background color of terminal body.
+!	Since it's always black, return 0 always.
+! FORMAL PARAMETERS:
+	(vd_id
+	,backcolor
+	) =
+!--
+BEGIN
+
+.backcolor = 0;
+RETURN SS$_NORMAL
+END;
+
+
+END
+ELUDOM

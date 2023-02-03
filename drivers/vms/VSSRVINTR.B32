@@ -1,0 +1,2005 @@
+MODULE VS$SRV_INTR (
+			IDENT = 'HI SERVER Forms Interaction'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module deals with the user editing fields and checking off items
+! in documents (PROFILE and TERMINAL SETTINGS).
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSSERVE subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_intr_write_checks,	!Write initial check-marks.
+    yes_check,				!write a box that is checked.
+    no_check,				!Write a box that is unchecked.
+    vsta$$srv_intr_write_edits,		!Write current info into editable
+					! fields.
+    vsta$$srv_update_edits,		!Update editable fields (if any)
+    vsta$$srv_intr_chk,			!Checkoff item was selected.
+    maybe_update_check,			!Called to maybe update a check
+    vsta$$srv_intr_edit,		!Editable field was selected.
+    edit_finished,			!Routine called when edit is finished.
+    vv,					!Check a profile value.
+    vdecg,				!Check a DEC terminal setting
+    vtekg,				!Check a TEK terminal setting
+    get_pstring,			!Get current string for profile item
+    get_tstring,			!Get edit info for a terminal item
+    write_ed_item,			!Write item in editable field.
+    update_ed_item,			!Update item in editable field.
+    vsta$$nudge_keyclick,		!Turn "keyclick" on or off
+    vsta$$nudge_autor,			!Turn "autorepeat" on or off
+    vsta$$change_kbd,			!change keyboard/legend		
+    vsta$$change_vkb_transtable,	!change vkb's translation table 
+    vsta$$nudge_keyboard,		!update keyboard/legend	
+    vsta$$get_transtable_id,		!get translation table index	
+    vsta$$get_acp_def_kbd,		!get def-kbd for this acp
+    set_acp_def_kbd,			!set selected kbd for this acp	
+    change_level,			!check legend based on vt-level 
+    change_legend;			!check vt-level based on legend
+
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:VSTEKEM';		! symbols like s4014$k_level_1
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		! Foreign Keyboard definitions	
+LIBRARY 'VSTA$LIBRARY:VSVTEM100';	!s100$K_wrap, etc.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Termtype symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';
+!LIBRARY 'VSTA$LIBRARY:VSTASYMS';	! vstagbl supercedes vstasyms
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error symbols
+LIBRARY	'VSTA$LIBRARY:LIBMACROS';	! $return_error (status)    
+
+$vsta_psect;				!Define PSECTs
+
+EXTERNAL ROUTINE
+    vsta$$ts_get_terminal,		!Get a setting for a terminal
+    vsta$$ts_set_terminal,		!Set a setting for a terminal
+    vs$$txt_defineFont,			!Define a local font
+    vs$$txt_setTypeface,		!set a typeface
+    vs$$txt_setTypesize,		!set a typesize
+    vs$$txt_set_Rendition,		!Set a rendition
+    vs$$txt_WriteText,			!Write text (overwrite if necessary)
+    vs$$txt_DeleteCharacters,		!Delete characters in a field
+    vsta$$edit_one,			!Edit a field
+    vsta$$edit_update,			!Update a field being edited.
+    vsta$$srv_prof_modified,		!Call when a profile item is modified.
+    vsta$$srv_remember_kbd_attach,	!Remember prev. KBD attachment
+    vsta$$srv_restore_kbd_attach,	!Restore prev. KBD attachment
+    vsta$$foot_update_date,		!Update date in utility area display
+    vsta$$foot_update_time,		!Update time in utility area display
+    vsta$$kbrd_keyclick_enable,		!Enable keyclick
+    vsta$$kbrd_keyclick_disable,	!Disable keyclick
+    vsta$$kbrd_autorepeat_enable,	!Enable autorepeat
+    vsta$$kbrd_autorepeat_disable,	!Disable autorepeat
+    vsta$$error,			!Report an error
+    vs$$inquire_current_vkb,		!find currently active vkb
+    vs$$set_vkb_trans_table,		!set trans table for the vkb
+    vs$$vds_get_vd_char,		!find curr defaults for a vd
+    vsta$$set_vt100_kbd_change,		!effect kbd change for vt100	
+    find_vt100;				!find vt100 database		
+
+EXTERNAL
+    srv$gl_auto_termtype,		!What type of auto-terminal
+    srv$gl_time_format,			!What time format to use
+    srv$gl_date_format,			!What date format to use
+    srv$gl_keyclick_on,			!=1 means do keyclick
+    srv$gl_autorepeat_on,		!=1 means do autorepeat
+    srv$gl_vt100_dark_bg,		!=1 if dark bg, =0 if light bg
+    srv$gl_vt100_ansi,			!=1 means come up in ANSI mode.
+    srv$gl_vt_margin_bell,		!=1 means margin bell
+    srv$gl_vt_wrap,			!=1 means WRAP on
+    srv$gl_vt_newline,			!=1 means NEWLINE on
+    srv$gl_vt_level,			!"level" of the terminal
+    srv$gl_tek_cr_lf,			!=1 means send CRLF when CR typed
+    srv$gl_tek_lf_cr,			!=1 means send LFCR when LF typed
+    srv$gl_tek_delvalid,		!=1 if DEL is valid for LOY
+    srv$gl_tek_addchars,		!What additional chars are added by TEK
+					! for graphics input
+    srv$gl_tek_stopout,			!=1 if output stops when page full
+    vs$gw_vbchan: WORD;			!VB channel; used by keyboard routines
+
+EXTERNAL
+    srv$gl_kbd_a,			!def kbd for VaxStation-A
+    srv$gl_kbd_b,			!def kbd for VaxStation-B
+    srv$gl_kbd_c,			!def kbd for VaxStation-C
+    srv$gl_kbd_d,			!def kbd for VaxStation-D	
+    srv$gl_kbd_e,			!def kbd for VaxStation-E	
+    srv$gl_kbd_f,			!def kbd for VaxStation-F	
+    srv$gl_kbd_g,			!def kbd for VaxStation-G	
+    srv$gl_kbd_h,			!def kbd for VaxStation-H	
+    srv$gl_kbd_i,			!def kbd for VaxStation-I	
+    srv$gl_kbd_j,			!def kbd for VaxStation-J	
+    srv$gl_kbd_k,			!def kbd for VaxStation-K	
+    srv$gl_kbd_l,			!def kbd for VaxStation-L	
+    srv$gl_kbd_m,			!def kbd for VaxStation-M	
+    srv$gl_kbd_n,			!def kbd for VaxStation-N	
+    srv$gl_kbd_o,			!def kbd for VaxStation-O	
+    srv$gl_kbd_p,			!def kbd for VaxStation-P	
+    srv$gl_kbd_q,			!def kbd for VaxStation-Q	
+    srv$gl_kbd_r,			!def kbd for VaxStation-R	
+    srv$gl_kbd_s,			!def kbd for VaxStation-S	
+    srv$gl_kbd_t,			!def kbd for VaxStation-T	
+    srv$gl_kbd_u,			!def kbd for VaxStation-U	
+    srv$gl_kbd_v,			!def kbd for VaxStation-V	
+    srv$gl_kbd_w,			!def kbd for VaxStation-W	
+    srv$gl_kbd_x,			!def kbd for VaxStation-X	
+    srv$gl_kbd_y,			!def kbd for VaxStation-Y	
+    srv$gl_kbd_z,			!def kbd for VaxStation-Z	
+    srv$gl_kbd_set,			!Keyboard setting	
+    srv$gl_vt_legend,			!Keyboard legend	
+    vsta$gl_keyboard,			! --> selected kbd & legend type 
+    vs$gl_acp_pid;			!tell the routine its us	 
+EXTERNAL
+    ACP_LETTER,				!letter of the current ACP	 
+    vs$gl_vd_name_desc: vector;		!name of this ACP (VSACP.B32)	 
+!                                                                        
+! Profile value definitions
+!
+EXTERNAL
+    prof$K_timef_12hr,		!12-hr time format
+    prof$K_timef_24hr,		!24-hr time format
+    prof$K_timef_eur,		!European time format
+    prof$K_datef_monthdd19yy,	!March 15, 1983
+    prof$K_datef_mmsddsyy,	!3/15/83
+    prof$K_datef_ddhmonhyy,	!15-Mar-83
+    prof$K_datef_ddmonth19yy,	!15 march 1983
+    prof$K_datef_ddsmmsyy,	!15/3/83
+    prof$K_vt_level1,		!VT100 level 1
+    prof$K_vt_level2,		!VT100 level 2
+    prof$K_tek_addc_none,	!Add no chars
+    prof$K_tek_addc_cr,		!Add CR
+    prof$K_tek_addc_creot;	!Add CR + EOT
+
+EXTERNAL LITERAL
+    prof$k_kbd_ca,		!LK201CA : American	
+    prof$k_kbd_cb,		!LK201CA : Flemish		
+    prof$k_kbd_cc,		!LK201CC : Canadian (French)	
+    prof$k_kbd_cd,		!LK201CD : Danish		
+    prof$k_kbd_ce,		!LK201CA : British		
+    prof$k_kbd_cf,		!LK201CA : Finnish		
+    prof$k_kbd_cg,		!LK201CA : German/Austrian	
+    prof$k_kbd_ch,		!LK201CA : Dutch		
+    prof$k_kbd_ci,		!LK201CA : Italian		
+    prof$k_kbd_ck,		!LK201CA : French/Swiss		
+    prof$k_kbd_cl,		!LK201CA : German/Swiss		
+    prof$k_kbd_cm,		!LK201CA : Swedish		
+    prof$k_kbd_cn,		!LK201CA : Norwegian		
+    prof$k_kbd_cp,		!LK201CA : French/Belgian	
+    prof$k_kbd_cs,		!LK201CA : Spanish		
+
+    prof$K_7bit_nrc,		!7-bit NRC			
+    prof$K_legend_tw,		!Kbd typewriter			
+    prof$K_legend_dp,		!Kbd dataprocessing		
+
+    prof$k_tek_margin1,		!TEK page-1 full		
+    prof$k_tek_margin2,		!TEK page-2 full		
+    prof$k_tek_marginoff;	!TEK margin off			
+
+MACRO
+    $checkr (id, get_routin, p1, p2, P3) =
+	id, get_routin, p1, p2, p3 %;
+LITERAL
+    bytes_per_word = 4,		!# of bytes in a VAX word
+    checkr_num_lwds = 5,	!# OF longwords in a checkr entry
+    num_chk_ents = 89,		!Number of checkoff entries. 
+    cki_size = bytes_per_word * checkr_num_lwds, !# of bytes in a check entry
+    ck_id = 0,			!Which longword has the "id"
+    ck_routin = 1,		!Which longword has param routine address.
+    ck_p1 = 2,			!Which longword has extra param 1.
+    ck_p2 = 3,			!Which longword has extra param 2.
+    ck_p3 = 4;			!Which longword has extra param 3.
+
+OWN
+    check_info: VECTOR [checkr_num_lwds * num_chk_ents]
+	INITIAL	(
+!
+! For regular profile items, routin = vv, p1 = variable, p2= value,
+! p3 = routine to call when the item has been updated.
+!
+
+!No logged-in term.
+ $checkr (1, vv, srv$gl_auto_termtype, 0, 0)
+!Logged-in DEC term.
+,$checkr (2, vv, srv$gl_auto_termtype, vsta$K_termtype_vt100, 0)
+!Logged-in DEC term_small.
+,$checkr (3, vv, srv$gl_auto_termtype, vsta$K_termtype_vt100_small, 0)
+!Logged-in DEC term_tall.
+,$checkr (4, vv, srv$gl_auto_termtype, vsta$K_termtype_vt100_tall, 0)
+!Logged-in DEC term_wide.
+,$checkr (5, vv, srv$gl_auto_termtype, vsta$K_termtype_vt100_wide, 0)
+!Logged-in TEK4014
+,$checkr (6, vv, srv$gl_auto_termtype, vsta$K_termtype_tek4014, 0) 
+
+!Time - 12-hr format
+,$checkr (10,vv, srv$gl_time_format, prof$K_timef_12hr, vsta$$foot_update_time)
+!Time - 24-hr format
+,$checkr (11,vv, srv$gl_time_format, prof$K_timef_24hr, vsta$$foot_update_time)
+!Time - european format
+,$checkr (12, vv, srv$gl_time_format, prof$K_timef_eur, vsta$$foot_update_time)
+
+!Date - March 15, 1983
+,$checkr (20, vv, srv$gl_date_format, prof$K_datef_monthdd19yy, vsta$$foot_update_date)
+!Date- 3/15/83
+,$checkr (21, vv, srv$gl_date_format, prof$K_datef_mmsddsyy, vsta$$foot_update_date)
+!Date- 15-Mar-83
+,$checkr (22, vv, srv$gl_date_format, prof$K_datef_ddhmonhyy, vsta$$foot_update_date)
+!Date - 15 March 1983
+,$checkr (23, vv, srv$gl_date_format, prof$K_datef_ddmonth19yy, vsta$$foot_update_date)
+!Date - 15/3/83
+,$checkr (24, vv, srv$gl_date_format, prof$K_datef_ddsmmsyy, vsta$$foot_update_date)
+
+! Let us insert the foreign Keyboard support stuff here 
+
+! American
+,$checkr (516, vv, srv$gl_kbd_set, prof$k_kbd_ca, vsta$$change_kbd)
+! Flemish
+,$checkr (530, vv, srv$gl_kbd_set, prof$k_kbd_cb, vsta$$change_kbd)
+! Canadian (French)
+,$checkr (517, vv, srv$gl_kbd_set, prof$k_kbd_cc, vsta$$change_kbd)
+! Danish
+,$checkr (518, vv, srv$gl_kbd_set, prof$k_kbd_cd, vsta$$change_kbd)
+! British
+,$checkr (519, vv, srv$gl_kbd_set, prof$k_kbd_ce, vsta$$change_kbd)
+! Finnish
+,$checkr (520, vv, srv$gl_kbd_set, prof$k_kbd_cf, vsta$$change_kbd)
+! German/Austrian
+,$checkr (521, vv, srv$gl_kbd_set, prof$k_kbd_cg, vsta$$change_kbd)
+! Dutch
+,$checkr (522, vv, srv$gl_kbd_set, prof$k_kbd_ch, vsta$$change_kbd)
+! Italian
+,$checkr (523, vv, srv$gl_kbd_set, prof$k_kbd_ci, vsta$$change_kbd)
+! French/Swiss
+,$checkr (524, vv, srv$gl_kbd_set, prof$k_kbd_ck, vsta$$change_kbd)
+! German/Swiss
+,$checkr (525, vv, srv$gl_kbd_set, prof$k_kbd_cl, vsta$$change_kbd)
+! Swedish
+,$checkr (526, vv, srv$gl_kbd_set, prof$k_kbd_cm, vsta$$change_kbd)
+! Norwegian
+,$checkr (527, vv, srv$gl_kbd_set, prof$k_kbd_cn, vsta$$change_kbd)
+! French/Belgian
+,$checkr (528, vv, srv$gl_kbd_set, prof$k_kbd_cp, vsta$$change_kbd)
+! Spanish
+,$checkr (529, vv, srv$gl_kbd_set, prof$k_kbd_cs, vsta$$change_kbd)
+
+!Key click on
+,$checkr (40, vv, srv$gl_keyclick_on, 1, vsta$$nudge_keyclick)
+!Key click off
+,$checkr (41, vv, srv$gl_keyclick_on, 0, vsta$$nudge_keyclick)
+
+!Autorepeat on keyboard keys
+,$checkr (42, vv, srv$gl_autorepeat_on, 1, vsta$$nudge_autor)
+!No autorepeat
+,$checkr (43, vv, srv$gl_autorepeat_on, 0, vsta$$nudge_autor)
+
+!VT100 dark background
+,$checkr (500, vv, srv$gl_vt100_dark_bg, 1, 0)
+!VT100 light background
+,$checkr (501, vv, srv$gl_vt100_dark_bg, 0, 0)
+
+!VT100- ansi mode
+,$checkr (502, vv, srv$gl_vt100_ansi, 1, 0)
+!VT100- VT52 mode
+,$checkr (503, vv, srv$gl_vt100_ansi, 0, 0)
+
+!VT100- Margin bell
+,$checkr (504, vv, srv$gl_vt_margin_bell, 1, 0)
+!VT100 - No margin bell
+,$checkr (505, vv, srv$gl_vt_margin_bell, 0, 0)
+
+!VT100- Wrap
+,$checkr (506, vv, srv$gl_vt_wrap, 1, 0)
+!VT100- No wrap
+,$checkr (507, vv, srv$gl_vt_wrap, 0, 0)
+
+!VT100- New line on
+,$checkr (508, vv, srv$gl_vt_newline, 1, 0)
+!VT100- New line off
+,$checkr (509, vv, srv$gl_vt_newline, 0, 0)
+
+! 7-bitASCII character set
+,$checkr (510, vv, srv$gl_vt_level, prof$K_vt_level1, change_level)	
+! 7-bit National Replacement caracter set				
+,$checkr (513, vv, srv$gl_vt_level, prof$K_7bit_nrc,  change_level)	
+! 8-bit DEC multinational cahracter set					
+,$checkr (511, vv, srv$gl_vt_level, prof$K_vt_level2, change_level)	
+
+! typewriter legend							
+,$checkr (514, vv, srv$gl_vt_legend, prof$K_legend_tw, change_legend)	
+
+! dataprocessing legend							
+,$checkr (515, vv, srv$gl_vt_legend, prof$K_legend_dp, change_legend)	
+
+!TEK- CR only
+,$checkr (600, vv, srv$gl_tek_cr_lf, 0, 0)
+!TEK- CR-LF sent
+,$checkr (601, vv, srv$gl_tek_cr_lf, 1, 0)
+
+!TEK- LF only
+,$checkr (602, vv, srv$gl_tek_lf_cr, 0, 0)
+!TEK- LF-CR sent
+,$checkr (603, vv, srv$gl_tek_lf_cr, 1, 0)
+
+!TEK- DEL valid for LOY (as well as ESC ?)
+,$checkr (604, vv, srv$gl_tek_delvalid, 1, 0)
+!TEK- Only ESC ? valid for LOY
+,$checkr (605, vv, srv$gl_tek_delvalid, 0, 0)
+
+!TEK- No additional chars sent for graphics input
+,$checkr (606, vv, srv$gl_tek_addchars, prof$K_tek_addc_none, 0)
+!TEK- CR added
+,$checkr (607, vv, srv$gl_tek_addchars, prof$K_tek_addc_cr, 0)
+!TEK- CR+EOT added
+,$checkr (608, vv, srv$gl_tek_addchars, prof$K_tek_addc_creot, 0)
+
+!TEK- stop output when column 1 is full					
+,$checkr (611, vv, srv$gl_tek_stopout, prof$k_tek_margin1, 0)		
+!TEK- Stop output on page-2 full					
+,$checkr (609, vv, srv$gl_tek_stopout, prof$k_tek_margin2, 0)		
+!TEK - DOn't stop output on page full                                   
+,$checkr (610, vv, srv$gl_tek_stopout, prof$k_tek_marginoff, 0)	
+
+! DEC terminal settings
+!For VT100, routin = vdecg, p1= index, p2= type of thing (small integer),
+! p3 is not used.
+!Dark background
+,$checkr (1000, vdecg, s100$k_dark_background, 0, 0)
+!Light background
+,$checkr (1001, vdecg, s100$k_light_background, 0, 0)
+
+!ANSI mode
+,$checkr (1002, vdecg, s100$K_ansi, 1, 0)
+!VT52 mode
+,$checkr (1003, vdecg, s100$K_vt52, 1, 0)
+
+!Margin bell on 
+,$checkr (1004, vdecg, s100$K_ansi, 2,0)	!(No index defined yet)
+,$checkr (1005, vdecg, s100$K_vt52, 2,0)	!(no index defined yet)
+
+!Wrap on
+,$checkr (1006, vdecg, s100$K_wrap, 3,0)
+!Wrap off
+,$checkr (1007, vdecg, s100$K_nowrap, 3,0)
+
+!New line on
+,$checkr (1008, vdecg, s100$K_newline, 4,0)
+!New line off
+,$checkr (1009, vdecg, s100$K_oldline, 4,0)
+
+! insert the 7-bit ASCII, 7-bit NRC & 8-bit DEC multinational
+! 7-bit ASCII character set
+,$checkr (1010, vdecg, s100$K_level_1, 5,0)
+! 7-bit National Replacement caracter set
+,$checkr (1013, vdecg, s100$K_bit7_nrc, 5,0)
+! 8-bit DEC multinational cahracter set
+,$checkr (1011, vdecg, s100$K_level_2, 5,0)
+
+! for the following two stmts, p2=12 which is the next number at the end of
+! this list.	
+! typewriter legend	
+,$checkr (1014, vdecg, s100$k_legend_tw, 12,0)
+
+! dataprocessing legend				
+,$checkr (1015, vdecg, s100$k_legend_dp, 12,0)
+
+! TEK4014 terminal settings
+!CR only sent
+,$checkr (2000, vtekg, s4014$k_cr_send_cr,  6,0)		!CR only sent
+!CR-LF sent
+,$checkr (2001, vtekg, s4014$k_cr_send_crlf,  6,0)		!CR-LF sent
+
+!LF only sent
+,$checkr (2002, vtekg, s4014$k_lf_send_lf,  7,0)		!LF only sent
+!LF-CR sent
+,$checkr (2003, vtekg, s4014$k_lf_send_lf_cr,  7,0)		!LF-CR sent
+
+!DEL valid for LOY
+,$checkr (2004, vtekg, s4014$k_del_loy,  8,0)
+!Only ESC ? valid for LOY (not DEL)
+,$checkr (2005, vtekg, s4014$k_esc_q_loy,  8,0)
+
+!No additional chars sent
+,$checkr (2006, vtekg, s4014$k_gin_term_none,  9,0)
+!CR sent
+,$checkr (2007, vtekg, s4014$k_gin_term_cr,  9,0)
+!CR, EOT added
+,$checkr (2008, vtekg, s4014$k_gin_term_cr_eot,  9,0)
+
+!TEK_- stopoutput when Column 1 is full			
+,$checkr (3033, vtekg, s4014$k_col1_full,  10,0)
+!Output stops on page full
+,$checkr (2009, vtekg, s4014$k_stop_full,  10,0)
+!Output continues on page full
+,$checkr (2010, vtekg, s4014$k_go_full, 10,0)
+!Control level 1 and level 2
+,$checkr (2011, vtekg, s4014$k_level_1, 11,0)
+,$checkr (2012, vtekg, s4014$k_level_2, 11,0)
+);
+
+MACRO
+    $editr (id, get_routin, maxlen, prm1, prm2, put_routin) =
+	id, get_routin, maxlen, prm1, prm2, put_routin %;
+LITERAL
+    editr_num_lwds = 6,		!Number of longwords in editr entry
+    num_ed_ents = 4,		!Number of editable entries
+    edi_size = bytes_per_word * editr_num_lwds,	!# of bytes in an editr entry
+    ed_id = 0,			!Which longword has the id
+    ed_get_routin = 1,		!Which longword has get_routin
+    ed_maxlen = 2,		!Which longword has maxlen
+    ed_prm1 = 3,		!Which longword has prm1
+    ed_prm2 = 4,		!Which longword has prm2
+    ed_put_routin = 5;		!Which longword has put_routin
+
+EXTERNAL
+    srv$gl_user_1_name_len,
+    srv$gl_user_2_name_len,
+    srv$gl_user_1_name,
+    srv$gl_user_2_name,
+    srv$gl_answerback_len,
+    srv$gl_answerback_str,
+    prof$K_ml_sitename,		!Max length of sitename
+    prof$K_ml_username_1,	!Max length of username_1
+    prof$K_ml_username_2;	!Max length of username_2
+
+EXTERNAL ROUTINE		!Routines that change the value of edited items
+    vsta$$foot_newun1,		!User name 1 changed
+    vsta$$foot_newun2;		!User name 2 changed
+
+OWN
+    ed_info: VECTOR [editr_num_lwds * num_ed_ents]
+	INITIAL (
+!
+! For regular profile items, prm1=len_address, prm2= string_address.
+!
+$editr (30, get_pstring, prof$K_ml_username_1,
+	srv$gl_user_1_name_len, srv$gl_user_1_name, vsta$$foot_newun1),
+$editr (31, get_pstring, prof$K_ml_username_2,
+	srv$gl_user_2_name_len, srv$gl_user_2_name, vsta$$foot_newun2),
+$editr (512, get_pstring, vt$s_answerback_message,
+	srv$gl_answerback_len, srv$gl_answerback_str, 0),
+!
+! Editable setting item fields.
+! prm1 = index, prm2 = not used.
+!
+! VT100 answerback string
+$editr (1012, get_tstring, vt$s_answerback_message, s100$k_answer,
+	0, 0)		!no need to call a routine when done editing this
+	
+);
+!
+! OWN variables that remember the CURRENT thing being edited.
+! Beware of end-session aspects of this!
+!
+OWN
+    ed_delim_type,	!Type of delimiter used to finish editing the field.
+    curr_ed_wdb,	!"Relevant wdb"
+    curr_ed_docblk: REF doc_block,	!DOCBLK
+    curr_ed_param,	!Parameter to be passed to emulators when edit finished
+    			! (the terminal vd-id)
+    curr_ede: REF editable_entry,	!EDE
+    curr_edv: REF VECTOR;	!EDV
+
+
+GLOBAL ROUTINE vsta$$srv_intr_write_checks
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write initial check-marks.
+! FORMAL PARAMETERS:
+	(num_blks		!Number of checkoff blocks
+	,blka			!Block address
+	,vd_id			!Virtual display id of the doc body
+	,wdb: REF window_data_block	!"relevant" wdb.
+	) =
+!--
+BEGIN
+LOCAL
+    id,
+    ckh: REF checkoff_header,
+    cke: REF checkoff_entry,
+    ckv: REF VECTOR,
+    get_chk_routin,		!Routine call that gets yes/no answer.
+    ans,
+    status;
+!
+! Set typeface to HISYMBOL so we can write check marks.
+!
+IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,%ASCID 'HISYMBOL'
+		)
+  THEN RETURN $error	(vsta$_settf
+			,string_type, %ASCID 'HISYMBOL'
+			);
+
+INCR i FROM 1 TO .num_blks DO
+    BEGIN
+    ckh = .blka + (512 * (.i - 1));
+    cke = .ckh + ckh$S_checkoff_header;	!Point to 1st entry
+    INCR j FROM 1 TO .ckh [ckh$w_num_ents] DO
+	BEGIN
+	id = .cke [cke$w_id];		!Get id to find
+	INCR k FROM 0 to num_chk_ents - 1 DO		
+	    BEGIN
+	    ckv = check_info + (.k * cki_size);
+	    IF (.id EQL .ckv [ck_id])
+	      THEN
+		BEGIN
+		get_chk_routin = .ckv [ck_routin];
+		(.get_chk_routin) (0, .cke, .ckv, .wdb, ans);
+		IF (.ans)
+		  THEN yes_check (.cke, .vd_id)
+		  ELSE no_check (.cke, .vd_id);
+		EXITLOOP;
+		END;
+	    END;
+	cke = .cke + cke$S_checkoff_entry;
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE yes_check
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write a box that is checked.
+! FORMAL PARAMETERS:
+	(cke: REF checkoff_entry	!field info
+	,vd_id				!and virtual display id
+	) =
+!--
+BEGIN
+OWN
+    check_on_byte: BYTE INITIAL (ch_sym$check_on),
+    txt_desc: VECTOR [2] INITIAL (1, check_on_byte);
+LOCAL
+    status;
+
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,txt_desc
+		,.cke [cke$w_line]
+		,.cke [cke$w_field]
+		,1
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'check mark'
+			);
+
+cke [cke$l_spare_lw] = 1;	!NOTE - this box is checked.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE no_check
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write a box with no check
+! FORMAL PARAMETERS:
+	(cke: REF checkoff_entry
+	,vd_id
+	) =
+!--
+BEGIN
+OWN
+    check_off_byte: BYTE INITIAL (ch_sym$check_off),
+    txt_desc: VECTOR [2] INITIAL (1, check_off_byte);
+LOCAL
+    status;
+
+IF NOT vs$$txt_writeText
+		(.vd_id
+		,txt_desc
+		,.cke [cke$w_line]
+		,.cke [cke$w_field]
+		,1
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'check mark'
+			);
+
+cke [cke$l_spare_lw] = 0;		!Note- this box is not checked.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_intr_write_edits
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write current info into editable fields.
+! FORMAL PARAMETERS:
+	(num_blks		!Number of checkoff blocks
+	,blka			!Block address
+	,vd_id			!Virtual display id of the doc body
+	,wdb: REF window_data_block	!"relevant" wdb.
+	) =
+!--
+BEGIN
+LOCAL
+    id,
+    edh: REF editable_header,
+    ede: REF editable_entry,
+    edv: REF VECTOR,
+    get_edit_routin,		!Routine that gets the str descriptor.
+    str_desc: VECTOR [2],
+    junk,			!Address of where to store length longword addr
+    status;
+!
+! Loop thru the editable fields defined on this page.
+!
+edh = .blka;			!Get address of first header.
+INCR i FROM 1 TO .num_blks DO
+    BEGIN
+    ede = .edh + edh$S_editable_header;	!Point to 1st entry
+    INCR j FROM 1 TO .edh [edh$w_num_ents] DO
+	BEGIN
+	id = .ede [ede$w_id];		!Get the id.
+    !  Find our info for this id. (if not found, ???).
+	INCR k FROM 0 TO num_ed_ents DO
+	    BEGIN
+	    edv = ed_info + (.k * edi_size);
+	    IF (.id EQL .edv [ed_id])
+	      THEN
+		BEGIN
+		get_edit_routin = .edv [ed_get_routin];
+		status = (.get_edit_routin) (.wdb, .edv, str_desc, junk);
+		IF .status THEN write_ed_item (str_desc, .ede, .vd_id);
+		END;
+	    END;
+	ede = .ede + .ede [ede$w_size];	!Skip to next entry start.
+	END;
+    edh = .edh + 512;		!Go on to next block, if any..
+    END;
+    
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_update_edits
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when a setting has changed and the form is up. We may
+!	have to re-do any editable fields with stuff in them. Beware:
+!	The user may be editing the field at the time!
+! FORMAL PARAMETERS:
+	(num_blks			!Number of edit blocks
+	,blka				!First block address
+	,vd_id				!Of the doc body
+	,wdb: REF window_data_block	!Of the terminal
+	) =
+!--
+BEGIN
+LOCAL
+    id,
+    edh: REF editable_header,
+    ede: REF editable_entry,
+    edv: REF VECTOR,
+    get_edit_routin,		!Routine that gets the str descriptor.
+    str_desc: VECTOR [2],
+    junk,			!Address of where to store length longword addr
+    status;
+!
+! Loop thru the editable fields defined on this page.
+!
+edh = .blka;			!Get address of first header.
+INCR i FROM 1 TO .num_blks DO
+    BEGIN
+    ede = .edh + edh$S_editable_header;	!Point to 1st entry
+    INCR j FROM 1 TO .edh [edh$w_num_ents] DO
+	BEGIN
+	id = .ede [ede$w_id];		!Get the id.
+    !  Find our info for this id. (if not found, ???).
+	INCR k FROM 0 TO num_ed_ents DO
+	    BEGIN
+	    edv = ed_info + (.k * edi_size);
+	    IF (.id EQL .edv [ed_id])
+	      THEN
+		BEGIN
+		get_edit_routin = .edv [ed_get_routin];
+		status = (.get_edit_routin) (.wdb, .edv, str_desc, junk);
+		IF .status THEN update_ed_item (str_desc, .ede, .vd_id);
+		END;
+	    END;
+	ede = .ede + .ede [ede$w_size];	!Skip to next entry start.
+	END;
+    edh = .edh + 512;		!Go on to next block, if any..
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_intr_chk
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Actions when user checks off an item.
+! FORMAL PARAMETERS:
+	(cke: REF checkoff_entry
+	,wdb: REF window_data_block
+	,docblk: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    ckv: REF VECTOR,
+    ckh: REF checkoff_header,
+    ckee: REF checkoff_entry,
+    ckv_idx,
+    doc_body_vd,
+    blka,		!Address of checkoff blocks
+    num_chk_blocks,	!Number of checkoff blocks there are.
+    set_chk_routin,	!Address of routine to set the value.
+    status;
+
+!
+! Find the ckv to which this applies.
+! If not found, then just quit.
+!
+ckv_idx = -1;
+INCR i FROM 0 TO num_chk_ents - 1 DO
+    BEGIN
+    ckv = check_info + (.i * cki_size);
+    IF (.cke [cke$w_id] EQL .ckv [ck_id])
+      THEN
+	BEGIN
+	ckv_idx = .i;
+	EXITLOOP;
+	END;
+    END;
+
+IF (.ckv_idx LSS 0)
+  THEN RETURN SS$_NORMAL;	!Not found.
+
+! If the value was already checked, just return.
+IF (.cke [cke$l_spare_lw] NEQ 0)
+  THEN RETURN SS$_NORMAL;
+
+doc_body_vd = .docblk [dkb$l_vd_of_body];	!Get doc body VD id.
+
+!
+! Set typeface to HISYMBOL so we can write check marks.
+!
+IF NOT vs$$txt_setTypeface
+		(.doc_body_vd
+		,%ASCID 'HISYMBOL'
+		)
+  THEN RETURN $error (vsta$_settf
+			,string_type, %ASCID 'HISYMBOL'
+			);
+
+yes_check (.cke, .doc_body_vd);		!Write a check there.
+
+!
+! Call routine to set it
+! 
+set_chk_routin = .ckv [ck_routin];
+(.set_chk_routin) (1, .cke, .ckv, .wdb, 0);
+
+!
+! Now, look at all checkoff items on this page to determine
+! which ones should really have check marks and which should not,
+! and update the check marks accordingly. This is rather
+! inefficient, but safe, and it's only done when
+! the user checks off an item.
+!
+num_chk_blocks = .docblk [dkb$w_num_chk_blks];
+blka = .docblk [dkb$a_chk_blk];
+
+INCR i FROM 1 to .num_chk_blocks DO
+    BEGIN
+    ckh = .blka + (512 * (.i - 1));
+    ckee = .ckh + ckh$S_checkoff_header;
+    INCR j FROM 1 TO .ckh [ckh$w_num_ents] DO
+	BEGIN
+	maybe_update_check (.ckee, .wdb, .doc_body_vd);
+	ckee = .ckee + cke$S_checkoff_entry;
+	END;
+    END;
+!
+! If the id was less than 1000, update the disk profile.
+!
+IF (.ckv [ck_id] LSS 1000)
+  THEN vsta$$srv_prof_modified ();
+
+RETURN SS$_NORMAL
+END;
+
+global ROUTINE maybe_update_check
+!++
+! FORMAL PARAMETERS:
+	(cke: REF checkoff_entry
+	,wdb		!relevant WDB
+	,vd_id		!of the doc body
+	) =
+!--
+BEGIN
+LOCAL
+    ckv: REF VECTOR,
+    id,			!From cke.
+    ans,
+    get_chk_routine,	!routine to call to get ans
+    status;
+!
+! Get ans and compare with spare_lw. If different, make the same
+! and update the check.
+!
+id = .cke [cke$w_id];
+ckv = check_info;
+INCR i FROM 0 TO num_chk_ents - 1 DO
+    BEGIN
+    IF (.id EQL .ckv [ck_id])
+      THEN
+	BEGIN
+	get_chk_routine = .ckv [ck_routin];
+	(.get_chk_routine) (0, .cke, .ckv, .wdb, ans);
+  !
+  ! Sometimes only the low bit is clear or set. Get 0 or 1 in the whole longwd.
+  !
+	IF NOT (.ans) THEN ans = 0 ELSE ans = 1;
+	IF (.ans NEQ .cke [cke$l_spare_lw])
+	  THEN			!have to change this!
+	    BEGIN
+	    IF (.ans NEQ 0)
+	      THEN
+		BEGIN		!Want to turn check ON
+		yes_check (.cke, .vd_id);
+		cke [cke$l_spare_lw] = 1;
+		EXITLOOP;
+		END
+	      ELSE
+		BEGIN		!Want to turn check OFF
+		no_check (.cke, .vd_id);
+		cke [cke$l_spare_lw] = 0;
+		EXITLOOP;
+		END;
+	    END;
+	END;
+    ckv = .ckv + cki_size;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_intr_edit
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Actions when user edits an editable item.
+! FORMAL PARAMETERS:
+	(ede: REF editable_entry
+	,wdb: REF window_data_block
+	,docblk: REF doc_block
+	) =
+!--
+BEGIN
+LOCAL
+    id,
+    buf_desc: VECTOR [2],
+    edv: REF VECTOR,
+    found_flag,
+    flags,
+    get_edit_routin,	!Routine to call to get str_desc of current string
+    typeface_desc: VECTOR [2],
+    typesize,
+    rendition_off,
+    rendition_on,
+    len_longword_addr,	!Address of the longword where length of string is
+    status;
+
+!
+! Find the edv.
+!
+id = .ede [ede$w_id];
+found_flag = 0;		!Set to 1 if edv found.
+edv = ed_info;
+INCR i FROM 1 TO num_ed_ents DO
+    BEGIN
+    IF (.edv [ed_id] EQL .id)
+      THEN
+	BEGIN
+	found_flag = 1;
+	EXITLOOP;
+	END;
+    edv = .edv + edi_size;
+    END;
+
+IF NOT (.found_flag)
+  THEN RETURN SS$_NORMAL;	!??Can't happen.
+
+!
+! Get edit flags.
+!
+flags = 0;		!Assume none.
+IF (.ede [ede$l_flags] AND ede$K_flag_center)
+  THEN flags = .flags OR vsta$K_edit_center;
+
+!
+! Get string descriptor to edit string.
+!
+get_edit_routin = .edv [ed_get_routin];
+IF NOT (status =
+    (.get_edit_routin) (.wdb, .edv, buf_desc, len_longword_addr)
+	)
+  THEN RETURN .status;		!?Can't start editing the field.
+
+buf_desc [0] = .edv [ed_maxlen];
+
+!
+! Set up typeface string descriptor. (0,0) if none specified.
+!
+typeface_desc [0] = .ede [ede$l_typeface_len];
+IF (.typeface_desc [0] NEQ 0)
+  THEN typeface_desc [1] = .ede + ede$K_typeface_str
+  ELSE typeface_desc [1] = 0;
+
+!
+! Remember the current KBD attachement, so when the user finished editing
+! the field we can attach the old keyboard.
+!
+vsta$$srv_remember_kbd_attach ();
+
+!
+! Call the routine to edit the field.
+!
+IF NOT vsta$$edit_one
+		(.docblk [dkb$l_pb]	!Keyboard id.
+		,.docblk [dkb$l_vd_of_body]	!Vd-id
+		,.ede [ede$w_line]	!Number of line
+		,.ede [ede$w_y_extent]	!Height of line
+		,.ede [ede$w_y_orig]	!Y position on VD where the line starts.
+		,.ede [ede$w_field]
+		,.ede [ede$w_space]	!Width of field
+		,buf_desc		!Descriptor to buffer
+		,.flags			!Flags
+		,.len_longword_addr	!Place to write current # of
+					! characters in buffer
+		,ed_delim_type		!Output -- Type of delimiter
+		,edit_finished		!Routine to call when field finished.
+		,typeface_desc		!Optional input: typeface descriptor.
+		,.ede [ede$l_typesize]	!optional input: typesize.
+		,.ede [ede$l_rend_off]	!optional input: rendition bits to turn off.
+		,.ede [ede$l_rend_on]	!optional input: rendition bits to turn on.
+		,0			!optional input: Timeout parameter
+		)
+  THEN RETURN $error	(vsta$_editone	!"?Can't edit !AS"
+			,string_type, %ASCID 'field in form'
+			);
+
+!
+! Remember current info.
+!
+curr_ed_docblk = .docblk;
+curr_ed_wdb = .wdb;
+curr_ede = .ede;
+curr_edv = .edv;
+!
+! Set up curr_ed_param = terminal vd-id if this is a term settings doc.
+!
+curr_ed_param = .wdb [wdb$l_term_vd_id];
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE edit_finished =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Come here when the edit is finished.
+! IMPLICIT INPUTS:
+!	ed_delim_type - type of delimiter used to finish editing the field.
+!	curr_ed_wdb - relevant wdb
+!	curr_ed_docblk - docblk
+!	curr_ede - ede
+!	curr_edv - edv
+!	curr_ed_param - param to be passed after prm1, prm2
+BEGIN
+LOCAL
+    status;
+
+!
+! Update the ACP
+!
+IF (.curr_edv [ed_put_routin] NEQ 0)	!If there'a routine to call..
+  THEN (.curr_edv [ed_put_routin]) (.curr_edv [ed_prm1], .curr_edv [ed_prm2],
+					.curr_ed_param);
+
+!
+! Update the profile on disk
+!
+IF (.curr_edv [ed_id] LSS 1000)
+  THEN vsta$$srv_prof_modified ();
+
+curr_edv = 0;
+curr_ede = 0;
+curr_ed_wdb = 0;
+curr_ed_docblk = 0;
+
+IF (.ed_delim_type EQL vsta$K_edit_delim_yank)
+  THEN RETURN SS$_NORMAL;		!If yanked, don't attach a new KBD
+
+vsta$$srv_restore_kbd_attach ();	!Restore old keyboard attachment
+					! if we can.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE vdecg
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get/set check value for a DEC terminal.
+! FORMAL PARAMETERS:
+	(set_flag	!=1 means SET
+	,cke: REF checkoff_entry
+	,ckv: REF VECTOR
+	,wdb: REF window_data_block	!Terminal's wdb.
+	,ans		!place to return 1 or 0
+	) =
+!--
+BEGIN
+LOCAL
+    term_vd_id,		! terminal body vd-id
+    index,
+    status;
+
+term_vd_id = .wdb [wdb$l_term_vd_id];		!Get terminal's vd-id
+index = .ckv [ck_p1];
+IF (.set_flag NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$ts_set_terminal (.term_vd_id, .index, 1)
+	    )
+      THEN RETURN .status;
+    END
+  ELSE
+    BEGIN
+    IF NOT (status =
+	vsta$$ts_get_terminal (.term_vd_id, .index, .ans)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE vtekg
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get/set check value for a TEK4014 terminal.
+! FORMAL PARAMETERS:
+	(set_flag	!=1 means SET
+	,cke: REF checkoff_entry
+	,ckv: REF VECTOR
+	,wdb: REF window_data_block	!Terminal's wdb.
+	,ans		!place to return 1 or 0
+	) =
+!--
+BEGIN
+LOCAL
+    term_vd_id,		! terminal body vd-id
+    index,
+    status;
+
+term_vd_id = .wdb [wdb$l_term_vd_id];		!Get terminal's vd-id
+index = .ckv [ck_p1];
+
+IF (.set_flag NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$ts_set_terminal (.term_vd_id, .index, 1)
+	    )
+      THEN RETURN .status;
+    END
+  ELSE
+    BEGIN
+    IF NOT (status =
+	vsta$$ts_get_terminal (.term_vd_id, .index, .ans)
+	    )
+      THEN RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE vv
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get /set binary check value for the profile
+! FORMAL PARAMETERS:
+	(set_flag	!=1 means SET
+	,cke: REF checkoff_entry
+	,ckv: REF VECTOR
+	,wdb		!wdb for profile (not Used)
+	,ans		!place to return 1 or 0
+	) =
+!--
+BEGIN
+LOCAL
+    var_addr,
+    value_for_yes,
+    set_routine_addr,	!Addr of routine to call when set.
+    status;
+
+var_addr = .ckv [ck_p1];
+value_for_yes = .ckv [ck_p2];
+set_routine_addr = .ckv [ck_p3];
+
+IF (.set_flag)
+  THEN
+    BEGIN
+    .var_addr = .value_for_yes;
+    IF (.set_routine_addr NEQ 0)	!Call routine if specified
+      THEN (.set_routine_addr) (.value_for_yes);
+    END
+  ELSE
+    BEGIN
+    IF (..var_addr EQL .value_for_yes)
+      THEN .ans = 1
+      ELSE .ans = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_pstring
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets string descriptor for a plain old PROFILE item.
+!	prm1 is the address of the length word. prm2 is the
+!	address of the string itself.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!"relevant" wdb
+	,edv: REF VECTOR
+	,str_desc: REF VECTOR [2]	!Address of output string descriptor
+	,len_longword_addr
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+!
+! Not much to do here. All info provided in the edv.
+!
+str_desc [0] = ..edv [ed_prm1];		!Number of chars in the string
+str_desc [1] = .edv [ed_prm2];		!String address.
+.len_longword_addr = .edv [ed_prm1];	!Where length is stored.
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_tstring
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets string information for a terminal.
+!	prm1 is the index; prm2 is not used.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Relevant WDB
+	,edv: REF VECTOR		! $editr entry information (prm1)
+	,str_desc: REF VECTOR [2]	!Address of output string desc.
+	,len_longword_addr		!Addr of longword where length is.
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc_addr: REF VECTOR [2],	!Address of the descriptor in the
+					! terminal's data base.
+    term_vd_id,				!Terminal's vd-id
+    index,				!Tells "ts_get_terminal" what to do
+    status;
+
+term_vd_id = .wdb [wdb$l_term_vd_id];	!Relevant WDB = wdb of the terminal,
+					! not the settings document itself.
+index = .edv [ed_prm1];			!PRM1 = index
+
+!
+! Ask the terminal for the string information
+!
+IF NOT (status =
+    vsta$$ts_get_terminal
+		(.term_vd_id		!Which terminal
+		,.index			!Which piece of information
+		,str_desc_addr		!(return address of strdesc here)
+		)
+	)
+  THEN RETURN .status;
+
+str_desc [0] = .str_desc_addr [0];
+str_desc [1] = .str_desc_addr [1];
+.len_longword_addr = .str_desc_addr;	!Address of string descriptor = address
+					! of the length longword.
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_ed_item
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Write the item in the editable field.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]	!String to write.
+	,ede: REF editable_entry	!The ede
+	,vd_id				!Vd-id of the doc body
+	) =
+!--
+BEGIN
+LOCAL
+    str_len: WORD,
+    tf_desc: VECTOR [2],
+    wrote_real_len,
+    status;
+
+str_len = .str_desc [0];
+IF (.str_len EQL 0)
+  THEN RETURN SS$_NORMAL;		!No string to write.
+
+!
+! Set typeface, typesize, rendition to appropriate values.
+!
+IF (.ede [ede$l_typeface_len] NEQ 0)
+  THEN
+    BEGIN
+    tf_Desc [0] = .ede [ede$l_typeface_len];
+    tf_desc [1] = .ede + ede$K_typeface_str;
+    IF NOT vs$$txt_setTypeface
+		(.vd_id
+		,tf_desc
+		)
+      THEN RETURN $error (vsta$_settf
+			,string_type, tf_desc
+			);
+    END;
+
+IF (.ede [ede$l_typesize] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$txt_setTypesize
+		(.vd_id
+		,.ede [ede$l_typesize]
+		)
+      THEN RETURN $error (vsta$_setts);
+    END;
+
+IF ((.ede [ede$l_rend_on] NEQ 0) OR (.ede [ede$l_rend_off] NEQ 0))
+  THEN
+    BEGIN
+    IF NOT vs$$txt_set_Rendition
+		(.vd_id
+		,.ede [ede$l_rend_off]
+		,.ede [ede$l_rend_on]
+		)
+      THEN RETURN $error (vsta$_setrend);
+    END;
+
+!
+! Write the string.
+!
+IF NOT vs$$txt_WriteText
+		(.vd_id
+		,.str_desc
+		,.ede [ede$w_line]
+		,.ede [ede$w_field]
+		,1			!At CPOS= 1
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'string in editable field'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE update_ed_item
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update the item in the editable field.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]	!String to write.
+	,ede: REF editable_entry	!The ede
+	,vd_id				!Vd-id of the doc body
+	) =
+!--
+BEGIN
+LOCAL
+    str_len: WORD,
+    tf_desc: VECTOR [2],
+    wrote_real_len,
+    status;
+
+str_len = .str_desc [0];
+IF (.str_len NEQ 0)
+  THEN
+    BEGIN		!Set typeface, etc.
+!
+! Set typeface, typesize, rendition to appropriate values.
+!
+    IF (.ede [ede$l_typeface_len] NEQ 0)
+      THEN
+	BEGIN
+	tf_Desc [0] = .ede [ede$l_typeface_len];
+	tf_desc [1] = .ede + ede$K_typeface_str;
+	IF NOT vs$$txt_setTypeface
+			(.vd_id
+			,tf_desc
+			)
+	  THEN RETURN $error (vsta$_settf
+				,string_type, tf_desc
+				);
+	END;
+
+    IF (.ede [ede$l_typesize] NEQ 0)
+      THEN
+	BEGIN
+	IF NOT vs$$txt_setTypesize
+			(.vd_id
+			,.ede [ede$l_typesize]
+			)
+	  THEN RETURN $error (vsta$_setts);
+	END;
+
+    IF ((.ede [ede$l_rend_on] NEQ 0) OR (.ede [ede$l_rend_off] NEQ 0))
+      THEN
+	BEGIN
+	IF NOT vs$$txt_set_Rendition
+			(.vd_id
+			,.ede [ede$l_rend_off]
+			,.ede [ede$l_rend_on]
+			)
+	  THEN RETURN $error (vsta$_setrend);
+	END;
+    END;
+
+!
+! If we were currently editing the field, tell the edit module
+! it has been changed.
+!
+IF (.curr_ed_docblk NEQ 0)
+  THEN					!We are currently editing something
+    BEGIN
+    IF ((.vd_id EQL .curr_ed_docblk [dkb$l_vd_of_body])
+		AND
+	(.ede [ede$w_line] EQL .curr_ede [ede$w_line])
+		AND
+	(.ede [ede$w_field] EQL .curr_ede [ede$w_field]))
+      THEN vsta$$edit_update (.str_desc);
+    RETURN SS$_NORMAL;
+    END;
+
+!
+! Not editing the field, we will delete it and write a new string ourself.
+!
+! Delete any old string, if any.
+!
+IF NOT vs$$txt_deleteCharacters
+		(.vd_id
+		,.ede [ede$w_line]
+		,.ede [ede$w_field]
+		,1
+		,0			!All of 'em
+		)
+  THEN RETURN $error (vsta$_delchs);
+
+!
+! Write the string.
+!
+IF (.str_len EQL 0)
+   THEN RETURN SS$_NORMAL;		!No new string to write
+
+IF NOT vs$$txt_WriteText
+		(.vd_id
+		,.str_desc
+		,.ede [ede$w_line]
+		,.ede [ede$w_field]
+		,1			!At CPOS= 1
+		)
+  THEN RETURN $error (vsta$_writet
+			,string_type, %ASCID 'string in editable field'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$nudge_keyclick =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Call appropriate routine to set or clear keyclick.
+! IMPLICIT INPUTS:
+!	srv$gl_keyclick_on:  = 0 means turn keyclick off
+!			     = 1 means turn keyclick on
+!	vs$gw_vbchan - VB channel number
+!--
+BEGIN
+
+IF (.srv$gl_keyclick_on)
+  THEN
+    RETURN vsta$$kbrd_keyclick_enable (.vs$gw_vbchan)
+  ELSE
+    RETURN vsta$$kbrd_keyclick_disable (.vs$gw_vbchan);
+
+END;
+
+GLOBAL ROUTINE vsta$$nudge_autor =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Call appropriate routine to set or clear autorepeat.
+! IMPLICIT INPUTS:
+!	srv$gl_autorepeat_on:  = 0 means turn autorepeat off
+!			     = 1 means turn autorepeat on
+!	vs$gw_vbchan - VB channel number
+!--
+BEGIN
+
+IF (.srv$gl_autorepeat_on)
+  THEN
+    RETURN vsta$$kbrd_autorepeat_enable (.vs$gw_vbchan)
+  ELSE
+    RETURN vsta$$kbrd_autorepeat_disable (.vs$gw_vbchan);
+
+END;
+
+GLOBAL ROUTINE vsta$$change_kbd =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update vsta$gl_keyboard based on the selected keyboard & legend
+!	Update the DEFAULT_KBD_x for this ACP with the new Keyboard vaule
+! IMPLICIT INPUTS:
+! IMPLICIT OUTPUTS:
+!	vsta$gl_keyboard: = set to the value corresponding to keyboard & legend
+!			    selected
+!	DEFAULT_kBD_x: is updated with the new keyboard value for this ACP
+!
+!--
+BEGIN
+LOCAL
+   s;		! status
+
+! determine the tr table based on new kbd and legend vaules (global variables)
+IF NOT (s = vsta$$nudge_keyboard ()	! to update vsta$gl_keyboard variable
+	)				! in order to use for HI fields etc
+  THEN $log_error_and_return (.s);
+
+! Update the default-kbd for this acp
+IF NOT (s = set_acp_def_kbd ()	
+       )	
+  THEN $log_error_and_return (.s);	
+
+IF NOT (s = vsta$$change_vkb_transtable ()
+       )
+  THEN $log_error_and_return (.s);
+
+RETURN SS$_NORMAL
+
+END;
+
+GLOBAL ROUTINE vsta$$change_vkb_transtable =
+!++
+! FUNCTIONAL DESCRIPTION:
+! find out what the current virtual keyboard is (vkb). Set the trans-table
+! for that vkb as follows:
+! Find out if its vd is owned by a vt100 emulator; if so, set the new tr-table
+! based on that VT100's legend value and the new kbd. Load tr-table to curr VKB.
+! Also change the emulator nrc stuff if needed.
+! Otherwise load the tr-table which is based on new kbd and legend values of the
+! global variables to curr VKB.
+!
+! IMPLICIT INPUTS:
+! IMPLICIT OUTPUTS:
+!	new physical keyboard translation table is set for the current vkb  
+!
+!--
+BEGIN
+LOCAL
+   vkb_id_reta,	!currently active vkb-id returned by vs$$inquire_current_vkb
+   vd_id_reta,	!vd-id of currently activ vkb  "            "
+   term_emulator: LONG, !emulated term or normal as returned by vds-get-vd-char
+   vt100 : REF device_data_table,	! VT100 database
+   legend,	!legend value
+   tr_table,	!translation table index
+   s;		! status
+
+
+! get the currently active vkb's vkb-id and vd-id if any
+IF NOT (s = vs$$inquire_current_vkb (vkb_id_reta !curr activ vkb-id returned
+				    ,vd_id_reta)) ! vd-id or 0 returned
+  THEN $log_error_and_return (.s);	
+
+term_emulator = 0;		! initialize this just in case
+IF .vd_id_reta NEQ 0
+  THEN
+  BEGIN
+! there is a VD. check if any vt100 emulator owns it.
+  IF NOT (s = vs$$vds_get_vd_char(.vd_id_reta,		!curr defaults for vd
+				  0,			!don't want UIC
+				  0,			!don't want HEIGHT
+				  0,			!don't want WIDTH
+				  0,			!don't want DEPTH
+				  0,			!don't want BACKGROUND
+				  0,			!don't want FOREGROUND
+				  term_emulator,	!emulated or normal
+				  0,			!don't want CHARS
+				  0			!don't want PROTECTION
+				  ))
+    THEN $log_error_and_return (.s);
+
+  IF .term_emulator EQL 1				!if vt100 emulator
+    THEN
+    BEGIN
+!   find vt100 databse for this vd
+    IF NOT find_vt100(.vd_id_reta,			!send vd_id
+		      vt100)				!get vt100 database
+      THEN $RETURN_ERROR(vsta$_nosuchvt);
+
+!   get the legend value for this vt100
+    legend = .vt100[vt$l_legend];
+    END
+    ELSE
+      IF .term_emulator EQL 2
+	THEN legend = prof$k_legend_dp;
+
+
+! get the translation table index for the new kbd and this legend value
+  IF NOT (s = vsta$$get_transtable_id(.srv$gl_kbd_set	! Kbd
+				     ,.legend	! legend
+				     ,tr_table	! trans_table returned
+				     ))
+    THEN $log_error_and_return (.s);
+
+!   set the new translation table
+  IF NOT (s = vs$$set_vkb_trans_table(.vkb_id_reta,	! = vkb_id
+				      .tr_table,	! new trans table
+				      .vs$gl_acp_pid	! tell routine its us
+				     ))
+    THEN $log_error_and_return (.s);
+
+! do nrc stuff initialization for this vt100 if needed
+  IF .term_emulator EQL 1				!if vt100 emulator
+    THEN
+    vsta$$set_vt100_kbd_change (vt100[$base]);		!change its nrc stuff
+ 
+  END;
+
+IF (.vd_id_reta EQL 0 OR (.term_emulator NEQ 1 AND .term_emulator NEQ 2))
+  THEN		! if its not a vt100 or a TEK4014 or VD-ID is zero
+  BEGIN
+!  set the new translation table based on global kbd & legend : vsta$gl_keyboard
+  IF NOT (s = vs$$set_vkb_trans_table(.vkb_id_reta,	 ! = vkb_id
+				      .vsta$gl_keyboard, ! new trans table
+				      .vs$gl_acp_pid	 ! tell routine its us
+				     ))
+  THEN $log_error_and_return (.s);
+  END;
+
+RETURN SS$_NORMAL
+
+END;
+
+GLOBAL ROUTINE vsta$$nudge_keyboard =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Call appropriate routine to get the translation table index based on
+!	the selected keyboard & legend
+! IMPLICIT INPUTS:
+!	srv$gl_kbd_set:  = 0 - 14 corresponds to the keyboard selected
+!	srv$gl_vt_legend: = 0 means typewriter mode legend
+!			  = 1 means dataprocessing mode legend
+! IMPLICIT OUTPUTS:
+!	vsta$gl_keyboard: = set to the value corresponding to keyboard & legend
+!			    selected
+!
+!--
+BEGIN
+LOCAL
+   s,		! status
+   tr_table;	! translation table value
+
+IF NOT (s = vsta$$get_transtable_id(.srv$gl_kbd_set	! Kbd
+				   ,.srv$gl_vt_legend	! legend
+				   ,tr_table		! trans_table returned
+				   ))
+  THEN $log_error_and_return (.s);
+
+vsta$gl_keyboard = .tr_table;
+
+RETURN SS$_NORMAL
+
+END;
+
+GLOBAL ROUTINE vsta$$get_transtable_id
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set the translation table index to the selected keyboard & legend
+!
+!--
+! FORMAL PARAMETERS:
+	(kbd			!Keyboard
+	,legend			!legend
+	,trans_table		!translation table index - to be returned
+	) =
+!--
+BEGIN
+
+(SELECTONE .kbd OF
+    SET
+    [PROF$K_KBD_CA]:		! American
+	BEGIN
+	.trans_table = vsta$k_lk201_ca;	!  typewriter & dataprocessing
+	END;
+
+    [PROF$K_KBD_CB]:		! Flemish
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cb_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cb_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CC]:		! Canadian (French)
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cc_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cc_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CD]:		! Danish
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cd_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cd_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CE]:		! British
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_ce_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_ce_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CF]:		! Finnish
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cf_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cf_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CG]:		! German/Austrian
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cg_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cg_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CH]:		! Dutch
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_ch_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_ch_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CI]:		! Italian
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_ci_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_ci_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CK]:		! French/Swiss
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_ck_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_ck_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CL]:		! German/Swiss
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cl_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cl_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CM]:		! Swedish
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cm_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cm_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CN]:		! Norwegian
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cn_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cn_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CP]:		! French/Belgian
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cp_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cp_dp	! dataprocessing
+	END;
+
+    [PROF$K_KBD_CS]:		! Spanish
+	BEGIN
+	IF (.legend EQL prof$k_legend_tw)
+	  THEN .trans_table = vsta$k_lk201_cs_typ	! typewriter
+	  ELSE .trans_table = vsta$k_lk201_cs_dp	! dataprocessing
+	END;
+
+    [OTHERWISE]:
+	BEGIN
+	$RETURN_ERROR (vsta$_nosuchvtt);
+	END;
+    TES
+);
+	SS$_NORMAL
+
+END;
+
+GLOBAL ROUTINE vsta$$get_acp_def_kbd =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set the default keyboard for this VaxStation(ACP)
+!
+! IMPLICIT INPUTS:
+! srv$gl_kbd_a thru srv$gl_kbd_z : keyboards for VaxStations A thru Z
+! vs$gl_vd_name_desc (defined in VSACP.B32) for this ACP
+!
+! IMPLICIT OUTPUTS:
+! srv$gl_kbd_set : set to the specified kbd value for this ACP
+!--
+BEGIN
+LOCAL
+   VD_NAME : REF VECTOR[0,BYTE];
+
+VD_NAME = .VS$GL_VD_NAME_DESC[1];
+ACP_LETTER = .VD_NAME[2];
+
+(SELECTONE .ACP_LETTER OF
+    SET
+    [%C'A']: srv$gl_kbd_set = .srv$gl_kbd_a;
+
+    [%C'B']: srv$gl_kbd_set = .srv$gl_kbd_b;
+
+    [%C'C']: srv$gl_kbd_set = .srv$gl_kbd_c;
+
+    [%C'D']: srv$gl_kbd_set = .srv$gl_kbd_d;
+
+    [%C'E']: srv$gl_kbd_set = .srv$gl_kbd_e;
+
+    [%C'F']: srv$gl_kbd_set = .srv$gl_kbd_f;
+
+    [%C'G']: srv$gl_kbd_set = .srv$gl_kbd_g;
+
+    [%C'H']: srv$gl_kbd_set = .srv$gl_kbd_h;
+
+    [%C'I']: srv$gl_kbd_set = .srv$gl_kbd_i;
+
+    [%C'J']: srv$gl_kbd_set = .srv$gl_kbd_j;
+
+    [%C'K']: srv$gl_kbd_set = .srv$gl_kbd_k;
+
+    [%C'L']: srv$gl_kbd_set = .srv$gl_kbd_l;
+
+    [%C'M']: srv$gl_kbd_set = .srv$gl_kbd_m;
+
+    [%C'N']: srv$gl_kbd_set = .srv$gl_kbd_n;
+
+    [%C'O']: srv$gl_kbd_set = .srv$gl_kbd_o;
+
+    [%C'P']: srv$gl_kbd_set = .srv$gl_kbd_p;
+
+    [%C'Q']: srv$gl_kbd_set = .srv$gl_kbd_q;
+
+    [%C'R']: srv$gl_kbd_set = .srv$gl_kbd_r;
+
+    [%C'S']: srv$gl_kbd_set = .srv$gl_kbd_s;
+
+    [%C'T']: srv$gl_kbd_set = .srv$gl_kbd_t;
+
+    [%C'U']: srv$gl_kbd_set = .srv$gl_kbd_u;
+
+    [%C'V']: srv$gl_kbd_set = .srv$gl_kbd_v;
+
+    [%C'W']: srv$gl_kbd_set = .srv$gl_kbd_w;
+
+    [%C'X']: srv$gl_kbd_set = .srv$gl_kbd_x;
+
+    [%C'Y']: srv$gl_kbd_set = .srv$gl_kbd_y;
+
+    [%C'Z']: srv$gl_kbd_set = .srv$gl_kbd_z;
+
+
+    [OTHERWISE]:
+	BEGIN
+	$RETURN_ERROR (vsta$_nosuchvtt);
+	END;
+    TES
+);
+	SS$_NORMAL
+
+END;
+
+ROUTINE set_acp_def_kbd =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	When user makes a change in profile for keyboard, equate it to the
+!	keyboard variable of that ACP; so that it will be reflected in the
+!	modified user_profile.
+!
+! IMPLICIT INPUTS:
+! srv$gl_kbd_set : kbd value set by the user
+! vs$gl_vd_name_desc (defined in VSACP.B32) for this ACP
+!
+! IMPLICIT OUTPUTS:
+! srv$gl_kbd_a thru srv$gl_kbd_z : keyboards for VaxStations A thru Z
+!				   whichever is applicable
+!--
+BEGIN
+
+(SELECTONE .ACP_LETTER OF
+    SET
+    [%C'A']: srv$gl_kbd_a = .srv$gl_kbd_set;
+
+    [%C'B']: srv$gl_kbd_b = .srv$gl_kbd_set;
+
+    [%C'C']: srv$gl_kbd_c = .srv$gl_kbd_set;
+
+    [%C'D']: srv$gl_kbd_d = .srv$gl_kbd_set;
+
+    [%C'E']: srv$gl_kbd_e = .srv$gl_kbd_set;
+
+    [%C'F']: srv$gl_kbd_f = .srv$gl_kbd_set;
+
+    [%C'G']: srv$gl_kbd_g = .srv$gl_kbd_set;
+
+    [%C'H']: srv$gl_kbd_h = .srv$gl_kbd_set;
+
+    [%C'I']: srv$gl_kbd_i = .srv$gl_kbd_set;
+
+    [%C'J']: srv$gl_kbd_j = .srv$gl_kbd_set;
+
+    [%C'K']: srv$gl_kbd_k = .srv$gl_kbd_set;
+
+    [%C'L']: srv$gl_kbd_l = .srv$gl_kbd_set;
+
+    [%C'M']: srv$gl_kbd_m = .srv$gl_kbd_set;
+
+    [%C'N']: srv$gl_kbd_n = .srv$gl_kbd_set;
+
+    [%C'O']: srv$gl_kbd_o = .srv$gl_kbd_set;
+
+    [%C'P']: srv$gl_kbd_p = .srv$gl_kbd_set;
+
+    [%C'Q']: srv$gl_kbd_q = .srv$gl_kbd_set;
+
+    [%C'R']: srv$gl_kbd_r = .srv$gl_kbd_set;
+
+    [%C'S']: srv$gl_kbd_s = .srv$gl_kbd_set;
+
+    [%C'T']: srv$gl_kbd_t = .srv$gl_kbd_set;
+
+    [%C'U']: srv$gl_kbd_u = .srv$gl_kbd_set;
+
+    [%C'V']: srv$gl_kbd_v = .srv$gl_kbd_set;
+
+    [%C'W']: srv$gl_kbd_w = .srv$gl_kbd_set;
+
+    [%C'X']: srv$gl_kbd_x = .srv$gl_kbd_set;
+
+    [%C'Y']: srv$gl_kbd_y = .srv$gl_kbd_set;
+
+    [%C'Z']: srv$gl_kbd_z = .srv$gl_kbd_set;
+
+    [OTHERWISE]:
+	BEGIN
+	$RETURN_ERROR (vsta$_nosuchvtt);
+	END;
+    TES
+);
+	SS$_NORMAL
+
+END;
+
+ROUTINE change_level =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Change the VT100 level.
+!	Check the legend based on the new vt_level and change if needed.
+!	Call the vsta$$nudge_keyboard routine to effect the change.
+! IMPLICIT INPUTS:
+!	srv$gl_vt_level, srv$gl_vt_legend & prof$k_vt_level1, prfo$k_7bit_nrc,
+!	prof$k_vt_level2, prof$k_legend_tw and prof$k_legend_dp
+! IMPLICIT OUTPUTS:
+!	srv$gl_vt_legend is set to the valid legend value and vsta$gl_keyboard
+!	is accordingly changed by vsta$$nudge_keyboard routine
+!
+!--
+BEGIN
+LOCAL
+   s;		! status
+
+(SELECTONE .srv$gl_vt_level OF
+    SET
+    [prof$k_vt_level1]:		! 7-bit ASCII
+	BEGIN
+	srv$gl_vt_legend = prof$k_legend_dp;	!force legend to dataprocessing
+	IF NOT (s = vsta$$nudge_keyboard ()
+		)
+	  THEN $log_error_and_return (.s);
+	END;
+
+    [prof$k_7bit_nrc]:		! 7-bit NRC
+	BEGIN
+	srv$gl_vt_legend = prof$k_legend_tw;	!force legend to typewriter
+	IF NOT (s = vsta$$nudge_keyboard ()
+		)
+	  THEN $log_error_and_return (.s);
+	END;
+
+    [prof$k_vt_level2]:		! 8-bit DEC multinational
+	BEGIN
+	s = SS$_NORMAL;		!real dummy statement
+! we don't have to change the legend for 8-bit since both dataprocessing and
+! typewriter legends are valid with 8-bit vt-level setting
+	END;
+
+    [OTHERWISE]:
+	BEGIN
+	$RETURN_ERROR (vsta$_nosuchvtt);
+	END;
+    TES
+);
+	SS$_NORMAL
+
+
+END;
+
+ROUTINE change_legend =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Change the legend setting.
+!	Call the vsta$$nudge_keyboard routine to effect the change.
+!	Change the vt-level setting based on the new legend value.
+! IMPLICIT INPUTS:
+!	srv$gl_vt_level, srv$gl_vt_legend & prof$k_vt_level1, prfo$k_7bit_nrc,
+!	prof$k_vt_level2, prof$k_legend_tw and prof$k_legend_dp
+! IMPLICIT OUTPUTS:
+!	vsta$gl_keyboard is changed by vsta$$nudge_keyboard routine
+!	srv$gl_vt_level is set to the valid vt-level value 
+!
+!--
+BEGIN
+LOCAL
+   s;		! status
+
+
+! first set to the right translation table based on the current (kbd &) legend
+! settings
+
+	IF NOT (s = vsta$$nudge_keyboard ()
+		)
+	  THEN $log_error_and_return (.s);
+
+
+! then set the vt-level to be consistent with the current legend value
+
+IF .srv$gl_vt_legend EQL prof$k_legend_tw
+   THEN		! typewriter legend
+     BEGIN
+     IF .srv$gl_vt_level EQL prof$k_vt_level1     !if 7-bit ASCII then
+	THEN srv$gl_vt_level = prof$k_7bit_nrc    !change it to 7-bit NRC
+     END
+
+   ELSE		! dataprocessing legend
+     IF .srv$gl_vt_level EQL prof$k_7bit_nrc      !if 7-bit nrc, then
+	THEN srv$gl_vt_level = prof$k_vt_level1;  !change it to 7-bit ASCII
+
+RETURN SS$_NORMAL
+
+END;
+END
+ELUDOM

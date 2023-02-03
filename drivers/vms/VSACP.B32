@@ -1,0 +1,5066 @@
+%title 'VS$ACP  --  VAX Station ACP Control routines'
+module VS$ACP	( 			! 
+		ident = 'VSTA V1.2-01',
+		main = VS$$ACP_INIT,
+		addressing_mode (external=general,nonexternal=general)
+		 ) =
+begin
+
+!++
+! FACILITY:
+!	VaxStation ACP Control routines
+!
+! ABSTRACT:
+!	Initialization of the VSxACP process; assigns a channel to 
+!	VAXStation device.
+!	Main Loop (Hibernates until there is an IRP to manage).
+!
+! ENVIRONMENT:
+!	VaxStation ACP Control routines
+!	AST re-entrant
+!	IPL = 0
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+library	'SYS$LIBRARY:LIB.L32';		! System constants and routines
+library 'vsta$library:LINKAGE';		! Linkages to VMS routines
+library 'vsta$library:LIBMACROS';	! Symbols like "$log_error_and_return"
+library 'vsta$library:VSACPDEF';	! VAX Station data structures, etc.
+library 'vsta$library:VSVDSVD';		! VD module definitions
+library 'vsta$library:TTYDEFS';		! Terminal defs. not in LIB.L32
+library 'vsta$library:VSVKB';		! Virtual Keyboard definitions
+library 'vsta$library:VSAST';		! AST queue defs.
+library 'vsta$library:VSVDSVDC';	! VDC and INT definitions
+library 'vsta$library:VSERRORS';	! Error-reporting symbols
+
+!
+! PSECTS
+!
+$vsta_psect;
+!
+! Define a single-parameter JSB linkage for the ACP process rundown routine
+! which will be called by VMS during SYS$DELPRC. This linkage must save
+! everything possible
+!
+linkage JSB_SAVE_EVERYTHING =
+    jsb:			! Linkage type
+    preserve( 			! Don't want to press our luck
+	0,1);
+
+
+!
+! EXTERNAL REFERENCES:
+!
+external routine 
+
+	EXE$ALONONPAGED: ALONONPAGED,				! VMS Non-paged pool allocate
+	EXE$DEANONPAGED: DEANONPAGED novalue, 			! VMS deallocation
+	EXE$CHKRDACCES: CHKACCESS,				! VMS check read access
+	EXE$CHKWRTACCES: CHKACCESS,				! VMS check write access
+	EXE$CHKPHYACCES: CHKACCESS,				! VMS check execute access
+	EXE$CHKDELACCES: CHKACCESS,				! VMS check delete access
+	EXE$EPID_TO_IPID: EXECVTPID,				! VMS PID conversion
+	EXE$IPID_TO_EPID: EXECVTPID,				! VMS PID conversion
+	EXE$EPID_TO_PCB: EXECVTPID,				! VMS EPID => PCB conversion
+	EXE$IPID_TO_PCB: EXECVTPID,				! VMS IPID => PCB conversion
+	EXE$NAMPID: NAMPID,					! VMS PCB locating routine
+	SCH$IOLOCKR: IOLOCKW novalue,				! VMS Mutex acquisition
+	SCH$IOLOCKW: IOLOCKW novalue,				! VMS Mutex acquisition
+	SCH$IOUNLOCK: IOUNLOCK novalue,				! VMS Mutex return
+	COM$DELATTNAST: DELATTNAST novalue,			! VMS attn AST delivery routine
+	COM$DELCTRLAST: DELCTRLAST novalue,			! VMS ctrl AST delivery routine
+	COM$POST: POST novalue,					! VMS IO Postprocessing
+	IOC$SEARCHDEV: SEARCHDEV,				! VMS Locates the UCB for a name
+	IOC$VERIFYCHAN: VERIFYCHAN,				! VMS CCB locater
+	IOC$CHKUCBQUOTA: CHKUCBQUOTA,				! VMS check for UCB quota
+	IOC$CLONE_UCB: CLONEUCB,				! VMS UCB cloner
+	IOC$CREDIT_UCB: CREDITUCB NOVALUE,			! VMS UCB creditor
+	IOC$DEBIT_UCB: DEBITUCB NOVALUE,			! VMS UCB uncreditor
+	IOC$DELETE_UCB: DELETEUCB NOVALUE,			! VMS UCB deletion
+	SYS$BRDCST,						! VMS Broadcast system service
+
+	LIB$FREE_EF,
+	LIB$PUT_OUTPUT,
+	LIB$GET_FOREIGN,
+	LIB$SIGNAL,
+	OTS$CVT_TI_L,
+
+	VSTA$$STARTUP_EFNS,		! Assign Permanent EFN's
+	vsta$$GET_EF,			! Get event flag
+	VSTA$$COM_INIT,			! Initialize Communication with
+					! Human Interfaces
+	VSTA$$DRIVE_NOOP,		! Puts AST at end of asynchronous stuff
+	VS$$ACP_DISPATCH,		! Selects an action routine
+	
+	VS$$ACP_DONE_BROADCAST,		! Broadcast completion processing
+
+	VS$$VDS_QUEUE_INT,		! Creates and queues an INT
+	VS$$VDS_QUEUE_INT_HIPQ,		! Creates and queues an INT (HIPQ)
+	VS$$VDS_VD_VKB_STATE,		! Find blocked-state of VKB
+	VS$$ACP_GET_VM,			! Jacket routine for LIB$GET_VM
+	VS$$ACP_FREE_VM,		! Jacket routine for LIB$FREE_VM
+	VS$$GET_VKB_STATE,		! Get state of virtual keyboard by ID
+	VS$$VDS_VD_GET_BLOCK,		! Find blocked state of VD
+	VS$$GET_EMULATOR_VKB,		! Get VKB_ID used by emulator
+	VS$$VDS_VD_MULTI_DELETE,	! Deletes all VDs
+	VS$$VDS_PB_MULTI_DELETE,	! Deletes all PBs
+
+	VS$$VKB_CANCEL_READ,		! Cancel I/O requests for a read
+	VS$$VTB_CANCEL_ASTS,		! Cancel I/O requests for a tablet
+	VSTA$$MOUSE_CANCEL_REQUESTS,	! Cancel I/O requests for a mouse
+	VSTA$$RGN_CANCEL_REQUESTS,	! Cancel I/O requests for a region
+
+	VSTA$$SRV_LOG_OUT_USER_JOBS,	! Log out the processes that we created
+
+	VSTA$$KERNEL_CALL,		! Call routine in kernel mode
+	VSTA$$KERNEL_EXCEPTION,		! Kernel mode exception handler
+	VSTA$$SET_KERNEL_HANDLER,	! Establish kernel handler
+	VSTA$$SRV_INIT_SRV,		! Initialize system before new session
+!***	VS$$ERR_ARGH,			! Display the call frame
+	VSTA$$ERROR,			! Error-logging routine
+	VSTA$$ERROR_LOGGER;		! Internal Error-logging routine
+
+external
+
+	IOC$GL_DEVLIST,					! First DDB in system
+	IOC$GL_AQBLIST,					! First AQB in system
+	SCH$GL_CURPCB,					! This PCB
+	VSTA$GL_END_SESSION_FLAG;			! 1 if session ending
+
+
+forward routine				! Routines defined in this module
+!
+! PRIVATE ROUTINES:
+!
+	one, two, three,		! Routines to guarantee stack frames
+	VS$$ACP_INIT,			! Initializes ACP process
+	session_over,			! Called when session is over
+!
+! Locked down code section. Please maintain this routine order within the
+! source code as well. All routines which raise IPL must be between START_LOCK
+! and END_LOCK.
+!
+	START_LOCK:novalue,		! Starting address of locked-down
+	VS$$ACP_STARTUP,		! Kernel Mode initialization
+	VS$$ACP_USERNAME,		! Change ACP's Username to SYSTEM
+	VS$$ACP_CHANNELS,		! Sets up IO base for the process
+	VS$$ACP_EXIT_K,			! K mode: deallocates VCB,AQB,UCBs
+	VS$$ACP_CREATE_UCB,		! Constructs UCB for a VD
+	VS$$ACP_DELETE_UCB,		!
+	VSTA$$ACP_MATCH_PRIVS,		! Match process privs with specified
+	VSTA$$ACP_CHECK_ACCESS,		! Check specified access of PID (RWED)
+	VS$$ACP_FIND_PCB,		! Determine PCB address from PID
+	VS$$ACP_SYSJOB_INC,		! System interactive job count incr
+	VS$$ACP_SYSJOB_DEC,		! System interactive job count decr
+	VS$$ACP_CLEAR_TERM_BIT,		! Makes generic UCBs non-terminal
+	VS$$ACP_READ_DELPEN_BIT,	! Sees if process is marked for deletion
+	VS$$ACP_AQB_HIGH_PRIORITY,	! Look through AQB for high priority stuff
+	VS$$ACP_AST_LEVEL_K,		! 
+	VS$$ACP_DELATTNAST,		! Delivery control-c,y ASTs to process
+	VS$$ACP_DELCTRLAST,		! Delivery out-of-band ASTs to process
+	VS$$ACP_ANSWERBACK,		! Emulator answerback handler
+	VS$$ACP_GIN_MODE,		! Emulator GIN mode establishment
+	VS$$ACP_SET_INPUT_CHAR,		! Set terminal input characteristics
+	VS$$ACP_FIX_VTEM,		! Copy emulator output data
+	VS$$ACP_SAVE_TMBU,		! Save process term. mbx unit number
+	VS$$ACP_VD_DISCONNECT,		! Was disconnect on VD done?
+	VS$$ACP_VD_CLONE,		! Clone virtual virtual terminal
+	VS$$ACP_DONE_IO_K,		! Completion routine (Kernel mode)
+	VS$$ACP_DONE_IO_NO_IOSB_K,	! Completion routine (Kernel mode)
+	END_LOCK:novalue,		! End of locked-down code
+!
+! End of locked down code section
+!
+	VS$$ACP_RESTORE_TMBU,		! Restore process term. mbx unit number
+	VS$$ACP_VD_CONNECTED,		! Is VD connected to VMS virtual term.?
+	VS$$ACP_DECLARE_EXIT,		! Declares process rundown handler
+	VS$$ACP_EXIT,			! Image exit handler calls ..._K
+	VS$$ACP_RUNDOWN:		! Process rundown calls image exiter
+	  jsb_save_everything novalue,
+	VS$$ACP_DEQUEUE,		! Main Hibernation Loop
+	VS$$ACP_GET_REQUEST:novalue,	! Finds next unblocked IRP
+	VS$$ACP_GET_UNBLOCKED,		! Finds an unblocked IRP in BLKQ
+	VS$$ACP_BLOCKED,		! True if request is blocked
+	VS$$ACP_CREATE_LBUF,		! Copies user data into local buffer
+	VS$$ACP_KMODE_MOVC3,		! Copies a block in K mode
+	VS$$ACP_FIND_PORT_INPUT,	! Find port driver input handler
+	VS$$ACP_MOVE_VTEMDATA,		! Copy emulator output data
+	VS$$ACP_CVT_EPID,		! Convert PID to external form
+	VS$$ACP_CVT_IPID,		! Convert PID to internal form
+	VS$$ACP_DONE_IO,		! Completion routine (calls ..._K)
+	VS$$ACP_DONE_IO_NO_IOSB,	! Completion routine (calls ..._K)
+	VS$$ACP_PRESET_IOST,		! IOSB contents (calls ..._K)
+	VS$$ACP_PRESET_IOST_K,		! IOSB contents (Kernel mode)
+	VS$$ACP_DELETE_IRP,		! K mode routine that only dumps IRP
+	VS$$ACP_SESSION_CLEANUP,	! VAXstation Session End cleanup
+	VS$$ACP_DEVICE_JOB_CLEANUP,	! VAXstation device/job cleanup
+	VS$$ACP_CANCEL_ALL_REQUESTS,	! Completes outstanding I/O requests
+	VS$$ACP_FLUSH_READS,		! Flush VKB read requests from BLKQ
+	VS$$ACP_FLUSH_ALL_IO,		! Flush all ACP I/O queues
+	VS$$ACP_CANCEL_VD_IO,		! Return all IRPs for this VD in all queues
+	VS$$ACP_CANCEL_VD_1_QUEUE,	! Cancels all IRPs for a VD in one queue
+	VS$$ACP_TEMPLATE_ONLINE,	! Make template device on-line
+	VS$$ACP_FINAL_ASYNCH,		! Completes asynchronous activities
+	VS$$ACP_COMPLETION_ROUTINE,	! AST routine for asynchronous DONE_IOs
+	VS$$ACP_AST_LEVEL,		! Returns current ASTACT (current level)
+	VS$$ACP_CURRENT_MODE,		! Returns current access mode
+	VS$$ACP_NAMES,			! Sets up VD and Process name descriptors
+	VS$$POST_AST_REQUEST,		! DUMMY ROUTINE
+	VS$$POST_AST_REQUEST_HIPQ,	! ANOTHER DUMMY ROUTINE
+	VS$$ACP_ENQUEUE_INT,		! Enqueue an internal request to the INTQ
+	VS$$ACP_ENQUEUE_INT_HIPQ,	! Enqueue an internal request to the HIPq
+	ALL_SYSTEM_OBJECTS_GONE;	! Returns 1 if all objects are gone
+
+builtin						! MACRO instructions
+	CALLG,
+	MTPR,					! Move to Process Reg.
+	MFPR,
+	INSQUE,
+	REMQUE;
+
+!
+! $BROAD calls the system service in lieu of a BLISS macro that understands
+!	flag and carcon.
+!
+keywordmacro
+	$BROAD (msgbuf, devnam, flag=0, carcon=32) =
+		SYS$BRDCST ( msgbuf, devnam, flag, carcon )%;
+!
+! Report error and $EXIT
+!
+macro
+	$EXIT_WITH_ERROR (status)[] = (
+		external routine VSTA$$ERROR_LOGGER;
+		external literal STATUS;
+		%if %null (%remaining)
+		    %then VSTA$$ERROR_LOGGER (STATUS)
+		    %else VSTA$$ERROR_LOGGER (STATUS,%remaining)
+		%fi;
+		$EXIT (code = STATUS);
+					)%;
+!
+! Report error only
+!
+macro
+	$LOG_BAD_STATUS (status)[] = (
+		external routine VSTA$$ERROR;
+		%if %null (%remaining)
+		    %then VSTA$$ERROR (STATUS)
+		    %else VSTA$$ERROR (STATUS,%remaining)
+		%fi;
+					)%;
+
+!
+! OWN STORAGE:
+!
+%if not %declared(DT$_VD) %then
+    GLOBAL LITERAL DT$_VD = 4;
+%fi
+
+Literal
+	MAX_PROCESSES = 200;
+Forward
+	VS$GL_EXIT_REASON;	!Referred to by exit_block
+Own
+	PROC_LIST: blockvector[MAX_PROCESSES,TMBU$K_LEN,BYTE]
+	  field(TMBU$PID_TMBU_FIELDSET)
+	  initial(byte(rep (MAX_PROCESSES * TMBU$K_LEN) of (0))),
+	END_SESSION_EFN:	! Event flag used for synchronizing rundown
+		initial(0),
+	WAITING_FOR_JOB_EXIT:	! Flag to indicate waiting for jobs to exit
+		initial(0),
+	OLD_KERNEL_ROUTINE,	! Address of old kernel exception routine
+	RUNDOWN_COMPLETE:	! Image rundown complete flag
+		initial(0),
+	FIRST_DATA,		! Marks data begin for lock-down
+	IJOB_COUNT:		! Count of VSTA-created interactive jobs
+		initial(0),
+	INTERACTIVE,		! Boolean, describes process type
+	CURRENT_UCB_UNIT,	! Unit number of the latest VD created
+	OPRMSG: vector[32]	! OPCOM message buffer
+	  initial(opc$m_nm_centrl^8+opc$_rq_rqst,0),
+	OPRMSG_DESC: vector[2]	! OPCOM message descriptor
+	  initial(0,OPRMSG[0]),
+	MSG_LEN: word,		! OPCOM message text size (in bytes)
+	MSG_DESC: vector[2]	! Descriptor for OPCOM message text only
+	  initial(0,OPRMSG[2]),
+	EXIT_BLOCK: vector [4] initial (0, VS$$ACP_EXIT, 1, VS$GL_EXIT_REASON),
+	IOSB:vector [4,word],	! IO status block
+	W_DESC:vector [2,long],	! Descriptor for window name
+	BLKQ:vector [2,long] initial (BLKQ,BLKQ), ! Queue of blocked IRPs
+	INTQ:vector [2,long] initial (INTQ,INTQ), ! Queue of INTs
+	GENERIC_AST_Q: vector [2,long] initial (GENERIC_AST_Q, GENERIC_AST_Q),
+				! Queue of "generic" operations pending
+	VD_NAME:vector [5,byte] initial (byte ('VDX0:')),
+	PROC_NAME:vector [10,byte] initial (byte('VSAACP')),
+						! Default for interactive
+	sys_username:vector [6,byte] initial (byte('SYSTEM')),! Force this.
+	sys_username_DESC:vector [2,long] initial (6,sys_username[0]),
+	starting_username:vector [uaf$s_username,byte],
+	starting_username_DESC:vector [2,long] initial (uaf$s_username,
+						starting_username[0]),
+	VT_FIRST_TIME: initial(1),
+	VTA0_UCB: ref block[0,byte],
+	OUTLEN: word,
+	INLEN: word,
+	OUTFILE: vector [128,byte],
+	INFILE: vector [128,byte],
+	OUTDESC: vector [2,long] initial (128,OUTFILE),
+	INDESC: $string_descriptor preset (
+	    [sd$w_len] = 128,
+	    [sd$a_adr] = INFILE),
+	JIB:ref block [0,byte],	! Address of Job Information Block
+	AQB:ref block [0,byte],	! Address of ACP Control Block
+	VCB:ref block [0,byte],	! Address of Volume Control Block
+	PCB:ref block [0,byte];	! Address of current Process Control Block
+
+global
+	VS$GL_OEM_FLAGS: initial(0),	! OEM mode flags
+	VS$GW_CHANNEL,			! Word containing channel to VAXStation
+	VS$GW_VD_CHAN: word initial(0),	! Word channel to VD template
+	VS$GL_DONE_IO_ABLE,		! boolean to tell ast routine to do done io or not
+	VS$GL_EXIT_REASON:initial (0),	! Nonzero for $EXIT of image
+	VS$GL_ACP_BROADCAST:initial (0),! Boolean message-trace enable (off)
+	VS$GL_PID,			! PID of the current IRP's process
+	VS$GL_UIC,			! UIC of the current IRP's process
+	VS$GL_ACP_PID,			! Proc. ID # of the ACP
+	VS$GL_ACP_PRIB,			! Base priority of the ACP
+	VS$GL_ACP_UIC,			! UIC of the ACP
+	VS$GL_OBJ_ID,			! ID of the Object of interest
+	VS$GL_PROC_NAME_DESC:vector [2,long] initial (6,PROC_NAME[0]),
+	VS$GL_VD_NAME_DESC:vector [2,long] initial (5,VD_NAME),
+	VS$GL_FULL_FUNCTION,		! Function code of request, including mods
+	VS$GL_MAIN_FUNCTION,		! Main function code (no modifiers)
+	VS$GQ_AVAILABLE_IIPS:vector [2,long]
+		initial (VS$GQ_AVAILABLE_IIPS,VS$GQ_AVAILABLE_IIPS),
+	VS$A_HIPQ:vector [2,long] 
+		initial (VS$A_HIPQ,VS$A_HIPQ), ! High Priority queue of INTs
+	VS$LIRP:irp_block,		! LOCAL copy of IRP.
+	VS$A_LIRP:ref irp_block initial (VS$LIRP[$base]),
+					! Address of LOCAL copy of IRP.  The
+					! only reason for extra level of
+					! indirection is that this buffer used
+					! to be dynamically allocated.
+	VS$A_LBUF:ref vsxblock,		! Address of LOCAL copy of user buffer
+	VS$AB_LBUFDAT:ref vector [0,byte], ! Address of LOCAL copy of user data
+	VS$A_IRP:ref block [0,byte],	! Address of IO Request Packet
+	VS$GL_UETP_IRP: initial(0),	! Address of UETP end-session IRP
+	VS$A_VSX:vsxblock,		! VaxStation Transport Block
+	VS$A_UCB:ref vd_ucb_block,	! Address of Unit Control Block
+	VS$GL_TEMPLATE_UCB:ref vd_ucb_block,	! Address of template UCB
+	VS$GL_VB_UCB:ref block [0,byte]	! Address of template UCB
+			initial(0),
+
+	VS$AL_VD_UCB:vector [VS$K_VD_MAX,long],
+	VS$AW_PS_CHANNEL:vector [VS$K_VB_MAX+VS$K_VC_MAX,word],
+	VS$AW_VB_CHANNEL:vector [VS$K_VB_MAX,word] 
+		initial (word (rep VS$K_VB_MAX of (0))),
+	VS$AW_VC_CHANNEL:vector [VS$K_VC_MAX,word] 
+		initial (word (rep VS$K_VC_MAX of (0))),
+	VSTA$GL_EXCEPTION,		! Exception code from exception handler
+	LAST_DATA:byte;			! Marks last data for lock-down
+
+
+%sbttl	'VS$$ACP_INIT  --  Initialize ACP process'
+global routine VS$$ACP_INIT  =	
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initializes VSACP process
+! Checks whether the process is being started interactively (if SYS$INPUT 
+!	is NOT equivalent to _VDx0:), or whether it is being started with
+!	STARTACP.EXE.  In the former case, all the data structures that 
+!	STARTACP creates must be made here.
+!		3. Makes up tables describing the VB, VC devices and
+!			the related object types.
+!		NB: There must be a template UCB for each VS device type
+!			which will be cloned whenever one is needed.
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!		SS$_NORMAL		successful completion
+!		SS$_ACCVIO		access violation
+!
+! SIDE EFFECTS:
+!
+!	Initialization runs in Kernel mode.  Remaining routines
+!	launch into Kernel Mode occasionally (but primarily run in
+!	User Mode).
+!
+!--
+	begin
+!
+! We intentionally guarantee four stack frames so that memory manager
+! can store four frames without worrying about there not being four to
+! store.  (Otherwise memory manager would have to be slower due to checking
+! to see if frames exist).
+!
+! We were called, so that's one frame.  We'll now do three more . . .
+!
+	one ()
+
+	end;
+
+routine one =
+
+	begin
+
+	two ()
+
+	end;
+
+routine two =
+
+	begin
+
+	three ()
+
+ 	end;
+
+routine three =
+
+    begin
+
+    builtin
+	FP;			! Frame Pointer VAX register
+
+    own
+	OEM_BUFFER;		! Buffer for ascii OEM flags
+
+    local
+	OEM_LEN,		! Length of string written to OEM_BUFFER
+	OEM_DESC: vector[2]	! OEM mode flags before conversion to integer
+	  initial(4,OEM_BUFFER),
+	STAT;			! Temporary return status
+
+!
+! Initialize user-mode condition handler
+!
+	.FP = (external routine vs$$exception_handler ; vs$$exception_handler);
+!
+! Initialize handler for kernel exceptions (big booboos).
+!
+! *** NOTE: This is considered a no-no under VMS V4. The secondary kernel mode
+!	    exception vector is used by the XQP. The primary and last chance
+!	    kernel mode handlers are used by DELTA. Until VMS invents some more,
+!	    we're out of handlers.
+!
+!	if not (stat = vsta$$set_kernel_handler (
+!	    vsta$$kernel_exception,
+!	    old_kernel_routine			! get old routine for exiting
+!	    ))
+!	then $log_error_and_return (.stat);
+!
+! Establish Exit Handlers to clean up after we're gone in both user and
+! kernel modes.
+!
+	if (not $DCLEXH (desblk = EXIT_BLOCK))
+		then $return_error (VSTA$_EXITHNDLR_FAIL);
+!
+	vsta$$kernel_call(VS$$ACP_DECLARE_EXIT);
+!
+! Translate SYS$INPUT and SYS$OUTPUT to see if this is interactive
+!
+	if (not (STAT=$TRNLOG (lognam = $DESCRIPTOR('SYS$INPUT'),
+				rsllen = INLEN,
+				rslbuf = INDESC ))) 
+		then $return_error (VSTA$_TRNLOG_FAIL,
+					string_type,
+					$DESCRIPTOR('SYS$INPUT') );
+!
+! Update input descriptor so that it accurately represents resultant
+! string.
+!
+	indesc[sd$w_len] = .inlen;
+
+	if (not (STAT=$TRNLOG (lognam = $DESCRIPTOR('SYS$OUTPUT'),
+				rsllen = OUTLEN,
+				rslbuf = OUTDESC ))) 
+		then $return_error (VSTA$_EXITHNDLR_FAIL,
+					string_type,
+					$DESCRIPTOR('SYS$OUTPUT') );
+!
+! Mask off letter code so that _vda0, _vdb0, _vdc0 all look like _vdx0
+!
+	infile[3] = %c'X';
+!
+! Now see if our input is coming from _VDX0:, in which case we're
+! NOT interactive.
+!
+	if CH$NEQ(.INLEN,CH$PTR(INFILE), 6,uplit ('_VDX0:'))
+	    then INTERACTIVE = 1
+	    else INTERACTIVE = 0;
+!
+! Find the process and VD controller names
+!
+    if (not (STAT=VS$$ACP_NAMES ( )))
+     then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	Names Creation Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$return_error (VSTA$_NAME_FAIL);
+
+	end;				! End NAMES failure
+!
+! Determine whether or not the ACP will run in "OEM" mode.
+!
+	if $TRNLOG(
+		lognam = $DESCRIPTOR('VSTA$OEM'),
+		rsllen = OEM_LEN,
+		rslbuf = OEM_DESC ) then
+	  begin
+	    OEM_DESC[0] = .OEM_LEN;
+	    if not OTS$CVT_TI_L( OEM_DESC, VS$GL_OEM_FLAGS, 4, 0 ) then
+	      VS$GL_OEM_FLAGS = 0
+	    else
+	      if not $QIOW(
+			CHAN = .VS$GW_VD_CHAN,
+			FUNC = IO$_VSTAHI or IO$M_VD_OEM,
+			P3   = .VS$GL_OEM_FLAGS) then
+		VS$GL_OEM_FLAGS = 0;
+	  end;
+!
+! Announce which kind of acp is running.
+!
+	if not .INTERACTIVE
+	then 
+	    begin
+	    MSG_DESC[0] = 120;
+	    $FAO(
+		%ASCID ' VAXstation ACP => !AS starting',
+		MSG_LEN,
+		MSG_DESC,
+		VS$GL_PROC_NAME_DESC);
+	    OPRMSG_DESC[0] = 8 + .MSG_LEN;
+	    $SNDOPR( MSGBUF = OPRMSG_DESC );
+	    end
+	else
+	    begin
+	    $broad (
+		msgbuf = $descriptor ('&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&'),
+		devnam = $descriptor ('OPA0:')
+		);
+	    $broad (
+		msgbuf = $descriptor ('Debugging VSACP running, SYS$INPUT = '),
+		devnam = $descriptor ('OPA0:')
+		);
+	    $broad (
+		msgbuf = indesc[$base],
+		devnam = $descriptor ('OPA0:')
+		);
+	    $broad (
+		msgbuf = $descriptor ('&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&'),
+		devnam = $descriptor ('OPA0:')
+		)
+	    end;
+
+!
+! Lock down code AND data
+!
+    if (not (STAT=$LKWSET ( inadr = uplit(START_LOCK, END_LOCK) ))) 
+     then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	$LKWSET Code Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$return_error (VSTA$_LOCK_FAIL,
+		integer_type, START_LOCK,
+		integer_type, END_LOCK);
+	end;				! End $LKWSET failure
+
+
+    if (not (STAT=$LKWSET ( inadr = uplit(FIRST_DATA, LAST_DATA) ))) 
+     then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	$LKWSET Data Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$return_error (VSTA$_LOCK_FAIL,
+		integer_type, FIRST_DATA,
+		integer_type, LAST_DATA);
+	end;				! End $LKWSET failure
+
+!
+! Store the ACP's PID, base priority, and UIC in global locations
+!
+    if (not (STAT=$GETJPI ( ITMLST=uplit(	
+				word(4,JPI$_PID),LONG(VS$GL_ACP_PID,0),
+				word(4,JPI$_PRIB),LONG(VS$GL_ACP_PRIB,0),
+				word(4,JPI$_UIC),LONG(VS$GL_ACP_UIC,0,0) ) )))
+     then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	$GETJPI Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$return_error (VSTA$_JPI_FAIL);
+	end;				! End $GETJPI failure
+
+!
+! Convert the ACP's PID to internal format
+!
+    vs$gl_acp_pid = vs$$acp_cvt_ipid(.vs$gl_acp_pid);
+!
+! KERNEL mode initialization -- set up AQB, VCB, template UCB
+!
+    if (not (STAT=vsta$$kernel_call (VS$$ACP_STARTUP ))) 
+     then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	STARTUP Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$exit_with_error (VSTA$_STARTUP_FAIL);
+	end;				! End STARTUP failure
+
+
+!
+! Username change.  No system service will do this.
+!
+!***NOTE: This routine causes all kinds of problems under VMS V4. Until it is
+!	  deemed necessary, the call to it will be commented out.
+!
+!    if (not (STAT=vsta$$kernel_call (VS$$ACP_USERNAME ))) 
+!     then
+!	begin
+!	$BROAD ( msgbuf = $DESCRIPTOR('	Couldn''t change ACP''s Username'),
+!		devnam = $DESCRIPTOR('OPA0:'));
+!	$exit_with_error (VSTA$_STARTUP_FAIL);
+!	end;				! End STARTUP failure
+!
+!
+! Get the channels to all the VAXStations
+!
+    if not vsta$$kernel_call (VS$$ACP_CHANNELS ) then
+	begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	Channel Creation Failure'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$exit_with_error(VSTA$_CHAN_FAIL);
+	end;				! End CHANNELS failure
+
+!
+! Allocate "permanent" EFN's.
+!
+   if not (stat=vsta$$startup_efns()) then
+	$exit (CODE = .stat);
+
+   if not (stat=vsta$$com_init()) then begin
+	$BROAD ( msgbuf = $DESCRIPTOR('	Bad status from vsta$$com_init.  Aborting.'),
+		devnam = $DESCRIPTOR('OPA0:'));
+	$exit_with_error(VSTA$_HI_INIT_FAIL);
+    end;
+
+
+
+!
+! Now enter the main loop, and wait for the next IRP to be queued
+!
+    while 1 do
+	begin
+	    vsta$$kernel_call (VS$$ACP_DEQUEUE  );
+  !
+  ! If we actually found a request, its IRP's address is in IRP.  If there 
+  ! is no request at this time, we HIBERnate, unless a session has just
+  ! ended, in which case we queue up a request to initialize the system
+  ! in preparation for a new session.
+  !
+	if (.VS$A_IRP eql 0)
+	then
+	    if .vsta$gl_end_session_flag
+	    then
+		if all_system_objects_gone ()
+		then session_over ()
+		else $hiber	! sleep because session still ending
+	    else $hiber		! sleep because session not ending
+	else	VS$$ACP_DISPATCH() ;
+
+  !
+  ! See if STOPACP has asked that we evaporate
+  !
+	    if (.VS$GL_EXIT_REASON neq 0) then 
+			$EXIT(code = .VS$GL_EXIT_REASON);
+
+	end;	! End main do loop
+
+!
+! If we get here, something is very amiss
+!
+    $EXIT(code = SS$_ABORT);		! Delete the ACP
+    return SS$_ABORT;			! Can never get here
+    end;			!End of VS$$ACP_INIT
+
+
+routine session_over =
+!++
+! Functional description:
+!
+!	When vms has finally reported to us that all objects (such as jobs,
+!	their terminals, driver ast's) are gone during end-session, this
+!	routine is called in order to release those things that we don't
+!	want to release until the vms objects are gone.
+!
+	begin
+!
+! Mark that we're no longer ending a session.
+!
+	vsta$gl_end_session_flag = 0;
+!
+! If User Environmental Tes Package 
+! requested the end-session, tell it we've done it.
+!
+	if .VS$GL_UETP_IRP neq 0 then
+	    begin
+	    VS$$ACP_DONE_IO(SS$_NORMAL,0,.VS$GL_UETP_IRP);
+	    VS$GL_UETP_IRP = 0
+	    end;
+!
+! Release display memory.
+!
+	$ertn (vsta$$dmm_session_end) ();
+!
+! This routine call is commented out so that memory that is allocated for use
+! by the ACP between sessions will not produce errors on every customer system.
+! If you are building a new version of the software from these sources you
+! may wish to enable this routine for debugging. 
+!
+! Now that EVERYTHING done, make sure all objects gone, and announce error
+! if they're not.  This allows unexpected memory accumulation to be
+! reported.
+!
+!	$ertn (vsta$$make_sure_objects_gone) ();
+!
+! session done ending, re-initialize system so mouse finger appears
+! prompting next user.
+!
+	vs$$post_ast_request (vsta$$srv_init_srv)
+
+	end;
+
+%sbttl 'START_LOCK -- dummy routine to provide handle for lock-down'
+routine START_LOCK:novalue = ;		! Marks start of locked-down code
+
+%sbttl 'VS$$ACP_STARTUP -- kernel mode initialization of ACP structures'
+routine VS$$ACP_STARTUP =
+!
+! Kernel Mode initialization code
+!
+begin
+
+local
+    STAT,
+    SIZE,
+    SAVED_IPL;
+
+
+!
+! If this is an interactive process, link the AQB into its list
+!
+    PCB = .SCH$GL_CURPCB;
+	if (.INTERACTIVE eql 1) then	! This is an interactive process
+
+
+		begin	! Interactive set-ups
+
+    !
+    ! Set Up Template UCB
+    !
+	    SCH$IOLOCKW (.PCB);			! Obtain the mutex
+	    if (not (STAT=IOC$SEARCHDEV( VS$GL_VD_NAME_DESC, .PCB; 
+					VS$GL_TEMPLATE_UCB )))
+		    then begin
+		        SCH$IOUNLOCK(.PCB);	! Give the mutex back, now
+	    		MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+			$return_error (VSTA$_SRCHDV_FAIL,
+				string_type, VS$GL_VD_NAME_DESC );
+			end;	! No template UCB found
+	    SCH$IOUNLOCK(.PCB);			! Give the mutex back, now
+	    MTPR(%ref(0),PR$_IPL);		! Set IPL to 0
+
+    !
+    ! Allocate and initialize the AQB (ACP control block)
+    !
+ 	   if not (STAT = EXE$ALONONPAGED(AQB$C_LENGTH;SIZE,AQB))
+		then $return_error (VSTA$_AQB_FAIL,
+					integer_type, AQB$C_LENGTH);
+	    AQB [AQB$W_SIZE] = AQB$C_LENGTH;
+	    AQB [AQB$B_TYPE] = DYN$C_AQB;
+	    AQB [AQB$L_ACPQFL] = .AQB;
+	    AQB [AQB$L_ACPQBL] = .AQB;
+	    AQB [AQB$B_MNTCNT] = 1;
+	    AQB [AQB$B_ACPTYPE] = AQB$K_UNDEFINED;
+	    AQB [AQB$B_STATUS] = (AQB$M_CREATING or AQB$M_UNIQUE);
+	    AQB [AQB$B_CLASS] = 0;
+	    AQB [AQB$L_ACPPID] = .VS$GL_ACP_PID;
+
+    !
+    ! Allocate and initialize the VCB (Volume Control Block)
+    !
+	    if not (STAT=EXE$ALONONPAGED(VCB$C_LENGTH;SIZE,VCB))
+		then begin
+		    EXE$DEANONPAGED(.AQB);
+		    $return_error (VSTA$_VCB_FAIL,
+					integer_type, VCB$C_LENGTH);
+		end;  ! Allocation failure
+
+	    CH$FILL (0,VCB$C_LENGTH, CH$PTR(.VCB)); ! Fill it completely with zeroes to start
+	    VCB [VCB$W_SIZE] = VCB$C_LENGTH;
+	    VCB [VCB$B_TYPE] = DYN$C_VCB;
+	    VCB [VCB$W_TRANS] = 1;
+	    VCB [VCB$L_AQB] = .AQB;
+	    VS$GL_TEMPLATE_UCB [UCB$B_ERTCNT] = 0;
+	    VS$GL_TEMPLATE_UCB [UCB$W_ERRCNT] = 0;
+	    VS$GL_TEMPLATE_UCB [UCB$L_VCB] = .VCB;
+	    VS$GL_TEMPLATE_UCB [UCB$B_DEVTYPE] = DT$_VD;
+	    VS$GL_TEMPLATE_UCB [UCB$B_TT_DETYPE] = DT$_VD;
+	    VS$GL_TEMPLATE_UCB [UCB$L_DEVCHAR] = ! The ACP is mounted now
+		.VS$GL_TEMPLATE_UCB [UCB$L_DEVCHAR] or (DEV$M_MNT or DEV$M_AVL);
+	    VS$GL_TEMPLATE_UCB[UCB$W_STS] = .VS$GL_TEMPLATE_UCB[UCB$W_STS]
+							or UCB$M_ONLINE;
+    !
+    ! Link the AQB into the AQB list raise IPL to synch to change AQB list
+    !
+		SCH$IOLOCKW (.SCH$GL_CURPCB);
+
+		MFPR ( PR$_IPL, SAVED_IPL);		! Save current IPL
+		MTPR ( %ref (IPL$_SYNCH), PR$_IPL );
+
+		AQB [AQB$L_LINK] = .IOC$GL_AQBLIST;
+		IOC$GL_AQBLIST = .AQB;
+
+		MTPR ( SAVED_IPL, PR$_IPL );		! Restore IPL
+
+    end			! End of set-ups for interactive process
+
+
+  else
+    begin		! Begin of set-ups for non-interactive process only
+
+    !
+    ! Set Up Template UCB
+    !
+	    SCH$IOLOCKW (.PCB);			! Obtain the mutex
+	    if (not (STAT=IOC$SEARCHDEV( VS$GL_VD_NAME_DESC, .PCB; VS$GL_TEMPLATE_UCB )))
+		    then begin
+			SCH$IOUNLOCK(.PCB);
+			MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+			$return_error (VSTA$_SRCHDV_FAIL,
+					string_type, VS$GL_VD_NAME_DESC );
+			end;	! No template UCB found
+
+    !
+    ! Find the AQB
+    !
+	    AQB = .IOC$GL_AQBLIST;		! Point to first AQB
+	    while .AQB [AQB$L_ACPPID] neq .VS$GL_ACP_PID ! Search for match of PIDs
+		do if (AQB = .AQB [AQB$L_LINK]) eql 0
+		    then begin
+			SCH$IOUNLOCK(.PCB);
+			MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+			$return_error (SS$_NOAQB);
+			end;	! No AQB match found
+    !
+    ! Save VCB address (only if we didn't just create it, though)
+    !
+	    VCB = .VS$GL_TEMPLATE_UCB [UCB$L_VCB];
+	    VS$GL_TEMPLATE_UCB [UCB$B_ERTCNT] = 0;
+	    VS$GL_TEMPLATE_UCB [UCB$W_ERRCNT] = 0;
+
+    end;		! End of set-ups for non-interactive process only
+
+
+
+
+!
+! Return the mutex in either case
+!
+	SCH$IOUNLOCK(.SCH$GL_CURPCB);
+	MTPR(%ref(0),PR$_IPL);	! Set IPL to 0
+
+!
+! Make sure everyone is playing by the rules
+!	
+    if (.AQB [AQB$B_STATUS] and AQB$M_CREATING) eql 0
+	    then begin
+		$return_error (SS$_WRONGACP); ! Whoops: not being created!
+		end;	! No AQB being created
+    AQB [AQB$B_STATUS] = .AQB [AQB$B_STATUS] and (not AQB$M_CREATING);
+
+!
+! That's all for here
+!
+    return SS$_NORMAL;    
+end;				! End of VS$$ACP_STARTUP
+
+%sbttl	'VS$$ACP_USERNAME  --  Changes ACP username to SYSTEM.'
+ROUTINE vs$$acp_username =
+
+!---
+!
+!	Set the username string.
+!
+! Inputs:
+!
+!	access mode = Kernel
+!
+!	starting_uic, sys_username, and sys_username_desc,
+!		 from this module's OWN declarations.
+!
+! Outputs:
+!
+!	routine = status (not signaled)
+!---
+
+BEGIN
+
+
+EXTERNAL
+    ctl$gl_pcb:	REF BLOCK[0,BYTE],
+    ctl$t_username;
+
+LOCAL
+    saved_ipl,
+    jib:	REF BLOCK[0,BYTE];		! Address of JIB
+
+MFPR ( PR$_IPL,SAVED_IPL );		! Remember current IPL
+   
+SCH$IOLOCKW (.SCH$GL_CURPCB);		! Obtain the mutex
+
+!
+!  Raise IPL
+!
+MTPR (%ref(IPL$_SYNCH), PR$_IPL);		! Set IPL to 7
+
+CH$COPY(uaf$s_username, ctl$t_username, ' ', ! Copy string from ctrl region,
+    uaf$s_username, starting_username);	!  space padded, to our own buffer.
+
+CH$COPY(.sys_username_desc [0], .sys_username_desc [1], ' ', ! Copy string,
+    uaf$s_username, ctl$t_username);	!  space padded, to control region
+
+jib = .ctl$gl_pcb [pcb$l_jib];		! Get JIB address
+
+CH$COPY(.sys_username_desc [0], .sys_username_desc [1] ,' ', ! Copy it to JIB
+    uaf$s_username, jib [jib$t_username]);
+
+
+SCH$IOUNLOCK(.SCH$GL_CURPCB);			! Give up the mutex.
+
+MTPR (SAVED_IPL, PR$_IPL);			! Restore original IPL
+
+RETURN SS$_NORMAL;
+
+END;
+
+%sbttl	'VS$$ACP_CHANNELS  --  Sets up IO database'
+routine VS$$ACP_CHANNELS: =
+
+!++
+! Functional Description:
+!	Assigns a channel to the appropriate VAXStation device, 
+!	VBA0:-VBH0: and/or VCA0: - VCH0:
+!	Which device to allocate is determined by the process name:
+!	VSXACP will acquire the Xth device in the system's list of UCBs.
+!
+! Formal Parameters:
+!	NONE
+!
+! Implicit Inputs:
+!	Kernel Mode
+!
+! Implicit Outputs:
+!	VS$GW_CHANNEL is filled in with the channel # to the device.
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!	Any return from $ASSIGN
+!
+! Side Effects:
+!	Obtains the IO mutex, and consequently raises IPL to SYNCH
+!
+!--
+
+    begin
+    own
+	NAME: vector [16,byte],		! Local copy of the controller name strint
+	NAME_SIZE,			! Will be discriptor of name string
+	NAME_LOCATION: initial (NAME [1]); ! NAME [0] is the # of bytes
+    local
+	DEVICE_TYPE,
+	DDB: ref block [0,byte],	! Pointer to Device Data Block
+	INDEX,
+	COUNT,
+	SAVED_IPL,
+	STAT;
+
+
+!
+! Initializations
+!
+    DDB = .IOC$GL_DEVLIST;		! Point to first DDB on the system
+    INDEX = .PROC_NAME[2] - %X'40';	! 'A'=1, 'B'=2, ...
+    COUNT = 0;
+
+
+!
+! Check the name string of all the devices on the system to find the INDEXth
+!	VAXStation
+!
+
+    SCH$IOLOCKR (.PCB);		! GET IO mutex for reading
+    DSBINT (%ref(IPL$_SYNCH),SAVED_IPL);	! Raise IPL to 7
+    until (.DDB eql 0) or (.INDEX eql .COUNT) do
+	begin
+	CH$MOVE (16, CH$PTR(DDB [DDB$T_NAME]), 
+			CH$PTR(NAME));	! Copy name string locally
+
+	if (.NAME [1] eql %C'V') and		! Count VAXStations
+		((.NAME [2] eql %C'B') or (.NAME [2] eql %C'C'))
+			 then COUNT = .COUNT+1;
+
+        DDB = .DDB [DDB$L_LINK];		! Point to the next DDB
+	end;				! Search DDB list
+
+    ENBINT (SAVED_IPL);				! IPL back to IPL$_ASTDEL
+    SCH$IOUNLOCK (.PCB);			! We don't need the mutex now
+    MTPR (%ref(0),PR$_IPL);			! Set IPL back to 0
+
+    if .COUNT eql .INDEX 
+	    then begin			! This is the right VAXStation 
+	        NAME_SIZE = .NAME [0];	! Set up the ASCII descriptor
+
+	        if (not (STAT=$ASSIGN(
+				devnam = NAME_SIZE,
+				chan = VS$GW_CHANNEL,
+				acmode = PSL$C_USER)))
+			then $return_error (VSTA$_ASS_FAIL, 
+					integer_type, NAME_SIZE);
+	    end		! Channel assignment
+
+	    else 			! Couldn't find enough VAXStation DDBs
+		$return_error (VSTA$_NO_DDB);
+
+    return SS$_NORMAL;
+    end;				! End routine VS$$ACP_CHANNELS
+
+%sbttl 'VS$$ACP_EXIT_K -- Exit handler, deletes VCB, AQB, UCBs'
+routine VS$$ACP_EXIT_K =
+
+!++
+! Functional Description:
+!	First deletes the UCBs of all the VDs associated with this ACP.
+!	Deallocates VCB, AQB.
+!
+! Formal Parameters:
+!	NONE
+!
+! Implicit Inputs:
+!	Kernel Mode
+!
+! Implicit Outputs:
+!	VD UCBs deleted
+!	VCB deleted
+!	AQB deleted
+!	Process deleted
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	NONE
+!
+!--
+
+    begin
+    local
+	XUCB: ref vd_ucb_block,			! Pointer to UCB deletee
+	NEXT_UCB: ref vd_ucb_block,		! Pointer to UCB deletee
+	CURAQB:ref block [0,byte],		! Temporary AQB pointer
+	SAVED_IPL;
+external
+        ctl$gl_pcb:	REF BLOCK[0,BYTE],
+        ctl$t_username;
+
+
+!
+! Make sure we're not mounted on image exit (so we can do an ACP restart)
+!
+	vs$gl_template_ucb[ucb$l_devchar] = .vs$gl_template_ucb[ucb$l_devchar]
+			AND (NOT (dev$m_mnt OR dev$m_dmt));
+
+	SCH$IOLOCKW (.PCB);			! Get Mutex
+!
+! Raise IPL to synch to modify UCB and access AQB list
+!
+	MFPR ( PR$_IPL, SAVED_IPL);		! Save current IPL
+	MTPR (%ref (IPL$_SYNCH), PR$_IPL );
+
+!
+! Deallocate the volume control block. Set UCB pointer to zero first
+! to tell VDDRIVER that there is no valid VCB and then deallocate it.
+!
+	VS$GL_TEMPLATE_UCB [UCB$L_VCB] = 0;
+	EXE$DEANONPAGED ( .VCB );		! Deallocate VCB
+
+!
+! Remove AQB from the system's list 
+!
+	CURAQB = .IOC$GL_AQBLIST;		! Point to first AQB
+	if .CURAQB eql .AQB
+	    then IOC$GL_AQBLIST = .AQB [AQB$L_LINK]
+	    else begin				! Find preceding AQB
+			while .CURAQB [AQB$L_LINK] neq .AQB
+			    do CURAQB = .CURAQB [AQB$L_LINK];
+			CURAQB [AQB$L_LINK] = .AQB [AQB$L_LINK]; 
+						! Point past this AQB
+		 end;
+
+!
+! Restore starting user name, in case we are a debugging ACP.
+!
+!***NOTE: The username is not currently being altered on VMS V4 systems. So
+!	  there is no need to restore it here.
+!
+!	CH$COPY(.starting_username_desc [0], .starting_username_desc [1], ' ',
+!	    uaf$s_username, ctl$t_username);	! Space padded
+!
+!	jib = .ctl$gl_pcb [pcb$l_jib];		! Get JIB address
+!
+!	CH$COPY(.starting_username_desc [0], .starting_username_desc [1] ,' ',
+!	    uaf$s_username, jib [jib$t_username]);
+!
+
+	MTPR ( SAVED_IPL, PR$_IPL );		! Restore IPL
+	EXE$DEANONPAGED ( .AQB );		! Deallocate AQB
+	SCH$IOUNLOCK ( .PCB);			! Return Mutex
+	MTPR (%ref(0), PR$_IPL);		! Set IPL to 0
+
+	return SS$_NORMAL;
+    end;					! End routine VS$$ACP_EXIT_K
+
+
+%sbttl 'VS$$ACP_CREATE_UCB  --  Creates a UCB for a VD'
+global routine VS$$ACP_CREATE_UCB(
+				VD_ID,
+				SHAREABLE,
+				TERMINAL_TYPE,
+				ROWS,
+				COLUMNS
+			): =
+
+!++
+! Functional Description:
+!	When a Virtual Display is created, this routine is called to 
+!	generate a UCB for that pseudo-device.  A list of pointers to these data
+!	structures is maintained, indexed by either the VD_ID or the device unit
+!	number (they are the same).
+!
+! Formal Parameters:
+!	VD_ID	The address in which to write the computed ID # of the VD
+!	SHAREABLE=1 if this is a shareable VD, 0 if a non-shareable VD
+!	TERMINAL_TYPE =0 if Native VD, =1 if VT100, =2 if TEK4014
+!	ROWS	The number of rows in the UCB (0 to use default)
+!	COLUMNS	The number of columns in the UCB (0 to use default)
+!
+! Implicit Inputs:
+!
+!
+! Implicit Outputs:
+!	A UCB is constructed, and its address is entered into the VS$AL_VD_UCB
+!	list.  The unit # and the VD_ID number is determined by the first available 
+!	slot in the list, and this number is entered into UCB$W_UNIT and UCB$L_VD_ID.
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!
+! Side Effects:
+!	Kernel mode.
+!	IPL 0.
+!	I/O database mutex is obtained and returned.
+!
+!--
+
+    begin
+
+    local 
+	EMULATOR,
+	SHARE,
+	XUCB: ref vd_ucb_block,
+	NEXT_UCB: ref vd_ucb_block,		! Pointer to UCB deletee
+	CLASS_VECTOR: ref class_def,		! Class driver vector
+	CURRENT_IPL,
+	UNIT_MATCH,
+	I;
+
+
+!
+	EMULATOR = .TERMINAL_TYPE;
+	SHARE = .SHAREABLE;
+!
+! Find the first available slot, starting with the next available one.  If
+! we exceed the maximum number of slots, start looking with slot 1 again.
+! If we wrap around to where we started, then no slots were available and
+! return an error.
+!
+	I = .CURRENT_UCB_UNIT + 1;
+	UNIT_MATCH = 1;				! We haven't found it yet
+	while (.I neq .CURRENT_UCB_UNIT) and (.UNIT_MATCH) do
+	    begin	! Look for available unit number
+		if .I geq VS$K_VD_MAX then
+		  I = 0;
+		if .VS$AL_VD_UCB [.I] eql 0 then
+!
+! Now that we have an empty slot, look through all the VD UCBs to see
+! if any of them have this unit number (left over from a previous ACP,
+! for example).  If so, then keep looking for a unit.
+!
+		begin
+		    UNIT_MATCH = 0;		! Haven't found this unit # yet
+		    NEXT_UCB = .VS$GL_TEMPLATE_UCB;	! Start with VDx0:
+		    until ((.UNIT_MATCH eql 1) or (.NEXT_UCB eql 0)) do
+			begin		! Try to match UCB
+			if (.NEXT_UCB [UCB$W_UNIT] eql .I ) 
+						then UNIT_MATCH = 1;
+			NEXT_UCB = .NEXT_UCB [UCB$L_LINK];
+			end;		! Try to match UCB
+		end;
+		I = .I + 1;
+	    end;	! Look for available unit number
+!
+! If no UCB slot was available, then return an indication
+!
+    if (.UNIT_MATCH) then		! No empty slot
+	    $return_error (VSTA$_NO_UCB_SLOT, 
+			integer_type, .I,
+			integer_type, VS$K_VD_MAX );
+    I = .I - 1;			!The real unit number
+!
+! We have found that the Ith slot is empty and available
+!
+    MFPR ( PR$_IPL,CURRENT_IPL);	! Save current IPL
+    SCH$IOLOCKW ( .PCB );		! Get the I/O base mutex
+    if (not (IOC$CHKUCBQUOTA ( .PCB,.VS$GL_TEMPLATE_UCB ))) or
+       (not (IOC$CLONE_UCB (.VS$GL_TEMPLATE_UCB; XUCB )))
+	then
+	    begin				! No UCB created
+	    SCH$IOUNLOCK ( .PCB );	! Return MUTEX
+	    MTPR ( CURRENT_IPL,PR$_IPL );
+!	    CURRENT_UCB_UNIT = .I - 1;	! Get this one next time
+	    $return_error (VSTA$_NO_UCB, integer_type, .I);	!ID #
+	    end;
+
+!
+! We got the UCB -- Let the terminal class driver do its initialization
+! and fill in some identification of our own
+!
+    CURRENT_UCB_UNIT = .I;			! Start looking here next time
+    VS$AL_VD_UCB [.I] = .XUCB;			! Enter it in the list
+!
+    CLASS_VECTOR = .XUCB[UCB$L_TT_CLASS];	! Address terminal class vector
+    begin
+      bind routine SETUP_UCB = (.CLASS_VECTOR[CLASS_SETUP_UCB]): SETUPUCB;
+      SETUP_UCB(.XUCB);
+    end;
+
+    XUCB [UCB$L_TT_WFLINK] = (XUCB [UCB$L_TT_WBLINK] = XUCB [UCB$L_TT_WFLINK]);
+    XUCB [UCB$W_TT_PRTCTL] = .XUCB [UCB$W_TT_PRTCTL] or TTY$M_PC_NOTIME;
+    XUCB [UCB$L_TL_PHYUCB] = .XUCB;		! Physical UCB address
+    XUCB [UCB$L_TT_LOGUCB] = .XUCB;		! Logical UCB address
+    XUCB [UCB$W_UNIT] = .I;			! Unit # (VDAi) = slot #
+    XUCB [UCB$L_VD_ID] = .I;			! VDID = unit # = slot #
+    XUCB [UCB$L_VD_EMULATOR] = .EMULATOR;	! Designated emulator for VD
+
+    XUCB [UCB$L_PID] = 0;			! VD is not allocated yet
+    XUCB [UCB$W_REFC] = 0;			! VD is not allocated yet
+    XUCB [UCB$B_ERTCNT] = 0;			! No error retry count
+    XUCB [UCB$W_ERRCNT] = 0;			! No error count
+    XUCB [UCB$B_DEVCLASS] = DC$_TERM;		! We must LOOK like a terminal
+    XUCB [UCB$W_STS] = .XUCB [UCB$W_STS] AND (NOT UCB$M_INT);
+    XUCB [UCB$L_VD_IRP_CNT] = 0;		! With no I/O to speak of yet
+
+    if .COLUMNS neq 0 then			! If not defaulted, then set
+      XUCB [UCB$W_DEVBUFSIZ] = .COLUMNS;	! to specified columns
+    if .ROWS neq 0 then				! If not defaulted, then set
+      XUCB [UCB$B_VERTSZ] = .ROWS;		! to specified rows
+    
+    selectone .EMULATOR of			! VD device dependent stuff
+	    set
+	    [VS$K_VTEM_VT100] :
+		begin
+		  XUCB [UCB$B_DEVTYPE] =  XUCB [UCB$B_TT_DETYPE] = DT$_VT102;
+		  XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] or DEV$M_TRM;
+		  XUCB [UCB$L_DEVDEPEND] =
+			(.XUCB [UCB$L_DEVDEPEND] or TT$M_WRAP or TT$M_MECHTAB
+			or TT$M_HOSTSYNC)
+			and (not (TT$M_MECHFORM or TT$M_NOBRDCST));
+		  XUCB [UCB$L_DEVDEPND2] = .XUCB [UCB$L_DEVDEPND2] or
+			(TT2$M_ANSICRT or TT2$M_AVO or TT2$M_DECCRT or
+			 TT2$M_EDIT);
+		end;
+	    [VS$K_VTEM_GENERIC] :
+		begin
+		  XUCB [UCB$B_DEVTYPE] = XUCB [UCB$B_TT_DETYPE] = DT$_VD;
+		end;
+	    [VS$K_VTEM_4014] :
+		begin
+		  XUCB [UCB$B_DEVTYPE] = XUCB [UCB$B_TT_DETYPE] = DT$_TEK4014;
+		  XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] or DEV$M_TRM;
+		  XUCB [UCB$L_DEVDEPEND] =
+		    (.XUCB [UCB$L_DEVDEPEND] or TT$M_MECHFORM or TT$M_MECHTAB)
+		    and (not (TT$M_WRAP or TT$M_NOBRDCST));
+		end;
+	    [otherwise] :
+		begin
+		  XUCB [UCB$B_DEVTYPE] = DT$_TTYUNKN;
+		end;
+	    tes;
+
+    if (.SHARE neq 0) then
+	begin						! Shareable
+	    XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] 
+				or DEV$M_SHR;
+	end						! Shareable
+    else
+	begin						! Not Shareable
+	    XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] 
+				and (not DEV$M_SHR);
+	end;						! Not Shareable
+!
+! If a VMS virtual terminal is required for our virtual terminal, better
+! create one of those virtual virtual terminals too. (This is only done for
+! terminals which the ACP will create jobs on. Those created by application
+! programs will not get automatically-cloned terminals but must use the
+! terminal driver like "real" VT100s).
+!
+    if (.XUCB [UCB$L_DEVDEPND2] and TT2$M_DISCONNECT) neq 0 then
+      if .VS$A_IRP gtr 0 then
+	VS$$ACP_VD_CLONE( .XUCB );
+!
+! Return
+!
+    SCH$IOUNLOCK ( .PCB );			! Return MUTEX
+    MTPR ( CURRENT_IPL,PR$_IPL );
+    .VD_ID = .CURRENT_UCB_UNIT;			! Pass ID# to the creator
+    return SS$_NORMAL;
+    end;					! End routine VS$$ACP_CREATE_UCB
+
+
+%sbttl 'VS$$ACP_DELETE_UCB  --  DELETES A VD''s UCB'
+global routine VS$$ACP_DELETE_UCB ( THIS_VD ) : =
+
+!++
+! Functional Description:
+!	When a Virtual Display is deleted, this routine is called to 
+!	delete the UCB for that pseudo-device.  The list of pointers to these data
+!	structures is updated by clearing the slot corresponding to that entry.
+!	If a process still has a channel assigned to this device, the UCB is 
+!	not deleted until the channel is deassigned.
+!
+! Formal Parameters:
+!	None.
+!
+! Implicit Inputs:
+!
+!
+! Implicit Outputs:
+!	The UCB is de-allocated, and the VS$AL_VD_UCB entry is cleared.
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!
+! Side Effects:
+!	Kernel mode.
+!	IPL 0.
+!	I/O database mutex is obtained and returned.
+!
+!--
+
+    begin
+
+    local
+	XUCB: ref vd_ucb_block,		! Address of UCB to be deleted
+	VT_UCB: ref block[0,byte],	! Address of virtual terminal UCB
+	VD_ID,				! Copy of virtual display ID
+	CLASS_VECTOR: ref class_def,	! Class driver vector
+	NEXT_UCB: ref vd_ucb_block,	! Address of UCB to be deleted
+	UNIT_MATCH: initial (0),
+	CURRENT_IPL,
+	STAT;
+
+
+    VD_ID = .THIS_VD;
+    XUCB = .VS$AL_VD_UCB [.VD_ID];		! Point to this UCB at low IPL
+    MFPR ( PR$_IPL, CURRENT_IPL );		! Save current IPL value
+    SCH$IOLOCKW ( .PCB );			! Get the I/O base mutex
+    if ((.XUCB eql 0) or (.XUCB [UCB$B_TYPE] neq DYN$C_UCB)) 
+	then 
+	    begin	! Not a UCB
+	    SCH$IOUNLOCK ( .PCB );
+	    MTPR ( CURRENT_IPL, PR$_IPL);	! Restore IPL 
+	    $return_error (VSTA$_NO_UCB,	! If this isn't REALLY a UCB...
+				integer_type, .XUCB );
+	    end;		! Not a UCB
+
+!
+! If this VD UCB has a VMS virtual terminal in front of it, fix the pointers
+! on the virtual virtual terminal until VMS gets around to deleting it.
+!
+    if (VT_UCB = .XUCB [UCB$L_TT_LOGUCB]) neq .XUCB then
+      begin
+	CLASS_VECTOR = .XUCB [UCB$L_TT_CLASS];	! Address terminal class vector
+	begin
+	  bind routine DISCONNECT_UCB = 
+		(.CLASS_VECTOR[CLASS_DISCONNECT]): SETUPUCB;
+	  SCH$IOUNLOCK ( .PCB );
+	  MTPR ( %ref(IPL$_SYNCH), PR$_IPL );		! Raise IPL to synch.
+	  DISCONNECT_UCB(.XUCB);
+	  SCH$IOLOCKW ( .PCB );				! Get the I/O base mutex
+	  MTPR ( %ref(IPL$_ASTDEL), PR$_IPL );		! Raise IPL to synch.
+	end;
+      end;
+!
+! Get rid of this UCB the old fashioned way...delete it
+!
+    XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] and
+		(not (DEV$M_MNT or DEV$M_DMT or DEV$M_TRM or DEV$M_AVL));
+    XUCB [UCB$L_STS] = (.XUCB [UCB$L_STS] or UCB$M_DELETEUCB) and
+			(not UCB$M_ONLINE);
+    IOC$CREDIT_UCB( .XUCB );	! Make sure we get credit for doing this deed
+    IOC$DELETE_UCB( .XUCB );	! Try to get rid of it.
+
+!
+! See if it's really gone (it might have I/O in progress).
+! If gone, empty its UCB slot and indicate in its UCB that it's not
+! a mailbox any more.
+!
+! *** COMMENTED OUT SINCE SYSTEM DEASSIGN CHANNEL CODE PERFORMS SAME ACTION ***
+!
+!    NEXT_UCB = .VS$GL_TEMPLATE_UCB;	! Start with VDA0:
+!    until ((.UNIT_MATCH eql 1) or (.NEXT_UCB eql 0)) do
+!	begin		! Try to match UCB
+!	if (.NEXT_UCB [UCB$W_UNIT] eql .VD_ID ) 
+!					then UNIT_MATCH = 1;
+!	NEXT_UCB = .NEXT_UCB [UCB$L_LINK];
+!	end;		! Try to match UCB
+!
+!    if (.UNIT_MATCH eql 0) then 
+!	begin		! UCB not in linked list
+!	VS$AL_VD_UCB [ .VD_ID ] = 0;
+!	end;		! UCB not in linked list
+!
+! Make this slot available
+!
+    VS$AL_VD_UCB [ .VD_ID ] = 0;
+!
+! Return the mutex and return
+!
+    SCH$IOUNLOCK ( .PCB );
+    MTPR ( CURRENT_IPL, PR$_IPL);		! Restore IPL
+    return SS$_NORMAL;
+    end;					! End routine VS$$ACP_DELETE_UCB
+
+
+%SBTTL 'vsta$$acp_match_privs -- Match the Specified Privileges to Process'
+GLOBAL ROUTINE vsta$$acp_match_privs(
+			pid,		!Process ID of reqesting process
+			privileges	!Privilege mask to match with process'
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has the specified privileges. All the privileges in the
+! specified mask must be set in the process' current privilege mask.
+!
+! NOTE: This routine assumes that the PID is in INTERNAL format.
+!
+! FORMAL PARAMETERS:
+!
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	PRIVILEGES  : Longword privilege mask to match with process privileges
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Process DOES have specified privileges
+!	SS$_NOPRIV : Process DOES NOT have all the specified privileges
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode as it requires access to the
+! process control block for the specified PID.
+!
+!--
+
+BEGIN
+
+LOCAL
+	current_ipl,			!To remember our original IPL
+	saved_ipl,			!To remember our raised IPL
+	process_privs,			!Privileges of process (lower longword)
+	pcb_adr: REF BLOCK[0,BYTE];	!PCB address
+
+!
+! Get the PCB address from the PID
+!
+	if not VS$$ACP_FIND_PCB(
+				pid,
+				0,
+				pcb_adr)
+		then return SS$_NOPRIV;
+!
+! Prevent someone else from looking at this PCB temporarily and copy the
+! current privileges
+!
+	mfpr(PR$_IPL,current_ipl);
+	sch$iolockw(.SCH$GL_CURPCB);
+	dsbint(%REF(ipl$_synch),saved_ipl);
+!
+	CH$MOVE(
+		4,
+		pcb_adr[PCB$Q_PRIV],
+		process_privs);
+!
+	enbint(saved_ipl);
+	sch$iounlock(.SCH$GL_CURPCB);
+	mtpr(current_ipl,PR$_IPL);
+!
+! If all the privileges match, return success. Otherwise no privilege for
+! attempted operation.
+!
+	IF (.process_privs AND .privileges) EQL .privileges THEN
+	  RETURN SS$_NORMAL
+	ELSE
+	  RETURN SS$_NOPRIV;
+!
+END;  
+
+
+%SBTTL 'vsta$$acp_check_access -- Check Specified Access of Process'
+GLOBAL ROUTINE vsta$$acp_check_access(
+			access_type,	!Type of access to check for
+			pid,		!Process ID of reqesting process
+			owner_uic,	!UIC of object owner
+			protection	!Protection mask on object
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if the process specified
+! by process ID (PID) has the specified access to the object owned by owner_uic
+! with a protection mask as specified. Privileges of the process are also taken
+! into account. The following are allowable access type checks:
+!
+!	ACCESS_TYPE =>
+!			vsta$k_read_access = 0,
+!			vsta$k_write_access = 1,
+!			vsta$k_execute_access = 2,
+!			vsta$k_delete_access = 3.
+!
+! NOTE: This routine assumes that the PID is in INTERNAL format.
+!
+! FORMAL PARAMETERS:
+!
+!	ACCESS_TYPE : Longword access type to be checked (see above)
+!				(input parameter)
+!	PID	    : Longword process ID of requesting process
+!				(input parameter)
+!	OWNER_UIC   : Longword object owner's UIC
+!				(input parameter)
+!	PROTECTION  : Longword protection mask (RWED format) on object
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Access GRANTED to the process in question
+!	SS$_NOPRIV : Access DENIED to the process in question
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode as it requires access to the
+! process control block for the specified PID as well as several operating
+! system routines.
+!
+!--
+
+BEGIN
+
+LITERAL
+	vsta$k_read_access = 0,
+	vsta$k_write_access = 1,
+	vsta$k_execute_access = 2,
+	vsta$k_delete_access = 3;
+
+LOCAL
+	current_ipl,				!To remember our original IPL
+	saved_ipl,				!To remember our raised IPL
+	access_status,				!Result to be returned
+	pcb_adr: REF BLOCK[0,BYTE],		!PCB address
+	orb_adr: BLOCK[orb$k_length,BYTE]	!Object's rights block
+	  INITIAL(BYTE(REP orb$k_length OF (0))),
+	ar_blk: BLOCK [arb$k_length,BYTE];	!Access rights block
+!
+! Allow the ACP access to any object
+!
+	if ((.PID eql .VS$GL_ACP_PID) or (.PID eql 0))
+		then return SS$_NORMAL;
+!
+! Get the PCB address from the PID and the reqesting process' access
+! rights block address (if possible)
+!
+	if not VS$$ACP_FIND_PCB(
+				pid,
+				0,
+				pcb_adr)
+		then return SS$_NONEXPR;
+!
+! Setup the ORB with the specified object owner and protection (this is
+! necessary under VMS V4 when doing access checking. Eventually, all SDA
+! objects should have their own ORBs and provide ACL access as well).
+!
+	orb_adr[orb$b_flags] = orb$m_prot_16 OR orb$m_acl_queue OR orb$m_noacl;
+	orb_adr[orb$w_size] = orb$k_length;
+	orb_adr[orb$b_type] = dyn$c_orb;
+	orb_adr[orb$w_prot] = .protection;
+	orb_adr[orb$l_owner] = .owner_uic;
+!
+! Prevent someone else from deleting this pcb while copy the ARB
+!
+	mfpr(PR$_IPL,current_ipl);
+	sch$iolockw(.SCH$GL_CURPCB);
+	dsbint(%REF(ipl$_synch),saved_ipl);
+!
+	ch$move (arb$k_length, .pcb_adr[PCB$L_ARB], ar_blk[$base]);
+!
+	enbint(saved_ipl);
+	sch$iounlock(.SCH$GL_CURPCB);
+	mtpr(current_ipl,PR$_IPL);
+!
+! We have all the information to check access. If the requesting process
+! exists, check for the specified access to the object in question
+!
+	CASE .access_type FROM vsta$k_read_access
+	    TO vsta$k_delete_access OF
+	  SET
+	    [vsta$k_read_access] :
+		access_status = exe$chkrdacces(
+				ar_blk[$base],
+				orb_adr,
+				0);
+	    [vsta$k_write_access] :
+		access_status = exe$chkwrtacces(
+				ar_blk[$base],
+				orb_adr,
+				0);
+	    [vsta$k_execute_access] :
+		access_status = exe$chkphyacces(
+				ar_blk[$base],
+				orb_adr,
+				0);
+	    [vsta$k_delete_access] :
+		access_status = exe$chkdelacces(
+				ar_blk[$base],
+				orb_adr,
+				0);
+	    [OUTRANGE] :
+		access_status = SS$_NOPRIV;
+	  TES;
+!
+! Return the requested access status.
+!
+	.access_status
+
+END;  
+
+
+%sbttl	'VS$$ACP_FIND_PCB -- Find PCB address from PID of Process'
+global routine VS$$ACP_FIND_PCB(
+			pid_adr,		!Address of PID of interest
+			proc_desc,		!Process name descriptor
+			pcb_adr			!Address for PCB address
+		) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is responsible for returning the PCB address of the
+! process specified by PID or process name or an error if not valid. Note
+! that this is only a jacket routine for the VMS exe$ipid_to_pcb routine.
+!
+! NOTE: This routine assumes that the pid is in INTERNAL format.
+!
+! FORMAL PARAMETERS:
+!
+!	PID_ADR	  : Address of process PID to be searched for (or zero)
+!				(input parameter)
+!	PROC_DESC : Address of process name descriptor (or zero)
+!				(input parameter) => currently ignored
+!	PCB_ADR   : Address for the PCB address (if found)
+!				(output parameter)
+! 
+! RETURN VALUES:
+!
+!	SS$_NORMAL		!Successful completion
+!	SS$_NONEXPR		!Nonexistent process
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it has been called in kernel mode (IPL 0).
+!--
+    BEGIN
+
+!
+! Just pass along the specified PID to the VMS routine (along with
+! our PCB address) and see what happens
+!
+	IF (.pcb_adr = exe$ipid_to_pcb(..pid_adr)) NEQ 0 THEN
+	  RETURN SS$_NORMAL
+	ELSE
+	  RETURN SS$_NONEXPR;
+!
+    END; 			! VS$$ACP_FIND_PCB
+
+
+GLOBAL ROUTINE vs$$acp_sysjob_inc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Increment the system's and our interactive job count.
+!	2. If no system job slot is available, return error (interactive job
+!	   limit has been exceeded).
+!
+! FORMAL PARAMETERS:
+	(pid: WORD		!The index portion of PID (not yet used)
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0.
+!--
+BEGIN
+BUILTIN
+    testbitss;				!Test for bit set and set
+EXTERNAL
+    vsta$gl_term_mbx_set,		!Process termination mbx setup?
+    sys$gw_ijoblim: WORD,		!System interactive job limit
+    sys$gw_ijobcnt: WORD;		!System interactive job count
+
+LOCAL
+    status;				!Return status value
+!
+! If the process termination mailbox is not properly set up, then we will
+! never find out about processes going away and consequently not be able to
+! decrement the interactive job count.
+!
+	IF NOT .vsta$gl_term_mbx_set THEN
+	  RETURN SS$_NORMAL;
+!
+! Keep track of how many jobs we create so we can wait around at end-session
+! for all of them to go away
+!
+	ijob_count = .ijob_count + 1;
+!
+! Raise IPL to AST delivery. access to system interactive job count and limit
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_astdel), pr$_ipl );
+!
+! Increment the system's count of interactive jobs. If we have exceeded the
+! interactive limit, it will get decremented on the other end (sysjob_dec)
+! when the process gets deleted.
+!
+	vs$gl_template_ucb[ucb$b_ertcnt] = .ijob_count;
+!
+! *** NOTE: VMS V4 performs this function for us
+!
+!	sys$gw_ijobcnt = .sys$gw_ijobcnt + 1;
+!
+! If there are too many interactive jobs already, return error
+!
+!	IF .sys$gw_ijobcnt GEQU .sys$gw_ijoblim THEN
+!	  status = SS$_NOSLOT
+!	ELSE
+	  status = SS$_NORMAL;
+!
+! Lower IPL and exit
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+
+RETURN .status;
+END;
+
+
+GLOBAL ROUTINE vs$$acp_sysjob_dec
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Decrement the system's and our interactive job count (not below 0).
+!	2. If ACP waiting for count => 0, set designated event flag
+!
+! FORMAL PARAMETERS:
+	(pid: WORD		!The index portion of PID (not yet used)
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0.
+!--
+BEGIN
+BUILTIN
+    testbitcc;				!Test for bit clear and clear
+EXTERNAL
+    sys$gw_ijobcnt: WORD;		!System interactive job count
+!
+	ijob_count = MAX(0,.ijob_count - 1);
+!
+! Raise IPL to AST Delivery. access to system interactive job count and limit
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_astdel), pr$_ipl );
+!
+! Decrement the system's count of interactive jobs
+!
+	vs$gl_template_ucb[ucb$b_ertcnt] = .ijob_count;
+!
+! *** NOTE: VMS V4 performs this function for us
+!
+!	sys$gw_ijobcnt = MAX(0,.sys$gw_ijobcnt - 1);
+!
+! Lower IPL
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+!
+! If ACP is waiting for OUR interactive count to go to zero (like during
+! end-session or abnormal exit), then set designated event flag and exit
+!
+	IF .ijob_count EQL 0 THEN
+	  IF .waiting_for_job_exit THEN
+	    $SETEF( EFN = .end_session_efn );
+
+RETURN SS$_NORMAL
+END;
+
+
+%sbttl 'VS$$ACP_CLEAR_TERM_BIT  --  Sets a UCB as NON_TERMINAL'
+global routine VS$$ACP_CLEAR_TERM_BIT ( VD_ID) : =
+
+!++
+! Functional Description:
+!	Called by CREATE_GENERIC_VD, this routine clears bit DEV$M_TRM in
+!	UCB$L_DEVCHAR, that indicates that this device is a terminal.  That
+!	way, native displays won't be sent any broadcast messages.
+!
+! Formal Parameters:
+!	VD_ID
+!
+! Implicit Outputs:
+!	The UCB bit is cleared.
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!
+! Side Effects:
+!	Kernel mode.
+!	IPL raised to IPL$_SYNCH, to alter UCB
+!
+!--
+
+    begin
+
+    local
+	XUCB: ref vd_ucb_block,			! Address of UCB to be deleted
+	CURRENT_IPL,
+	STAT;
+
+    XUCB = .VS$AL_VD_UCB [.VD_ID];		! Point to this UCB
+    MFPR ( PR$_IPL, CURRENT_IPL );		! Save current IPL
+    MTPR (%ref (IPL$_SYNCH), PR$_IPL);		! Disable interrupts
+    if ((.XUCB eql 0) or (.XUCB [UCB$B_TYPE] neq DYN$C_UCB)) 
+	then 
+	    begin	! Not a UCB
+	    MTPR ( CURRENT_IPL, PR$_IPL);	! Restore IPL 
+	    $return_error (VSTA$_NO_UCB,	! If this isn't REALLY a UCB...
+				integer_type, .XUCB );
+	    end;	! Not a UCB
+!
+! Clear the bit
+!
+    XUCB [UCB$L_DEVCHAR] = .XUCB [UCB$L_DEVCHAR] and
+				(not DEV$M_TRM);
+!
+! Restore the IPL and return
+!
+    MTPR ( CURRENT_IPL, PR$_IPL);		! Restore IPL 
+    return SS$_NORMAL;
+    end;		! End routine VS$$ACP_CLEAR_TERM_BIT
+
+
+%sbttl 'VS$$ACP_READ_DELPEN_BIT  --  Sees if process delete pending'
+global routine VS$$ACP_READ_DELPEN_BIT ( PID ) : =
+
+!++
+! Functional Description:
+!	Called by VS$$ACP_STOP when $DASSGNing this device.  If this is
+!	being done as part of deleting the process, then there is
+!	more cleanup to be done.  This routine reports whether the 
+!	process has been marked for deletion.
+!
+! Formal Parameters:
+!	PID
+!
+! Implicit Outputs:
+!	None.
+!
+! Routine value:
+! Completion Codes:
+!	1 if bit is set (Process is marked for deletion or already gone)
+!	0 if bit is not set (Process is not marked for deletion)
+!
+! Side Effects:
+!	Kernel mode.
+!	IPL raised to IPL$_SYNCH, to read PCB
+!
+!--
+
+    begin
+
+    local
+	INDEX: word,				! Low order word of PID
+	THIS_PCB: ref block[0,byte],		! Address of Process PCB
+	CURRENT_IPL,
+	STAT;
+
+!
+! Get the PCB address from the PID and the reqesting process' access
+! rights block address (if possible)
+!
+	if not VS$$ACP_FIND_PCB(
+				PID,
+				0,
+				THIS_PCB)
+		then return 1;
+!
+! Raise IPL to prevent process deletion while we peek
+!
+    MFPR ( PR$_IPL, CURRENT_IPL );		! Save current IPL
+    MTPR (%ref (IPL$_SYNCH), PR$_IPL);		! Disable interrupts
+!
+! Read the bit
+!
+    STAT = .THIS_PCB [PCB$V_DELPEN];
+!
+! Restore the IPL and return
+!
+    MTPR ( CURRENT_IPL, PR$_IPL);		! Restore IPL 
+    return .STAT;
+    end;		! End routine VS$$ACP_READ_DELPEN_BIT
+
+
+%sbttl 'VS$$ACP_AQB_HIGH_PRIORITY -- Find High-Priority AQB Items'
+routine VS$$ACP_AQB_HIGH_PRIORITY =
+
+!++
+! Functional Description:
+!	Find and remove any high priority I/O requests from the AQB queue
+!	and return indication.
+!
+! Formal Parameters:
+!	none.
+!
+! Implicit Inputs:
+!	AQB : ACP I/O request queue head
+!	VS$A_IRP : Address of "current" I/O request packet
+!
+! Routine value:
+! Completion Codes:
+!	1 if high priority I/O request exists
+!	0 if no high priority I/O request exists
+!
+! Side Effects:
+!	Kernel mode.
+!	IPL raised to IPL$_SYNCH, to browse AQB queue
+!
+!--
+
+    begin
+
+    local
+	CURRENT_IPL,
+	HIGH_PRIORITY_FOUND;
+
+	HIGH_PRIORITY_FOUND = 0;
+!
+! Remember previous IPL and raise to IPL$_SYNCH (don't want VDDRIVER adding
+! to the AQB queue while we're browsing)
+!
+	MFPR ( PR$_IPL, CURRENT_IPL );
+	MTPR (%ref (IPL$_SYNCH), PR$_IPL);
+!
+! Now look through the AQB queue for high-priority requests from VDDRIVER
+! (High priority function codes are mentioned here explicitly).
+!
+	VS$A_IRP = .AQB[AQB$L_ACPQFL];
+	while (.VS$A_IRP neq AQB[AQB$L_ACPQFL]) and
+		(not .HIGH_PRIORITY_FOUND) DO
+	  selectone (.VS$A_IRP[IRP$V_FCODE]) of
+	    set
+	      [IO$_STOP,IO$_VSTAHI]  :	!Cancel I/O/ HI request
+			begin
+			  remque(.VS$A_IRP,VS$A_IRP);
+			  HIGH_PRIORITY_FOUND = 1;
+			end;
+	      [OTHERWISE] : VS$A_IRP = .VS$A_IRP[IRP$L_IOQFL];
+	    tes;
+!
+! Restore the IPL and return indicator of whether or not high priority I/O
+! request was found in queue
+!
+	MTPR ( CURRENT_IPL, PR$_IPL);
+!
+    return .HIGH_PRIORITY_FOUND;
+    end;		! End routine VS$$ACP_AQB_HIGH_PRIORITY
+
+
+
+%sbttl 'VS$$ACP_AST_LEVEL_K -- Finds current AST level'
+routine VS$$ACP_AST_LEVEL_K(LEVEL:ref block [0,byte]) =
+!++
+! Kernel mode routine adjunct to VS$$ACP_AST_LEVEL must be locked down to 
+! Raise IPL to 7
+!
+!--
+    begin
+    local 
+	LOCAL_LEVEL,		! Local copy, reachable at IPL 7
+	SAVED_IPL,
+	PCB:ref block[0,byte];
+
+!
+! Synchronize access to scheduler's database and locate our PCB
+!
+   MFPR ( PR$_IPL,SAVED_IPL );			! Remember current IPL
+   MTPR (%ref(IPL$_SYNCH), PR$_IPL);		! Set IPL to 7
+   
+   PCB = .SCH$GL_CURPCB;
+
+!
+! Return ASTACT in LEVEL
+!
+    LOCAL_LEVEL = .PCB [PCB$B_ASTACT];		! Can't page User stack at IPL 7
+    MTPR (SAVED_IPL, PR$_IPL);			! Restore original IPL
+    .LEVEL = .LOCAL_LEVEL;			! We can find it at low IPL
+
+    return SS$_NORMAL;
+
+    end;					! End routine VS$$ACP_AST_LEVEL_K
+
+
+GLOBAL ROUTINE vs$$acp_delattnast(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Deliver attention (Control-C, Control-Y) ASTs given the AST control
+!	block list head and the UCB.
+!
+! FORMAL PARAMETERS:
+	list_head_adr,			!Address of AST control block list head
+	ucb_adr				!UCB address
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0 in kernel mode.
+!--
+BEGIN
+
+!
+! Raise IPL to synch.
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! Let VMS go off and prepare to deliver all the control-c and control-y ASTs
+! according to the list specified.
+!
+	com$delattnast(
+		.list_head_adr,
+		.ucb_adr);
+!
+! Lower IPL and exit
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+
+RETURN SS$_NORMAL;
+END;
+
+
+GLOBAL ROUTINE vs$$acp_delctrlast(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Deliver control (Out-of-band) ASTs given the summary mask, the AST
+!	control block list head, character typed, and the UCB.
+!
+! FORMAL PARAMETERS:
+	input_char,			!Input character
+	list_head_adr,			!Address of AST control block list head
+	ucb_adr,			!UCB address
+	output_char: REF VECTOR[0,WORD]	!Address for character to include in
+					!input stream (if any => WORD)
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0 in kernel mode.
+!--
+BEGIN
+
+LOCAL
+	out_of_band_char: BYTE,
+	include_char: WORD;
+!
+! Raise IPL to synch.
+!
+	out_of_band_char = .input_char;
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! Let VMS go off and prepare to deliver all the control-c and control-y ASTs
+! according to the list specified.
+!
+	com$delctrlast(
+		.out_of_band_char,
+		.list_head_adr,
+		.ucb_adr;
+		include_char);
+!
+! Lower IPL and exit
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+	output_char[0] = .include_char;
+
+RETURN SS$_NORMAL;
+END;
+
+
+GLOBAL ROUTINE vs$$acp_answerback(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is to be used by terminal emulators in the ACP to
+! cause answerback data to be forced into the input stream for a particular
+! device.
+!
+! FORMAL PARAMETERS:
+	vd_id,				!Virtual display ID
+	buffer_size,			!Buffer size
+	buffer_adr			!Buffer address
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0 in kernel mode.
+!--
+BEGIN
+
+BUILTIN
+	testbitsc,			!Test for bit set and clear
+	testbitss;			!Test for bit set and set
+LITERAL
+	max_answerback = 50;		!Max. answerback buffer size
+LOCAL
+	size,				!Buffer size storage
+	buffer:				!Local buffer storage
+	  VECTOR[max_answerback,BYTE],	!on kernel stack
+	ucb_adr: REF vd_ucb_block,	!VD UCB address
+	port_vector: REF port_def,	!Port driver vector table
+	interrupt_expected: BYTE	!"Boolean" interrupt expected state
+	  INITIAL(BYTE(0)),		!
+	status;				!Return status value
+!
+! Determine the UCB address and raise IPL to synch. access
+!
+	IF (ucb_adr = .vs$al_vd_ucb[.vd_id]) EQL 0 THEN
+	  RETURN SS$_NOSUCHDEV;
+!
+! Copy the answerback buffer and buffer size into local, kernel stack space
+! to make sure its locked down before raising IPL
+!
+	size = MINU(max_answerback,.buffer_size);
+	CH$MOVE(
+		.size,
+		.buffer_adr,
+		buffer);
+!
+	mtpr (%ref(ipl$_synch), pr$_ipl );
+!
+! Prevent the terminal class driver from giving us data back to echo
+! until we're done (then let the port driver handle it)
+!
+	IF testbitss(ucb_adr[ucb$v_int]) THEN
+	  interrupt_expected = 1;
+!
+! One character at a time, give the answerback data to the terminal class
+! driver.
+!
+	INCR char_no FROM 0 TO (.size - 1) DO
+	  BEGIN
+	    BIND ROUTINE flag_class = (.ucb_adr[ucb$l_tt_putnxt]): post;
+	    flag_class(.buffer[.char_no],.ucb_adr);
+	  END;
+!
+! If GIN mode in affect, disable it and restart stalled input data
+!
+	IF testbitsc(ucb_adr[ucb$v_vd_gin]) THEN
+	  BEGIN
+	    port_vector = .ucb_adr[ucb$l_tt_port];
+	      BEGIN
+		BIND ROUTINE restart_port = (.port_vector[port_xon]): post;
+		restart_port(0,.ucb_adr);
+	      END;
+	  END;
+!
+! Allow class driver output data if previously disabled
+!
+	IF NOT .interrupt_expected THEN
+	  ucb_adr[ucb$v_int] = 0;
+!
+! Lower IPL and exit
+!
+	mtpr (%REF(0), pr$_ipl);
+
+RETURN SS$_NORMAL;
+END;
+
+
+GLOBAL ROUTINE vs$$acp_gin_mode(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is to be used by terminal emulators in the ACP to
+! cause a device to enter/exit GIN (graphics input) mode. Once set, the next
+! input character for this device will be forwarded from the terminal
+! port driver to the emulator for processing. The emulator must then force
+! the appropriate data to enter the input stream using VS$$ACP_ANSWERBACK.
+! Note that the invokation of VS$$ACP_ANSWERBACK will cause the device to
+! exit GIN mode. No keyboard input will be processed until this occurs. If
+! this routine is called to exit GIN mode, the state will be cleared and
+! any accumulated input data will be processed.
+!
+! FORMAL PARAMETERS:
+	vd_id,				!Virtual display ID
+	on_off				!GIN mode on/off indicator
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0 in kernel mode.
+!--
+BEGIN
+
+LOCAL
+	ucb_adr: REF vd_ucb_block,	!VD UCB address
+	port_vector: REF port_def,	!Port driver vector table
+	status;				!Return status value
+!
+! Determine the UCB address (if possible)
+!
+	IF (ucb_adr = .vs$al_vd_ucb[.vd_id]) EQL 0 THEN
+	  RETURN SS$_NOSUCHDEV;
+!
+! Raise IPL to synch. access to UCB status
+!
+	mtpr (%ref(ipl$_synch), pr$_ipl );
+!
+! If the on_off flag specifies to turn on GIN mode, set the appropriate bits
+!
+	IF .on_off THEN
+!
+! Set UCB to GIN mode (which "implicitly" causes an XOFF as well after
+! the first character has been typed which remains in affect until turned
+! off by the emulator).
+!
+	  ucb_adr[ucb$w_vd_status] = .ucb_adr[ucb$w_vd_status] OR
+						ucb$m_vd_gin
+	ELSE
+!
+! Otherwise, clear GIN mode and restart input processing on the device
+!
+	  BEGIN
+	    ucb_adr[ucb$v_vd_gin] = 0;
+	    port_vector = .ucb_adr[ucb$l_tt_port];
+	      BEGIN
+		BIND ROUTINE restart_port = (.port_vector[port_xon]): post;
+		restart_port(0,.ucb_adr);
+	      END;
+	  END;
+!
+! Lower IPL and exit
+!
+	mtpr (%REF(0), pr$_ipl);
+
+RETURN SS$_NORMAL;
+END;
+
+
+%SBTTL 'vs$$acp_set_input_char -- Set Virtual Terminal Input Characteristics'
+GLOBAL ROUTINE vs$$acp_set_input_char(
+			vd_id,			!ID of virtual display
+			mod_states,		!States of VD to modify
+			on_bits,		!New on state bits of VD
+			new_level		!New input conformance level
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting certain terminal input
+! characteristics for the caller which were deemed settable external to this
+! module. Such states include Keypad application mode, cursor key mode, etc.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID           : Longword ID of virtual display
+!				(input parameter)
+!	MOD_STATES	: Longword states to be modified
+!				(input parameter)
+!	ON_BITS		: Longword new on bits
+!				(input parameter)
+!	NEW_LEVEL	: Address for new longword conformance level
+!				(output parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful, or SS$_NOSUCHDEV if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it was called in kernel mode at IPL 0.
+! IPL will be raised to IPL$_SYNCH before modifying UCB contents.
+!
+!--
+BEGIN
+
+LOCAL
+	bits_on,				!Local copy on kernel stack
+	states_to_change,			!Local copy on kernel stack
+	old_level,				!Previous conformance level
+	ucb_adr: REF vd_ucb_block;		!Corresponding UCB address
+
+!
+! First make sure that this UCB exists
+!
+	IF (ucb_adr = .vs$al_vd_ucb[.vd_id]) EQL 0 THEN
+	  RETURN SS$_NOSUCHDEV;
+!
+! Raise IPL to synch. access to UCB state field
+!
+	bits_on = .on_bits;
+	states_to_change = .mod_states;
+	old_level = .ucb_adr[ucb$v_vd_level];
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! Turn the correct bits on and off as specified
+!
+	ucb_adr[ucb$w_vd_status] =
+			(.ucb_adr[ucb$w_vd_status] OR
+			.bits_on) AND
+			(NOT (.bits_on XOR .states_to_change));
+	IF .ucb_adr[ucb$v_vd_eightbit] THEN
+	  ucb_adr[ucb$l_devdepend] =
+		.ucb_adr[ucb$l_devdepend] OR tt$m_eightbit
+	ELSE
+	  ucb_adr[ucb$l_devdepend] =
+		.ucb_adr[ucb$l_devdepend] AND (NOT tt$m_eightbit);
+!
+! If we've changed conformance levels and the new level is level 1, then no
+! more symbol key handling allowed
+!
+	IF .old_level NEQ .ucb_adr[ucb$v_vd_level] THEN
+	  IF .ucb_adr[ucb$v_vd_level] EQL kb_level_1 THEN
+	    BEGIN
+	      ucb_adr[ucb$l_vd_symbol_shift] = 0;
+	      ucb_adr[ucb$l_vd_symbol_lower] = 0;
+	    END;
+!
+! Lower IPL
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+!
+! Return the new input conformance level
+!
+	.new_level = .ucb_adr[ucb$v_vd_level];
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$acp_set_input_char
+
+
+%SBTTL 'vs$$acp_fix_vtem -- Fix Virtual Terminal Device Type'
+GLOBAL ROUTINE vs$$acp_fix_vtem(
+			vd_id			!ID of virtual display
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for attempting to fix the device type
+! field of a terminal emulator after it has been set to something we don't
+! have an emulator to handle. The result, if successful, will be that a
+! single error message will be logged and the terminal will be reset to its
+! default device type. If this is also screwed up, then we throw up our hands
+! and let the ACP spin its wheels and die a horrible death.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID           : Longword ID of virtual display
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$AL_VD_UCB : List of UCBs for all VDs
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful, or SS$_NOSUCHDEV if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it was called in kernel mode at IPL 0.
+! IPL will be raised to IPL$_SYNCH before modifying UCB contents.
+!
+!--
+BEGIN
+
+LOCAL
+	ucb_adr: REF vd_ucb_block;		!Corresponding UCB address
+!
+! First make sure that this UCB exists
+!
+	IF (ucb_adr = .vs$al_vd_ucb[.vd_id]) EQL 0 THEN
+	  RETURN SS$_NOSUCHDEV;
+!
+! Raise IPL to synch. access to UCB state field
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! Set the device type to the default device type
+!
+	ucb_adr[ucb$b_devtype] = .ucb_adr[ucb$b_tt_detype];
+!
+! Lower IPL and return
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$acp_fix_vtem
+
+
+%SBTTL 'vs$$acp_save_tmbu -- Save Termination Mbx Unit Number'
+GLOBAL ROUTINE vs$$acp_save_tmbu(
+			epid			!External PID
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for saving the specified PID and its
+! associated termination mailbox unit number (if there is one) in a list while
+! replacing the process' termination mailbox unit number with our own. Yes,
+! you heard correctly. This functionality is required so that we
+! (the ACP) get notified whenever VMS deletes processes which have created
+! things (SDA objects) on this VAXstation. By saving the "real" process
+! termination mbx unit number, we can then send off the appropriate message to
+! that mailbox and make the whole thing transparent...
+!
+! FORMAL PARAMETERS:
+!
+!	EPID : Longword external PID of process
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	PROC_LIST : Blockvector of PIDs with associated term. mbx unit no.
+!
+! IMPLICIT OUTPUTS:
+!
+!	PROC_LIST : Blockvector of PIDs with associated term. mbx unit no.
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful, or SS$_NOSUCHDEV if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it was called in kernel mode at IPL 0.
+! IPL will be raised to IPL$_SYNCH before modifying PCB contents.
+!
+!--
+BEGIN
+
+EXTERNAL
+	vsta$gl_term_mbx_unit;
+LOCAL
+	our_mbx_unit: WORD,
+	their_mbx_unit: WORD,
+	pcb_adr: REF BLOCK[0,BYTE];
+!
+! Determine the PCB address from the external PID
+!
+	IF (pcb_adr = exe$epid_to_pcb(.epid)) EQL 0 THEN
+	  RETURN SS$_NONEXPR;
+!
+	IF (our_mbx_unit = .vsta$gl_term_mbx_unit) EQL 0 THEN
+	  RETURN SS$_NORMAL;
+!
+! Raise IPL to synch. access to PCB term. mbx unit field
+!
+	sch$iolockr ( .sch$gl_curpcb );
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! Retrieve their termination mailbox unit number and replace it with ours
+!
+	their_mbx_unit = .pcb_adr[pcb$w_tmbu];
+	pcb_adr[pcb$w_tmbu] = .our_mbx_unit;
+!
+! Lower IPL (but prevent AST delivery)
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(IPL$_ASTDEL), pr$_ipl);
+!
+! do the interactive-job-count increment here
+!
+	vs$$acp_sysjob_inc (.epid);
+!
+! Find an empty slot in our list and store this PID and term. mbx unit (if
+! there is one to store).
+!
+	IF (.their_mbx_unit EQL 0) OR
+	   (.their_mbx_unit EQL .our_mbx_unit)  THEN
+	  BEGIN
+	    mtpr (%REF(0), pr$_ipl);
+	    RETURN SS$_NORMAL;
+	  END;
+!
+	INCR proc_count FROM 0 TO (max_processes - 1) DO
+	  IF .proc_list[.proc_count,tmbu$l_epid] EQL 0 THEN
+	    BEGIN
+	      proc_list[.proc_count,tmbu$l_epid] = .epid;
+	      proc_list[.proc_count,tmbu$w_mbx_unit] = .their_mbx_unit;
+	      mtpr (%REF(0), pr$_ipl);
+	      RETURN SS$_NORMAL;
+	    END;
+!
+	mtpr (%REF(0), pr$_ipl);
+	RETURN SS$_NORMAL;	!return success 
+END;				! of routine vs$$acp_save_tmbu
+
+
+%SBTTL 'vs$$acp_vd_disconnect -- Was VD Disconnected'
+GLOBAL ROUTINE vs$$acp_vd_disconnect(
+			vd_id,			!VD ID
+			pid			!New pid for device
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for determining if VMS just disconnected
+! the specified virtual display from a virtual terminal and connected it to
+! another. This would happen when you login on an emulated terminal and connect
+! to an existing job. The new job (or process) would be deleted and the VD
+! would be connected to the original job's virtual terminal. This routine will
+! determine if there are any VMS virtual terminals currently using this VD as
+! the physical device. If so, this VD should not be deleted.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID : Virtual display ID
+!			(input parameter)
+!	PID   : Address for new Process ID of device owner
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	VS$AL_VD_UCB : List of UCBs for VDs
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns 1 if VD was disconnected (don't delete) or
+!	  0 if okay to beam VD into deep space.
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it was called in kernel mode.
+! IPL will be raised to IPL$_SYNCH before searching device list and
+! restored to the caller's IPL before returning.
+!
+!--
+BEGIN
+
+LOCAL
+	status,
+	new_pid,
+	current_ipl,
+	vtx_ucb: REF BLOCK[0,BYTE],
+	vd_ucb: REF BLOCK[0,BYTE];
+!
+! First make sure we can determine the UCB address for this VD
+!
+	IF .vd_id GEQU vs$k_vd_max THEN
+	  RETURN 0;
+	IF (vd_ucb = .vs$al_vd_ucb[.vd_id]) GEQ 0 THEN
+	  RETURN 0;		!Don't worry about deleting this one
+!
+! If this is the first time calling this routine, try to find the template
+! VMS virtual terminal
+!
+	mfpr ( pr$_ipl,current_ipl);	! Save current IPL
+	sch$iolockw ( .sch$gl_curpcb );
+!
+	IF .vt_first_time THEN
+	  BEGIN
+	    vt_first_time = 0;
+	    IF (NOT (status = ioc$searchdev(
+			%ASCID 'VTA0:', .pcb; vta0_ucb ))) THEN
+	      vta0_ucb = 0;
+	  END;
+!
+! If there is no virtual terminal template, then nothing to worry about
+!
+	IF .vta0_ucb EQL 0 THEN
+	  BEGIN
+	    sch$iounlock ( .sch$gl_curpcb );
+	    mtpr (current_ipl, pr$_ipl);
+	    RETURN 0;		!No VMS virtual terminals to worry about
+	  END;
+!
+! Raise IPL to synch. access to virtual terminal device list
+!
+	status = 0;
+	mtpr (%REF (ipl$_synch), pr$_ipl );
+!
+! See if any virtual terminals are pointing to this VD's UCB
+!
+	vtx_ucb = .vta0_ucb[ucb$l_link];
+	WHILE (.vtx_ucb NEQ 0) AND (NOT .status) DO
+	  IF .vtx_ucb[ucb$l_tl_phyucb] EQL .vd_ucb THEN
+	    BEGIN
+	      status = 1;
+	      new_pid = .vtx_ucb[ucb$l_pid];
+	    END
+	  ELSE
+	    vtx_ucb = .vtx_ucb[ucb$l_link];
+!
+! Lower IPL
+!
+	sch$iounlock ( .sch$gl_curpcb );
+	mtpr (%REF(0), pr$_ipl);
+!
+	.pid = .new_pid;
+!
+	RETURN .status;		!return disconnect indicator
+END;				! of routine vs$$acp_vd_disconnect
+
+
+%SBTTL 'vs$$acp_vd_clone -- Clone Virtual Terminal for Virtual Terminal'
+GLOBAL ROUTINE vs$$acp_vd_clone(
+			vd_ucb: REF BLOCK[0,BYTE]	!VD UCB
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cloning a VMS virtual terminal for
+! an emulated VAXstation virtual terminal.  The terminal driver performs this 
+! for terminals interrupted by unsolicited input. We will perform this function
+! for our virtual terminals which are disconnectable (as defined by VMS).
+!
+! FORMAL PARAMETERS:
+!
+!	VD_UCB: Virtual display UCB
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	I/O data base locked for writing
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+!
+! Returns SS$_NORMAL if successful
+!	and LBC if not
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	This routine assumes that it was called in kernel mode with the I/O
+! data base locked for writing. This routine will preserve this state.
+!
+!--
+BEGIN
+
+LOCAL
+	status,
+	vtx_ucb: REF BLOCK[0,BYTE];
+!
+! If this is the first time calling this routine, try to find the template
+! VMS virtual terminal
+!
+	IF .vt_first_time THEN
+	  BEGIN
+	    vt_first_time = 0;
+	    IF (NOT (status = ioc$searchdev(
+			%ASCID 'VTA0:', .pcb; vta0_ucb ))) THEN
+	      vta0_ucb = 0;
+	  END;
+!
+! If there is no virtual terminal template, then nothing to worry about
+!
+	IF .vta0_ucb EQL 0 THEN
+	  RETURN SS$_NOSUCHDEV;		!No VMS virtual terminals to worry about
+!
+! Clone a copy of the VMS virtual terminal template
+!
+	IF (status = ioc$clone_ucb(
+			.vta0_ucb;
+			vtx_ucb)) THEN
+	  BEGIN
+!
+! So far so good. Fix the so-called physical device status
+!
+	    vd_ucb[ucb$l_devchar] = .vd_ucb[ucb$l_devchar] AND (NOT dev$m_avl);
+	    vd_ucb[ucb$l_devchar2] = .vd_ucb[ucb$l_devchar2] OR dev$m_red;
+!
+! Now the virtual terminal UCB fields
+!
+	    vtx_ucb[ucb$w_refc] = 0;
+	    vtx_ucb[ucb$l_sts] = .vtx_ucb[ucb$l_sts] OR ucb$m_deleteucb;
+	    vtx_ucb[ucb$b_devtype] = .vd_ucb[ucb$b_devtype];
+	    vtx_ucb[ucb$b_fipl] = .vd_ucb[ucb$b_fipl];
+	    vtx_ucb[ucb$b_dipl] = .vd_ucb[ucb$b_dipl];
+	    vtx_ucb[ucb$w_devbufsiz] = .vd_ucb[ucb$w_devbufsiz];
+	    vtx_ucb[ucb$l_devdepend] = .vd_ucb[ucb$l_devdepend];
+	    vtx_ucb[ucb$l_devdepnd2] = .vd_ucb[ucb$l_devdepnd2];
+	    vtx_ucb[ucb$b_amod] = .vd_ucb[ucb$b_amod];
+	    vtx_ucb[ucb$w_devbufsiz] = .vd_ucb[ucb$w_devbufsiz];
+	    vtx_ucb[ucb$b_vertsz] = .vd_ucb[ucb$b_vertsz];
+	    vtx_ucb[ucb$l_tl_phyucb] = .vd_ucb;
+	    vd_ucb[ucb$l_tt_logucb] = .vtx_ucb;
+	  END;
+!
+	RETURN .status;		!return disconnect indicator
+END;				! of routine vs$$acp_vd_clone
+
+
+%sbttl 'VS$$ACP_DONE_IO_K -- I/O completion in K mode'
+global routine VS$$ACP_DONE_IO_K(A1,A2,THIS_IRP:ref block [0,byte]) =
+!++
+! Kernel mode routine adjunct to VS$$ACP_DONE_IO
+!
+!--
+    begin
+    local 
+	RXB,				! Indicates a read function
+	S0BUFF: ref ttyrb,
+	THIS_UCB:ref vd_ucb_block,
+	IRPE:ref block [0,byte],
+	USER_BUFFER: vector[2],
+	FUNCTION_CODE: word,
+	SAVED_IPL;
+
+!
+! Check that we really have an IRP and a UCB
+!
+   if (.THIS_IRP [IRP$B_TYPE] neq DYN$C_IRP) then ! If not an IRP, punt!
+	    $return_error (VSTA$_NO_IRP, integer_type, .THIS_IRP);
+
+   if ((THIS_UCB=.THIS_IRP [IRP$L_UCB]) eql 0) then 
+	    $return_error (VSTA$_NO_UCB,	! If this isn't REALLY a UCB...
+				integer_type, .THIS_UCB );
+
+   FUNCTION_CODE = .THIS_IRP [IRP$W_FUNC] and IRP$M_FCODE;
+!
+! Gotta do special stuff for broadcast cleanup
+!
+	if .FUNCTION_CODE eql IO$_BROADCAST then
+	  VS$$ACP_DONE_BROADCAST( .THIS_IRP [IRP$L_WIND] );
+!
+! If this is an "internal" IRP (one created by VDDRIVER to perform an action
+! not initiated by a user program), then perform cleanup instead of I/O
+! post-processing.
+!
+	if (.FUNCTION_CODE eql IO$_BROADCAST) or
+	   (.FUNCTION_CODE eql IO$_STOP) then
+	begin
+	  EXE$DEANONPAGED (.THIS_IRP);
+	  return SS$_NORMAL;
+	end;
+!
+! If the function code is one for which an RXB is involved, save the Read
+! Extension Block address for de-allocation after COM$POST
+!
+    RXB = 0;				! Indicate not a read function (yet)
+
+	selectoneu .FUNCTION_CODE of
+	set [
+	    IO$_READVBLK,
+	    IO$_READLBLK,
+	    IO$_READPBLK,
+	    IO$_READPROMPT,
+	    IO$_TTYREADALL,
+	    IO$_TTYREADPALL,
+	    IO$_CREATE_MENU
+	    ] :
+		begin
+		S0BUFF = .THIS_IRP [IRP$L_SVAPTE];
+		RXB = .S0BUFF [TTY$L_RB_AES];
+		end;	! End READ function clean-up
+	    [IO$_READ_VKB] :
+		if (.THIS_IRP [IRP$W_FUNC] and IO$M_VD_CANCEL) eql 0
+		then
+			begin
+			S0BUFF = .THIS_IRP [IRP$L_SVAPTE];
+			RXB = .S0BUFF [TTY$L_RB_AES];
+			end;	! End READ function clean-up
+	tes;	
+
+!
+! Give back the Virtual Memory if this was a Direct IO
+! Also re-set the Accumulated and Original Byte count fields so the post-
+! processor won't try to re-submit the IRP.
+! Both buffer fields will be -1 if no memory was created.
+! NOTE: It is possible that this is a direct I/O operation which has not
+!	been looked at yet by the ACP. In that case, the buffer is NOT mapped
+!	and MUST not be "un-mapped."
+!
+    if (.THIS_IRP [IRP$V_BUFIO] eql 0) then
+	begin	! Direct IO
+	USER_BUFFER[0] = .THIS_IRP [IRP$L_ABCNT];
+	USER_BUFFER[1] = .THIS_IRP [IRP$L_OBCNT];
+	if ((.USER_BUFFER [0] gtr 0) and 	! Don't delete non-existent
+	    (.USER_BUFFER [1] gtr .USER_BUFFER[0]) and
+	    (.THIS_IRP [IRP$L_SVAPTE] lss 0)) then  ! Virt Mem
+		$DELTVA (inadr = USER_BUFFER [0]);
+	THIS_IRP [IRP$L_ABCNT] = 0;
+	THIS_IRP [IRP$L_OBCNT] = 0;
+	if (.THIS_IRP [IRP$V_EXTEND] eql 0)
+		then IRPE = 0
+		else IRPE = .THIS_IRP [IRP$L_EXTEND];	! Point to first extension
+	until (.IRPE eql 0) do			! Unmap all the extension regions
+	    begin	! Unmap all IRPE regions
+		if .IRPE [IRPE$L_SVAPTE1] neq 0
+		    then $DELTVA (inadr = .IRPE+12 );
+		if .IRPE [IRPE$L_SVAPTE2] neq 0
+		    then $DELTVA (inadr = .IRPE+20 );
+		if (.IRPE [IRP$V_EXTEND] eql 0)
+			then IRPE = 0
+			else IRPE = .IRPE [IRP$L_EXTEND];! Next extension
+	    end;	! Unmap all IRPE regions
+	end;	! Direct IO
+!
+! If this is a Read, for which the IOSB contains information on  how
+! many bytes were actually transferred, then put those data into the
+! IRP for the post-processor.
+!
+	selectoneu .FUNCTION_CODE of
+	set [
+	    IO$_READVBLK,
+	    IO$_READLBLK,
+	    IO$_READPBLK,
+	    IO$_READPROMPT,
+	    IO$_TTYREADALL,
+	    IO$_TTYREADPALL,
+	    IO$_READ_VKB
+	    ] :
+		begin	! Map IOSB  as words
+		map A1: vector [0,word];
+		map A2: vector [0,word];
+		THIS_IRP [IRP$L_BCNT] = .A1[1] + .A2[1];
+		end;	! Unmap IOSB  as words
+	tes;	
+!
+! Fill in the IOSB, and call the IO Post Processer
+! System copies the data from the S0 buffer into the user buffer (if there
+!	is one), sets event flags, queues ASTs, etc., etc.
+!
+    VCB [VCB$W_TRANS] = .VCB [VCB$W_TRANS] - 1;
+    THIS_IRP [IRP$L_IOST1] = .A1;
+    THIS_IRP [IRP$L_IOST2] = .A2;
+    THIS_UCB = .THIS_IRP [IRP$L_UCB];
+
+!    DSBINT ( %ref(IPL$_ASTDEL), SAVED_IPL );	! Prevent AST delivery
+    DSBINT ( THIS_UCB [UCB$B_FIPL], SAVED_IPL );	! Raise to Fork IPL
+    COM$POST ( .THIS_IRP, .THIS_UCB );
+    ENBINT ( SAVED_IPL );				! Lower IPL
+
+!
+! If this is a read type function, get rid of the RXB
+!
+    if (.RXB neq 0) then
+	begin
+	EXE$DEANONPAGED ( .RXB ); 		! Out, out, damned RXB!
+	end;
+
+    return SS$_NORMAL;
+
+    end;					! End routine VS$$ACP_DONE_IO_K
+
+%sbttl 'VS$$ACP_DONE_IO_NO_IOSB_K -- I/O completion in K mode'
+routine VS$$ACP_DONE_IO_NO_IOSB_K( THIS_IRP:ref block [0,byte]) =
+!++
+! Kernel mode routine adjunct to VS$$ACP_DONE_IO_NO_IOSB
+!
+!--
+    begin
+    local 
+	FUNCTION_CODE: word,
+	USER_BUFFER: vector[2],
+	THIS_UCB:ref vd_ucb_block,
+	IRPE:ref block [0,byte],
+	SAVED_IPL;
+
+!
+! Check that we really have an IRP and a UCB
+!
+   if (.THIS_IRP [IRP$B_TYPE] neq DYN$C_IRP) then ! If not an IRP, punt!
+	    $return_error (VSTA$_NO_IRP, integer_type, .THIS_IRP);
+
+   if ((THIS_UCB=.THIS_IRP [IRP$L_UCB]) eql 0) then 
+	    $return_error (VSTA$_NO_UCB,	! If this isn't REALLY a UCB...
+				integer_type, .THIS_UCB );
+
+   FUNCTION_CODE = .THIS_IRP [IRP$W_FUNC] and IRP$M_FCODE;
+!
+! Gotta do special stuff for broadcast cleanup
+!
+	if .FUNCTION_CODE eql IO$_BROADCAST then
+	  VS$$ACP_DONE_BROADCAST( .THIS_IRP [IRP$L_WIND] );
+!
+! If this is an "internal" IRP (one created by VDDRIVER to perform an action
+! not initiated by a user program), then perform cleanup instead of I/O
+! post-processing.
+!
+	if (.FUNCTION_CODE eql IO$_BROADCAST) or
+	   (.FUNCTION_CODE eql IO$_STOP) then
+	begin
+	  EXE$DEANONPAGED (.THIS_IRP);
+	  return SS$_NORMAL;
+	end;
+!
+! Give back the Virtual Memory if this was a Direct IO
+! Also re-set the Accumulated and Original Byte count fields so the post-
+! processor won't try to re-submit the IRP.
+! Both buffer fields will be -1 if no memory was created.
+!
+    if (.THIS_IRP [IRP$V_BUFIO] eql 0) then
+	begin	! Direct IO
+	USER_BUFFER[0] = .THIS_IRP [IRP$L_ABCNT];
+	USER_BUFFER[1] = .THIS_IRP [IRP$L_OBCNT];
+	if ((.USER_BUFFER [0] gtr 0) and 	! Don't delete non-existent
+	    (.THIS_IRP [IRP$L_SVAPTE] lss 0)) then  ! Virt Mem
+		$DELTVA (inadr = USER_BUFFER [0]);
+	THIS_IRP [IRP$L_ABCNT] = 0;
+	THIS_IRP [IRP$L_OBCNT] = 0;
+	if (.THIS_IRP [IRP$V_EXTEND] eql 0)
+		then IRPE = 0
+		else IRPE = .THIS_IRP [IRP$L_EXTEND];	! Point to first extension
+	until (.IRPE eql 0) do			! Unmap all the extension regions
+	    begin	! Unmap all IRPE regions
+		if .IRPE [IRPE$L_SVAPTE1] neq 0
+		    then $DELTVA (inadr = .IRPE+12 );
+		if .IRPE [IRPE$L_SVAPTE2] neq 0
+		    then $DELTVA (inadr = .IRPE+20 );
+		if (.IRPE [IRP$V_EXTEND] eql 0)
+			then IRPE = 0
+			else IRPE = .IRPE [IRP$L_EXTEND];! Next extension
+	    end;	! Unmap all IRPE regions
+	end;	! Direct IO
+!
+! Post-processing interrupt
+!
+    VCB [VCB$W_TRANS] = .VCB [VCB$W_TRANS] - 1;
+
+!    DSBINT ( %ref(IPL$_ASTDEL), SAVED_IPL );	! Prevent AST delivery
+    DSBINT ( THIS_UCB [UCB$B_FIPL], SAVED_IPL );	! Raise to Fork IPL
+    COM$POST ( .THIS_IRP, .THIS_UCB );
+    ENBINT ( SAVED_IPL );				! Lower IPL
+
+    return SS$_NORMAL;
+    end;				! End routine VS$$ACP_DONE_IO_NO_IOSB_K
+
+%sbttl 'END_LOCK -- dummy routine to provide handle for lock-down'
+routine END_LOCK:novalue = ;		! Marks end of locked-down code
+
+
+%SBTTL 'vs$$acp_restore_tmbu -- Restore Termination Mbx Unit Number'
+GLOBAL ROUTINE vs$$acp_restore_tmbu =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for cleanup processing when a process is
+! being deleted for which we had previously modified its process termination
+! mailbox unit number. So if this process is in our list, then it will be
+! removed from the list and the termination mailbox message we just received
+! will be sent to their termination mailbox.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+!
+! IMPLICIT INPUTS:
+!
+!	PROC_LIST : Blockvector of PIDs with associated term. mbx unit no.
+!
+! IMPLICIT OUTPUTS:
+!
+!	PROC_LIST : Blockvector of PIDs with associated term. mbx unit no.
+!
+! ROUTINE VALUE
+!
+! Returns "SS$_NORMAL" if successful, or SS$_NOSUCHDEV if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+EXTERNAL
+	vsta$gl_term_mbx_buf: BLOCK[,BYTE];
+LITERAL
+	max_mbx_name = 8;
+OWN
+	mbx_name: VECTOR[max_mbx_name,BYTE];
+LOCAL
+	mbx_desc: VECTOR[2] INITIAL(max_mbx_name,mbx_name),
+	mbx_chan: WORD;
+!
+! Find this PID in the list
+!
+	INCR proc_count FROM 0 TO (max_processes - 1) DO
+	  IF .proc_list[.proc_count,tmbu$l_epid] EQL
+	     .vsta$gl_term_mbx_buf[acc$l_pid] THEN
+	    BEGIN
+!
+! Found this PID. Clear it out of the list and forward this termination
+! mbx buffer to the appropriate mailbox
+!
+	      proc_list[.proc_count,tmbu$l_epid] = 0;
+	      mbx_desc[0] = max_mbx_name;
+	      IF $fao(
+			%ASCID 'MBA!UL',
+			mbx_desc,
+			mbx_desc,
+			.proc_list[.proc_count,tmbu$w_mbx_unit]) THEN
+		IF $assign(
+			CHAN   = mbx_chan,
+			DEVNAM = mbx_desc) THEN
+		  BEGIN
+		    $QIO(
+			CHAN = .mbx_chan,
+			FUNC = IO$_WRITEVBLK,
+			P1   = vsta$gl_term_mbx_buf,
+			P2   = acc$k_termlen);
+		    $DASSGN( CHAN = .mbx_chan );
+		  END;
+	      RETURN SS$_NORMAL;
+	    END;
+!
+	RETURN SS$_NORMAL;	!return success (not in this list)
+END;				! of routine vs$$acp_restore_tmbu
+
+
+GLOBAL ROUTINE vs$$acp_vd_connected
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Determines if VD was cloned and if so
+!	writes the ASCII name in the given descriptor,
+!	and returns the real length.
+!
+! FORMAL PARAMETERS:
+	(vd_id
+	,str_desc
+	,real_len_addr		!Address of a word to get the real length
+	) =
+!--
+BEGIN
+LOCAL
+    status,
+    vt_ucb: REF BLOCK[0,BYTE],
+    vd_ucb: REF BLOCK[0,BYTE];
+
+!
+! Get the virtual display's UCB address
+!
+IF (vd_ucb = .vs$al_vd_ucb[.vd_id]) GEQ 0 THEN
+    RETURN SS$_NOSUCHDEV;
+!
+! If this VD has not been cloned, we don't have to worry about it here
+!
+IF (vt_ucb = .vd_ucb[ucb$l_tt_logucb]) EQL .vd_ucb THEN
+    RETURN SS$_NOSUCHDEV;
+!
+! We have found a clone. Build the virtual terminal device name string.
+!
+RETURN $fao(
+	%ASCID 'VTA!UW:',	!CTRSTR
+	.real_len_addr,		!Address of real output length
+	.str_desc,		!Address of output descriptor
+	.vt_ucb[ucb$w_unit]);	!Unit number
+END;
+
+
+%sbttl	'VS$$ACP_DECLARE_EXIT -- Declares exit handler in callers mode'
+routine VS$$ACP_DECLARE_EXIT =
+!++
+! Called by VS$$ACP_INIT to set up the process rundown handler which in
+! turn causes image rundown cleanup to occur if the ACP process gets deleted
+! by some unknown force. Currently, VMS stores the address of a RSB
+! instruction in this location, but always does a JSB to it during SYS$RUNDOWN
+! and SYS$DELPRC. For some reason, although ALL documentation states that
+! image rundown will be performed during process deletion, it is NOT true in
+! our case and we must do it manually.
+! 
+! Return values:
+!	SS$_NORMAL
+!--
+    begin
+    external
+	CTL$GL_USRUNDWN;		!User process rundown routine
+
+!
+! Change whatever the user-rundown pointer used to be pointing at to point
+! at our rundown routine (Note: it will be called via JSB)
+!
+! NOTE: This is commented out as it is causing system crashes after exiting
+!	from a debug ACP.
+!
+!    CTL$GL_USRUNDWN = VS$$ACP_RUNDOWN;
+
+    return SS$_NORMAL;
+
+    end; ! VS$$ACP_DECLARE_EXIT
+
+%sbttl 'VS$$ACP_EXIT -- Exit handler, deletes VCB, AQB, UCBs'
+routine VS$$ACP_EXIT ( reason_addr ) =
+
+!++
+! Functional Description:
+!	Called by system when the VSACP image exits. Calls VS$$ACP_EXIT_K, which
+!	first deletes the UCBs of all the VDs associated with this ACP,
+!	and then deallocates VCB, AQB.
+!
+! Formal Parameters:
+!	REASON_ADDR	Address of image exit reason written by system
+!			This is VS$GL_EXIT_REASON.
+!
+! Implicit Inputs:
+!	User Mode
+!
+! Implicit Outputs:
+!	VD UCBs deleted
+!	VCB deleted
+!	AQB deleted
+!	Process deleted
+!
+! Routine value:
+! Completion Codes:
+!	SS$_NORMAL
+!	Values returned by $CMKRNL
+!
+! Side Effects:
+!	NONE
+!
+!--
+
+    begin
+    builtin
+	fp;				!Call frame pointer
+    local
+	STAT;
+!
+! Establish ourself as the caller so we'll have delete access to all
+! pasteboards, etc.
+!
+	vs$gl_pid = .vs$gl_acp_pid;
+!
+! Inform "central operators" of VAXstation software shutdown
+!
+    MSG_DESC[0] = 120;
+    $FAO(
+	%ASCID ' VAXstation ACP => !AS shutting down',
+	MSG_LEN,
+	MSG_DESC,
+	VS$GL_PROC_NAME_DESC);
+    OPRMSG_DESC[0] = 8 + .MSG_LEN;
+    $SNDOPR( MSGBUF = OPRMSG_DESC );
+!
+! Make sure that any user-mode exceptions which occur during cleanup operations
+! don't stop us from doing as much as possible (Note: The kernel mode exception
+! handler will perform the same function here but need not be explicitly
+! redeclared as it is in one of the kernel-mode exception vectors)
+!
+	.FP = (external routine vs$$exception_handler ; vs$$exception_handler);
+!
+! Do all I/O post-processing, job deletion, and SDA object deletion
+!
+	RUNDOWN_COMPLETE = 1;
+
+	VS$$ACP_SESSION_CLEANUP();
+!
+! Try to clean up the mess
+!
+	STAT=vsta$$kernel_call (VS$$ACP_EXIT_K);
+!
+! Restore previous kernel mode exception handler address.
+!
+! *** NOTE: Since we don't establish any kernel mode handlers under VMS V4,
+!	    there's no need to restore what we didn't do.
+!
+!	vsta$$set_kernel_handler (
+!	    .old_kernel_routine,	! get old routine
+!	    0				! we don't need previous handler
+!	    );
+!
+! Now try to restart the ACP, if the above was successful
+!
+!	if ((.STAT eql SS$_NORMAL) and (.INTERACTIVE eql 0))
+!			 then $CREPRC (
+!				image=$DESCRIPTOR('VSTA$EXE:STARTACP'),
+!				input=$DESCRIPTOR('VSTA$EXE:VDINPUT.LOG'),
+!				output=$DESCRIPTOR('VSTA$EXE:VDPUTPUT.LOG'),
+!				error=$DESCRIPTOR('VSTA$EXE:VDERROR.LOG'),
+!				prcnam=$DESCRIPTOR('STARTVSACP'),
+!				uic=%X'10007');
+	return .STAT;
+    end;					! End routine VS$$ACP_EXIT
+
+
+%sbttl 'VS$$ACP_RUNDOWN -- Invoke Exit handler for User Rundown Services'
+routine VS$$ACP_RUNDOWN: jsb_save_everything novalue =
+
+!++
+! Functional Description:
+!	Called by system when the VSACP process is being deleted. Calls
+!	VS$$ACP_EXIT, which first deletes the UCBs of all the VDs associated
+!	with this ACP, and then deallocates VCB, AQB. This routine only
+!	exists because VMS isn't doing image rundown for $DELPRC on the ACP
+!	and we must do it ourselves.
+!
+!	NOTE: For now, we are just setting the template device dismount bit
+!	      to indicate our predicament since we do not have enough kernel
+!	      stack space to perform all cleanup operations.
+!
+! Formal Parameters:
+!	None
+!
+! Implicit Inputs:
+!	Kernel Mode
+!
+! Implicit Outputs:
+!	VD UCBs deleted
+!	VCB deleted
+!	AQB deleted
+!	Process deleted
+!
+! Routine value:
+! Completion Codes:
+!	NONE
+!
+! Side Effects:
+!	NONE
+!
+!--
+
+    begin
+    builtin
+	SP;				!Stack pointer
+    literal
+	fake_stack_size = 1000;
+    own
+	REASON_ADR: INITIAL(SS$_NONEXPR),
+	SIZE,
+	OLD_STACK_ADR,
+	NEW_STACK_ADR: REF VECTOR;
+!
+! If we have already done the cleanup, just return
+!
+	if .RUNDOWN_COMPLETE then
+	  return;
+!
+! For now, we don't have enough kernel stack space to
+! perform all cleanup operations. So "dismount" the template device to
+! indicate the predicament we're in.
+!
+	vs$gl_template_ucb[ucb$l_devchar] =
+		(.vs$gl_template_ucb[ucb$l_devchar] OR dev$m_dmt)
+		AND (NOT dev$m_avl);
+!
+! We already know that under normal conditions, there is not enough kernel
+! stack space to perform all our cleanup operations. So its time to get our
+! hands dirty and allocate some non-paged pool to use for a fake kernel stack
+! while we do cleanup.
+!
+!	if not EXE$ALONONPAGED(FAKE_STACK_SIZE;SIZE,NEW_STACK_ADR) then
+!	  return;
+!
+!	NEW_STACK_ADR[2] = .SIZE;
+!
+! Now save the old stack pointer to restore later and use our new stack
+!
+!	OLD_STACK_ADR = .SP;
+!	SP = .NEW_STACK_ADR + (.SIZE - 4);
+!
+! Store exit reason value and pass its address to our normal
+! exit handler (so it looks like any other exit)
+!
+!	VS$$ACP_EXIT( REASON_ADR );
+!
+! Restore the old stack pointer and deallocate the borrowed pool.
+!
+!	SP = .OLD_STACK_ADR;
+!	EXE$DEANONPAGED(.NEW_STACK_ADR);
+
+	return;
+    end;					! End routine VS$$ACP_RUNDOWN
+
+
+%sbttl 'VS$$ACP_DEQUEUE  --  Main Loop of ACP process'
+routine VS$$ACP_DEQUEUE: =
+
+!++
+! Functional Description:
+!	Main loop of VSACP process.
+!	Obtains IRP from the ACP's queue, or Hibernates, awaiting an IRP
+!		to be queued.
+!
+! Formal Parameters:
+!	NONE
+!
+! Implicit Inputs:
+!	NONE
+!
+! Implicit Outputs:
+!	NONE
+!
+! Routine value:
+! Completion Codes:
+!	NONE
+!
+! Side Effects:
+!	NONE
+!
+!--
+
+    begin
+    local
+	SAVED_IPL;
+!
+! Try to de-queue an IRP
+!
+	VS$$ACP_GET_REQUEST();
+!
+! If there is no handleable request at this time, VS$A_IRP contains a 0.
+! If there actually is a valid request, then its IRP's address, or its
+! INT's address, is in VS$A_IRP. IRP address is in S0, and so is <0.
+!
+	if (.VS$A_IRP eql 0) then return SS$_NORMAL;
+	if (.VS$A_IRP lss 0) then
+	    begin	! IRP exists
+	!
+	! Copy the LIRP buffer, and the VSX, if it exists
+	!
+	    CH$MOVE ( IRP$C_LENGTH, .VS$A_IRP, .VS$A_LIRP );
+
+	    if (.VS$A_IRP [IRP$W_STS] and IRP$M_EXTEND) neq 0 then
+		CH$MOVE ( VSX$S_VSXBLOCK, .VS$A_IRP [IRP$L_EXTEND],
+		VS$A_VSX[$BASE] );
+
+	    VS$GL_FULL_FUNCTION = .VS$A_IRP [IRP$W_FUNC];
+	    VS$GL_MAIN_FUNCTION = (.VS$GL_FULL_FUNCTION and IRP$M_FCODE);
+	    VS$A_UCB = .VS$A_IRP [IRP$L_UCB];
+	    VS$GL_PID = .VS$A_IRP [IRP$L_PID];
+	    VS$GL_UIC = .VS$A_IRP [IRP$L_SAVD_RTN];
+	    VS$GL_OBJ_ID = .VS$A_UCB [UCB$L_VD_ID];	! Assume VD is relevant
+
+	    end		! IRP exists
+
+    else    begin	! INT exists
+
+	    VS$GL_FULL_FUNCTION = 0;
+	    VS$GL_MAIN_FUNCTION = 0;
+	    VS$A_UCB = 0;
+	    VS$GL_PID = 0;
+	    VS$GL_UIC = 0;
+	    VS$GL_OBJ_ID = 0;
+
+	    end;	! INT exists
+
+    return SS$_NORMAL;
+
+    end;			! End of VS$$ACP_DEQUEUE
+
+
+
+%sbttl 'VS$$ACP_GET_REQUEST -- Obtains next unblocked IRP'
+routine VS$$ACP_GET_REQUEST :novalue = 
+
+!++
+! Functional Description:
+!	First checks the High Priority INT Queue, then the normal INT queue
+!	for Internal Requests that have not yet been processed.  If these 
+!	queues are empty, we proceed to the AQB queue and look for special,
+!	high priority requests. Then look at BLKQ, starting at the head, for 
+!	previously-blocked IRPs that are now free for processing.  If none are 
+!	found, IRPs from the head of the AQB queue are removed either for processing
+!	or for insertion into the blocked queue.  In both cases, the routine
+!	VS$$ACP_BLOCKED is called to determine whether the IRP should be 
+!	blocked.  If the AQB queue is empty , we hibernate the ACP process.
+!
+! Formal Parameters:
+!	NONE
+!
+! Implicit Inputs:
+!	AQB, BLKQ, INTQ, VS$A_HIPQ
+!
+! Implicit Outputs:
+!	VS$A_IRP	contains the address of the current IRP or INT
+!
+! Routine value:
+! Completion Codes:
+!	NONE
+!
+! Side Effects:
+!	IRPs are placed on and removed from the blocked queue, and removed
+!	from the AQB queue as appropriate.
+!	If AQB$B_MNTCNT is ever non-zero, we will quietly delete this process
+!	and all its data structures as soon as there are no more handleable
+!	IRPs in either queue.
+!
+!--
+
+    begin
+    local
+	ERR;			! Error in determining if request blocked
+
+!
+! First check the High Priority INT Queue, then the normal INT queue.  If 
+!	either contains an INT, handle that request.
+!
+	if (not (remque(.VS$A_HIPQ [0], VS$A_IRP))) 	! Remove first INT
+		then return;			!  [Empty queue iff TRUE]
+
+	if (not (remque(.INTQ [0], VS$A_IRP))) 	! Remove first INT
+		then return;			!  [Empty queue iff TRUE]
+
+!
+! Now look through the AQB queue for high-priority requests from VDDRIVER
+! (High priority function codes are mentioned explicitly)
+!
+	if VS$$ACP_AQB_HIGH_PRIORITY()
+		then return;
+
+!
+! Now get any unblocked requests in the BLKQ
+!
+	if VS$$ACP_GET_UNBLOCKED()
+		then return;
+
+!
+! Next, take the first request from the AQB queue, and try to satisfy it.
+!	if it is blocked, insert it in the blocked queue, and try to get
+!	another IRP from the AQB.
+!
+	while (not (remque(.AQB [AQB$L_ACPQFL], VS$A_IRP))) do ! Remove first IRP
+						!  [Empty queue iff TRUE]
+	    begin	! Handle this request
+		if VS$$ACP_BLOCKED (.VS$A_IRP,ERR)
+		    then
+			begin
+			if .ERR
+			then
+			    vs$$acp_done_io(SS$_NOSUCHDEV,0,.VS$A_IRP)
+			else
+			    insque(.VS$A_IRP, .BLKQ [1]);	! Insert at tail of queue
+			end
+		    else return;	! If this one is unblocked
+	    end;	! Handle this request
+
+!
+! If we've exhausted all the queues, and found nothing to do, then we should 
+!  hibernate. Return to VS$$ACP_INIT to do that in user mode.
+!
+	VS$A_IRP = 0;		! Indicate no handleable request found
+	return;
+
+    end;		! Routine VS$$ACP_GET_REQUEST
+
+
+
+%sbttl 'VS$$ACP_GET_UNBLOCKED -- Obtains unblocked IRP'
+routine VS$$ACP_GET_UNBLOCKED = 
+
+!++
+! Functional Description:
+!
+! Formal Parameters:
+!
+! Implicit Inputs:
+!
+! Implicit Outputs:
+!
+!	VS$A_IRP	contains the address of the unblocked IRP
+!
+! Routine value:
+!
+!	true  : If an unblocked request is found
+!	false : If no unblocked request is found
+!
+!--
+
+begin
+
+local
+	FIRST_FLAG,
+	FIRST_IRP,
+	ERR;
+
+
+	FIRST_FLAG = 1;				! Let the first IRP through at first
+	FIRST_IRP = .BLKQ;			! Remember first IRP
+
+	if (not (remque(.BLKQ, VS$A_IRP))) then	! Consider first blocked entry
+						!  [Empty queue iff TRUE]
+	    begin				! Find first unblocked request
+
+	    while ((.VS$A_IRP neq .FIRST_IRP) or (.FIRST_FLAG eql 1)) do
+		begin				! Unchecked IRPs loop
+
+		    FIRST_FLAG = 0;		! NEXT time we see this IRP...
+
+		    if VS$$ACP_BLOCKED (.VS$A_IRP,ERR)
+		    then
+			begin			! Not this IRP yet
+
+			if .ERR			! Does device still exist
+			then
+			   begin		! No device does not exist
+			   
+			   !
+			   ! Complete the I/O for IRP
+			   !
+			   vs$$acp_done_io(SS$_NOSUCHDEV,0,.VS$A_IRP);
+			   
+			   !
+			   ! If we just completed the first IRP in queue
+			   ! then we must use the next IRP as loop control
+			   !
+			   if .VS$A_IRP eql .FIRST_IRP
+				then begin
+				     FIRST_IRP = .BLKQ [0];
+				     FIRST_FLAG = 1;
+				     end;
+
+			   !
+			   ! Get next IRP from queue
+			   !
+			   if remque (.BLKQ, VS$A_IRP)	! Try next one
+				then return 0;		! Return false if none
+			   
+			   end				! End no device exist
+			else
+
+			   begin			! IRP still blocked
+
+			   insque(.VS$A_IRP, .BLKQ [1]);! Put this one back
+			   remque (.BLKQ, VS$A_IRP);	! GEt next one
+
+			   end				! End IRP still blocked
+
+			end
+
+		    else return 1;			! Unblocked IRP found
+
+		end;					! Unchecked IRPs loop
+
+	    if (.VS$A_IRP eql .FIRST_IRP)		! Look for end of loop
+		then insque (.VS$A_IRP, BLKQ [0]);	! Put first IRP back
+
+	    end;					! Get first IRP in queue
+
+
+return 0;						! No unblocked request
+
+end;
+
+
+
+%sbttl 'VS$$ACP_BLOCKED -- Returns TRUE if the IRP is blocked'
+routine VS$$ACP_BLOCKED ( THIS_IRP:ref block [0,byte], ERR_FLAG ) =
+
+!++
+! Functional Description:
+!	Checks the various state data structures in the ACP to see if this
+!	IO Request is blocked by ongoing asynchronous activity.
+!
+! Formal Parameters:
+!	THIS_IRP	Address of the IRP in question
+!	ERR_FLAG	Address to return "boolean" error indicator
+!
+! Implicit Inputs:
+!	IRP$Q_TT_STATE contains the state and operation information
+!			about this request.  
+!
+! 	(IRP$L_ABCNT is coincident with IRP$Q_TT_STATE, and has the further 
+!			advantage of being defined in LIB.L32.)
+!
+!		Bits that indicate operations:
+!			VS$V_ST_READ
+!			VS$V_ST_WRITE
+!			VS$V_ST_BRDCST
+!			VS$V_ST_DEL
+!			VS$V_ST_MODIFY
+!			VS$V_ST_CONTROL
+!			VS$V_ST_POINTER
+!		Bits that indicate objects:
+!			VS$V_ST_VD
+!			VS$V_ST_PB
+!			VS$V_ST_W
+!			VS$V_ST_VP
+!			VS$V_ST_VS
+!			VS$V_ST_PS
+!
+! Implicit Outputs:
+!
+!
+! Routine value:
+! Completion Codes:
+!	Boolean 'TRUE' ( = 1) if this IRP is blocked.
+!	Boolean 'FALSE' ( = 0) if this IRP is not blocked.
+!
+! Side Effects:
+!	
+!
+!--
+
+    begin
+
+    local
+	STATE: initial (0),	! 'Or'ed state of all this VD's PBs
+	NUM_PB: initial (0),	! Number of PBs this VD is pasted on
+	VD_ID,			! ID number of this VD
+	S0BUFF: ref TTYRB,	! System read buffer address
+	RXB: ref RXBLOCK,	! Read extend block address
+	THIS_UCB:ref vd_ucb_block, ! Address of the UCB associated with this IRP
+	XON_XOFF,		! 1 = XOFF   0 = XON for a terminal
+	BLOCKS,			! Number of reasons this VD should be blocked
+	STAT;			! Temporary storage
+
+!
+! If this is VDA0 and not a native keyboard read request, return unblocked
+! status immediately
+!
+    .ERR_FLAG = 0;
+    THIS_UCB = .THIS_IRP [IRP$L_UCB];
+    VD_ID = .THIS_UCB [UCB$W_UNIT];
+    if ( .VD_ID eql 0 ) then
+	if (.THIS_IRP [IRP$W_FUNC] and IRP$M_FCODE) neq IO$_READ_VKB then
+	  return 0
+	else
+	  if (.THIS_IRP [IRP$W_FUNC] and IO$M_VD_CANCEL) neq 0 then
+	    return 0
+	  else
+!
+! See if native keyboard read request is blocked
+!
+	    begin
+	      S0BUFF = .THIS_IRP [IRP$L_SVAPTE];
+	      RXB = .S0BUFF [TTY$L_RB_AES];
+	      if not VS$$GET_VKB_STATE(.RXB [RX$W_PB_ID],STATE) then return 0;
+	      if ((.STATE and VS$VKB_M_READ) neq 0) then return 1;
+	      if ((.STATE and VS$VKB_M_READ_ACTIVE) neq 0) then return 1;
+	      if ((.STATE and VS$VKB_M_WRITE) neq 0) then return 1;
+	      return 0;
+	    end;
+!
+! Return as blocked if the VD is in an XOFF state, or if anyone 
+! has indicated a reason to block it by setting VDB$W_BLOCKS > 0
+!
+    if (not (STAT=VS$$VDS_VD_GET_BLOCK (	! Get VD blocked status
+					.VD_ID,
+					XON_XOFF,
+					BLOCKS	)))
+		then	begin
+			$log_bad_status (.STAT);
+			.ERR_FLAG = 1;		! Indicate the error
+			return 1;		! Don't handle this one
+			end;
+
+!    if ((.XON_XOFF eql 1) or (.BLOCKS gtr 0)) then return 1;
+
+!
+! If this is a READ function, return as blocked if any of the PBs are
+!	in states READ, READ_ACTIVE, or WRITE
+! N.B. IRP$L_ABCNT is coincident with IRP$Q_TT_STATE, and has the further 
+!	advantage of being defined in LIB.L32.
+!
+    if ((.THIS_IRP [IRP$L_ABCNT] and VS$M_ST_READ) neq 0)
+	then begin	! Begin READ IRP
+	    VS$$VDS_VD_VKB_STATE (.VD_ID,		! Find aggregate of all states
+				STATE,
+				NUM_PB	);
+	    if ((.STATE and VS$VKB_M_READ) neq 0) then return 1;
+	    if ((.STATE and VS$VKB_M_READ_ACTIVE) neq 0) then return 1;
+	    if ((.STATE and VS$VKB_M_WRITE) neq 0) then return 1;
+	    return 0;
+	end;		! End   READ IRP
+!
+! If this is a WRITE function, return as blocked if any of the PBs are
+!	in states  READ_ACTIVE or WRITE
+!
+    if ((.THIS_IRP [IRP$L_ABCNT] and VS$M_ST_WRITE) neq 0)
+	then begin	! Begin WRITE IRP
+	    if (.XON_XOFF eql 1) then return 1;		! Block if XOFFed
+	    VS$$VDS_VD_VKB_STATE (.VD_ID,		! Find aggregate of all states
+				STATE,
+				NUM_PB	);
+	    if ((.STATE and VS$VKB_M_READ_ACTIVE) neq 0) then return 1;
+	    if ((.STATE and VS$VKB_M_WRITE) neq 0) then return 1;
+	    return 0;
+	end;		! End    WRITE IRP
+!
+! Return as unblocked if not READ or WRITE, at this point
+!
+    return 0;		! Not blocked
+    end;				! End routine VS$$ACP_BLOCKED
+
+%sbttl 'VS$$ACP_CREATE_LBUF  --  Copies a user buffer into a local buffer'
+global routine VS$$ACP_CREATE_LBUF:=
+
+!++
+! Functional Description:
+! Copies a user's data, previously buffered by the VDDRIVER FDT routines,
+! into VSACP's user space.
+!	This routine is called by the VS$$ACP_action_routines when they
+!	determine that a user buffer exists.  The buffer is de-allocated
+!	by the dispatching routine VS$$ACP_DISPATCH.
+!    This routine is called in USER mode, but does the copy in KERNEL
+!	mode by calling KMODE_MOVC3.
+!
+! Formal Parameters:
+!
+!
+! Implicit Inputs:
+!	LBUF		Local buffer area
+!
+! Implicit Outputs:
+!
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	
+!
+!--
+
+    begin
+
+    local STAT;
+
+
+!
+! Copy the data
+!
+	if (not (STAT=VSTA$$KERNEL_CALL (VS$$ACP_KMODE_MOVC3)))
+		then return .STAT;
+!
+! Store requested size, so we can return the memory properly later
+!
+	VS$A_LBUF [VSX$W_SIZE] = .VS$A_LIRP [IRP$W_BOFF];
+
+!
+! Point to the data with LBUFDAT
+!
+	    selectone .VS$GL_MAIN_FUNCTION of
+		set
+
+		[IO$_WRITEVBLK] : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_WB_DATA;
+		[IO$_WRITELBLK] : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_WB_DATA;
+		[IO$_WRITEPBLK] : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_WB_DATA;
+		[IO$_WRITE_VD]  : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_WB_DATA;
+
+		[IO$_READVBLK]  : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_RB_DATA;
+		[IO$_READLBLK]  : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_RB_DATA;
+		[IO$_READPBLK]  : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_RB_DATA;
+
+		[IO$_BROADCAST] : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_WB_DATA;
+
+		[otherwise] : VS$AB_LBUFDAT = .VS$A_LBUF + VS$K_TTY_DATA;
+		tes;
+
+    return SS$_NORMAL;
+    end;				! End routine VS$$ACP_CREATE_LBUF
+
+
+routine VS$$ACP_KMODE_MOVC3:=
+    begin 
+    local
+	S0BUFF:ref block [0,byte];
+
+	S0BUFF = .VS$A_IRP [IRP$L_SVAPTE];
+	CH$MOVE ( .S0BUFF [IRP$W_SIZE], .S0BUFF, .VS$A_LBUF );
+	return SS$_NORMAL;
+    end;	! Routine VS$$ACP_KMODE_MOVC3
+
+
+GLOBAL ROUTINE vs$$acp_find_port_input(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will return the address of the port driver input
+! handling routine. The address of that routine can be found in the driver
+! dispatch table of VDDRIVER, which in turn will be located through the
+! template UCB.
+!
+! FORMAL PARAMETERS:
+	input_routine	! Address to store routine address on output
+	) =
+!
+! SIDE EFFECTS:
+!	This routine assumes that it was called at IPL 0 in kernel mode.
+!--
+BEGIN
+
+LOCAL
+	ddt_adr: REF BLOCK[0,BYTE];	!Driver dispatch table address
+!
+! Determine the input handling routine and return it
+!
+	ddt_adr = .vs$gl_template_ucb[ucb$l_ddt];
+	.input_routine = .ddt_adr[ddt$l_unsolint];
+
+RETURN SS$_NORMAL;
+END;
+
+
+%sbttl 'VS$$ACP_MOVE_VTEMDATA -- Move Emulator data from system => local'
+global routine VS$$ACP_MOVE_VTEMDATA(
+
+!++
+! Functional Description:
+!
+!	This routine is responsible for copying the output data from
+! nonpaged pool into that local storage and deallocating the nonpaged pool.
+! While we're in kernel mode, the VD_ID and device type fields will be
+! pulled out of the UCB and returned.
+!
+! FORMAL PARAMETERS:
+	vd_id,					!Address for VD_ID
+	emulator_type,				!Address for emulator type
+	buffer_size,				!Buffer size
+	buffer_adr				!Buffer address allocated
+	): =
+!--
+BEGIN
+LOCAL
+	ucb_adr: REF vd_ucb_block;
+!
+! Retrieve the VD_ID and device type fields from the UCB
+!
+	ucb_adr = .vs$a_irp[irp$l_ucb];
+	.vd_id = .ucb_adr[ucb$l_vd_id];
+	.emulator_type = .ucb_adr[ucb$l_vd_emulator];
+!
+! Now copy the data and deallocate the nonpaged pool if we need to
+!
+	IF .buffer_size LEQ vs$k_small_vtem_buf THEN
+	  CH$MOVE(
+		.buffer_size,
+		vs$a_irp[irp$l_iost2],
+		.buffer_adr)
+	ELSE
+	  CH$MOVE(
+		.buffer_size,
+		vs$k_vtem_head_size + .vs$a_irp[irp$l_svapte],
+		.buffer_adr);
+!
+RETURN SS$_NORMAL;
+END;			!End of routine VS$ACP_MOVE_VTEMDATA
+
+
+%SBTTL	'VS$$ACP_CVT_EPID  Convert to EPID'
+GLOBAL ROUTINE VS$$ACP_CVT_EPID (PID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Convert a PID to EPID form (External PID) form.  If it does not
+!	convert, then return the input parameter.
+!
+! FORMAL PARAMETERS:
+!
+!	PID passed by value
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	PID in EPID form or zero
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	EPID
+	;
+
+    BUILTIN AP;
+    ROUTINE IPID_TO_EPID (IPID) = EXE$IPID_TO_EPID(.IPID);
+
+    IF (EPID = $CMKRNL (ROUTIN = IPID_TO_EPID, ARGLST = .AP) ) NEQ 0
+    THEN
+	RETURN .EPID
+    ELSE
+	RETURN .PID
+
+    END;
+
+%SBTTL	'VS$$ACP_CVT_IPID  Convert to IPID'
+GLOBAL ROUTINE VS$$ACP_CVT_IPID (PID) =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	Convert a PID to IPID form (internal form) and if the PID
+!	does not convert, return the input argument.
+!
+! FORMAL PARAMETERS:
+!
+!	PID passed by value
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	PID in EPID form or zero
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	IPID
+	;
+
+    BUILTIN AP;
+    ROUTINE EPID_TO_IPID (EPID) = EXE$EPID_TO_IPID(.EPID);
+
+    IF (IPID = $CMKRNL (ROUTIN = EPID_TO_IPID, ARGLST = .AP) ) NEQ 0
+    THEN
+	RETURN .IPID
+    ELSE
+	RETURN .PID
+
+    END;
+
+
+%sbttl 'VS$$ACP_DONE_IO  --  IO completion routine'
+global routine VS$$ACP_DONE_IO(STATUS,
+			DATA2,
+			THIS_IRP:ref block [0,byte] ) : =
+
+!++
+! Functional Description:
+!	Checks whether the data block in THIS_IRP is an IRP or an INT.
+!	If an INT, we de-allocate the P1 Virtual memory.  If an IRP,
+!	puts the STATUS value in the IOSB, as well as DATA, and 
+!	completes the IO request
+!
+! Formal Parameters:
+!	STATUS		32 bit return status value, e.g. SS$_ACCVIO
+!	DATA2		Operation-dependent 2nd longword of IOSB
+!	THIS_IRP	Address of the IRP associated with this request
+!
+! Implicit Inputs:
+!	THIS_IRP [IRP$L_UCB] points to the UCB of the VD to which the QIO was directed
+!
+! Implicit Outputs:
+!
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	If the IRP or the UCB can't be located, will exit the image with a call
+!	to LIB$SIGNAL, to log the event on SYS$ERROR, and then delete the 
+!	ACP process.
+!
+!--
+
+    begin
+
+    own
+	THIS_UCB: ref vd_ucb_block;
+    local
+	SIZE,
+	STAT;
+
+
+!
+! Consistency check the IRP pointer
+!
+    if (.THIS_IRP eql 0) 
+	then begin			! Delete the ACP
+	$exit_with_error (VSTA$_NO_IRP, integer_type, .THIS_IRP );
+	end;
+!
+! If this is an INT, de-allocate it from P1 space, and DO NOT do an IO 
+! post-processing interrupt.
+!
+    if (.THIS_IRP gtr 0) then
+	begin	! INT cleanup
+	SIZE = .THIS_IRP [IRP$W_SIZE];		! Must store this in a longword
+	if (not (STAT = VS$$ACP_FREE_VM ( SIZE, .THIS_IRP ))) 
+		then $return_error (VSTA$_INT_X_FAIL, integer_type, .THIS_IRP);
+	return .STAT;
+	end;	! INT cleanup
+!
+! Now do all the Kernel-mode cleanup
+!
+    STAT = vsta$$kernel_call (VS$$ACP_DONE_IO_K, .STATUS, .DATA2, .THIS_IRP);
+
+    if not .STAT 
+	then begin			! Delete the ACP
+	$EXIT(code = .STAT);
+	end;
+
+    return .STAT;
+    end;					! End routine VS$$ACP_DONE_IO
+
+%sbttl 'VS$$ACP_DONE_IO_NO_IOSB  --  IO completion routine'
+global routine VS$$ACP_DONE_IO_NO_IOSB (THIS_IRP:ref block [0,byte] ) : =
+
+!++
+! Functional Description:
+!	Performs the same functions as DONE_IO, except there is no need
+!	to copy the IOSB information, since it must already be in the IRP.
+!
+! Formal Parameters:
+!	THIS_IRP	Address of the IRP associated with this request
+!
+! Implicit Inputs:
+!	THIS_IRP [IRP$L_UCB] points to the UCB of the VD to which the QIO was directed
+!
+! Implicit Outputs:
+!
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	If the IRP or the UCB can't be located, will exit the image with a call
+!	to LIB$SIGNAL, to log the event on SYS$ERROR, and then delete the 
+!	ACP process.
+!
+!--
+
+    begin
+
+    own
+	THIS_UCB: ref vd_ucb_block;
+    local
+	SIZE,
+	STAT;
+
+
+!
+! Consistency check the IRP pointer
+!
+    if (.THIS_IRP eql 0) 
+	then begin			! Delete the ACP
+	$exit_with_error (VSTA$_NO_IRP, integer_type, .THIS_IRP );
+	end;
+!
+! If this is an INT, de-allocate it from P1 space, and DO NOT do an IO 
+! post-processing interrupt.
+!
+    if (.THIS_IRP gtr 0) then
+	begin	! INT cleanup
+	SIZE = .THIS_IRP [IRP$W_SIZE];		! Must store this in a longword
+	if (not (STAT = VS$$ACP_FREE_VM ( SIZE, .THIS_IRP ))) 
+		then $return_error (VSTA$_INT_X_FAIL, integer_type, .THIS_IRP);
+	return .STAT;
+	end;	! INT cleanup
+!
+! Now do all the Kernel-mode cleanup
+!
+    STAT = VSTA$$KERNEL_CALL (VS$$ACP_DONE_IO_NO_IOSB_K, .THIS_IRP);
+    if not .STAT 
+	then $EXIT (code = .STAT );	! Delete the ACP
+
+    return .STAT;
+    end;				! End routine VS$$ACP_DONE_IO_NO_IOSB
+
+%sbttl 'VS$$ACP_PRESET_IOST  --  Loads presumed (successful) IOSB longwords'
+global routine VS$$ACP_PRESET_IOST (IRP,IOST1,IOST2) : =
+
+!++
+! Functional Description:
+!	Copies the IOST1 and IOST2 values into the IOSB, so routines that 
+!	do a DONE_IO_NO_IOSB will have the successful values already loaded.
+!
+! Formal Parameters:
+!	IRP	Address of the IRP associated with this request
+!	IOST1	Value of first IOSB longword
+!	IOST2	Value of second IOSB longword
+!
+! Implicit Inputs:
+!	none
+!
+! Implicit Outputs:
+!
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	none.
+!
+!--
+
+    begin
+
+    local
+	STAT;
+
+
+!
+! Consistency check the IRP pointer
+!
+    if (.IRP geq 0) 
+	then 	
+	$return_error (VSTA$_NO_IRP, integer_type, .IRP );
+!
+! Now do the Kernel-mode transfer
+!
+    return VSTA$$KERNEL_CALL (VS$$ACP_PRESET_IOST_K, .IRP, .IOST1, .IOST2);
+
+    end;				! End routine VS$$ACP_PRESET_IOST
+
+routine VS$$ACP_PRESET_IOST_K ( THIS_IRP:ref block [0,byte], IOST1, IOST2 ) =
+!++
+! Kernel mode routine adjunct to VS$$ACP_PRESET_IOST
+!
+!--
+    begin
+
+	THIS_IRP [IRP$L_IOST1] = .IOST1;
+	THIS_IRP [IRP$L_IOST2] = .IOST2;
+
+    return SS$_NORMAL;
+    end;				! End routine VS$$ACP_PRESET_IOST_K
+
+%sbttl 'VS$$ACP_DELETE_IRP -- Erases traces of IRP'
+global routine VS$$ACP_DELETE_IRP =
+!++
+! Kernel mode routine that deallocates the IRP.
+! Clears VS$A_IRP.
+!
+!--
+    begin
+!
+    if (.VS$A_IRP [IRP$B_TYPE] neq DYN$C_IRP) then ! If not an IRP, punt!
+	$return_error (VSTA$_NO_IRP, integer_type, .VS$A_IRP);
+
+    EXE$DEANONPAGED (.VS$A_IRP);
+
+    VS$A_IRP = 0;
+    return SS$_NORMAL;
+
+    end;				! End routine VS$$ACP_DELETE_IRP
+
+%sbttl	'VS$$ACP_SESSION_CLEANUP -- VAXstation Exit Cleanup'
+global routine VS$$ACP_SESSION_CLEANUP =
+!++
+! Called by exit handler, exception handler, and via $QIO to perform
+! device/job cleanup, deletes all VDs, temporary AND permanent, and
+! deletes all PBs, temporary AND permanent.
+! 
+! Return values:
+!	SS$_NORMAL
+!--
+    begin
+    local
+	STAT;
+!
+! Complete any and all outstanding I/O.
+! Any VDs marked for deletion above will disappear here.
+!
+	VS$$ACP_DEVICE_JOB_CLEANUP ();
+!
+! Delete all VDs by passing a zero PID to the multi-delete routine.
+!
+	VS$$VDS_VD_MULTI_DELETE ( 0, 0 );
+!
+! We want to give back pasteboards (which will give back any VKBs and
+! their non-paged pool for typeahead buffers)
+!
+	VS$$VDS_PB_MULTI_DELETE ( 0 );
+
+    return SS$_NORMAL;
+
+    end; ! VS$$ACP_SESSION_CLEANUP
+
+%sbttl	'VS$$ACP_DEVICE_JOB_CLEANUP -- VAXstation Device/Job Cleanup'
+global routine VS$$ACP_DEVICE_JOB_CLEANUP =
+!++
+! Called by human interface when the VAXstation Session terminates.
+! It will cancel all I/O and delete all process (or jobs).
+! 
+! Return values:
+!	SS$_NORMAL
+!--
+    begin
+    local
+	STAT;
+!
+! Complete any and all outstanding I/O.
+! Any VDs marked for deletion above will disappear here.
+!
+	VS$$ACP_CANCEL_ALL_REQUESTS ();
+
+!
+! Allocate an event flag to wait for which indicates that all known
+! jobs have gone away.
+!
+	IF .end_session_efn EQL 0 THEN
+	  IF NOT vsta$$get_ef ( end_session_efn ) THEN
+	    end_session_efn = 0;
+	$CLREF( EFN = .end_session_efn );
+!
+! Stop user processes that we created.
+! All those terminals will be automatically deleted when $DASSGNed.
+!
+	waiting_for_job_exit = 1;
+	vsta$$srv_log_out_user_jobs ();
+!
+! Now if we were successful in allocating an event flag to wait for, then
+! wait for it (it will be set when all jobs we created have actually gone
+! away, if any)
+!
+	IF .ijob_count GTR 0 THEN
+	  $WAITFR( EFN = .end_session_efn );
+	waiting_for_job_exit = 0;
+!
+! Make sure that the template UCB is left on-line for future restarts of
+! the ACP
+!
+	vsta$$kernel_call(vs$$acp_template_online);
+
+    return SS$_NORMAL;
+
+    end; ! VS$$ACP_DEVICE_JOB_CLEANUP
+
+%sbttl	'VS$$ACP_CANCEL_ALL_REQUESTS -- Complete all I/O requests'
+global routine VS$$ACP_CANCEL_ALL_REQUESTS =
+!++
+! Called by SESSION_CLEANUP to complete all outstanding 
+!  I/O requests for all processes.
+! 
+! Return values:
+!	SS$_NORMAL
+!--
+    begin
+!
+! Complete ALL I/O requests by passing a zero PID to the multi-delete routines
+! and flushing all the ACP I/O queues and "current" IRP being processed
+!
+	VSTA$$KERNEL_CALL(
+		VS$$ACP_FLUSH_ALL_IO);
+	VS$$VKB_CANCEL_READ ( 0 , 0 );
+	VS$$VTB_CANCEL_ASTS ( 0 );
+	VSTA$$MOUSE_CANCEL_REQUESTS ( 0 );
+	VSTA$$RGN_CANCEL_REQUESTS ( 0 );
+	if (.VS$A_IRP lss 0) then		! IRP, but not INT
+	  begin
+	    VS$$ACP_DONE_IO (SS$_ABORT, 0, .VS$A_IRP);
+	    VS$A_IRP = 0;
+	  end;
+
+
+    return SS$_NORMAL;
+
+    end; ! VS$$ACP_CANCEL_ALL_REQUESTS
+
+%sbttl	'VS$$ACP_FLUSH_READS -- Cancel Blocked Read Requests'
+global routine VS$$ACP_FLUSH_READS(
+				VKB_ID,		!Virtual Keyboard ID
+				pid,		!Process id
+				vd_chan		!Channel number
+			) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is responsible for SS$_CANCELing read requests in
+! the blocked queue (BLKQ) for the specified virtual keyboard. If an entry
+! matches the specified vkb id and process id and channel, the entry will
+! be removed from the queue and I/O post-processing performed on it. A
+! specified ID of zero implies that all native keyboard reads (IO$_READ_VKB)
+! are to be canceled for the specified process, or *all* reads in the case
+! of a pid of 0.
+!
+! FORMAL PARAMETERS:
+!
+!	VKB_ID : Longword virtual keyboard ID (or zero)
+!			(input parameter)
+!	PID    : Longword process ID (or zero)
+!			(input parameter)
+!	VD_CHAN: Longword channel
+!			(input parameter)
+! 
+! RETURN VALUES:
+!
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode (IPL 0).
+!--
+    BEGIN
+
+    LOCAL
+	ucb_adr: REF vd_ucb_block,		!Unit control block address
+	irp_adr: REF BLOCK[0,BYTE],		!Arbitrary IRP address
+	next_irp,				!Save ptr to next IRP
+	this_vkb,				!Save virtual keyboard ID
+	s0buff: REF ttyrb,			!System read buffer address
+	rxb: REF rxblock;			!Read extend block address
+!
+! Look through all entries in the blocked queue for VKB read functions
+!
+	irp_adr = .blkq[0];
+	WHILE .irp_adr NEQ blkq[0] DO
+	  BEGIN
+	    next_irp = .irp_adr[IRP$L_IOQFL];
+!
+! If read function and virtual keyboard matches with parameter specified,
+! then remove IRP from the blocked queue and do I/O post-processing on it.
+!
+	    SELECTONEU (.irp_adr[IRP$W_FUNC] AND IRP$M_FCODE) OF
+	      SET
+!
+! If its a IO$_READ_VKB request, get the ID out of the RXB
+!
+		[IO$_READ_VKB] :
+			BEGIN
+			  s0buff = .irp_adr[IRP$L_SVAPTE];
+			  rxb = .s0buff[TTY$L_RB_AES];
+			  this_vkb = .rxb[rx$w_pb_id];
+			END;
+!
+! If its an emulated terminal read request, get the virtual keyboard ID
+! associated with the output device on which the IRP came in on
+!
+	        [IO$_READPBLK,
+		 IO$_READLBLK,
+		 IO$_READVBLK,
+		 IO$_READPROMPT,
+		 IO$_TTYREADALL,
+		 IO$_TTYREADPALL] :
+			BEGIN
+			  ucb_adr = .irp_adr[IRP$L_UCB];
+			  IF NOT vs$$get_emulator_vkb(
+					.ucb_adr[ucb$l_vd_id],
+					this_vkb) THEN
+			    this_vkb = 0;
+			END;
+!
+! If its not a read, we'll ignore it
+!
+		[OTHERWISE] :
+			this_vkb = 0;
+	      TES;
+!
+! If there's a match, cancel this request.
+!
+	    IF .this_vkb NEQ 0
+	    THEN			! this request HAS non-0 vkb
+		IF .vkb_id EQL 0
+		THEN
+		    begin		! we're doing ALL vkbs
+		    if .pid eql 0
+		    then		! we're doing ALL vkbs for ALL pids
+			(remque(.irp_adr,irp_adr);
+			 vs$$acp_done_io(SS$_CANCEL,0,.irp_adr))
+		    else
+		    if .irp_adr[irp$l_pid] eql .pid and .irp_adr[irp$w_chan]
+			eql .vd_chan
+		    then		! we're doing ALL vkbs for THIS pid
+			(remque(.irp_adr,irp_adr);
+			 vs$$acp_done_io(SS$_CANCEL,0,.irp_adr))
+		    end
+		else
+		if .this_vkb eql .vkb_id
+		then			! we're doing specific vkb
+		    if .pid eql 0
+		    then		! we're doing specific vkb for ALL pids
+			(remque(.irp_adr,irp_adr);
+			 vs$$acp_done_io(SS$_CANCEL,0,.irp_adr))
+		    else
+		    if .irp_adr[irp$l_pid] eql .pid and .irp_adr[irp$w_chan]
+			eql .vd_chan
+		    then		! specific vkb for specific pid
+			(remque(.irp_adr,irp_adr);
+			 vs$$acp_done_io(SS$_CANCEL,0,.irp_adr));
+!
+	    irp_adr = .next_irp;
+	  END;				!While blocked IRPs remain
+!
+!
+    RETURN SS$_NORMAL;
+
+    END; 			! VS$$ACP_FLUSH_READS
+
+%sbttl	'VS$$ACP_FLUSH_ALL_IO -- Cancel All Outstanding I/O Requests'
+global routine VS$$ACP_FLUSH_ALL_IO =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is responsible for SS$_CANCELing all requests in
+! the blocked queue (BLKQ) and the ACP's AQB queue. The entry will
+! be removed from the queue and I/O post-processing performed on it.
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+! 
+! RETURN VALUES:
+!
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode (IPL 0).
+!--
+    BEGIN
+
+    LOCAL
+	ucb_adr: REF vd_ucb_block,		!Arbitrary UCB address
+	irp_adr: REF BLOCK[0,BYTE],		!Arbitrary IRP address
+	next_irp;				!Save ptr to next IRP
+!
+! Stop output to all VD devices by "dismounting" them and turning them off-line
+!
+	ucb_adr = .vs$gl_template_ucb;
+	WHILE .ucb_adr NEQ 0 DO
+	  BEGIN
+	    ucb_adr[ucb$l_devchar] = .ucb_adr[ucb$l_devchar] AND
+		(NOT (dev$m_mnt OR dev$m_dmt OR dev$m_trm OR dev$m_avl));
+	    ucb_adr[ucb$w_sts] = .ucb_adr[ucb$w_sts] AND
+			(NOT ucb$m_online);
+	    ucb_adr = .ucb_adr[ucb$l_link];
+	  END;
+!
+! I/O post-process all entries in the blocked queue
+!
+	irp_adr = .blkq[0];
+	WHILE .irp_adr NEQ blkq[0] DO
+	  BEGIN
+	    next_irp = .irp_adr[IRP$L_IOQFL];
+	    remque(.irp_adr,irp_adr);
+	    vs$$acp_done_io(SS$_CANCEL,0,.irp_adr);
+	    irp_adr = .next_irp;
+	  END;				!While blocked IRPs remain
+!
+! I/O post-process all entries in the ACP's AQB queue (note that the pointer
+! to the AQB is being zeroed out of the VCB to prevent VDDRIVER from inserting
+! anymore IRPs into the AQB queue).
+!
+	irp_adr = .aqb[aqb$l_acpqfl];
+	WHILE .irp_adr NEQ aqb[aqb$l_acpqfl] DO
+	  BEGIN
+	    next_irp = .irp_adr[IRP$L_IOQFL];
+	    remque(.irp_adr,irp_adr);
+	    vs$$acp_done_io(SS$_CANCEL,0,.irp_adr);
+	    irp_adr = .next_irp;
+	  END;				!While unprocessed IRPs remain
+!
+    RETURN SS$_NORMAL;
+
+    END; 			! VS$$ACP_FLUSH_ALL_IO
+
+%sbttl	'VS$$ACP_CANCEL_VD_IO  --  Cancel all I/O on a VD'
+global routine VS$$ACP_CANCEL_VD_IO (
+				VD_ID,		!Virtual Display ID
+				VD_CHAN		!Channel
+			) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is responsible for SS$_CANCELing all I/O requests in
+! the blocked queue (BLKQ) and the AQB queue for the specified VD on the
+! specified channel (or all for the vd if channel = 0). The entry will
+! be removed from the queue and I/O post-processing performed on it. 
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID : Longword virtual Display ID 
+!			(input parameter)
+!	VD_CHAN : Longword virtual Display Channel
+!			(input parameter)
+! 
+! RETURN VALUES:
+!
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode (IPL 0).
+!--
+    BEGIN
+
+    LOCAL
+	STAT: initial (0);
+!
+! Cancel IRPs from blocked queue.
+!
+    if not VS$$ACP_CANCEL_VD_1_QUEUE (
+	BLKQ,
+	.VD_ID,
+	.vd_chan)
+    then
+		begin
+		STAT = 1;
+		$log_error_and_return ( SS$_CANCEL );
+		end;
+
+    if (.STAT eql 0)	then return SS$_NORMAL
+			else return SS$_CANCEL;
+
+    END; 			! VS$$ACP_CANCEL_VD_IO
+
+%sbttl	'VS$$ACP_CANCEL_VD_1_QUEUE  --  Cancel IRPs from one queue'
+global routine VS$$ACP_CANCEL_VD_1_QUEUE (
+				HEADER:ref vector [0,long],! Queue header address
+				VDID,		!Virtual Display ID
+				VD_CHAN		!Virtual Display Channel
+			) =
+!++
+!	This routine must run in kernel mode (IPL 0).
+!--
+    BEGIN
+
+    LOCAL
+	THIS_IRP: REF BLOCK[0,BYTE],		!Arbitrary IRP address
+	NEXT_IRP;				!Save ptr to next IRP
+
+!
+! Return bad status if bad header address
+!
+	if ((.HEADER neq BLKQ) and (.HEADER neq AQB [AQB$L_ACPQFL]))
+		then return SS$_CANCEL;
+
+!
+! Look through all entries in the specified queue for this VDID
+!
+	THIS_IRP = .HEADER [0];
+	while .THIS_IRP neq HEADER [0] do
+	  begin
+	      if (.THIS_IRP [IRP$B_TYPE] neq DYN$C_IRP)
+		    then return SS$_CANCEL;	! Make sure it's an IRP
+
+	      NEXT_IRP = .THIS_IRP [IRP$L_IOQFL];
+		if (.THIS_IRP [IRP$L_IOST1] eql .VDID)
+		then
+		    if .this_irp [irp$w_chan] eql .vd_chan or
+			.vd_chan eql 0
+		    then
+			begin			!If VDIDs match
+			remque (.THIS_IRP,THIS_IRP);
+			VS$$ACP_DONE_IO (SS$_CANCEL,0,.THIS_IRP);
+			end;			!If VDIDs match
+!
+	    THIS_IRP = .NEXT_IRP;
+
+	  end;				!While IRPs remain in queue
+!
+!
+    return SS$_NORMAL;
+
+    end; 			! VS$$ACP_CANCEL_VD_1_QUEUE
+
+%sbttl	'VS$$ACP_TEMPLATE_ONLINE -- Set Template UCB On-line'
+global routine VS$$ACP_TEMPLATE_ONLINE =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is responsible for setting the on-line bit in the
+! UCB of the template device for this ACP. This will permit I/O and a
+! restart of the ACP after all I/O had been previously stopped (end-session,
+! ACP death, etc.)
+!
+! FORMAL PARAMETERS:
+!
+!	NONE
+! 
+! RETURN VALUES:
+!
+!	SS$_NORMAL
+!
+! SIDE EFFECTS:
+!
+!	This routine must run in kernel mode (IPL 0).
+!--
+    BEGIN
+
+!
+! Make sure that the template UCB is left on-line for future restarts of
+! the ACP
+!
+	vs$gl_template_ucb[ucb$l_devchar] = .vs$gl_template_ucb[ucb$l_devchar]
+				OR (dev$m_mnt OR dev$m_avl OR dev$m_trm);
+	vs$gl_template_ucb[ucb$w_sts] = .vs$gl_template_ucb[ucb$w_sts]
+							OR ucb$m_online;
+!
+    RETURN SS$_NORMAL;
+
+    END; 			! VS$$ACP_TEMPLATE_ONLINE
+
+%sbttl	'VS$$ACP_FINAL_ASYNCH -- Ensures all asynchronous activity done'
+GLOBAL ROUTINE vs$$acp_final_asynch =
+!++
+! Called by dispatch routines after all other asynchronous activity has been
+! queued.  Does a NO-OP call to VBDRIVER, specifying an AST routine to perform
+! the DONE_IO_NO_IOSB.
+! 
+! Return values:
+!	SS$_NORMAL
+!	Any returned $QIO value from VSTA$$DRIVE
+!--
+BEGIN
+EXTERNAL
+    vs$gw_vbchan: WORD;			!Channel to device for session.
+LOCAL
+    stat;
+!
+! Schedule a no-op to the driver
+!
+IF (.vs$gw_vbchan NEQ 0)		!If no channel, don't need to do it.
+  THEN RETURN vsta$$drive_noop
+		(.vs$gw_channel			! Channel to device
+		,0				! efn
+		,vs$$acp_completion_routine	! AST address
+		,.vs$a_irp			!IRP pointer
+		)
+  ELSE 
+    RETURN vs$$acp_done_io_no_iosb (.vs$a_irp);
+
+END; ! VS$$ACP_FINAL_ASYNCH
+
+%sbttl	'VS$$ACP_COMPLETION_ROUTINE -- AST for Asynchronous activity'
+global routine VS$$ACP_COMPLETION_ROUTINE (	THIS_IRP,
+						STATUS	  ) =
+!++
+! Called as AST routine for VS$$ACP_FINAL_ASYNCH to do the DONE_IO_NO_IOSB
+! Assumes that the IRP$L_IOST1 and IRP$L_IOST2 fields of VS$A_IRP contain
+! the valid IOSB data.
+! 
+! Input parameters:
+!	THIS_IRP	Address of the IRP corresponding to this request
+!	STATUS		32-bit value from VBDRIVER, giving status of
+!			this call.  Since this was a no-op, this is
+!			almost certainly SS$_NORMAL, and of no use, anyway.
+!
+! Return values:
+!	SS$_NORMAL
+!--
+BEGIN
+!
+! The IOSB data are already in the IRP
+!
+RETURN vs$$acp_done_io_no_iosb ( .this_irp );
+END; ! VS$$ACP_COMPLETION_ROUTINE
+
+%sbttl 'VS$$ACP_AST_LEVEL  --  Current active level'
+global routine VS$$ACP_AST_LEVEL ( LEVEL:ref block[0,byte] ) : =
+
+!++
+! Functional Description:
+!	Returns the ASTACT contents from the current PCB, i.e., 0 if we are
+!	currently at process level, and the appropriate bit (which indicates
+!	which mode this AST is running at) set if we are at AST level.
+!
+! Formal Parameters:
+!	LEVEL	Address of a byte to return the info.
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	Called in User Mode.  Calls a Kernel mode routine to get at PCB.
+!
+!--
+
+    begin
+
+    local
+	STAT;
+
+    return vsta$$kernel_call (VS$$ACP_AST_LEVEL_K, .LEVEL);
+
+    end;					! End routine VS$$ACP_AST_LEVEL
+
+
+%sbttl 'VS$$ACP_CURRENT_MODE --  Current access  mode'
+global routine VS$$ACP_CURRENT_MODE ( MODE ) : =
+
+!++
+! Functional Description:
+!	Returns the access mode the process is currently running at:
+!		0	Kernel
+!		1	Executive
+!		2	Supervisor
+!		3	User
+!
+!	Since we must be in kernel mode to read the PSL, we must be sure to
+!	return the Previous Mode field, not the Current Mode field, of the
+!	PSL.
+!
+! Formal Parameters:
+!	MODE	Address of a longword to return the info.
+!
+! Routine value:
+! Completion Codes:
+!
+!
+! Side Effects:
+!	Called in Kernel Mode to get at the PSL.  
+!
+!--
+
+    begin
+
+    builtin
+	MOVPSL;
+    local
+	CURRENT_PSL,
+	STAT;
+
+	MOVPSL (CURRENT_PSL);
+	.MODE = .CURRENT_PSL<22,2,0>; !Previous-Mode field, bits 22-23
+
+	return SS$_NORMAL;
+
+    end;			! End routine VS$$ACP_CURRENT_MODE
+
+%sbttl 'VS$$ACP_NAMES  --  VD and Process name descriptors'
+routine VS$$ACP_NAMES =
+!++
+! Finds the process name, and creates the VD name to go with it.
+! E.g., VSAACP goes with VDA0:, and VSDACP goes with VDD0:.
+! 
+! Return values:
+!	SS$_NORMAL
+!	SS$_NOTRAN	if process name wasn't VSXsomething
+!	Any return codes from SYS$GETJPI
+!--
+    begin
+    local
+	POINT,
+	CHARACTER,
+	ACP_DESC: vector[2] initial(1,PROC_NAME[2]),
+	IOSB:vector [4,word],
+	STAT;
+
+    if (.INTERACTIVE eql 0) then
+	begin
+	    if not (STAT=$GETJPI (
+		itmlst = uplit (word (15,JPI$_PRCNAM), ! Get process name
+				PROC_NAME, VS$GL_PROC_NAME_DESC[0], 0),
+		iosb = IOSB	) )
+	    then return VSTA$$ERROR (.STAT);
+	end		! Non-interactive process name
+    else
+	begin
+!
+! See if device identifier was entered as a foreign command and if not just
+! prompt the user for the VAXstation device to use
+!
+	  if not (STAT = LIB$GET_FOREIGN(
+				ACP_DESC,
+				%ASCID 'Which VS100 device (A,B,C,...)? ',
+				ACP_DESC)) then
+	    return VSTA$$ERROR(.STAT);
+!
+	  if (.PROC_NAME[2] geq %c'a') and (.PROC_NAME[2] leq %c'z') then
+	    PROC_NAME[2] = .PROC_NAME[2] and %x'df';
+!
+	  if (.PROC_NAME[2] lss %c'A') or (.PROC_NAME[2] gtr %c'Z') then
+	    PROC_NAME[2] = %c'A';
+	end;
+
+    POINT = CH$FIND_SUB(.VS$GL_PROC_NAME_DESC[0],CH$PTR(PROC_NAME[0]),
+			2,CH$PTR(uplit(byte('VS'))) );
+    if CH$FAIL (.POINT) then return SS$_NOTRAN;
+
+    POINT = CH$PLUS (.POINT,2);		! Point to X in VSXACP
+    CHARACTER = CH$RCHAR (.POINT);	! Identify the character
+    VD_NAME[2] = .CHARACTER;		! VDX0: is now VDB0:, for example
+!
+    if (not (STAT=$ASSIGN(
+			devnam = VS$GL_VD_NAME_DESC,
+			chan = VS$GW_VD_CHAN,
+			acmode = PSL$C_USER)))
+		then return .STAT;
+
+    return SS$_NORMAL;
+    end; ! VS$$ACP_NAMES
+
+%sbttl 'VS$$POST_AST_REQUEST -- DUMMY routine'
+global routine VS$$POST_AST_REQUEST
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called at AST level, this routine calls CREATE_INT
+!	to create an INT request.
+! FORMAL PARAMETERS:
+	(routine_address
+!	,[parameter_1]
+!	,[parameter_2]
+!	,[etc. up to 12]
+	) =
+!--
+BEGIN
+BUILTIN
+    CALLG,
+    ARGPTR;
+BIND
+    argvec = argptr (): VECTOR;
+LOCAL
+    status;
+
+!
+! Create the INT and queue it to the INT queue
+!
+IF NOT (CALLG (argvec [0], vs$$vds_queue_int)	!Pass args exactly
+	)
+  THEN $return_error (VSTA$_INT_Q_FAIL_D);
+!
+! Wake the process
+!
+$wake ();
+RETURN SS$_NORMAL;		!All ok, good return
+
+END; ! 		routine VS$$POST_AST_REQUEST
+
+%sbttl 'VS$$POST_AST_REQUEST_HIPQ -- DUMMY routine'
+global routine VS$$POST_AST_REQUEST_HIPQ
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called at AST level, this routine calls CREATE_INT
+!	to create an INT request.
+! FORMAL PARAMETERS:
+	(routine_address
+!	,[parameter_1]
+!	,[parameter_2]
+!	,[etc. up to 12]
+	) =
+!--
+BEGIN
+BUILTIN
+    CALLG,
+    ARGPTR;
+BIND
+    argvec = argptr (): VECTOR;
+LOCAL
+    status;
+
+!
+! Create the INT and queue it to the INT queue
+!
+IF NOT (CALLG (argvec [0], vs$$vds_queue_int_hipq)	!Pass args exactly
+	)
+  THEN $return_error (VSTA$_INT_Q_FAIL_D);
+!
+! Wake the process
+!
+$wake ();
+RETURN SS$_NORMAL;		!All ok, good return
+
+END; ! 		routine VS$$POST_AST_REQUEST_HIPQ
+
+%sbttl 'VS$$ACP_ENQUEUE_INT  --  Internal Request queue'
+global routine VS$$ACP_ENQUEUE_INT ( INT_ADDR ) =
+
+!++
+! Called at AST level, this routine queues an internal request for
+! the ACP to handle.  
+!--
+    begin
+    local
+	STAT;
+!
+! Insert the entry at tail of queue
+!
+	insque (.INT_ADDR, .INTQ [1] );
+
+	return SS$_NORMAL;		!All ok, good return
+
+    end; ! 		routine VS$$ACP_ENQUEUE_INT
+
+%sbttl 'VS$$ACP_ENQUEUE_INT_HIPQ  --  High Priority Internal Request queue'
+global routine VS$$ACP_ENQUEUE_INT_HIPQ ( INT_ADDR ) =
+
+!++
+! Called at AST level, this routine queues an internal request for
+! the ACP to handle.  
+!--
+    begin
+    local
+	STAT;
+!
+! Insert the entry at tail of queue
+!
+	insque (.INT_ADDR, .VS$A_HIPQ [1] );
+
+	return SS$_NORMAL;		!All ok, good return
+
+    end; ! 		routine VS$$ACP_ENQUEUE_INT_HIPQ
+
+routine all_system_objects_gone =
+!++
+! Functional description:
+!
+!	Returns 1 iff all system objects have gone away.  This is called
+!	during end session to see if things have really ended yet, since
+!	we must be careful not to re-initialize the world until things
+!	have ended.
+!
+!	The objects that should be checked here are ones that VMS can
+!	be expected to asynchronously announce to us their demise, such
+!	as virtual displays as jobs are logged out.
+!
+! Implicit inputs:
+!
+!	vdb_q_head		! list of vd's left to be deleted.
+!	drv$q_base		! list of device operations pending
+!
+!--
+	begin
+
+	external
+
+	    drv$q_base : vector [2],
+	    vdb_q_head : vector [2];
+!
+! See if all vd's have gone away.  If not, tell caller that not all objects
+! have gone away, and assume that vms will wake us up when all channels have
+! been deassigned on the vd, and we'll come through here again.
+!
+	if .vdb_q_head[0] neq vdb_q_head[0]
+	then return $false;
+!
+! See if all operations have been completed.  If not, we assume we'll be
+! awakened later to come through here again.
+!
+	if .drv$q_base[0] neq drv$q_base[0]
+	then return $false;
+!
+! Everything's gone so give truth.
+!
+	$true
+
+	end;
+
+end				!End of module VS$ACP
+eludom

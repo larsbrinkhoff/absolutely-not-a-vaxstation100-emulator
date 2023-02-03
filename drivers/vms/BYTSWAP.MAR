@@ -1,0 +1,25 @@
+
+	.title BYTSWAP
+
+BYTSWAP::
+
+	.WORD	^M<R1,R2,R3,R4>
+
+	MOVB	@4(AP),R2	;Get first operand data
+	CLRL	R3		;Clear place for output
+	CLRL	R4		;R4 is counter for test...starts at bit 0
+	MOVL	#15,R1		;R1 is counter for output...starts at bit 7
+LOOP:	BBS	R4,R2,1$	;Test bit pointed at by R4
+
+	BBCC	R1,R3,3$	;Bit was clear, so clear bit<R1> in output
+3$:	DECL	R1		;Decrement R1
+	BBCC	R1,R3,2$	;Clear next bit
+	BRB	2$
+1$:	BBCS	R1,R3,4$	;Bit was set, so set bit<R1> in output
+4$:	DECL	R1
+	BBCS	R1,R3,2$
+2$:	INCL	R4		;Set up for next bit
+	SOBGEQ	R1,LOOP
+	MOVW	R3,@8(AP)	;Give the output to caller
+	RET
+	.END

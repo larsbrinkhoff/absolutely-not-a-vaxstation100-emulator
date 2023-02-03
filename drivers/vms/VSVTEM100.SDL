@@ -1,0 +1,320 @@
+MODULE VS$VTEM_100_SDL IDENT "VT100 EMULATOR";
+/*++
+/* FACILITY: VAXstation software (VS)
+/*
+/* Virtual Terminal Emulator (VTEM) for VT100
+/*
+/* ABSTRACT:
+/*
+/* This module defines the data structures relevant to emulating 
+/* the operation of a VT100 terminal in the context of a VAX workstation running
+/* the associated workstation display software; specifically, an implementation of
+/* the System Display Architecture.
+/*
+/* Data tables are maintained on a per-terminal basis. That is, each emulated VT100
+/* has a region of storage devoted to it which contains all permanent and temorary
+/* states, modes, settings, and buffers. No data, except for local counters
+/* (which use registers) and literals, is kept in the body of the code.
+/* Therefore the code itself is re-entrant, and could reside in shared memory. Only
+/* individual VT100's are not re-enterable.
+/*
+/*
+/* ENVIRONMENT:
+/*
+/* VAX workstation: 11/750 or 11/730 running VMS with at least one
+/* ONYX graphics subsystem.
+/*
+/*--
+/* EQUATED SYMBOLS:
+/*
+/* Limits on emulated terminals:
+/*
+	CONSTANT maximum_rows EQUALS 66 PREFIX vt$;	/*Most rows an emulated VT100 can have
+	CONSTANT maximum_columns EQUALS 200 PREFIX vt$;	/*Most columns an emulated VT100 can have
+/*	CONSTANT maximum_vt100s EQUALS 10 PREFIX vt$;	/*Most VT100's that can exist at one time
+
+/* Definition of size, which depends on character font:
+
+	CONSTANT character_width EQUALS 8 PREFIX vt$;	/*Eight bits wide
+	CONSTANT character_height EQUALS 15 PREFIX vt$;	/*Thirteen bits high
+
+/* Various other defaults:
+
+	CONSTANT background EQUALS 0 PREFIX vt$;	/*Initially, black bg
+	CONSTANT foreground EQUALS 1 PREFIX vt$;	/*Initially, white fg
+	CONSTANT text_mode EQUALS 1 PREFIX vt$;		/*Indicate VT100
+	CONSTANT nographics EQUALS 2 PREFIX vt$;	/*Indicate text only
+
+/* Definitions of states:
+/* These define the values and meanings
+/* of the data structure field "vt$w_state".
+/* "vt$w_state" determines whether we are just processing text, evaluating an
+/* escape sequence, a control sequence (which began with escape/leftbracket),
+/* or a "dec private" sequence (which began with escape/leftbracket/questionmark).
+
+	CONSTANT first_state EQUALS 0 PREFIX vt$;
+
+	CONSTANT (	straight_text,
+			last_character_was_escape,
+			escape_sequence,
+			last_was_esc_leftbracket,
+			control_sequence,
+			dec_private )
+			EQUALS vt$k_first_state INCREMENT 1 PREFIX vt$;
+	CONSTANT last_state EQUALS vt$k_dec_private PREFIX vt$;
+/*
+/* Define constants for items being set.
+/*
+	CONSTANT (
+	    dark_background,		/* make background dark
+	    light_background,		/* make it light
+	    ansi, vt52,			/* set to ansi or vt52 mode
+	    wrap, nowrap,		/* wrap long lines or not
+	    newline, oldline,		/* go to new line or not on carigreturn
+	    answer,			/* set new answerback message
+	    settab, cleartab,		/* set or clear a tab stop
+	    level_1, level_2,		/* whether umlauts work or not
+	    bit7_nrc,			/* 7-bit NRC set 
+	    legend_tw, legend_dp,	/* typewriter/dataprocess legends 
+	    first_non_setting		/* skin
+	    )
+	EQUALS 0 INCREMENT 1 PREFIX s100$;
+/*
+/* Definitions of line states (single width, double, etc):
+/*
+	CONSTANT single EQUALS 0 PREFIX vt$;	/*single width single height
+	CONSTANT dwidth EQUALS 1 PREFIX vt$;	/*double width
+	CONSTANT dhtop EQUALS 2 PREFIX vt$;	/*double height top half
+	CONSTANT dhbot EQUALS 3 PREFIX vt$;	/*double height bottom half
+	CONSTANT no_typeface EQUALS 4 PREFIX vt$; /*no typeface set
+
+/* Definitions of control characters:
+
+	CONSTANT enq EQUALS 5;		/*enquire (answerback)
+	CONSTANT bel EQUALS 7;		/*ring bell
+	CONSTANT bs  EQUALS 8;		/*backspace
+	CONSTANT ht  EQUALS 9;		/*horizontal tab
+	CONSTANT lf  EQUALS 10;		/*line feed
+	CONSTANT vt  EQUALS 11;		/*vertical tab (means same as lf to a VT100)
+	CONSTANT ff  EQUALS 12;		/*form feed (means same as lf to a VT100)
+	CONSTANT cr  EQUALS 13;		/*return (to column 1)
+	CONSTANT so  EQUALS 14;		/*shift out (make g1 default character set)
+	CONSTANT si  EQUALS 15;		/*shift in (make g0 default)
+	CONSTANT xon EQUALS 17;		/*permit transmission of characters from terminal
+	CONSTANT xoff EQUALS 19;	/*block transmission of characters from terminal
+	CONSTANT can EQUALS 24;		/*cancel (escape sequence)
+	CONSTANT sub EQUALS 26;		/*means same as cancel
+	CONSTANT esc EQUALS 27;		/*escape character (introduces escape and control sequences)
+
+/*Definitions of SDA-related items:
+
+	CONSTANT footer_bg EQUALS 1 PREFIX vt$; /*footer background light gray
+	CONSTANT footer_fg EQUALS 0 PREFIX vt$; /*footer foreground black
+	CONSTANT pasteboard_color EQUALS 0 PREFIX vt$; /*pasteboard normally white
+	CONSTANT pasteboard_reverse EQUALS 0 PREFIX vt$; /*pb black when screen reversed
+	CONSTANT uic EQUALS 0 PREFIX vt$;
+
+/*
+/*
+/* MACROS AND
+/* DATA STRUCTURES:
+/*+
+/*This defines the internal structure of the data table for
+/*each emulated VT100. The structure is referenced by routines which access
+/*the table, but the actual storage is allocated by the routine "vs$$vtem_100_create",
+/*at the time a VT100 is created.
+/*The pointer to the table is passed as an argument to internal routines.
+/*-
+/*
+AGGREGATE device_data_table STRUCTURE ORIGIN forward_link PREFIX vt$;
+/*
+/*  DEFINE STANDARD VMS AND VSTA BLOCK INFORMATION
+/*
+	forward_link		ADDRESS;/*address of next queue entry
+	backward_link		ADDRESS;/*address of prior queue entry
+	vms_blk_info		LONGWORD UNSIGNED;
+	vsta_field UNION;
+		vsta_blk_info		LONGWORD UNSIGNED;
+		vsta_blk_bits STRUCTURE;
+			cntr_o_flag	BITFIELD;
+			send_lf		BITFIELD;
+			vsta_reserved   BITFIELD LENGTH 30;
+		END vsta_blk_bits;
+	END vsta_field;
+/*
+/*  DEFINE DEVICE DEPENDENT INFORMATION STARTING HERE
+/*
+	virtual_display_id	LONGWORD UNSIGNED;/*Handle on the Virtual Display from VDS
+	pasteboard_id		LONGWORD UNSIGNED;/*Handle on the pasteboard from VDS
+	window_id		LONGWORD UNSIGNED;/*Handle on the window from VDS
+	footer_id		LONGWORD UNSIGNED;/*Handle on the footer
+	bezel_vd_id		LONGWORD UNSIGNED;/*Handle on the border
+	body_width		LONGWORD UNSIGNED;/*Calculated width of VT100 body
+	body_height		LONGWORD UNSIGNED;/*Calculated height of VT100 body
+	footer_width		LONGWORD UNSIGNED;/*Calculated width of footer
+	bezel_width		LONGWORD UNSIGNED;/*Calculated width of header
+	bezel_height		LONGWORD UNSIGNED;/*Calculated height of header
+	black_line_height	LONGWORD UNSIGNED;/*Calculated height of body footer separator
+	pb_width		LONGWORD UNSIGNED;/*Cal. width of pb
+	pb_height		LONGWORD UNSIGNED;/*Cal. height of pb
+	state 			WORD UNSIGNED;/*Indicates processing text, escape sequence, control sequence, etc.
+	crm_state		WORD UNSIGNED;
+
+	CONSTANT	level_1	EQUALS 1;
+	CONSTANT	level_2 EQUALS 2;
+	CONSTANT	legend_tw EQUALS 0;	/* foreign kbd support 
+	CONSTANT	legend_dp EQUALS 1;	/* foreign kbd support 
+	conformance_level	WORD UNSIGNED;
+	legend			LONGWORD UNSIGNED;	/* foreign kbd  
+	char			BYTE UNSIGNED;/*During a write, current character being processed
+	backlog_count		LONGWORD UNSIGNED;/*During a write, indicates how many straight-text characters to be output
+	backlog			ADDRESS;/*Address of backlog buffer *** count and address must be adjacent ***
+	backlog			BYTE UNSIGNED DIMENSION vt$k_maximum_columns;/*Contains accumulated printable characters to go
+	trans_table		BYTE UNSIGNED DIMENSION 256;
+
+/*
+/*  define the characteristics status word fields
+/*
+char_status_field UNION;
+    char_status_word WORD UNSIGNED;
+    char STRUCTURE;
+	scroll 			BITFIELD;/*true means "smooth"
+	screen_background 	BITFIELD;/*true means "light background"
+	cursor_type 		BITFIELD;/*true means "block cursor"
+	ansi_vt52 		BITFIELD;/*true means "ANSI"
+	bell 			BITFIELD;/*true means "ring bell at margin"
+	us_uk			BITFIELD;/*true means "US char set 
+	auto_wrap 		BITFIELD;/*true means "wrap at end of line"
+	linefeed_newline 	BITFIELD;/*true means "return key sends cr/lf"
+	wide 			BITFIELD;/*true means "wide" (132 cols normally)
+	keyboard_blocked 	BITFIELD;/*true means "keyboard blocked"
+	cursor_keys	 	BITFIELD;/*true means "application mode"
+	keypad	 		BITFIELD;/*true means "application mode"
+	text_cursor_enabled	BITFIELD;/*true means "text cursor is turned on"
+	crm			BITFIELD;/*true means "control representation"
+    END char;
+END char_status_field;
+/*
+	margin_origin 		BITFIELD;/*true means "origin within margins"
+	invalid_sequence 	BITFIELD;/*true means too many intermediate characters in an escape or control sequence
+	settings_exist		BITFIELD;/*true if settings form up for trmnl
+	last_col_flag		BITFIELD;/*true if cursor is in last column
+
+/*
+/* Put in character table definitions--This has been moved to VSVTEM100.B32
+/*
+/*	CONSTANT	(
+/*			 ascii_g
+/*			,line_drawing
+/*			,supplemental_g
+/*			,ascii_c	
+/*			,supplemental_c
+/*			,uk_ascii_g
+/*			)		EQUALS 0 INCREMENT 1;
+
+	CONSTANT	(
+			 g0_set
+			,g1_set
+			,g2_set
+			,g3_set
+			) 		EQUALS 0 INCREMENT 1;
+
+	g0_set			WORD UNSIGNED;
+	g1_set			WORD UNSIGNED;
+	g2_set			WORD UNSIGNED;
+	g3_set			WORD UNSIGNED;
+	gl_active_set		WORD UNSIGNED;
+	gr_active_set		WORD UNSIGNED;
+
+	CONSTANT	(
+			 ssn
+			,ss2
+			,ss3
+			)	EQUALS 0 INCREMENT 1;
+
+	single_shift		WORD UNSIGNED;
+	saved_character_sets	WORD UNSIGNED DIMENSION 6;/*Place to save current character set for g0 and g1
+/*
+/*
+	cursor_column 		LONGWORD UNSIGNED;/*Current column position of cursor
+	cursor_row 		LONGWORD UNSIGNED;/*Current row position of cursor
+	saved_cursor_column 	LONGWORD UNSIGNED;/*Place to save column on <esc> 7
+	saved_cursor_row 	LONGWORD UNSIGNED;/*Place to save row
+	saved_last_col_flag	BITFIELD;/* Place to save the last column flag
+	saved_origin_mode	BITFIELD;/* Place to save the origin mode flag
+/*
+/*
+/*  blinking cursor bitfields
+/*
+	alpha_cursor_on		BITFIELD;
+/*
+/*  vt52 compatibilty mode state field
+/*
+	vt52_random_move_state  LONGWORD;	/* state of the <esc>Y cursor
+	vt52_char_set		BYTE UNSIGNED;/*Indicates the current vt52 character set
+/*
+/*  vt102 compatibility modes
+/*
+	vt102_insert_mode	BITFIELD;
+/*						/* movement sequence
+/*
+	graphics_rendition UNION;
+		attributes		BYTE UNSIGNED;/*Current attributes (bold, underscore, blink, reverse video)
+		att STRUCTURE ;
+			bold		BITFIELD;
+			underscore	BITFIELD;
+			blink		BITFIELD;
+			reverse		BITFIELD;
+		END att;
+	END graphics_rendition ;
+	saved_attributes		BYTE UNSIGNED;/*Place to save current graphics attributes
+/*
+/*
+	top_margin 		LONGWORD UNSIGNED;/*Current top row of scrolling region
+	bottom_margin 		LONGWORD UNSIGNED;/*Current bottom row of scrolling region
+	extreme_right 		LONGWORD UNSIGNED;/*Column at right edge of screen, or current number of columns
+	wide_right 		LONGWORD UNSIGNED;/*Number of columns in "wide" mode (normally 132)
+	normal_right 		LONGWORD UNSIGNED;/*Number of columns in normal mode (normally 80)
+	screen_absolute_bottom 	LONGWORD UNSIGNED;/*Number of rows
+/*
+	CONSTANT		c1_7bit EQUALS 0;
+	CONSTANT		c1_8bit EQUALS 1;
+	CONSTANT		bit7_nrc EQUALS 2;  /* foreign kbd support
+	c1_transmission		WORD UNSIGNED;
+	generation_buffer	BYTE UNSIGNED DIMENSION 30;
+	generation_buffer_index LONGWORD UNSIGNED;
+	generation_buffer_ptr	LONGWORD UNSIGNED;
+	CONSTANT	generation_max_index 	EQUALS 30;
+		/* Note: Keep "length" field to a longword for the profile
+	answerback_message_length LONGWORD UNSIGNED;	/* Number of bytes
+	answerback_message_adr	ADDRESS;		/* Address of string
+		/* End of non-standard VMS string descriptor
+	answerback_message	BYTE UNSIGNED DIMENSION 30;/*Text of answerback message 
+	tabs 			BITFIELD DIMENSION 1:vt$k_maximum_columns;
+	line_state 		BYTE UNSIGNED DIMENSION vt$k_maximum_rows;
+/*
+	CONSTANT max_num_intermediates	EQUALS 3;
+	intermediate_character 	BYTE UNSIGNED DIMENSION vt$k_max_num_intermediates;
+	intermediate_count	WORD UNSIGNED;
+	private_parameter	WORD UNSIGNED;
+	CONSTANT maximum_parameter	EQUALS 15;
+	parameters	 	WORD UNSIGNED DIMENSION vt$k_maximum_parameter;
+	current_parameter	BYTE UNSIGNED;
+/*
+
+/*
+/*  Define a typeface cashing variable
+/*
+	current_typeface	LONGWORD UNSIGNED;
+
+/*
+/*  Define text table pointer and attribute table pointer
+/*
+	text_table		ADDRESS;
+	rend_table		ADDRESS;
+	row_table		BYTE UNSIGNED DIMENSION vt$k_maximum_rows;
+	
+
+END device_data_table;
+
+END_MODULE VS$VTEM_100_SDL;

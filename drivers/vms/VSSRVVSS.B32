@@ -1,0 +1,4034 @@
+MODULE VS$SRV_VSS (	IDENT = 'HI SERVER Virt Screen Services'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module does the manipulation of virtual screen objects
+! by the human interface.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_settings_created,		! Bookkeeping for settings window.
+    make_settings_name,			! Create name for settings header
+    vsta$$form_get_settings_desc,	!Get descriptor to "Settings"
+    vsta$$srv_window_created,		!ACP says a window was created
+    window_in_job,			!Create VP's in job context
+    vsta$$srv_window_deleted,		!ACP says a window was deleted
+    find_next_top_vp,			!Find top VP now that we deleted one.
+    vsta$$srv_term_created,		!ACP says a terminal was created
+    vsta$$srv_change_window_chars,	!Change characteristics for a window
+    vsta$$srv_tablet_indicator,		!Tablet added or subtracted.
+    vsta$$srv_helpwin_created,		!HELP document window created (init)
+    vsta$$srv_profwin_created,		!PROFILE window created (init)
+    vsta$$srv_notice_win_created,	!NOTICES window created (init)
+    vsta$$srv_authwin_created,		!AUTHORIZE window created (init)
+    vsta$$srv_vp_selected,		!A selectable region was selected
+					! (make VP "pop to the top").
+    vsta$$srv_pop_current_vp_to_top,	!Pop current vp to top
+    vsta$$srv_sink_currnt_vp_to_btm,	!Sink current vp to bottom
+    vsta$$srv_pop_wdb,			!Pop this vdb-u to the top
+    vsta$$srv_pop_only_wdb,		!Pop only one wdb to top
+    vsta$$srv_sink_only_wdb,		!Sink one wdb to the bottom
+    attach_kbd_topmost,			!Attach keyboard to topmost object
+    attach_tablet_topmost,		!Attach tablet to topmost object
+    vsta$$srv_vps_fully_visible,	!Make the VP's in a WDB "fully visible"
+    vsta$$srv_delete_all_jrb,		!Delete all my SDA objects
+					! for a JRB.
+    delete_this_wdb,			!Used by "delete_all_jrb"
+    vsta$$srv_zap_vps,			!Delete the VP's
+    vsta$$srv_restore_vps,		!Restore the VP's at a certain place.
+    vsta$$srv_remember_kbd_attach,	!Remember current KBD attachment
+    vsta$$srv_restore_kbd_attach,	!Restore KBD attachment
+    vsta$$srv_attached_gone,		!Attached KBD gone; try to attach
+					! to the top-most item on the screen.
+					!If there isn't any, detach KBD.
+    vsta$$srv_tablet_gone,		!Attached tablet gone, attach elsewhere
+    vsta$$srv_attach_kbd,		!Attach keyboard somewhere
+    vsta$$srv_attach_tablet,		!Attach tablet somewhere
+    add_terminal_to_job,		!Make new terminal appear.
+    wdb_setup,				!Setup data structures to make
+					! a window appear
+    wdb_go_away,			!REMQUE and release memory
+    get_viewport_placement,		!Get VS coordinates where new VP
+					! should go.
+    user_vp_placement,			!Place the user's viewport
+    get_auth_placement,			!Get position where authorization
+					! form will go.
+    get_help_placement,			!Get position where the HELP document
+					! will go.
+    find_wdb,				!Find window block given window-id
+    create_term_appearance,		!Create objects for terminal visibility
+    create_window_appearance,		!Create objects for window visibility
+    create_header,			!Do PAD, KBD, HOLD icons
+    create_vp_sda,
+    delete_appearance_objects,		!Delete SDA objects
+    get_my_pb,
+    get_win_border_vd,
+    insure_jobname,			!Make sure there is a job name VD
+    vp_sda_cleanup,			!Delete my SDA objects
+    vsta$$srv_vss_end_session;		!End session actions
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!Data definitions
+LIBRARY 'VSTA$LIBRARY:VSVDSVD';		!Symbols like vdb$l_help_data
+LIBRARY 'VSTA$LIBRARY:VSTATERM';	!Defines terminal types
+LIBRARY 'VSTA$LIBRARY:VSACPDEF';	!ACP Definitions
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';	!vsta$K_color_white
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';		!Application pgm symbols
+LIBRARY 'VSTA$LIBRARY:VSVSSVS';		!Symbols like vp_block
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error macros and symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    get_ts_menu_pb,			!Get menu for settings
+    get_term_menu_pb,			!Get menu for terminal border
+    get_vp_menu_pb,			!Get menu for vp border
+    vsta$$srv_get_message_Text,		!Get text for a message number
+!    vsta$$form_get_settings_desc,	!Get descriptor to "Settings"
+    vs$$acp_get_vm,			!Get memory
+    vs$$acp_free_vm,			! Release memory
+    vs$$vds_vd_pointer,			! Get vd database from vd id
+    vs$$vds_fetch_wname,		! Get window name descriptor
+    vsta$$report_free_vm_error,		! broadcast message if couldn't
+					! release VM.
+    vsta$$ts_close_doc,			! Close terminal settings document.
+    vsta$$com_delete_terminal,		!Tell ACP to delete a terminal
+    vsta$$srv_job_go,			!Create a job for this terminal
+    vsta$$get_jrb_for_pid,		!Gets JRB address given the PID.
+					!If a JRB doesn't yet exist, create it.
+    vsta$$srv_delete_this_jrb,		!Delete this jrb
+    vsta$$srv_job_new_jrb,		!Create a new JRB with 0-pid
+    vsta$$srv_vds_get_hdr_info,		!prepare to write a header
+    vsta$$srv_vds_header_write,		!Write a header
+    vsta$$srv_vds_jobname_vd,		!Write a jobname VD
+    vsta$$srv_vds_keyboard_on,		!Turn on keyboard indicator
+    vsta$$srv_vds_keyboard_off,		!Turn off keyboard indicator
+    vsta$$srv_vds_tablet_on,		!Turn on tablet indicator
+    vsta$$srv_vds_tablet_off,		!Turn off tablet indicator
+    vsta$$vss_get_vp_paste_order,	!Get paste order for a viewport
+    vs$$vds_create_pb,			!Create a pasteboard
+    vs$$vds_delete_pb,			!Delete a pasteboard
+    vs$$vds_create_vd,			!Create a VD
+    vs$$vds_delete_vd,			!Delete a VD
+    vs$$vtem_vt100_delete,		!Delete a VT100
+    vs$$vtem_tek4014_delete,		!Delete a TEK4014
+    vs$$vds_paste_vd_to_pb,		!Paste VD to PB
+    vs$$vds_unpaste_vd_from_Pb,		!Unpaste VD from PB
+    vs$$vds_delete_window,		!Delete a window
+    vs$$vds_create_term_window,		!Create a window, but don't call
+					!"vsta$$srv_window_created"
+    vs$$vss_create_vp,			!Create a viewport
+    vs$$vss_delete_vp,			!Delete a viewport
+    vs$$vss_delete_2_vps,		!Delete viewports
+    vs$$vss_change_vp_paste,		!Change paste order of a VP
+    vs$$vss_change_doc_paste,		!As above, save do it for two.
+    vs$$activate_vkb,			!Activate a virtual keyboard
+    vs$$deactivate_vkb,			!Deactivate a virtual keyboard
+    vsta$$edit_yank_actions,		!Yanked out of editable field
+    vs$$activate_vtb,			!Activate a virtual tablet
+    vsta$$rgn_define_region,		!Define a region
+    vsta$$rgn_set_region_selectable,	!Set a region selectable.
+    vsta$$srv_hold_addone,		!Add an entry to the HOLD list
+    vsta$$srv_hold_subone,		!Subtract an entry from the HOLD list
+    vsta$$pid_get_top,			!Get top-level PID for a PID
+    vsta$$error,			!General error routine
+    vsta$$error_Logger,			!Log errors that are unexpected
+    vsta$$change_vkb_transtable;	!change trtable if vkb made activ 
+EXTERNAL
+    jrb_q_hdr: VECTOR [2],		!JRB queue header
+    hi$gl_mtjrb,
+    srv_vs_id,				!Virtual screen id
+    vsta$gl_screen_size_x,		!Size of the screen in pixels..
+    vsta$gl_screen_size_y,		! . .
+    vsta$gl_footer_start_x,		!Current x-position of utility area
+					! or 0 if no footer is showing.
+    vsta$gl_symb_start_y,		!Current y-position of symbol bar
+					! or 0 if no symbol bar is showing.
+    vsta$gl_bottom_vp,			!Bottommost VP-id
+    vsta$gl_popup_vp_id,		!The currently popped-up VP
+    vsta$gl_goto_routine,		!0, or address of routine to
+					! call when a terminal gets created
+    vsta$gl_footer_vp_id,		!VP-id of the workstation footer
+    vsta$gl_symbol_vp_id,		!Vp-id of the symbol bar
+    vsta$gl_footer_displayed,		!=1 if footer is being displayed
+    vs$gl_acp_pid,			!our pid
+    vs$gl_e_vkb_id,			!not = 0 if VSSRVEDIT was
+					! editing a field
+    vsta$gl_end_session_flag,		!=1 if we are ending a session.
+    srv$gl_main_menu: hi_menu_block,
+    srv$gl_term_menu: hi_menu_block,
+    srv$gl_vp_menu: hi_menu_block,
+    srv$gl_ts_menu: hi_menu_block,
+    srv$gl_auth_menu: hi_menu_block;
+
+BUILTIN
+    INSQUE, REMQUE;
+GLOBAL
+    wdb_last_id,			!Id generator
+    vp_place_counter : initial (0),	!Used for calculating vp placement
+    srv_gl_ignore_delw,			!Set to -1 if "delete window" call
+					! should be ignored (it is MY window)
+    vsta$gl_last_selected_wdb:		!Last WDB that was selected.
+		REF window_data_block,
+    vsta$gl_top_vp,			!Top-most VP in the VDB's (0 if none).
+    srv$gl_curr_kbd_id,			!Current attached kbd (0 if none)
+    srv$gl_curr_kbd_wdb: REF window_data_block,
+					!Current WDB that shows kbd attachment
+					! (0 if none).
+    srv$gl_curr_tablet_id,		!Current attached tablet (0 if none)
+    srv$gl_curr_tablet_wdb: REF window_data_block,
+    srv$gl_help_jrb;			!Address of the HELP document's JRB.
+					! (used by VSSRVFOOT).
+OWN
+    rem_attached_kbd_id,
+    rem_attached_kbd_wdb: REF window_data_block;
+
+
+GLOBAL ROUTINE vsta$$srv_settings_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is modeled after vsta$$srv_window_created.  It creates
+!	the necessary data structures for keeping track of a terminal settings
+!	document, such that the correct border menu comes up, and the document
+!	goes away at the right time.
+!
+! FORMAL PARAMETERS:
+	(window_id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	,ter_wdb : ref window_data_block!Window data block for terminal
+	,returned_wdb_user		!Where to write settings wdb
+	,help_keyword			!Help for settings border and header
+	) =
+! SIDE EFFECTS:
+!	Two viewports are created. One for the window itself and
+!	one for the borders underneath. The various databases are
+!	updated.
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,		!Window block address
+    my_window_id,			!Window id for border pasteboard
+    my_pb_width,			!Width of border pasteboard
+    my_pb_height,			!Height of border pasteboard
+    vp_x_coor,				!Where to put my VP
+    vp_y_coor,				! . .
+    needed,				!# pixels needed for window
+    a_name_desc: REF $string_descriptor,
+    term_name_desc: VECTOR [2],
+    settings_desc: VECTOR [2],
+    whole_desc: VECTOR [2],
+    whole_str: VECTOR [100,BYTE],
+    status;				!Return status
+
+!
+! Get name of the terminal
+!
+IF NOT (status =
+    vs$$vds_fetch_wname	(.ter_wdb [wdb$l_u_window_id]	!Ask VSWINDOW module
+			,a_name_desc	! where the name desc is.
+			)
+	)
+  THEN RETURN .status;
+term_name_desc [0] = .a_name_desc [sd$w_len];
+term_name_Desc [1] = .a_name_desc [sd$a_adr];
+!
+! Get descriptor to "Settings" in the current language.
+!
+IF NOT (status = vsta$$form_get_settings_desc (settings_desc))
+  THEN RETURN .status;
+
+!
+! Truncate already if combined name is GTR 100
+!
+IF ((.term_name_desc [0] + .settings_desc [0] + 1) GTR 100)
+  THEN term_name_desc [0] = 100 - .settings_desc [0] - 1;
+
+whole_desc [1] = whole_str;	!Place to write combined name
+!
+! Append the strings together and put a space in between to get
+! <term name><space>"Settings"
+!
+make_settings_name (term_name_desc, settings_desc, whole_desc);
+!
+! Create a WDB for the settings document, so most of the code
+! can treat this as another user window.
+!
+IF NOT (status =
+    wdb_setup	(.window_id		!Window id
+		,.ter_wdb [wdb$a_jrb]	!Job ref. block.
+		,wdb			!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+!
+! Remember the setting documents wdb where the caller asked.
+!
+.returned_wdb_user = .wdb;
+
+wdb [wdb$b_window_type] = WDB$K_WTYPE_TS; !This is a settings window
+!
+! Remember the wdb of the terminal whose settings this wdb represents, so that
+! when the settings want to go away while the terminal remains around, we
+! can find the terminal's wdb in which the doc block for this settings document
+! is stored.
+!
+wdb [wdb$a_ter_wdb] = ter_wdb[$base];
+
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+
+wdb [wdb$a_name_desc] = whole_desc;	! where the name desc is.
+
+!
+! Create my SDA objects for a user's window.
+! (My pasteboard, border VD, and a window on them)
+!
+insure_jobname (.ter_wdb[wdb$a_jrb]);
+				!Make sure there is a job name VD
+
+WHILE 1 DO
+    BEGIN
+    IF NOT (status =
+	create_window_appearance
+			(.win_width
+			,.win_height
+			,.wdb
+			,0		!No keyboard needed
+			,0		!No tablet
+			,0		!non-editable header
+			,.help_keyword
+					!help keyword for border
+			,needed		!# pixels needed
+			)
+	    )
+      THEN
+	BEGIN
+	wdb_go_away (.wdb);			!Cleanup.
+	RETURN .status;		! and return the error
+	END;
+
+    IF .needed EQL 0
+      THEN EXITLOOP;		!Window fit, exit this loop
+  !
+  ! Name must be truncated.
+  ! If the term name is gtr 0 characters, subtract 1 and try again.
+  ! Else, if "settings" still has characters in it, sub 1 and try again.
+  ! Else, return "W2SMALL" error.
+  !
+    IF (.term_name_desc [0] GTR 0)
+      THEN
+	term_name_desc [0] = .term_name_desc [0] - 1
+      ELSE
+	BEGIN
+	IF (.settings_desc [0] GTR 0)
+	  THEN settings_desc [0] = .settings_desc [0] - 1
+	  ELSE
+	    BEGIN
+	    wdb_go_away (.wdb);
+	    RETURN $error	(vsta$_w2small
+				,integer_type, .needed
+				)
+	    END
+	END;
+  !
+  ! Try this truncated name..
+  !
+    make_settings_name (term_name_desc, settings_desc, whole_desc);
+  !
+  ! Back through the loop to try again..
+  !
+    END;	!End of "while 1 do.."
+
+wdb [wdb$a_name_desc] = 0;	!Name in header doesn't match window database,
+				! but that's ok since user can't edit it.
+				! Zero this out so it doesn't point to 
+				! a random stack location..
+
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as to allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF .srv$gl_ts_menu [hmb$l_vd] EQL 0
+  THEN
+    IF NOT get_ts_menu_pb ()
+      THEN
+	BEGIN
+	wdb_go_away (.wdb);
+	RETURN $error (vsta$_hi_menu
+			,string_type, %ASCID 'Terminal settings'
+			);
+	END;
+
+IF NOT (status =
+    vsta$$rgn_set_region_selectable
+		(.wdb [wdb$l_win_border_vd_id]
+		,0, 0			!Region x,y
+		,0, 0			! no routine or parameter
+		,.srv$gl_ts_menu [hmb$l_pb]	!Popup PB
+		,.srv$gl_ts_menu [hmb$w_def_x]
+		,.srv$gl_ts_menu [hmb$w_def_y]
+		,vsta$K_sel_area	!Selectable attribute for border
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);
+    RETURN $error (vsta$_setrgnsel);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember user's PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+
+!
+! Find position of viewport
+!
+get_viewport_placement (.wdb);
+
+IF NOT (status =
+    window_in_job (.wdb)	!Create viewports
+	)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_win_in_job); !?Can't put window into job screen space
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$form_get_settings_Desc
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get descriptor to "Settings" in the current language.
+! FORMAL PARAMETERS:
+	(ret_desc: REF VECTOR [2]	!Returned descriptor to string
+	) =
+!--
+BEGIN
+OWN
+    have_settings_desc: INITIAL (0);	!Set to 1 when have it already.
+					! When switching languages or at end
+					! session, set to zero.
+OWN
+    settings_str: VECTOR [30,BYTE],
+    settings_desc: VECTOR [2];
+LOCAL
+    ret_len;
+
+IF NOT .have_settings_desc
+  THEN
+    BEGIN
+    settings_desc [0] = 30;		!Get a descriptor
+    settings_Desc [1] = settings_str;	!Where string will go.
+    IF NOT vsta$$srv_get_message_text
+		(2200		!"Settings" in the current language
+		,settings_desc	!Descriptor to string
+		,ret_len	!Real length of string
+		)
+      THEN
+	BEGIN
+	EXTERNAL vsta$_msgtxt;	!?Can't get message number !SL
+	vsta$$error_logger (vsta$_msgtxt
+			,integer_type, 2200
+			);
+	ret_len = %CHARCOUNT ('Settings');	! Use english version
+	settings_desc [1] = UPLIT ('Settings');	! . .
+	END;
+
+    settings_desc [0] = .ret_len;	!Put length in descriptor.
+    have_settings_desc = 1;		!Remember we have it.
+    END;
+
+ret_desc [0] = .settings_desc [0];	!Return it to user.
+ret_desc [1] = .settings_desc [1];	! . .
+RETURN SS$_NORMAL
+END;
+
+ROUTINE make_settings_name
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates 1 long string by truncating two short ones.
+! FORMAL PARAMETERS:
+	(one_desc: REF $string_descriptor
+	,two_desc: REF $string_descriptor
+	,out_Desc: REF $string_descriptor
+	) =
+!--
+BEGIN
+
+out_desc [sd$w_len] = .one_desc [sd$w_len] + .two_desc [sd$w_len] + 1;
+CH$MOVE	(.one_desc [sd$w_len]
+	,.one_desc [sd$a_adr]
+	,.out_desc [sd$a_adr]
+	);
+CH$MOVE	(1
+	,UPLIT (' ')
+	,.out_desc [sd$a_adr] + .one_desc [sd$w_len]
+	);
+CH$MOVE	(.two_desc [sd$w_len]
+	,.two_desc [sd$a_adr]
+	,.out_Desc [sd$a_adr] + .one_desc [sd$w_len] + 1
+	);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_window_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when a user program has created a window on a pasteboard.
+!	Make it appear.
+!
+! FORMAL PARAMETERS:
+	(window_id			!Window id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	,pid				!Process id of creator
+	,kbd_flag			!=1 if there is a Virt Keyboard
+	,tab_flag			!=1 if there is a Virt tablet.
+	) =
+! SIDE EFFECTS:
+!	Two viewports are created. One for the window itself and
+!	one for the borders underneath. The various databases are
+!	updated.
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!JRB address
+    wdb: REF window_data_block,		!Window block address
+    my_window_id,			!Window id for border pasteboard
+    my_pb_width,			!Width of border pasteboard
+    my_pb_height,			!Height of border pasteboard
+    vp_x_coor,				!Where to put my VP
+    vp_y_coor,				! . .
+    help_keyword : INITIAL (%ASCID 'Generic viewport'),
+					!Help keyword to look up
+    top_pid,				!Top-process's pid
+    last_att: REF window_data_block,	!Previous "last-vkb-att" in this job
+    last_vtb: ref window_data_block,	!Previous tablet object in this job
+    needed,				!# pixels needed
+    status;				!Return status
+
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as to allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF .srv$gl_vp_menu [hmb$l_vd] EQL 0
+  THEN
+    IF NOT get_vp_menu_pb ()
+      THEN RETURN $error (vsta$_hi_menu
+			,string_type, %ASCID 'Viewport'
+			);
+
+vsta$$pid_get_top (.pid, top_pid);	!Get top-level PID
+
+IF NOT vsta$$get_jrb_for_pid (.top_pid, jrb)	!Get the JRB
+  THEN RETURN vsta$$error (SS$_BADPARAM);
+
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!Job ref. block.
+		,wdb		!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$b_window_type] = wdb$K_wtype_user;	!This is a normal window
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+
+!
+! Create my SDA objects for a user's window.
+! (My pasteboard, border VD, and a window on them)
+!
+insure_jobname (.jrb);		!Make sure there is a job name VD
+
+IF NOT (status =
+    create_window_appearance
+		(.win_width
+		,.win_height
+		,.wdb
+		,.kbd_flag
+		,.tab_flag
+		,1		!Editable header
+		,.help_keyword	!help keyword for border
+		,needed		!Return # pixels needed
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);		!Cleanup.
+    RETURN .status;		! and return the error
+    END;
+
+IF .needed NEQ 0
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN $error (vsta$_w2small	!Tell user his window is too small.
+		,integer_type, .needed
+		);
+    END;
+!
+! Get the regular VP menu.
+!
+IF NOT (status =
+    vsta$$rgn_set_region_selectable
+		(.wdb [wdb$l_win_border_vd_id]
+		,0, 0			!Region x,y
+		,0, 0			! no routine or parameter
+		,.srv$gl_vp_menu [hmb$l_pb]	!Popup PB
+		,.srv$gl_vp_menu [hmb$w_def_x]
+		,.srv$gl_vp_menu [hmb$w_def_y]
+		,vsta$K_sel_area	!Selectable attribute for border
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);
+    RETURN $error (vsta$_setrgnsel);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember "user's" PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+
+!
+! Remember help keyword in the window block so that if job is stored
+! and later retrieved, the help data will still be intact.
+!
+wdb [wdb$a_vp_help_keyword] = .help_keyword;
+!
+! Find position of viewport
+!
+get_viewport_placement	(.wdb);
+
+!
+! Now attach viewports to the windows
+!
+IF NOT (status =
+    window_in_job (.wdb)	!Create the viewports
+	)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_win_in_job);	!?Can't put window into job screen space
+    END;
+
+!
+! If there is a KBD indicator, set this jrb's default VKB to it.
+!
+IF (.kbd_flag NEQ 0)
+  THEN
+    BEGIN
+    last_att = .jrb [jrb$l_last_vkb_wdb];
+    jrb [jrb$l_last_vkb_wdb] = .wdb;
+    END;
+!
+! If there is a KBD indicator, and this jrb had the keyboard, attach the KBD.
+!
+IF ((.srv$gl_curr_kbd_wdb EQL .last_att)
+		AND
+	(.kbd_flag NEQ 0))
+  THEN
+    vsta$$srv_attach_kbd (.wdb [wdb$l_u_pb_id], .wdb);
+!
+! If there is a tablet indicator, set this jrb's default virtual tablet to it.
+!
+	IF (.tab_flag NEQ 0)
+	  THEN
+	    BEGIN
+	    last_vtb = .jrb [jrb$a_last_vtb_wdb];
+	    jrb [jrb$a_last_vtb_wdb] = .wdb;
+	    END;
+!
+! If there is a tablet indicator, and this jrb had the tablet, attach it.
+!
+	IF ((.srv$gl_curr_tablet_wdb EQL .last_vtb)
+			AND
+		(.tab_flag NEQ 0))
+	  THEN
+	    vsta$$srv_attach_tablet (.wdb [wdb$l_u_pb_id], .wdb);
+
+RETURN SS$_NORMAL;	!return success
+END;
+
+ROUTINE window_in_job
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create VP's for a window.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    top_wdb: REF window_data_block,
+    reference_vp,
+    status;
+
+! Get top VP for this job.
+!
+jrb = .wdb [wdb$a_jrb];
+top_wdb = .wdb [wdb$a_flink];
+IF (.top_wdb EQL jrb [jrb$a_wdb_q_hdr_fl])	!Q empty except for this entry?
+  THEN reference_vp = .vsta$gl_top_vp		!No other WDB exists.
+  ELSE reference_vp = .top_wdb [wdb$l_u_vp_id];	!Get "previous top" vp in job
+
+IF (.reference_vp EQL 0)
+  THEN RETURN SS$_NORMAL;		!Job is stored, don't create VP
+!
+! We really always create new viewports on the very top.  Now that we know
+! job is not stored, don't really use its top viewport as reference point, but
+! use topmost viewport existing in session.
+!
+reference_vp = .vsta$gl_top_vp;
+
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_u_window_id]	!User's window id
+		,.srv_vs_id		!Same vs-id
+		,wdb [wdb$l_u_vp_id]	!Where to return VP id
+		,.wdb [wdb$l_u_vp_x_coor]
+		,.wdb [wdb$l_u_vp_y_coor]
+		,.reference_vp		!Put it on top of the job
+		,.wdb [wdb$a_vp_help_keyword]	! Help keyword
+		)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);	!Delete my SDA objects
+    RETURN $error	(vsta$_crevp_for
+			,string_type, %ASCID 'user window'
+			);
+    END;
+!
+! Now create my viewport (underneath)
+!
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_hi_window_id]	!Window id
+		,.srv_vs_id		!Virtual screen id
+		,wdb [wdb$l_hi_vp_id]	!adr of returned Vp id
+		,.wdb [wdb$l_hi_vp_x_coor] !VS X coordinate
+		,.wdb [wdb$l_hi_vp_y_coor] !VS Y coordinate
+		,.reference_vp		!Put it on top of prev. top VP
+		,0			!No HELP keyword
+		)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);	!Delete my SDA objects
+    RETURN $error	(vsta$_crevp_for
+			,string_type, %ASCID 'borders'
+			);
+    END;
+!
+! Remember that this new viewport is now on top.
+!
+vsta$gl_top_vp = .wdb [wdb$l_u_vp_id];
+
+RETURN SS$_NORMAL	!return success
+END;
+
+GLOBAL ROUTINE vsta$$srv_window_deleted
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when user program deletes a window on its pasteboard.
+!	(or the PB itself got deleted). We assume that the ACP has
+!	also deleted the corresponding VP. So delete our window.
+!
+! FORMAL PARAMETERS:
+	(window_id
+	,pid		!PID of deleting process
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,	!JRB address
+    wdb: REF window_data_block, !Addr of window data block
+    vp_id,			!Vp-id of the highest VP
+    status;
+
+IF (.srv_gl_ignore_delw NEQ 0)		!My window, so just ignore call.
+  THEN
+    BEGIN
+    srv_gl_ignore_delw = 0;		!Reset
+    RETURN SS$_NORMAL
+    END;
+!
+! User's window was deleted. That deleted the viewport automatically.
+!
+! So delete all my SDA stuff (which will delete my viewport automatically)
+!
+IF NOT (status =
+    find_wdb (.window_id, wdb, jrb)	!Find WDB entry
+	)
+  THEN RETURN SS$_NORMAL;		!Not one that I know about, forget it.
+
+vp_id = .wdb [wdb$l_u_vp_id];		!Get VP id.
+
+!
+! This next routine will delete ALL the SDA objects that we created to
+! have our borders, headers, etc. appear. It will also take care of de-queueing
+! the window blocks and viewport blocks, and release all the memory.
+!
+IF NOT (status =
+    delete_appearance_objects (.wdb)	!Delete my SDA objects
+	)
+  THEN RETURN .status;
+!
+! If this JRB is now empty, delete it and return.
+!
+IF (.jrb [jrb$a_wdb_q_hdr_fl] EQL jrb [jrb$a_wdb_q_hdr_fl])
+  THEN
+    BEGIN
+    vsta$$srv_delete_this_jrb (.jrb);
+    END;
+!
+! Make sure vsta$gl_top_vp doesn't point to the one that is now deleted.
+!
+IF (.vp_id EQL 0)
+  THEN RETURN SS$_NORMAL;		!NO VP was really deleted.
+
+IF (.vp_id EQL .vsta$gl_top_vp)
+  THEN
+    find_next_top_vp ();
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE find_next_top_vp =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when the previous "top_vp" has been deleted,
+!	to find the next "top_vp".  This routine also moves whatever
+!	jrb is now on top to the beginning of the queue.
+!
+! IMPLICIT OUTPUTS:
+!	vsta$gl_top_vp
+!--
+	BEGIN
+
+	LOCAL
+
+	    s,
+	    jrb: REF job_block,
+	    wdb_q_hdr,
+	    top_po : initial (-1),
+	    paste_order,
+	    top_jrb : ref job_block initial (0),
+	    wdb: REF window_data_block;
+	
+	vsta$gl_top_vp = .vsta$gl_bottom_vp; !Leave bottom VP if none found.
+!
+! If virtual screen has been deleted, as during end session, then vp's are
+! gone, even though the following loop will see id's for them.  Hence
+! don't execute the loop.
+!
+	if .srv_vs_id eql 0
+	then return ss$_normal;
+
+	jrb = .jrb_q_hdr [0];		!Get ptr to top JRB
+
+WHILE (.jrb NEQ jrb_q_hdr [0]) DO
+    BEGIN
+    wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];
+    wdb = ..wdb_q_hdr;
+    WHILE (.wdb NEQ .wdb_q_hdr) DO
+        BEGIN
+        IF (.wdb [wdb$l_u_vp_id] NEQ 0)
+          THEN
+	    BEGIN
+!
+! Get paste order for the viewport.
+!
+	    if not (s = vsta$$vss_get_vp_paste_order (.wdb[wdb$l_u_vp_id],
+		paste_order))
+	    then return .s;
+!
+! If it is topmost so far, then remember.
+!
+	if .paste_order gtr .top_po
+		then
+		    begin
+		    top_jrb = jrb[$base];
+		    top_po = .paste_order;
+		    vsta$gl_top_vp = .wdb[wdb$l_u_vp_id]
+		    end;
+	    END;
+	wdb = .wdb [wdb$a_flink];	!Next WDB
+        END;
+    jrb = .jrb [jrb$a_flink];		!Next JRB
+    END;
+!
+! If any jrb was found, put it at start of queue, so that
+! after next "sink" operation, keyboard gets attached to something in
+! the topmost job.
+!
+	if top_jrb[$base] neq 0
+	then
+	    begin
+	    local junk;
+	    remque (top_jrb[$base], junk);
+	    insque (top_jrb[$base], jrb_q_hdr)
+	    end;
+
+	SS$_NORMAL
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_term_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The ACP is telling us that a terminal has just been created.
+!	There are two ways that this can happen:
+!	1. The user has hit menu item "create logged-in-job" or "not-logged".
+!	   Our routine in the JOB module called the ACP routine to create
+!	   a terminal, which called this routine. In this case,
+!	   "vsta$gl_goto_routine" is non-zero.
+!	2. A process has called the user library routine to create a terminal.
+!	   In this case, "vsta$gl_goto_routine" = 0.
+!
+! FORMAL PARAMETERS:
+	(window_id			!Window id of terminal
+	,width				!How wide terminal is
+	,height				!How high it is
+	,vd_id				!Virt. display id
+	,pb_id				!Pasteboard id (of keyboard)
+	,ttype				!Type of terminal
+	,pid				!process id
+	,bezel_vd_id			!Vd id for bezel
+	) =
+!--
+BEGIN
+LOCAL
+    jobpid,			!Pid of new job
+    jrb: REF job_block,		!Address of jrb
+    mtflag,			!Set to 1 if a job's main terminal
+    status;
+
+IF (.vsta$gl_goto_routine NEQ 0)
+  THEN mtflag = 1		!Job's main terminal!
+  ELSE mtflag = 0;		! or not.
+
+jobpid = .pid;			!Assume not a main terminal
+
+IF (.mtflag NEQ 0)		!Job's main terminal, go create the job.
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_job_go (.vd_id, .pb_id, .ttype, jobpid)
+	    )
+      THEN RETURN .status;		!Error creating job
+    jrb = .hi$gl_mtjrb;
+    jrb [jrb$l_pid] = .jobpid;
+    jrb [jrb$l_mttype] = .ttype;
+    END
+  ELSE
+    BEGIN
+    vsta$$pid_get_top (.pid, jobpid);	!Get top-level PID
+    IF NOT vsta$$get_jrb_for_pid (.jobpid, jrb)
+      THEN RETURN vsta$$error (SS$_BADPARAM);
+    END;
+!
+! Make the terminal appear
+!
+insure_jobname (.jrb);			!Get a jobname VD
+
+IF NOT (status =
+    add_terminal_to_job
+	(.jrb			!Address of jrb block
+	,.mtflag		!=1 if job's main terminal
+	,.ttype			!Type of terminal
+	,.window_id		!Window id
+	,.width			!Window width
+	,.height		!Window height
+	,.pb_id			!Pasteboard id (VKB id)
+	,.vd_id			!virtual display id
+	,.bezel_vd_id		!Vd id for bezel
+	)
+	)
+  THEN
+    BEGIN
+    IF (.mtflag NEQ 0)
+      THEN $delprc (PIDADR = jobpid); !Delete process if we can.
+  !   Use VSTA$$ERROR if not created by human interface
+    RETURN .status
+    END;
+
+RETURN SS$_NORMAL		!Good return
+END;
+
+GLOBAL ROUTINE vsta$$srv_change_window_chars
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Change window characteristics
+! FORMAL PARAMETERS:
+	(window_id		!Which window
+	,x			!New X
+	,y			!New Y
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_tablet_indicator
+!++
+! FUNCTIONAL DESCRIPTION:
+!   The ACP is telling us that the user has created or deleted
+! a terminal datapad.
+!   We have to modify the appropriate header.
+!
+! FORMAL PARAMETERS:
+	(pb_id			!Pb id of the terminal
+	,pad_flag		!=1 if datapad being created, 0 if deleted
+	) =
+!--
+BEGIN
+EXTERNAL
+    vsta$_paste_what,
+    vsta$_delvd_for;
+LOCAL
+    jrb: REF job_block,
+    wdb: REF window_data_block,
+    wdb_q_hdr,			!Address of the queue header
+    found_flag,
+    old_header_vd_id,		!The previous header vd-id
+    old_header_vd : ref vdblock,!Old header vd database
+    kbd_flag,
+    hold_vd_id,			!If a hold indicator is needed, this is the
+				! terminal body vd-id
+    mtflag,			!=1 if this is the main terminal
+    needed,			!# pixels needed still, for window name
+    status;
+!
+! Search through the jobs looking for the terminal, to get the WDB in question.
+!
+found_flag = 0;			!Set to 1 if we find it (we'd better!)
+jrb = .jrb_q_hdr [0];		!Get first JRB
+WHILE (.jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];
+    wdb = ..wdb_q_hdr;		!Get first WDB
+    WHILE (.wdb NEQ .wdb_q_hdr) DO
+	BEGIN
+	IF (.wdb [wdb$l_u_pb_id] EQL .pb_id)
+	  THEN
+	    BEGIN
+	    found_flag = 1;
+	    EXITLOOP;
+	    END;
+	wdb = .wdb [wdb$a_flink];
+	END;
+    IF (.found_flag NEQ 0) THEN EXITLOOP;	!Found it
+    jrb = .jrb [jrb$a_flink];
+    END;
+
+IF NOT .found_flag
+  THEN
+    RETURN $bug (vsta$_notermpad);	!?Can't find terminal to modify header
+					! for terminal datapad..
+					! (Something is screwed up).
+!
+! Create a new header vd and try to write it. Any errors are
+! unexpected, since we always make sure to save room for a datapad
+! indicator.
+!
+old_header_vd_id = .wdb [wdb$l_header_vd_id];	!Save the old header vd-id
+!
+! Get vd database so old help can be extracted.
+!
+if not (status = vs$$vds_vd_pointer (
+	    .wdb [wdb$l_header_vd_id],
+	    old_header_vd
+	    ))
+  then $log_error_and_return (.status);
+
+IF (.wdb [wdb$b_kbd_char_idx] NEQ 0)
+  THEN kbd_flag = 1
+  ELSE kbd_flag = 0;
+
+IF (.wdb [wdb$b_hold_char_idx] NEQ 0)	!If there is a HOLD field,
+  THEN hold_vd_id = .wdb [wdb$l_term_vd_id]	! Then pass the term-vd-id
+  ELSE hold_vd_id = 0;
+
+IF (.jrb [jrb$a_mtwin] EQL .wdb)	!If this wdb is for the main terminal,
+  THEN mtflag = 1			! set mtflag
+  ELSE mtflag = 0;
+
+!
+IF NOT (status =
+    create_header
+		(.wdb			!Address of HI's window block
+		,.wdb [wdb$l_u_vp_width] !Width of header
+		,0			!Term name desc not used
+		,.mtflag
+		,.kbd_flag
+		,.pad_flag
+		,.hold_vd_id
+		,1			!Editable
+		,needed
+		)
+	)
+  THEN
+    BEGIN		!Restore old stuff and return error to user.
+    wdb [wdb$l_header_vd_id] = .old_header_vd_id;
+    RETURN .status
+    END;
+
+IF (.needed NEQ 0)			!Need more pixels for header!?!?
+  THEN
+    BEGIN
+    wdb [wdb$l_header_vd_id] = .old_header_vd_id;
+    RETURN $error	(vsta$_w2small
+			,integer_type, .needed
+			);
+    END;
+
+!
+! all ok, paste the new header on top of the old one, then delete the old one.
+!
+IF NOT vs$$vds_paste_vd_to_pb
+		(.wdb [wdb$l_hi_pb_id]
+		,.wdb [wdb$l_header_vd_id]
+		,vsta$K_outer_border_width	!x-coor
+		,vsta$K_outer_border_width	!y-coor
+		,0				!On top
+		,.vs$gl_acp_pid			!WE are doing it, not caller
+		)
+  THEN
+    BEGIN
+    RETURN vsta$$error_logger (vsta$_paste_what
+				,string_type, %ASCID 'new header'
+				,string_type, %ASCID 'old header'
+				);
+    END;
+
+IF NOT vs$$vds_delete_vd (.old_header_vd_id, 0, .vs$gl_acp_pid)
+  THEN
+    BEGIN
+    RETURN vsta$$error_logger (vsta$_delvd_for
+				,string_type, %ASCID 'old header'
+				);
+    END;
+!
+! Unpaste the job name VD and paste it at the new place.
+!
+IF NOT vs$$vds_unpaste_vd_from_pb
+		(.wdb [wdb$l_hi_pb_id]
+		,.jrb [jrb$l_job_name_vd]
+		,.vs$gl_acp_pid			!WE are doing it, not caller
+		)
+  THEN
+    BEGIN
+    RETURN vsta$$error_Logger (vsta$_paste_what
+				,string_type, %ASCID '(unpasting) job name VD'
+				,string_type, %ASCID 'HI PB'
+				);
+    END;
+
+IF NOT (status =
+    vs$$vds_paste_vd_to_pb
+		(.wdb [wdb$l_hi_pb_id]
+		,.jrb [jrb$l_job_name_vd]
+		,vsta$K_outer_border_width + .wdb [wdb$w_jobname_field_start]
+		,vsta$K_outer_border_width	!y-coor
+		,0				!On top
+		,.vs$gl_acp_pid			!WE are doing it, not caller
+		)
+	)
+  THEN
+    BEGIN
+    RETURN vsta$$error_logger (vsta$_paste_what
+				,string_type, %ASCID 'Job name VD'
+				,string_type, %ASCID 'HI PB'
+				);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_helpwin_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The HELP window was created. Create data structures but no VP's yet.
+! FORMAL PARAMETERS:
+	(window_id			!Window id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	,slot				!Which slot it's in
+	,returned_wdb_user		!Return WDB user
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!JRB address
+    wdb: REF window_data_block,		!Window block address for user's window
+    my_window_id,			!Window id for border pasteboard
+    my_pb_width,			!Width of border pasteboard
+    my_pb_height,			!Height of border pasteboard
+    needed,
+    status;
+
+IF NOT (status =
+    vsta$$srv_job_new_jrb (jrb)		!Get a JRB
+	)
+  THEN RETURN .status;
+
+jrb [jrb$l_slot] = .slot;		!remember which slot it's in
+
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!Job ref. block.
+		,wdb		!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$b_window_type] = wdb$K_wtype_help;	!This is the HELP document
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+!
+! Create my SDA objects for the HELP document.
+! (My pasteboard, border VD, and a window on them)
+!
+IF NOT (status =
+    create_window_appearance	(.win_width
+				,.win_height
+				,.wdb
+				,0		!KBD flag
+				,0		!TAB flag
+				,0		!Editable header flag (no)
+				,%ascid 'Help'
+						!help keyword for border
+				,needed
+				)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN .status;			! and return the error
+    END;
+
+IF .needed NEQ 0
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN $error (vsta$_w2small
+		,integer_type, .needed
+		);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember "user's" PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+.returned_wdb_user = .wdb;		!Return address of WDB.
+
+srv$gl_help_jrb = .jrb;			!Remember the JRB address.
+					! (only for HELP document).
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_profwin_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The PROFILE window was created. Create data structures but no VP's yet.
+! FORMAL PARAMETERS:
+	(window_id			!Window id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	,slot				!Which slot it's in
+	,returned_wdb_user		!returned WDB
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!JRB address
+    wdb: REF window_data_block,		!Window block address for user's window
+    my_window_id,			!Window id for border pasteboard
+    needed,				!# pixels needed
+    status;
+
+IF NOT (status =
+    vsta$$srv_job_new_jrb (jrb)		!Get a JRB
+	)
+  THEN RETURN .status;
+
+jrb [jrb$l_slot] = .slot;		!remember which slot it's in
+
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!Job ref. block.
+		,wdb		!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$b_window_type] = wdb$K_wtype_prof;	!This is the PROFILE document
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+
+!
+! Create my SDA objects for the HELP document.
+! (My pasteboard, border VD, and a window on them)
+!
+IF NOT (status =
+    create_window_appearance
+		(.win_width
+		,.win_height
+		,.wdb
+		,0		!KBD flag
+		,0		!TAB flag
+		,0		!Header is NOT editable.
+		,%ASCID 'User profile'	!help keyword for border
+		,needed
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);		!Cleanup.
+    RETURN .status;		! and return the error
+    END;
+
+IF .needed NEQ 0
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN $error (vsta$_w2small
+		,integer_type, .needed
+		);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember "user's" PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+.returned_wdb_user = .wdb;		!Return address of WDB.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_notice_win_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The NOTICES window was created.
+!	Create data structures but no VP's yet.
+! FORMAL PARAMETERS:
+	(window_id			!Window id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	,slot				!Which slot it's in
+	,returned_wdb_user		!returned WDB
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!JRB address
+    wdb: REF window_data_block,		!Window block address for user's window
+    my_window_id,			!Window id for border pasteboard
+    needed,				!# pixels needed 
+    status;
+
+IF NOT (status =
+    vsta$$srv_job_new_jrb (jrb)		!Get a JRB
+	)
+  THEN RETURN .status;
+
+jrb [jrb$l_slot] = .slot;		!remember which slot it's in
+
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!Job ref. block.
+		,wdb		!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$b_window_type] = wdb$K_wtype_notice;	!This is the NOTICES document
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+
+!
+! Create my SDA objects for the NOTICES document.
+! (My pasteboard, border VD, and a window on them)
+!
+IF NOT (status =
+    create_window_appearance
+		(.win_width
+		,.win_height
+		,.wdb
+		,0		!KBD flag
+		,0		!TAB flag
+		,0		!Header is NOT editable
+		,%ASCID 'Notices' !help keyword for border
+		,needed		!# pixels more needed, or 0
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);		!Cleanup.
+    RETURN .status;		! and return the error
+    END;
+
+IF .needed NEQ 0
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN $error (vsta$_w2small
+		,integer_type, .needed
+		);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember "user's" PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+.returned_wdb_user = .wdb;		!Return address of WDB.
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_authwin_created
+!++
+! FUNCTIONAL DESCRIPTION:
+!	The AUTHORIZATION FORM window was created.
+!	Create data structures and VP, centered on the screen.
+! FORMAL PARAMETERS:
+	(window_id			!Window id
+	,win_width			!X extent of window
+	,win_height			!Y extent of window
+	,pb_id				!Pasteboard id
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!JRB address
+    wdb: REF window_data_block,		!Window block address for user's window
+    my_window_id,			!Window id for border pasteboard
+    my_pb_width,			!Width of border pasteboard
+    my_pb_height,			!Height of border pasteboard
+    vp_x_coor,
+    vp_y_coor,
+    needed,
+    status;
+
+IF NOT (status =
+    vsta$$srv_job_new_jrb (jrb)		!Get a JRB
+	)
+  THEN RETURN .status;
+
+jrb [jrb$l_slot] = 0;			!Not in any slot.
+
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!Job ref. block.
+		,wdb		!Addr. of returned wdb addr
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$b_window_type] = wdb$K_wtype_vsserve;	!VSSERVE type of window
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+
+!
+! Create my SDA objects for the AUTHORIZATION FORM
+! (My pasteboard, border VD, and a window on them)
+!
+IF NOT (status =
+    create_window_appearance
+		(.win_width
+		,.win_height
+		,.wdb
+		,0		!KBD flag
+		,0		!TAB flag
+		,0		!Header is NOT editable
+		,%ASCID 'Authorization form' !help keyword for border
+		,needed
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);		!Cleanup.
+    RETURN .status;		! and return the error
+    END;
+
+IF .needed NEQ 0
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);			!Cleanup.
+    RETURN $error (vsta$_w2small
+		,integer_type, .needed
+		);
+    END;
+
+wdb [wdb$l_u_pb_id] = .pb_id;		!Remember "user's" PB-id
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+
+!
+! Put authorization form where the HELP document won't occlude it.
+! (up and to the right).
+!
+get_auth_placement (.wdb);
+
+IF NOT (status =
+    window_in_job (.wdb)	!Create viewports
+	)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_win_in_job);
+    END;
+
+!
+! Make the border selectable.
+!
+IF NOT vsta$$rgn_set_region_selectable
+		(.wdb [wdb$l_win_border_vd_id]
+		,0, 0			!Region X,y
+		,0, 0			! no routine or parameter
+		,.srv$gl_auth_menu [hmb$l_pb]	!Popup PB
+		,.srv$gl_auth_menu [hmb$w_def_x]
+		,.srv$gl_auth_menu [hmb$w_def_y]
+		,vsta$K_sel_area
+		)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_setrgnsel);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vp_selected
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by the region server when a Selectable region or vp has
+!	been selected. At process level (not AST level).
+!	This routine causes the wdb associated with the vp to be remembered.
+!
+!	Also, if the vp has a keyboard and we're selecting the
+!	viewport and NOT a region, we activate the keyboard.
+!
+!	If we're selecting a REGION within the viewport, we don't attach
+!	the keyboard.
+!
+! FORMAL PARMETERS:
+	(vp_id			!Which VP
+	,region_flag		! 1 if a region was selected
+	) =
+!--
+BEGIN
+LOCAL
+    found_flag,
+    jrb: REF job_block,		!Ptr to JRB
+    wdb_q_hdr,			!Queue header address
+    curr_wdb: REF window_data_block,
+    wdb: REF window_data_block,
+    status;
+!
+! If this is the VP of the footer, or the symbol bar, then return immediately--
+! there is no WDB for them.
+!
+IF ((.vp_id EQL .vsta$gl_footer_vp_id)
+		OR
+	(.vp_id EQL .vsta$gl_symbol_vp_id))
+  THEN RETURN SS$_NORMAL;
+
+!
+! Unless we have a popup VP, find the wdb.
+!
+IF (.vp_id NEQ .vsta$gl_popup_vp_id)
+  THEN
+    BEGIN
+    jrb = .jrb_q_hdr [0];		!Point to first JRB
+    found_flag = 0;
+    WHILE (.jrb NEQ jrb_q_hdr) DO
+	BEGIN
+	wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Get address of queue header
+	curr_wdb = ..wdb_q_hdr;
+	WHILE (.curr_wdb NEQ .wdb_q_hdr) DO
+	    BEGIN
+	    IF ((.curr_wdb [wdb$l_u_vp_id] EQL .vp_id)
+			OR
+		(.curr_wdb [wdb$l_hi_vp_id] EQL .vp_id))
+	      THEN
+		BEGIN
+		found_flag = 1;
+		wdb = .curr_wdb;
+		EXITLOOP;
+		END;
+
+	    curr_wdb = .curr_wdb [wdb$a_flink];	!Go on to next wdb
+	    END;
+	IF (.found_flag) THEN EXITLOOP;
+	jrb = .jrb [jrb$a_flink];
+	END;
+!
+! If we couldn't find it, it went away, such as when user hits mouse button
+! on an object that is just in the process of going away.
+!
+	IF NOT .found_flag
+	THEN RETURN SS$_NORMAL;
+  !
+  ! Set "last wdb selected"
+  !
+    vsta$gl_last_selected_wdb = .wdb;
+
+  !
+  ! If not a region selection, and viewport has a keyboard or/and tablet,
+  !  attach the keyboard or/and tablet.
+  !
+    IF NOT .region_flag
+      THEN
+	BEGIN
+	IF (.wdb [wdb$b_kbd_char_idx] NEQ 0)
+	  THEN
+	    BEGIN
+	    IF (.wdb NEQ .srv$gl_curr_kbd_wdb)	!Don't bother if it's the same
+	      THEN
+		vsta$$srv_attach_kbd (.wdb [wdb$l_u_pb_id], wdb[$base]);
+	    END;
+
+	IF (.wdb [wdb$b_tab_char_idx] NEQ 0)
+	  THEN
+	    BEGIN
+	    IF (.wdb NEQ .srv$gl_curr_tablet_wdb)
+						!Don't bother if it's the same
+	      THEN
+		vsta$$srv_attach_tablet (.wdb [wdb$l_u_pb_id], wdb[$base]);
+	    END;
+	END;
+    RETURN SS$_NORMAL;
+    END;		!** END of "not a popup VP" ***
+
+RETURN SS$_NORMAL;
+END;
+
+GLOBAL ROUTINE vsta$$srv_pop_current_vp_to_top =
+!++
+! Functional description:
+!
+! User has just selected the "Pop to top" entry in a menu.  Pop
+! the current vp to the top.
+!   If the popped VP is a native window with a keyboard icon, make
+! it is default VKB WDB for the job. Attach the keyboard to the job
+! if there is someplace to do it.
+!
+! Implicit inputs:
+!	vsta$gl_last_selected_wdb
+!
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    att_wdb: REF window_data_block initial (0),
+    tablet_wdb: REF window_data_block initial (0),
+    status;
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+!
+! Get job block.
+!
+	jrb = .vsta$gl_last_selected_wdb [wdb$a_jrb];
+!
+! If this WDB is a candidate for automatically getting the KBD,
+! make it the default VKB in this job.
+!
+IF (.vsta$gl_last_selected_wdb [wdb$b_kbd_char_idx] NEQ 0)
+  THEN
+    BEGIN
+    IF ((.vsta$gl_last_selected_wdb EQL .jrb [jrb$a_mtwin])
+			OR
+	(.vsta$gl_last_selected_wdb [wdb$b_window_type] EQL wdb$K_wtype_user))
+       THEN att_wdb = .vsta$gl_last_selected_wdb;
+    END
+  ELSE
+    BEGIN
+    att_wdb = .jrb [jrb$l_last_vkb_wdb];	!Last place in job with KBD
+    END;
+
+!
+! Attach the keyboard to the job if it is reasonable to do so.
+!
+IF (.att_wdb NEQ 0)
+  THEN
+    vsta$$srv_attach_kbd
+			(.att_wdb [wdb$l_u_pb_id]
+			,.att_wdb
+			);
+!
+! If this WDB is a candidate for automatically getting the tablet,
+! make it the default tablet in this job.
+!
+IF (.vsta$gl_last_selected_wdb [wdb$b_tab_char_idx] NEQ 0)
+  THEN
+    BEGIN
+    tablet_wdb = .vsta$gl_last_selected_wdb;
+    END
+  ELSE
+    BEGIN
+    tablet_wdb = .jrb [jrb$a_last_vtb_wdb];	!Last place in job with tablet
+    END;
+
+!
+! Attach the tablet to the job if it is reasonable to do so.
+!
+IF (.tablet_wdb NEQ 0)
+  THEN
+    vsta$$srv_attach_tablet
+			(.tablet_wdb [wdb$l_u_pb_id]
+			,.tablet_wdb
+			);
+!
+! Bring it to the top
+!
+vsta$$srv_pop_only_wdb (.vsta$gl_last_selected_wdb);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_sink_currnt_vp_to_btm =
+!++
+! Functional description:
+!
+! User has just selected the "Sink to bottom" entry in a menu.  Sink
+! the current vp to the bottom.
+! Leave keyboard where it is.
+! Implicit inputs:
+!	vsta$gl_last_selected_wdb
+!
+!--
+BEGIN
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF .vsta$gl_last_selected_wdb EQL 0
+THEN RETURN SS$_NORMAL;
+
+!
+! Sink it to the bottom.
+!
+	vsta$$srv_sink_only_wdb (.vsta$gl_last_selected_wdb)
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_pop_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Pops the viewports specified by wdb to the top.
+!	If no viewports are currently attached, then note that
+!	nothing needs to be done except modify our data structure.
+!         Note: This routine is called when an icon is deposited,
+!	for example the HELP document; or when a region is selected.
+!	In the latter case the viewports really exist, in the former
+!	case they don't (yet).
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    wdb_q_hdr,
+    wdb_top: REF window_data_block,
+    top_vp_this_jrb,
+    junk,		!Misc argument to REMQUE
+    status;
+
+jrb = .wdb [wdb$a_jrb];
+
+IF (.jrb [jrb$a_blink] NEQ jrb_q_hdr)
+  THEN
+    BEGIN			!This JRB is not "on top"-- put it there.
+    REMQUE (.jrb, junk);
+    INSQUE (.jrb, jrb_q_hdr);
+    END;
+
+wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Get address of wdb queue header
+wdb_top = ..wdb_q_hdr;
+top_vp_this_jrb = .wdb_top [wdb$l_u_vp_id];
+
+IF (.wdb_top NEQ .wdb)
+  THEN
+    BEGIN
+    REMQUE (.wdb, junk);
+    INSQUE (.wdb, .wdb_q_hdr);		!This WDB is not "on top" -- put it.
+    END;
+
+IF (.top_vp_this_jrb EQL 0)
+  THEN RETURN SS$_NORMAL;		!No VP, really-- no popping to do.
+
+IF (.top_vp_this_jrb EQL .vsta$gl_top_vp)
+  THEN
+    BEGIN		!This JRB is already on top
+    IF (.top_vp_this_jrb EQL .wdb [wdb$l_u_vp_id])
+      THEN RETURN SS$_NORMAL;		!Already on top--do nothing.
+    vs$$vss_change_doc_paste (.wdb [wdb$l_hi_vp_id], .wdb [wdb$l_u_vp_id],
+				.top_vp_this_jrb);
+    END
+  ELSE
+    BEGIN		!Must pop all viewports above top_vp
+  ! First pop the top viewport above top_vp
+    vs$$vss_change_doc_paste (.wdb [wdb$l_hi_vp_id], .wdb [wdb$l_u_vp_id],
+				.vsta$gl_top_vp);
+
+  ! Now pop all the other viewports above top_vp
+    wdb_top = ..wdb_q_hdr;
+    wdb_top = .wdb_top [wdb$a_flink];	!Skip over top VP
+
+    WHILE (.wdb_top NEQ .wdb_q_hdr) DO
+	BEGIN
+	vs$$vss_change_vp_paste (.wdb_top [wdb$l_u_vp_id], .vsta$gl_top_vp);
+	vs$$vss_change_vp_paste (.wdb_top [wdb$l_hi_vp_id], .vsta$gl_top_vp);
+	wdb_top = .wdb_top [wdb$a_flink];
+	END;
+    END;
+
+vsta$gl_top_vp = .wdb [wdb$l_u_vp_id];	!Remember new "top vp"
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_pop_only_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Pops ONE viewport specified by wdb to the top.  See vsta$$srv_pop_wdb
+!	for popping all viewports to top for a wdb.
+!
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    wdb_q_hdr,
+    wdb_top: REF window_data_block,
+    top_vp_this_jrb,
+    junk,		!Misc argument to REMQUE
+    status;
+
+jrb = .wdb [wdb$a_jrb];
+
+IF (.jrb [jrb$a_blink] NEQ jrb_q_hdr)
+  THEN
+    BEGIN			!This JRB is not "on top"-- put it there.
+    REMQUE (.jrb, junk);
+    INSQUE (.jrb, jrb_q_hdr);
+    END;
+
+wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Get address of wdb queue header
+wdb_top = ..wdb_q_hdr;
+top_vp_this_jrb = .wdb_top [wdb$l_u_vp_id];
+
+IF (.wdb_top NEQ .wdb)
+  THEN
+    BEGIN
+    REMQUE (.wdb, junk);
+    INSQUE (.wdb, .wdb_q_hdr);		!This WDB is not "on top" -- put it.
+    END;
+
+IF (.top_vp_this_jrb EQL 0)
+  THEN RETURN SS$_NORMAL;		!No VP, really-- no popping to do.
+!
+! Pop the top viewport above top_vp unless it is already there.
+!
+	if .wdb [wdb$l_u_vp_id] neq .vsta$gl_top_vp
+	then
+	    begin
+	    vs$$vss_change_doc_paste (.wdb [wdb$l_hi_vp_id],
+	    .wdb [wdb$l_u_vp_id], .vsta$gl_top_vp);
+!
+! Remember new top vp.
+!
+	    vsta$gl_top_vp = .wdb [wdb$l_u_vp_id]
+	    end;
+
+	SS$_NORMAL
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_sink_only_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Puts ONE viewport specified by wdb on the bottom, i.e. behind
+!	all other viewports.
+!
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+	begin
+
+	external
+
+	    vsta$gl_authorized;
+
+	local
+
+	    jrb: REF job_block,
+	    junk,
+	    s;
+!
+! Get address of job block.
+!
+	jrb = .wdb [wdb$a_jrb];
+!
+! Put the wdb at the end of the queue, so store and retrieve will know to
+! leave the newly buried wdb buried.
+!
+	REMQUE (.wdb, junk);
+	INSQUE (.wdb, .jrb [jrb$a_wdb_q_hdr_bl]);
+!
+! Get rid of image so we can recreate it on bottom.  (the doc_paste routine
+! doesn't seem to do this corrently).
+!
+	IF NOT (s =
+	    vs$$vss_delete_2_vps (.wdb [wdb$l_hi_vp_id], .wdb [wdb$l_u_vp_id])
+		)
+	  THEN
+	    RETURN $error (vsta$_del2vps);
+!
+! Recreate the viewports below everything.
+!
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_u_window_id]
+		,.srv_vs_id		!VS
+		,wdb [wdb$l_u_vp_id]	!Return VPid here
+		,.wdb [wdb$l_u_vp_x_coor]
+		,.wdb [wdb$l_u_vp_y_coor]
+		,.vsta$gl_bottom_vp	!On bottom
+		,.wdb [wdb$a_vp_help_keyword]	! Restore help keyword
+		)
+  THEN RETURN $error (vsta$_crevp_for
+			,string_type, %ASCID 'bottom window'
+			);
+
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_hi_window_id]
+		,.srv_vs_id		!VS
+		,wdb [wdb$l_hi_vp_id]	!Return VPid here
+		,.wdb [wdb$l_hi_vp_x_coor]
+		,.wdb [wdb$l_hi_vp_y_coor]
+		,.vsta$gl_bottom_vp	!On bottom
+		,0			!NO HELP keyword
+		)
+  THEN RETURN $error	(vsta$_crevp_for
+			,string_type, %ASCID 'bottom borders'
+			);
+!
+! Figure out which vp is on top now.
+!
+	if not (s = find_next_top_vp ())
+	then return .s;
+!
+! Attach keyboard to someplace useful.  For now, we only do this if user
+! is authorized.  Otherwise sinking authorization form detaches keyboard,
+! requiring user to select name or password field again, which for now
+! is kind of silly since there are no other possible places to put keyboard,
+! not to mention that user might not know HOW to reattach keyboard.
+!
+	if .vsta$gl_authorized
+	then
+!
+! Don't change keyboard attachment unless the sunken object is the one
+! currently having the keyboard or the sunken object contains a field being
+! edited.
+!
+	    if .srv$gl_curr_kbd_wdb eql wdb[$base]
+	    then attach_kbd_topmost ()		    !we sank body with kbd
+	    else
+		if  .vs$gl_e_vkb_id neq 0
+		then
+		    if .vs$gl_e_vkb_id eql .wdb[wdb$l_hi_pb_id]
+		    then attach_kbd_topmost ()	    !we sank header field
+		    else
+			if .vs$gl_e_vkb_id eql .wdb[wdb$l_u_pb_id]
+			then attach_kbd_topmost (); !we sank body editable fld
+!
+! If we just sank object with tablet, reattach tablet to topmost object
+! having tablet.
+!
+	    if .srv$gl_curr_tablet_wdb eql wdb[$base]
+	    then attach_tablet_topmost ();
+
+	ss$_normal
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_vps_fully_visible
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Make the VPs in a WDB "fully visible".
+!	If they are not positioned fully on the screen,
+!	change the WDB data structure to reflect the proper placement,
+!	then:
+!	1. If the VPs don't exist, return.
+!	2. If the VPs exist now, delete them and set vp-id's to 0.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    screen_bm,		!Bottom margin of screen area
+    screen_rm,		!right margin of screen area
+    x_move,
+    y_move,
+    status;
+
+x_move = 0;
+y_move = 0;
+
+IF (.vsta$gl_footer_start_x NEQ 0)
+  THEN
+	!
+	! Calculations WITH utility area.
+	!
+	begin
+	screen_bm = .vsta$gl_symb_start_y;
+	screen_rm = .vsta$gl_footer_start_x;
+	end
+  ELSE
+	!
+	! No utility area.
+	!
+	begin
+	screen_bm = .vsta$gl_screen_size_y;
+	screen_rm = .vsta$gl_screen_size_x;
+	end;
+
+IF (.wdb [wdb$l_hi_vp_x_coor] LSS 0)
+  THEN x_move = 0 - .wdb [wdb$l_hi_vp_x_coor]	!get amount to move in X direct
+  ELSE
+    BEGIN
+    x_move = .screen_rm -
+		(.wdb [wdb$l_hi_vp_x_coor] + .wdb [wdb$l_hi_vp_width]);
+    IF (.x_move GTR 0) THEN x_move = 0;		!No need to move.
+    END;
+
+IF (.wdb [wdb$l_hi_vp_y_coor] LSS 0)
+  THEN y_move = 0 - .wdb [wdb$l_hi_vp_y_coor]
+  ELSE
+    BEGIN
+    y_move = .screen_bm -
+		(.wdb [wdb$l_hi_vp_y_coor] + .wdb [wdb$l_hi_vp_height]);
+    IF (.y_move GTR 0) THEN y_move = 0;		!No need to move.
+    END;
+
+IF ((.x_move EQL 0) AND (.y_move EQL 0))
+  THEN RETURN SS$_NORMAL;		!Positioning is ok.
+
+!
+! Must be re-positioned. Update the data structure.
+!
+wdb [wdb$l_hi_vp_x_coor] = .wdb [wdb$l_hi_vp_x_coor] + .x_move;
+wdb [wdb$l_u_vp_x_coor] = .wdb [wdb$l_u_vp_x_coor] + .x_move;
+wdb [wdb$l_hi_vp_y_coor] = .wdb [wdb$l_hi_vp_y_coor] + .y_move;
+wdb [wdb$l_u_vp_y_coor] = .wdb [wdb$l_u_vp_y_coor] + .y_move;
+
+!
+! If VP's don't exist, just return.
+!
+IF (.wdb [wdb$l_hi_vp_id] EQL 0)
+  THEN RETURN SS$_NORMAL;
+
+!
+! VP's exist. Delete them and set VP-id's to 0.
+!
+vsta$$srv_zap_vps (.wdb);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_delete_all_jrb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes all my SDA objects for a jrb.
+!	and de-link stuff, etc.
+!	Called when the user has selected "logout job" menu item;
+!	or for each JRB at "end session".
+! FORMAL PARAMETERS:
+	(jrb: REF job_block	!JRB address
+	) =
+!--
+BEGIN
+LOCAL
+    wdb_q_hdr,			!Address of WDB queue header
+    wdb: REF window_data_block,	!Address of user's WDB
+    status;
+!
+! Loop through the JRB deleting the window, etc.
+!
+wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Get address of window q header
+wdb = ..wdb_q_hdr;		!Get addr of first WDB entry
+WHILE (.wdb NEQ .wdb_q_hdr) DO	!Until we've done them all.
+    BEGIN
+    IF NOT (status =
+	delete_this_wdb (.wdb)
+	    )
+      THEN RETURN .status;	!Give up if error.
+    wdb = ..wdb_q_hdr;		!Get ptr to (new) first entry
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE delete_this_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets the window id and pretends that the user
+!	has just called "delete_window".
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+! SIDE EFFECTS:
+!	The window (or terminal) will be deleted.
+!	The WDB database will be deleted. The JRB will be deleted
+!	if all the WDB's have gone away.
+!--
+BEGIN
+LOCAL
+    wdb_type,
+    window_id,
+    ttype,
+    status;
+
+wdb_type = .wdb [wdb$b_window_type];
+window_id = .wdb [wdb$l_u_window_id];	!Get user's window id.
+
+(CASE .wdb_type	FROM wdb$k_lowest_wtype TO wdb$k_highest_wtype OF
+   SET
+	[wdb$k_wtype_user
+	,wdb$k_wtype_ts
+	,wdb$K_wtype_help
+	,wdb$K_wtype_prof
+	,wdb$K_wtype_notice]: 
+		RETURN vs$$vds_delete_window (.window_id, .vs$gl_acp_pid);
+	[wdb$k_wtype_vt100]:
+		RETURN vs$$vtem_vt100_delete (.wdb [wdb$l_term_vd_id]);
+	[wdb$k_wtype_4014]:
+		RETURN vs$$vtem_tek4014_delete (.wdb [wdb$l_term_vd_id]);
+	[inrange, outrange]:
+		RETURN vsta$$error (SS$_BADPARAM);
+   TES
+)
+
+END;
+
+GLOBAL ROUTINE vsta$$srv_zap_vps
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the VP's associated with a wdb.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    vp_u,
+    status;
+
+vp_u = .wdb [wdb$l_u_vp_id];
+
+IF NOT (status =
+    vs$$vss_delete_2_vps (.wdb [wdb$l_hi_vp_id], .vp_u)
+	)
+  THEN
+    RETURN $error (vsta$_del2vps);
+
+wdb [wdb$l_hi_vp_id] = 0;
+wdb [wdb$l_u_vp_id] = 0;
+
+IF (.vp_u EQL .vsta$gl_top_vp)
+  THEN find_next_top_vp ();
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_restore_vps
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Re-create the VP's, at a given location.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If the VPs haven't been positioned yet, do it now.
+!
+IF (.wdb [wdb$l_u_vp_x_coor] EQL .wdb [wdb$l_hi_vp_x_coor])	!=0
+  THEN
+    BEGIN
+  !
+  ! Find position of viewport
+  !
+    IF (.wdb [wdb$b_window_type] EQL wdb$K_wtype_help)
+      THEN get_help_placement (.wdb)		!Special placement for HELP
+      ELSE get_viewport_placement (.wdb);
+    RETURN window_in_job (.wdb);
+    END;
+
+!
+! OK, we just have to create the viewports on top of everything.
+!
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_u_window_id]
+		,.srv_vs_id		!VS
+		,wdb [wdb$l_u_vp_id]	!Return VPid here
+		,.wdb [wdb$l_u_vp_x_coor]
+		,.wdb [wdb$l_u_vp_y_coor]
+		,.vsta$gl_top_vp	!On top
+		,.wdb [wdb$a_vp_help_keyword]	! Restore help keyword
+		)
+  THEN RETURN $error (vsta$_crevp_for
+			,string_type, %ASCID 'user window'
+			);
+
+IF NOT vs$$vss_create_vp
+		(.wdb [wdb$l_hi_window_id]
+		,.srv_vs_id		!VS
+		,wdb [wdb$l_hi_vp_id]	!Return VPid here
+		,.wdb [wdb$l_hi_vp_x_coor]
+		,.wdb [wdb$l_hi_vp_y_coor]
+		,.vsta$gl_top_vp	!On top of prev. top
+		,0			!NO HELP keyword
+		)
+  THEN RETURN $error	(vsta$_crevp_for
+			,string_type, %ASCID 'borders'
+			);
+
+! Remember new top VP.
+!
+vsta$gl_top_vp = .wdb [wdb$l_u_vp_id];
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_remember_kbd_attach =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Remember the current KBD attachment. This may be called
+!	when a field is selected for editing if we are planning
+!	to restore the old attachment when the editing is finished.
+!	When a field is selected for editing, the code should appear
+!	as follows:
+!		vsta$$srv_remember_kbd_attach ();
+!		call "vsta$$srv_edit_one"
+!	  And when the field is finished being edited the code should
+!	appear as follows:
+!		IF (.delim EQL yank) THEN RETURN SS$_NORMAL;
+!		vsta$$srv_restore_kbd_attach ();
+! IMPLICIT OUTPUTS:
+!	rem_attached_kbd_id, rem_attached_kbd_wdb
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If we were already editing a field, do not affect the remembered
+! variables.
+!
+IF (.vs$gl_e_vkb_id NEQ 0)
+  THEN RETURN SS$_NORMAL;		!Already editing a field.
+
+!
+! We weren't previously editing a field, so remember the keyboard
+! attachment information. vsta$$srv_restore_kbd_attach will put
+! the attachment back the way it was when we started if it is called
+! when the user finishes editing the field.
+!
+
+IF (.srv$gl_curr_kbd_wdb NEQ 0)
+  THEN
+    BEGIN		!KBD was attached to a terminal or user PB
+    rem_attached_kbd_id = .srv$gl_curr_kbd_id;
+    rem_attached_kbd_wdb = .srv$gl_curr_kbd_wdb;
+    END
+  ELSE
+    BEGIN		!KBD was nowhere or on an editable field.
+    rem_attached_kbd_id = 0;
+    rem_attached_kbd_wdb = 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_attached_gone
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when the thing that had the KBD has been deleted from the
+! screen. We will try to attach the KBD to the main terminal of the job,
+! or if that is gone, to the top-most thing left on the
+! screen. If there isn't anything that could use the KBD, then we detach
+! the keyboard.
+! FORMAL PARAMETERS:
+	(jrb_ignore: REF job_block !Which JRB to ignore, or 0
+	,try_mt_flag	!=1 if we should try attaching to the main terminal
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    wdb: REF window_data_block,
+    wdb_to_attach: REF window_data_block,
+    status;
+!
+! If "try_mt_flag" = 1, try to attach the keyboard to the job's main terminal.
+!
+IF (.try_mt_flag NEQ 0)
+  THEN
+    BEGIN
+    wdb_to_attach = .jrb_ignore [jrb$a_mtwin];
+    IF (.wdb_to_attach NEQ 0)
+      THEN
+	BEGIN
+	IF (.wdb_to_attach [wdb$l_u_vp_id] NEQ 0)	!Appears on the screen?
+	  THEN RETURN vsta$$srv_attach_kbd		!Yes, attach kbd to it.
+		(.wdb_to_attach [wdb$l_u_pb_id], .wdb_to_attach);
+	END;
+    END;
+
+!
+! Loop through the JRB's, starting at the one given.
+!
+wdb_to_attach = 0;
+jrb =.jrb_q_hdr[0];		!Start at the top JRB
+WHILE (.jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    IF (.jrb NEQ .jrb_ignore)
+      THEN
+	BEGIN
+	wdb = .jrb [jrb$a_wdb_q_hdr_fl];	!Get first WDB
+	IF (.wdb [wdb$l_u_vp_id] NEQ 0)
+	  THEN				!This job is on the screen.
+	    BEGIN
+	    IF (.jrb [jrb$l_last_vkb_wdb] NEQ 0)
+	      THEN
+		BEGIN
+		wdb_to_attach = .jrb [jrb$l_last_vkb_wdb];
+		EXITLOOP;
+		END
+	      ELSE
+		BEGIN
+		wdb_to_attach = .jrb [jrb$a_mtwin];
+		IF (.wdb_to_attach NEQ 0)
+		  THEN EXITLOOP;
+		END;
+	    END;
+	END;
+    jrb = .jrb [jrb$a_flink];		!Go on to next JRB
+    END;
+
+IF (.wdb_to_attach EQL 0)
+  THEN RETURN vsta$$srv_attach_kbd (0,0)	!Didn't find one
+  ELSE RETURN vsta$$srv_attach_kbd
+		(.wdb_to_attach [wdb$l_u_pb_id], .wdb_to_attach);
+
+END;
+
+ROUTINE attach_kbd_topmost =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when something has been put underneath.  This routine attaches
+!	the keyboard to the topmost object having a keyboard, or leaves
+!	keyboard UNATTACHED if no screen object currently has a keyboard.
+!
+!--
+	begin
+
+	LOCAL
+
+	    s,
+	    paste_order,
+	    largest_paste_order : initial (-1),
+	    jrb: REF job_block,
+	    wdb: REF window_data_block,
+	    wdb_to_attach: REF window_data_block initial (0),
+	    status;
+!
+! Loop through the JRB's.
+!
+	jrb =.jrb_q_hdr[0];		!Start at the top JRB
+
+	WHILE (.jrb NEQ jrb_q_hdr) DO
+	BEGIN
+!
+! Get first wdb for this job.
+!
+	wdb = .jrb [jrb$a_wdb_q_hdr_fl];
+!
+! Use first wdb to decide if job is on screen.
+!
+	IF (.wdb [wdb$l_u_vp_id] NEQ 0)
+	  THEN
+!
+! Loop through this job from topmost down to see if any object has a keyboard.
+!
+	    while wdb[$base] neq jrb[jrb$a_wdb_q_hdr_fl] do
+
+	    begin
+
+	    IF (.wdb [wdb$b_kbd_char_idx] NEQ 0)	
+	    then
+
+		begin
+!
+! Found a keyboard.  Get paste order of this viewport.
+!
+		if not (s = vsta$$vss_get_vp_paste_order (.wdb[wdb$l_u_vp_id],
+		    paste_order))
+		then return .s;
+!
+! If this viewport is higher than any seen so far, remember.
+!
+		if .paste_order gtr .largest_paste_order
+		then
+		    begin
+		    largest_paste_order = .paste_order;
+		    wdb_to_attach = wdb[$base]
+		    end
+
+		end;	! of block for each keyboard wdb
+!
+! Keep looking in this job.
+!
+	    wdb = .wdb[wdb$a_flink]
+
+	    end;	! of loop through wdb's in this job
+!
+! Done with this job, look in the next job down.
+!
+	jrb = .jrb [jrb$a_flink]		!Go on to next JRB
+
+	END;		! of loop through all jobs
+!
+! Attach keyboard to topmost found, or detach if none found.
+!
+	IF (.wdb_to_attach EQL 0)
+	THEN vsta$$srv_attach_kbd (0,0)
+	ELSE vsta$$srv_attach_kbd (.wdb_to_attach [wdb$l_u_pb_id],
+	    .wdb_to_attach)
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_tablet_gone
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when the thing that had the tablet has been deleted from the
+! screen. We will try to attach the tablet to the top-most thing left on the
+! screen. If there isn't anything that could use the tablet, then we detach
+! it completely.
+! FORMAL PARAMETERS:
+	(jrb_ignore: REF job_block !Which JRB to ignore, or 0
+	) =
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    wdb: REF window_data_block,
+    wdb_to_attach: REF window_data_block,
+    status;
+!
+! Loop through the JRB's, starting at the one given.
+!
+wdb_to_attach = 0;
+jrb =.jrb_q_hdr[0];		!Start at the top JRB
+WHILE (.jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    IF (.jrb NEQ .jrb_ignore)
+      THEN
+	BEGIN
+	wdb = .jrb [jrb$a_wdb_q_hdr_fl];	!Get first WDB
+	IF (.wdb [wdb$l_u_vp_id] NEQ 0)
+	  THEN				!This job is on the screen.
+	    BEGIN
+	    IF (.jrb [jrb$a_last_vtb_wdb] NEQ 0)
+	      THEN
+		BEGIN
+		wdb_to_attach = .jrb [jrb$a_last_vtb_wdb];
+		EXITLOOP;
+		END;
+	    END;
+	END;
+    jrb = .jrb [jrb$a_flink];		!Go on to next JRB
+    END;
+
+IF (.wdb_to_attach EQL 0)
+  THEN RETURN vsta$$srv_attach_tablet (0,0)	!Didn't find one
+  ELSE RETURN vsta$$srv_attach_tablet
+		(.wdb_to_attach [wdb$l_u_pb_id], .wdb_to_attach);
+
+END;
+
+ROUTINE attach_tablet_topmost =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called when something has been put underneath.  This routine attaches
+!	the tablet to the topmost object having a keyboard, or leaves
+!	tablet UNATTACHED if no screen object currently has a keyboard.
+!
+!--
+	begin
+
+	LOCAL
+
+	    s,
+	    paste_order,
+	    largest_paste_order : initial (-1),
+	    jrb: REF job_block,
+	    wdb: REF window_data_block,
+	    wdb_to_attach: REF window_data_block initial (0),
+	    status;
+!
+! Loop through the JRB's.
+!
+	jrb =.jrb_q_hdr[0];		!Start at the top JRB
+
+	WHILE (.jrb NEQ jrb_q_hdr) DO
+	BEGIN
+!
+! Get first wdb for this job.
+!
+	wdb = .jrb [jrb$a_wdb_q_hdr_fl];
+!
+! Use first wdb to decide if job is on screen.
+!
+	IF (.wdb [wdb$l_u_vp_id] NEQ 0)
+	  THEN
+!
+! Loop through this job from topmost down to see if any object has a tablet.
+!
+	    while wdb[$base] neq jrb[jrb$a_wdb_q_hdr_fl] do
+
+	    begin
+
+	    IF (.wdb [wdb$b_tab_char_idx] NEQ 0)	
+	    then
+
+		begin
+!
+! Found a tablet.  Get paste order of this viewport.
+!
+		if not (s = vsta$$vss_get_vp_paste_order (.wdb[wdb$l_u_vp_id],
+		    paste_order))
+		then return .s;
+!
+! If this viewport is higher than any seen so far, remember.
+!
+		if .paste_order gtr .largest_paste_order
+		then
+		    begin
+		    largest_paste_order = .paste_order;
+		    wdb_to_attach = wdb[$base]
+		    end
+
+		end;	! of block for each keyboard wdb
+!
+! Keep looking in this job.
+!
+	    wdb = .wdb[wdb$a_flink]
+
+	    end;	! of loop through wdb's in this job
+!
+! Done with this job, look in the next job down.
+!
+	jrb = .jrb [jrb$a_flink]		!Go on to next JRB
+
+	END;		! of loop through all jobs
+!
+! Attach tablet to topmost found, or detach if none found.
+!
+	IF (.wdb_to_attach EQL 0)
+	THEN vsta$$srv_attach_tablet (0,0)
+	ELSE vsta$$srv_attach_tablet (.wdb_to_attach [wdb$l_u_pb_id],
+	    .wdb_to_attach)
+
+	END;
+
+GLOBAL ROUTINE vsta$$srv_restore_kbd_attach =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Restore the KBD attachment saved by "remember_kbd_attach" routine.
+!--
+BEGIN
+LOCAL
+    status;
+!
+! If there was a WDB, and it is now stored in a job slot, do NOT
+! attach the keyboard there.
+!
+IF (.rem_attached_kbd_wdb NEQ 0)
+  THEN
+    BEGIN
+    IF (.rem_attached_kbd_wdb [wdb$l_u_vp_id] EQL 0)
+      THEN RETURN SS$_NORMAL;		!Not on screen - leave KBD detached.
+    END;
+
+vsta$$srv_attach_kbd (.rem_attached_kbd_id, .rem_attached_kbd_wdb);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_attach_kbd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attach the keyboard somewhere.
+! FORMAL PARAMETERS:
+	(kbd_id				! or 0, if want to deactivate
+	,wdb: REF window_data_block	!New WDB, or 0 if none
+	) =
+! IMPLICIT I/O:
+!	srv$gl_curr_kbd_id, srv$gl_curr_kbd_wdb, vs$gl_e_vkb_id
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    vd_id,
+    field_start,
+    status;
+
+!
+! The keyboard is attached. If there was a WDB already attached, the
+! keyboard indicator is turned off. If there is a new WDB, its keyboard
+! indicator is turned on. Then kbd-id and wdb-u are remembered.
+!
+IF (.kbd_id NEQ .srv$gl_curr_kbd_id)	!Don't bother attaching if already done
+  THEN
+    BEGIN
+    IF (.vs$gl_e_vkb_id NEQ 0)		!Were we editing a field?
+      THEN vsta$$edit_yank_actions (0);	!Yes, end field; cancel read.
+
+    IF (.kbd_id NEQ 0)			!Are we ATTACHING to new place?
+      THEN
+	BEGIN				!Yes, call ACTIVATE to do both the
+	IF NOT (status =		! deactivation of the old one and the
+	    vs$$activate_vkb (.kbd_id)	! activation of the new one.
+		)
+	  THEN RETURN $error (vsta$_actvkb);	!Can't activate virtual kbd
+
+!	determine & change the translation table for this vkb	
+	IF NOT (status =					
+	    vsta$$change_vkb_transtable ()			
+		)						
+	  THEN RETURN $error (vsta$_actvkb);			
+	 END
+        ELSE
+	BEGIN				!No, just deactivate old one
+	IF (.srv$gl_curr_kbd_id NEQ 0)	! if one was activated.
+	  THEN
+	    BEGIN
+	    IF NOT (status =
+		vs$$deactivate_vkb (.srv$gl_curr_kbd_id)
+		    )
+	      THEN RETURN $error (vsta$_deactvkb);
+	    END;
+	END;
+    END;
+!
+! Keyboard is now attached to the new place. Update headers.
+!
+IF (.srv$gl_curr_kbd_wdb NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_vds_keyboard_off (.srv$gl_curr_kbd_wdb)
+	    )
+      THEN RETURN $error (vsta$_kbd_ind_off); !"Can't turn off KBD indicator"
+    END;
+!
+! Turn on new indicator, if we need to.
+!
+IF (.wdb NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_vds_keyboard_on (.wdb)
+	    )
+      THEN RETURN $error (vsta$_kbd_ind_on);	!?Can't turn on KBD indicator
+    END;
+!
+! Remember the new info.
+!
+srv$gl_curr_kbd_id = .kbd_id;
+srv$gl_curr_kbd_wdb = .wdb;
+!
+! If keyboard is now attached to a wdb, remember this incase we
+! store the job and then get it back.
+!
+IF (.wdb NEQ 0)
+  THEN
+    BEGIN
+    jrb = .wdb [wdb$a_jrb];
+    jrb [jrb$l_last_vkb_wdb] = .wdb;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_attach_tablet
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Attaches the tablet to a VTB
+! FORMAL PARAMETERS:
+	(tablet_id		! or 0 to detach
+	,wdb: REF window_data_block
+	) =
+! IMPLICIT I/O:
+!	srv$gl_curr_tablet_id, srv$gl_curr_tablet_wdb
+!--
+BEGIN
+LOCAL
+    vd_id,
+    field_start,
+    status;
+!
+! The tablet is attached. If there was a WDB already attached, the
+! tablet indicator is turned off. If there is a new WDB, its tablet
+! indicator is turned on. Then tablet-id and wdb-u are remembered.
+!
+    IF (.tablet_id NEQ 0)			!Are we ATTACHING to new place?
+      THEN
+	BEGIN				!Yes, call ACTIVATE to do both the
+	IF NOT (status =		! deactivation of the old one and the
+	    vs$$activate_vtb (.tablet_id)	! activation of the new one.
+		)
+	  THEN RETURN $error (vsta$_actpad)	!Can't activate virtual tablet
+	END
+      ELSE
+	IF (.srv$gl_curr_tablet_id NEQ 0)	! if one was activated.
+	  THEN
+	    IF NOT (status =
+		$ertn (vs$$deactivate_vtb) (.srv$gl_curr_tablet_id)
+		    )
+	      THEN RETURN $error (vsta$_deactpad);
+!
+! Tablet is now attached to the new place. Update headers.
+!
+IF (.srv$gl_curr_tablet_wdb NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_vds_tablet_off (.srv$gl_curr_tablet_wdb)
+	    )
+      THEN RETURN $error (vsta$_pad_ind_off);
+    END;
+!
+! Turn on new indicator, if we need to.
+!
+IF (.wdb NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vsta$$srv_vds_tablet_on (.wdb)
+	    )
+      THEN RETURN $error (vsta$_pad_ind_on);
+    END;
+!
+! Remember the new info.
+!
+srv$gl_curr_tablet_id = .tablet_id;
+srv$gl_curr_tablet_wdb = .wdb;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE add_terminal_to_job
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Adds the terminal just created to the given JRB
+!	and creates terminal header, borders, and viewports.
+! FORMAL PARAMETERS:
+	(jrb: REF job_block		!JRB entry address
+	,mtflag				!0 if userlib called "create terminal"
+					!1 If this is a new job's main terminal
+	,ttype				!Terminal type
+	,window_id			!User's window id
+	,win_width			!Width of new window
+	,win_height			!Heigth of new window
+	,pb_id				!VKB id
+	,vd_id				!Virtual display id of terminal
+	,bezel_vd_id			!Vd id for bezel
+	) =
+!--
+BEGIN
+LOCAL
+    wdb: REF window_data_block,		!Window block address
+    my_window_id,			!Window id for header/border PB
+    my_pb_height,			!Height of my pasteboard
+    my_pb_width,			!Width of my pasteboard
+    total_vp_height,			!Height of both VP's combined
+    vp_x_coor,				!Where to put my VP
+    vp_y_coor,				! . .
+    status;
+!
+! Go get the data structures
+!
+IF NOT (status =
+    wdb_setup	(.window_id	!Window id
+		,.jrb		!address of JRB
+		,wdb		!Addr. of returned wdb addr.
+		)
+	)
+  THEN RETURN .status;
+
+wdb [WDB$B_WINDOW_TYPE] =
+	(CASE .ttype FROM vsta$k_termtype_lowest TO vsta$k_termtype_highest OF
+	    SET
+	    [vsta$k_termtype_vt100]: WDB$K_WTYPE_VT100;
+	    [vsta$k_termtype_vt100_small]: WDB$K_WTYPE_VT100;		
+	    [vsta$k_termtype_vt100_tall]: WDB$K_WTYPE_VT100;	
+	    [vsta$k_termtype_vt100_wide]: WDB$K_WTYPE_VT100;	
+	    [vsta$k_termtype_tek4014]: WDB$K_WTYPE_4014;
+	    TES
+	);
+wdb [wdb$l_term_vd_id] = .vd_id;	!Remember terminal body's VD-id.
+wdb [wdb$L_u_pb_id] = .pb_id;		!Remember user's PB-id
+wdb [wdb$l_u_vp_width] = .win_width;
+wdb [wdb$l_u_vp_height] = .win_height;
+vs$$vds_fetch_wname	(.window_id		!Ask VSWINDOW module
+			,wdb [wdb$a_name_desc]	! where the name desc is.
+			);
+
+!
+! Now, wid_width and win_height are the dimensions of a window that
+! includes the terminal body and footer. Call routine
+! that will create a pasteboard,VD's for borders and header,
+! and create a window on it for the human interface.
+!
+IF NOT (status = create_term_appearance	!Create SDA objects for a terminal
+		(.win_width		!Width of window
+		,.win_height		!Height of window
+		,.wdb			!Address of main window block
+		,.mtflag		!main terminal flag
+		,.ttype			!Type of terminal
+		,.vd_id			!Vd-id of terminal body
+		)
+	)
+  THEN
+    BEGIN
+    wdb_go_away (.wdb);
+    RETURN .status
+    END;
+
+!
+! Get VP size.
+!
+wdb [wdb$l_hi_vp_width] = .wdb [wdb$w_hi_pb_width];
+wdb [wdb$l_hi_vp_height] = .wdb [wdb$w_hi_pb_height];
+
+!
+! Make sure menu is all set.  We do this here rather than at system startup
+! so as to allow the user to get to work quickly and not be penalized for
+! menu startup if he's not even going to use it in this session.
+!
+IF .srv$gl_term_menu [hmb$l_vd] EQL 0
+  THEN
+    IF NOT get_term_menu_pb ()
+      THEN
+	BEGIN
+	delete_appearance_objects (.wdb);
+	RETURN $error (vsta$_hi_menu
+			,string_type, %ASCID 'Terminal'
+			);
+	END;
+!
+! Make the whole bezel VD selectable.
+!
+wdb [wdb$l_win_bezel_vd_id] = .bezel_vd_id;
+
+IF NOT (status =
+    vsta$$rgn_set_region_selectable
+		(.bezel_vd_id
+		,0, 0		!Region x,y
+		,0, 0			! no routine or parameter
+		,.srv$gl_term_menu [hmb$l_pb]
+		,.srv$gl_term_menu [hmb$w_def_x]
+		,.srv$gl_term_menu [hmb$w_def_y]
+		,vsta$K_sel_area
+		)
+	)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_setrgnsel);
+    END;
+!
+! Find position of viewport
+!
+get_viewport_placement	(.wdb);
+
+!
+! Create viewports
+!
+IF NOT (status =
+    window_in_job (.wdb)
+	)
+  THEN
+    BEGIN
+    delete_appearance_objects (.wdb);
+    RETURN $error (vsta$_win_in_job);
+    END;
+
+!
+! If the terminal is the main terminal, attach the KBD.
+!
+IF (.mtflag NEQ 0)
+  THEN
+    BEGIN
+    jrb [jrb$a_mtwin] = .wdb;		!Remember this is the job's Main term.
+    jrb [jrb$l_last_vkb_wdb] = .wdb;	! and the default VKB wdb
+    vsta$$srv_attach_kbd (.pb_id, .wdb); !Attach the keyboard NOW!
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE wdb_setup
+!++
+! FUNCTIONAL DESCRIPTION:
+!	This routine sets up the data structures for the case
+!	where we want to create a viewport for borders, headers,
+!	etc. to show a user's window.
+! FORMAL PARAMETERS:
+	(window_id		!User's window id
+	,jrb: REF job_block	!Address of JRB
+	,wdb			!Address of returned wdb
+	) =
+BEGIN
+LOCAL
+    wdb_q_hdr,			!Address of wdb queue hdr for this JRB
+    wdb_addr: REF window_data_block,
+    status;
+
+IF NOT vs$$acp_get_vm (%REF(wdb$s_window_data_block), wdb_addr)
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, wdb$s_window_data_block
+			,string_type, %ASCID 'window block (WDB)'
+			);
+!
+! Clear out entire block so that fields are already initialized to 0.
+!
+ch$fill (0, wdb$s_window_data_block, wdb_addr[$base]);
+
+wdb_q_hdr = jrb [JRB$A_WDB_Q_HDR_FL];	!Get address of window queue header
+!
+! Initialize its unique ID.  Note that this is currently only 16 bits,
+! because it gets stuffed with something else into a single ast parameter.
+!
+	wdb_addr[wdb$w_id] = wdb_last_id = .wdb_last_id + 1;
+
+INSQUE (.wdb_addr, .wdb_q_hdr);	!Insert block at head of queue
+
+!
+! Initialize the window block
+!
+wdb_addr [wdb$l_u_window_id] = .window_id;	! I know his window id.
+wdb_addr [WDB$A_JRB] = .jrb;		!Point back to owner JRB.
+
+!
+! Return address of the block to the caller.
+!
+.wdb = .wdb_addr;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_viewport_placement
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given viewport size, return info in the VP data blocks.
+!
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+BEGIN
+
+literal
+
+	vp_shift = 2 * vsta$k_header_height,
+			! amount to shift each vp down and to the left by
+			! such that header shows
+	skew = 7,	! difference  in height to use for viewports next
+			! to each other so that their headers don't line
+			! up exactly
+	margin = 0;	! distance to leave from physical margin in case of
+			! screen maladjustment
+
+LOCAL
+   screen_lm : initial (margin),
+			! left margin - distance left justified
+			! viewports should be kept from actual left or top
+			! of screen (merely to avoid possible distortion due
+			! to screen maladjustment)
+
+   screen_tm : initial (margin),
+			! top margin - distance top justified
+			! viewports should be kept from actual left
+			! of screen (merely to avoid possible distortion due
+			! to screen maladjustment)
+
+   screen_rm,		! right margin - pixels measured from left to
+			! utility bar or near right edge of screen
+
+   screen_bm,		! bottom margin - pixels measured from top down to
+			! symbol bar or near bottom edge of screen
+
+   screen_center_x,
+   screen_center_y,
+   hi_vp_x_size,
+   hi_vp_y_size,
+   vp_rm,		! right margin of vp on screen BEFORE final adjstmnt
+   vp_bm;		! bottom margin of vp before final adjustment
+
+screen_center_y = .vsta$gl_screen_size_y / 2;
+!
+! Calculate right and bottom margins.  The calculation depends on the
+! presense of the utility areas.  Also, calculate center.
+!
+IF (.vsta$gl_footer_start_x NEQ 0)
+  THEN
+	!
+	! Calculations WITH utility area.
+	!
+	begin
+	screen_center_x = .vsta$gl_footer_start_x / 2;
+	screen_bm = .vsta$gl_symb_start_y;
+	screen_rm = .vsta$gl_footer_start_x - margin
+	end
+  ELSE
+	!
+	! No utility area.
+	!
+	begin
+	screen_center_x = .vsta$gl_screen_size_x / 2;
+	screen_bm = .vsta$gl_screen_size_y - margin;
+	screen_rm = .vsta$gl_screen_size_x - margin
+	end;
+!
+! Remember the size
+!
+hi_vp_x_size = .wdb [wdb$l_hi_vp_width];
+hi_vp_y_size = .wdb [wdb$l_hi_vp_height];
+!
+! Calculate desired viewport placement according to counter such that
+! viewport is located down and to the right a bit from the previously
+! placed viewport.
+!
+wdb [wdb$l_hi_vp_x_coor] = vp_shift * .vp_place_counter;
+wdb [wdb$l_hi_vp_y_coor] = vp_shift * .vp_place_counter;
+!
+! Calculate right and bottom margins of placed vp.
+!
+vp_rm = .wdb[wdb$l_hi_vp_x_coor] + .wdb [wdb$w_hi_pb_width];
+vp_bm = .wdb[wdb$l_hi_vp_y_coor] + .wdb [wdb$w_hi_pb_height];
+!
+! If placement has put part of viewport off the screen or under the utility
+! area, put viewport at upperleft, and reset the placement counter.
+!
+if .wdb[wdb$l_hi_vp_x_coor] lss 0 or
+    .wdb[wdb$l_hi_vp_y_coor] lss 0 or
+    .vp_rm gtr .screen_rm or
+    .vp_bm gtr .screen_bm
+  then
+    begin
+    wdb[wdb$l_hi_vp_x_coor] = 0;
+    wdb[wdb$l_hi_vp_y_coor] = 0;
+    vp_place_counter = 0
+    end;
+! 
+!
+! Increment counter so next viewport goes into next slot.
+!
+vp_place_counter = .vp_place_counter + 1;
+!
+! Now calculate where user's viewport lies now that we know where outer
+! one lies.
+!
+user_vp_placement (.wdb);
+RETURN SS$_NORMAL
+END;
+
+ROUTINE user_vp_placement
+!++
+! FUNCTIONAL DESCRIPTION:
+!	From HI placement, calculate user vp placement
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+LOCAL
+    term_flag;		!=1 if this is a terminal
+
+term_flag = (SELECTONE (.wdb [wdb$b_window_type]) OF
+    SET
+    [wdb$K_wtype_vt100, wdb$K_wtype_4014]:
+	1;
+    [otherwise]:
+	0;
+    TES
+);
+
+IF (.term_flag EQL 0)
+  THEN
+    BEGIN			!Window
+
+    wdb [wdb$l_u_vp_width] = .wdb [wdb$w_hi_pb_width]
+			- (2 * vsta$K_outer_border_width)
+			- (2 * vsta$K_window_border_size);
+    wdb [wdb$l_u_vp_height] = .wdb [wdb$w_hi_pb_height]
+			- (2 * vsta$K_outer_border_width)
+			- (2 * vsta$K_window_border_size)
+			- vsta$K_header_height;
+    wdb [wdb$l_u_vp_x_coor] = .wdb [wdb$l_hi_vp_x_coor]
+			+ vsta$K_outer_border_width
+			+ vsta$K_window_border_size;
+    wdb [wdb$l_u_vp_y_coor] = .wdb [wdb$l_hi_vp_y_coor]
+			+ vsta$K_outer_border_width
+			+ vsta$K_header_height + vsta$K_window_border_size;
+    END
+  ELSE
+    BEGIN			!Terminal, bezel is included in the "user"
+				!  window size.
+    wdb [wdb$l_u_vp_width] = .wdb [wdb$w_hi_pb_width]
+			- (2 * vsta$K_outer_border_width);
+    wdb [wdb$l_u_vp_height] = .wdb [wdb$w_hi_pb_height]
+			- (2 * vsta$K_outer_border_width)
+			- vsta$K_header_height;
+    wdb [wdb$l_u_vp_x_coor] = .wdb [wdb$l_hi_vp_x_coor]
+			+ vsta$K_outer_border_width;
+    wdb [wdb$l_u_vp_y_coor] = .wdb [wdb$l_hi_vp_y_coor]
+			+ vsta$K_outer_border_width
+			+ vsta$K_header_height;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_auth_placement
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Place the authorization viewport.  Make sure that the entire form fits
+!	within the screen limits, and leave a small margin at the right.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+
+wdb [wdb$l_hi_vp_x_coor] = .vsta$gl_screen_size_x - .wdb[wdb$l_hi_vp_width] - 8;
+wdb [wdb$l_hi_vp_y_coor] =(.vsta$gl_screen_size_y - .wdb[wdb$l_hi_vp_height]) /2; !*RR*
+
+user_vp_placement (.wdb);	!Place the inner VP
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_help_placement
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get position where HELP document will go.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block
+	) =
+!--
+BEGIN
+!
+!    For now, absolute
+!    coordinates are supplied to give a placement that is aesthetically pleasing.
+!
+wdb [wdb$l_hi_vp_x_coor] = 8;
+wdb [wdb$l_hi_vp_y_coor] = 80;
+
+user_vp_placement (.wdb);	!Place the inner VP
+RETURN SS$_NORMAL
+END;
+
+ROUTINE find_wdb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Finds wdb given window-id and jrb
+!	if not found, return 0.
+!
+! FORMAL PARAMETERS:
+	(window_id
+	,wdb_addr			!Address of where to return wdb address
+	,jrb_addr			!Addr of where to return jrb address
+	) =
+!
+!--
+BEGIN
+LOCAL
+    jrb: REF job_block,			!Ptr to current jrb
+    curr_wdb: REF window_data_block,
+    wdb_q_hdr;			!QUEUE header address
+!
+! Look at each JRB's window-block chain
+!
+jrb = .jrb_q_hdr [0];			!Point to first JRB
+WHILE (.jrb NEQ jrb_q_hdr) DO
+    BEGIN
+    wdb_q_hdr = jrb [jrb$a_wdb_q_hdr_fl];	!Get ADDRESS of queue header
+    curr_wdb = ..wdb_q_hdr;		!Get addr of first entry
+
+    WHILE (.curr_wdb NEQ .wdb_q_hdr) DO
+	BEGIN
+	IF (.curr_wdb [wdb$l_u_window_id] EQL .window_id)
+	  THEN
+	    BEGIN			!Found entry, return it
+	    .wdb_addr = .curr_wdb;
+	    .jrb_addr = .jrb;
+	    RETURN SS$_NORMAL	
+	    END;
+
+    ! Not this entry
+    !
+	curr_wdb = .curr_wdb [wdb$a_flink];	!Search down the WBD list..
+	END;
+    jrb = .jrb [jrb$a_flink];		!Not in this jrb, search down JRB list
+    END;
+!
+! Not found - return 0
+!
+RETURN 0  	       
+END;
+
+ROUTINE wdb_go_away
+!++
+! FUNCTIONAL DESCRIPTION:
+!	REMQUE's and deletes memory allocated for our WDB.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Addr of window data block
+	) =
+!--
+BEGIN
+EXTERNAL
+    vsta$_freevm_for;		!?Can't free VM..
+LOCAL
+    jrb: REF job_block,
+    junk,
+    status;
+
+jrb = .wdb [wdb$a_jrb];
+!
+! Delete ptrs to these guys in global variables, if any.
+!
+IF (.wdb EQL .srv$gl_curr_kbd_wdb)
+  THEN
+    BEGIN
+    srv$gl_curr_kbd_wdb = 0;
+    srv$gl_curr_kbd_id = 0;
+    END;
+
+IF (.wdb EQL .srv$gl_curr_tablet_wdb)
+  THEN
+    BEGIN
+    srv$gl_curr_tablet_wdb = 0;
+    srv$gl_curr_tablet_id = 0;
+    END;
+
+!
+! If wdb = 0, then the job is gone (already logged out)
+!
+IF (.vsta$gl_last_selected_wdb NEQ 0) 
+THEN IF (.wdb EQL .vsta$gl_last_selected_wdb)
+  THEN vsta$gl_last_selected_wdb = 0;
+
+IF (.wdb EQL .jrb [jrb$l_last_vkb_wdb])
+  THEN jrb [jrb$l_last_vkb_wdb] = 0;
+
+IF (.wdb EQL .jrb [jrb$a_last_vtb_wdb])
+  THEN jrb [jrb$a_last_vtb_wdb] = 0;
+
+IF (.wdb EQL .rem_attached_kbd_wdb)
+  THEN
+    BEGIN
+    rem_attached_kbd_wdb = 0;
+    rem_attached_kbd_id = 0;
+    END;
+
+!
+! If this is a terminal that has a settings document
+! on the prowl, get rid of the settings document.
+!
+IF .wdb [wdb$a_ts_docblk] NEQ 0
+  THEN
+    IF NOT (status = vsta$$ts_close_doc (wdb[$base]))
+      THEN $log_error_and_return (.status);
+
+!
+! Remove the queue entry
+!
+REMQUE (.wdb, junk);
+
+!
+! Release memory
+!
+IF NOT vs$$acp_free_vm (%REF (wdb$s_window_data_block), wdb)
+  THEN RETURN vsta$$error_logger
+			(vsta$_freevm_for
+			,string_type, %ASCID 'WDB'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_term_appearance
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates SDA objects for a terminal
+! FORMAL PARAMETERS:
+	(win_width		!Terminal body width
+	,win_height		!height of window on body & footer
+	,wdb : REF window_data_block
+				!Addr of window data block
+	,mtflag			!0 if not job's main terminal
+	,ttype			!type of terminal
+	,body_vd_id		!Vd-id of the terminal body
+	) =
+! IMPLICIT OUTPUTS:
+!	The following fields are filled in:
+!	wdb$l_hi_window_id, wdb$l_hi_pb_id
+!	wdb$w_hi_pb_width, wdb$w_hi_pb_height,
+!	wdb$l_header_vd_id
+BEGIN
+LOCAL
+    term_desc,		!Addr of termtype name descriptor
+    body_vd : ref vdblock,
+			! body vd database
+    hold_vd_id,		!=0 if no HOLD indicator, else term body vd id
+    needed,		!# pixels needed for header
+    jobname_help,	!Help for jobname field
+    status;
+!
+! Set up terminal-type-dependent stuff.
+!
+	CASE .ttype FROM vsta$K_termtype_lowest TO vsta$K_termtype_highest OF
+	    SET
+	    [vsta$K_termtype_vt100]:
+		begin
+		term_desc = %ASCID 'VT100';
+		jobname_help = %ASCID 'Process'
+		end;
+	    [vsta$K_termtype_vt100_small]:		
+		begin
+		term_desc = %ASCID 'VT100';	
+		jobname_help = %ASCID 'Process'	
+		end;				
+	    [vsta$K_termtype_vt100_tall]:	
+		begin				
+		term_desc = %ASCID 'VT100';	
+		jobname_help = %ASCID 'Process'	
+		end;				
+	    [vsta$K_termtype_vt100_wide]:	
+		begin				
+		term_desc = %ASCID 'VT100';	
+		jobname_help = %ASCID 'Process'	
+		end;				
+	    [vsta$K_termtype_tek4014]:
+		begin
+		term_desc = %ASCID 'TEK4014';
+		jobname_help = %ascid '4014 process'
+		end;
+	    TES;
+
+IF ((.ttype EQL vsta$K_termtype_vt100) OR
+    (.ttype EQL vsta$K_termtype_vt100_small) OR	
+    (.ttype EQL vsta$K_termtype_vt100_tall) OR	
+    (.ttype EQL vsta$K_termtype_vt100_wide) OR	
+    (.ttype EQL vsta$K_termtype_tek4014))	!tek4014's and
+  THEN	hold_vd_id = .body_vd_id		!VT100's have the HOLD ind.
+  ELSE  hold_vd_id = 0;				! and nothing else does.
+!
+! Get vd database so old help can be extracted.
+!
+IF NOT (status = vs$$vds_vd_pointer (
+	    .body_vd_id,
+	    body_vd
+	    ))
+  THEN $log_error_and_return (.status);
+
+IF NOT (status =
+   create_header
+		(.wdb			!Address of window block
+		,.win_width		!Width of header
+		,.term_desc		!Type of terminal
+		,.mtflag		!Main terminal flag
+		,1			!KBD flag (all terminals have)
+		,0			!Tablet flag (no tablet for
+					! terminals initially)
+		,.hold_vd_id		!Hold flag (non-zero for VT100's and tek4014's)
+		,1			!Editable flag ("yes")
+		,needed
+		)
+	)
+  THEN RETURN .status;		!?Can't create terminal header
+
+IF (.needed NEQ 0)			!Need more pixels for header!?!?
+  THEN
+    RETURN $error	(vsta$_w2small
+			,integer_type, .needed
+			);
+!
+! Create background pb and other objects.
+!
+IF NOT (status =
+    create_vp_sda	(.win_width
+			,.win_height
+			,.wdb
+			,.jobname_help
+			)
+	)
+  THEN
+    BEGIN
+    vp_sda_cleanup (.wdb);
+    RETURN .status		!?Can't create SDA objects
+    END;
+
+! All done successfully!
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE create_window_appearance
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates HI SDA objects for a user's window.
+!	A pasteboard, borders, and window are created.
+! FORMAL PARAMETERS:
+	(win_width		!Width of user's window
+	,win_height		!Height of user's window
+	,wdb: REF window_data_block	!WDB
+	,kbd_flag		!=1 if a virt keyboard
+	,tab_flag		!=1 if a virt tablet
+	,editable_flag		!=1 if header should be editable.
+	,border_help_keyword	!Descriptor address of border help
+	,needed			!(output) # pixels needed
+	) =
+! IMPLICIT OUTPUTS:
+!	Same as for vsta$$srv_vds_term
+!--
+BEGIN
+LOCAL
+    width_with_ib,
+    height_with_ib,
+    status;
+
+width_with_ib = .win_width + (2 * vsta$K_window_border_size);
+height_with_ib = .win_height + (2 * vsta$K_window_border_size);
+
+IF NOT (status =
+   create_header
+		(.wdb			!Address of window block
+		,.width_with_ib		!Width of header
+		,0			!No terminal type name
+		,0			!Main terminal flag
+		,.kbd_flag		!KBD flag
+		,.tab_flag		!Tablet flag
+		,0			!Hold flag (none for windows)
+		,.editable_flag		!whether or not header is editable
+		,.needed		!# pixels needed
+		)
+	)
+  THEN RETURN .status;		!?Can't create window header
+
+IF ..needed NEQ 0
+  THEN RETURN SS$_NORMAL;
+
+! Create inner border (same idea as the terminal BEZEL)
+!
+IF NOT (status =
+    get_win_border_vd	(.width_with_ib
+			,.height_with_ib
+			,wdb [wdb$l_win_border_vd_id]
+			,.border_help_keyword
+			)
+	)
+  THEN
+    BEGIN
+    vp_sda_cleanup (.wdb);
+    RETURN .status
+    END;
+!
+! Create everything else.
+!
+IF NOT (status =
+    create_vp_sda	(.width_with_ib
+			,.height_with_ib
+			,.wdb
+			,.border_help_keyword
+			)
+	)
+  THEN
+    BEGIN
+    vp_sda_cleanup (.wdb);
+    RETURN .status		!?Can't create SDA objects
+    END;
+!
+! All done successfully
+!
+RETURN SS$_NORMAL
+END;
+
+routine create_header
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a header for a terminal or window
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!Address of window block
+	,vd_width			!Width of header
+	,term_desc			!Terminal type, or 0
+	,mtflag				!Main terminal flag
+	,kbd_flag			!KBD flag
+	,tab_flag			!Tablet flag
+	,hold_vd_id			!If "hold" indicator should be present,
+					! this holds the Vd-id of the terminal
+					! body. Otherwise this is zero.
+	,editable_flag			!Whether header is editable
+	,needed				!(output) # pixels needed
+	) =
+!--
+BEGIN
+LOCAL
+    header_vd_id,		!Vd-id of header
+    status;
+
+IF NOT (status =
+    vsta$$srv_vds_get_hdr_info
+		(.wdb		!WDB address
+		,.vd_width	!Width of header
+		,.wdb [wdb$a_name_desc]	!Name
+		,.term_desc	!Terminal type, or 0
+		,.mtflag	!Main terminal flag
+		,.kbd_flag	!KBD flag
+		,.tab_flag	!Tablet flag
+		,.hold_vd_id	!Hold indicator flag
+		,.editable_flag	!Editable name flag
+		,.needed	!# pixels needed
+		)
+	)
+  THEN RETURN .status;
+
+IF ..needed NEQ 0
+  THEN RETURN SS$_NORMAL;		!Sorry, need more pixels
+
+IF NOT vs$$vds_create_vd
+		(vsta$K_header_height
+		,.vd_width
+		,1		!Single bitplane
+		,1		!Background = WHITE
+		,0		!Foreground = BLACK
+		,3		!3 = internal VD
+		,3		!Indicate text and graphics
+		,0		!UIC
+		,VS$M_PERM_VD	!permanent, not shareable
+		,0		!UIC protection code
+		,header_vd_id	!Place to put VD-id
+		,0		!No help needed at this layer
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'header'
+			);
+
+wdb [wdb$l_header_vd_id] = .header_vd_id;
+
+IF NOT (status =
+    vsta$$srv_vds_header_write
+		(.wdb		!Window data block
+		,.vd_width	!Width of header
+		,.editable_flag	!=1 if name of window is editable
+		)
+	)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.header_vd_id, 0, .vs$gl_acp_pid);
+    wdb [wdb$l_header_vd_id] = 0;
+    RETURN .status			!Pass along status
+    END;
+
+IF (.hold_vd_id NEQ 0)
+  THEN vsta$$srv_hold_addone (.hold_vd_id, .wdb);
+
+RETURN SS$_NORMAL			!All ok, return normally
+END;
+
+ROUTINE create_vp_sda
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create SDA objects necessary to display a user's viewport.
+!	This is a pasteboard, black border VD, and window.
+!	The Border VD and header VD are pasted on the pasteboard.
+!	No viewports are created yet.
+! FORMAL PARAMETERS:
+	(win_width		!Width of user's window (incl. "inner border")
+	,win_height		!Height of user's window ( . . .)
+	,wdb: REF window_data_block	!The window data block
+	,pb_help		!Pasteboard help
+	) =
+!
+! IMPLICIT OUTPUTS:
+!	wdb$l_hi_pb_id, wdb$w_hi_pb_width, wdb$w_hi_pb_height
+!--
+!
+!  Note: No SDA cleanup is done if there is an error. The caller
+!        is responsible for that!
+!
+BEGIN
+LOCAL
+    jrb: REF job_block,
+    my_pb_height,
+    my_pb_width,
+    my_pb_id,
+    head_vd_id,
+    inner_border_vd_id,
+    status;
+
+jrb = .wdb [wdb$a_jrb];			!Get address of JRB
+head_vd_id = .wdb [wdb$l_header_vd_id];	!Get header Vd-id, already created
+inner_border_vd_id = .wdb [wdb$l_win_border_vd_id];	!(if user's window)
+
+my_pb_width = .win_width + (2 * vsta$K_outer_border_width);
+my_pb_height = .win_height + (2 * vsta$K_outer_border_width)
+		+ vsta$K_header_height;
+IF NOT (status =
+    get_my_pb	(.my_pb_width
+		,.my_pb_height
+		,.pb_help
+		,my_pb_id
+		)
+	)
+  THEN RETURN .status;
+
+wdb [wdb$l_hi_pb_id] = .my_pb_id;	!Remember we created it
+wdb [wdb$w_hi_pb_width] = .my_pb_width;	!Remember its width
+wdb [wdb$w_hi_pb_height] = .my_pb_height;	! and height
+
+IF NOT (status =
+    vs$$vds_paste_vd_to_pb
+		(.my_pb_id
+		,.head_vd_id
+		,vsta$K_outer_border_width
+		,vsta$K_outer_border_width
+		,0		!On top
+		,.vs$gl_acp_pid			!WE are doing it, not caller
+		)
+	)
+  THEN RETURN $error	(vsta$_paste_what
+			,string_type, %ASCID 'header vd'
+			,string_type, %ASCID 'HI pasteboard'
+			);
+!
+! If there was an inner border, paste it at (vsta$K_outer_border_width,
+!						" + vsta$K_header_height)
+IF (.inner_border_vd_id NEQ 0)
+  THEN
+	BEGIN
+	IF NOT (status =
+	    vs$$vds_paste_vd_to_pb
+			(.my_pb_id
+			,.inner_border_vd_id
+			,vsta$K_outer_border_width
+			,vsta$K_outer_border_width + vsta$K_header_height
+			,0		!On top
+			,.vs$gl_acp_pid	!WE are doing it, not caller
+			)
+		)
+	  THEN RETURN $error (vsta$_paste_what
+				,string_type, %ASCID 'inner border vd'
+				,string_type, %ASCID 'HI pasteboard'
+				);
+	END;
+!
+! Paste the job name VD if it exists.
+!
+IF (.jrb [jrb$l_job_name_vd] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT vs$$vds_paste_vd_to_pb
+		(.my_pb_id
+		,.jrb [jrb$l_job_name_vd]
+		,vsta$K_outer_border_width + .wdb [wdb$w_jobname_field_start]
+		,vsta$K_outer_border_width
+		,0			!On top
+		,.vs$gl_acp_pid		!WE are doing it, not caller
+		)
+      THEN RETURN $error (vsta$_paste_what
+			,string_type, %ASCID 'job name vd'
+			,string_type, %ASCID 'HI pasteboard'
+			);
+    END;
+!
+! And now a window for the whole mess
+!
+IF NOT vs$$vds_create_term_window
+		(.my_pb_id		!Pasteboard id
+		,wdb [wdb$l_hi_window_id] !Place to put window id
+		,%REF (0)		!Name desc.
+		,0			!x-origin
+		,0			!Y-origin
+		,.my_pb_width		!Make window same size as PB
+		,.my_pb_height		!. .
+		)
+  THEN RETURN $error	(vsta$_crewin_for
+			,string_type, %ASCID 'HI pasteboard'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_my_pb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a pasteboard for my borders, header/footer, etc.
+!	My pasteboard is BLACK.
+! FORMAL PARAMETERS:
+	(width			!How wide to make it
+	,height			!How tall to make it
+	,pb_help		!Help for pasteboard
+	,pb_id			!Addr of place to return pb-id.
+	) =
+!--
+BEGIN
+
+IF NOT vs$$vds_create_pb
+		(.pb_id		!Address of returned id
+		,1		!Not user-owned
+		,vsta$K_color_black	!Color number (BLACK)
+		,.width		!Width
+		,.height	!height
+		,0		!UIC of owner ACP
+		,vs$m_vkb	!With keyboard
+		,vsta$k_default_protection
+				!Default protection
+		,.pb_help
+		)
+  THEN RETURN $error (vsta$_crepb_for
+			,string_type, %ASCID 'borders'
+			);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_win_border_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates VD for the window border.
+! FORMAL PARAMETERS:
+	(width			!Width of VD
+	,height			!Height of VD
+	,vd_id			!Address to get returned VD-id
+	,border_help_keyword	!Help for border
+	) =
+!--
+BEGIN
+
+IF NOT vs$$vds_create_vd
+		(.height
+		,.width
+		,1		!Single bitplane
+		,vsta$K_window_border_color	!Background color
+		,vsta$K_color_black	!Foreground color
+		,3		!Text mode 3 = internal VD
+		,0		!Neither text nor graphics
+		,0		!UIC
+		,0		!characteristics
+		,0		!UIC protection code
+		,.vd_id		!Place to put VD-id
+		,.border_help_keyword
+				!Help for when user asks about border
+		)
+  THEN RETURN $error	(vsta$_crevd_for
+			,string_type, %ASCID 'borders'
+			);
+!
+! Create a region that can be made selectable.
+!
+IF NOT vsta$$rgn_define_region
+	(..vd_id
+	,0
+	,0
+	,.width
+	,.height
+	)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (..vd_id, 0, .vs$gl_acp_pid);	!Delete the VD.
+    RETURN $error (vsta$_defrgn);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE insure_jobname
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a jobname VD and writes it if there is none.
+! FORMAL PARAMETERS:
+	(jrb: REF job_block
+	) =
+!--
+BEGIN
+LOCAL
+    vd_id,			!Temp. holds VD-id of job name
+    status;
+
+IF (.jrb [jrb$l_job_name_vd] NEQ 0)
+  THEN RETURN SS$_NORMAL;		!Already exists
+
+IF NOT vs$$vds_create_vd
+		(vsta$K_size_y_jobname	!Height
+		,vsta$K_size_x_jobname	!Width
+		,1			!"Z"
+		,vsta$K_color_white	!Background color
+		,vsta$K_color_black	!Writing color
+		,3			!Internal VD
+		,3			!Text and graphics
+		,0			!UIC
+		,0			!temp.
+		,0			!Protection
+		,vd_id			!Place to put VD-id
+		)
+  THEN RETURN $error (vsta$_crevd_for
+			,string_type, %ASCID 'job name'
+			);
+
+IF NOT (status =
+    vsta$$srv_vds_jobname_vd (.vd_id, .jrb)
+	)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.vd_id, 0, .vs$gl_acp_pid); !Attempt to delete the VD
+    RETURN .status
+    END;
+
+jrb [jrb$l_job_name_vd] = .vd_id;	!Remember VD-id of the jobname
+RETURN SS$_NORMAL
+END;
+
+ROUTINE delete_appearance_objects
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes all SDA objects associated with the WDB,
+!	also deletes memory and ALL related queue entries.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!The window data block
+	) =
+!--
+BEGIN
+LOCAL
+    cleanup_status,			!Status of calling vp_sda_cleanup
+    status;
+!
+! The ACP automatically deletes a viewport when the corresponding
+! window is deleted, and also assume that windows are deleted when
+! the corresponding pasteboard is deleted.
+!
+! Get rid of HOLD entry if we had one.
+!
+IF (.wdb [wdb$b_hold_char_idx] NEQ 0)
+  THEN vsta$$srv_hold_subone (.wdb [wdb$l_term_vd_id]);
+
+cleanup_status = vp_sda_cleanup (.wdb);	!Attempt to delete my SDA objects,
+					! and get status;
+wdb_go_away (.wdb);			!Remove queue entries, release memory
+
+RETURN .cleanup_status
+END;
+
+ROUTINE vp_sda_cleanup
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Delete all my SDA objects created for displaying user's VP.
+! FORMAL PARAMETERS:
+	(wdb: REF window_data_block	!For me.
+	) =
+!--
+BEGIN
+!
+! This routine may be called if there was an error while setting up
+! my WDB, or it could be called if everything was fine and we are finally
+! getting around to delete everything after it has been in use.
+!
+EXTERNAL
+    vsta$_delpb_for,		!"Can't delete pasteboard.."
+    vsta$_delvd_for;		!"Can't delete display .."
+LOCAL
+    err_status,		!Saved error status (if any)
+    status;
+
+err_status = SS$_NORMAL;	!If no errors, err_status = <good status>
+
+IF ((.wdb [wdb$l_hi_vp_id] neq 0) AND (.wdb [wdb$l_u_vp_id] neq 0))
+AND (.vsta$gl_end_session_flag eql $FALSE)	! Not ending a session...
+   THEN		! There are VP's there.
+	IF NOT (status =
+	    vs$$vss_delete_2_vps (.wdb [wdb$l_hi_vp_id], .wdb [wdb$l_u_vp_id])
+		)
+	  THEN RETURN $error (vsta$_del2vps)
+	  ELSE
+	    BEGIN	! We did delete things.
+	    bind uvp = .wdb [wdb$l_u_vp_id];
+	    wdb [wdb$l_u_vp_id] = 0;
+	    wdb [wdb$l_hi_vp_id] = 0;
+	    IF uvp EQL .vsta$gl_top_vp
+		   THEN find_next_top_vp ();
+	    END;	! We did delete things.
+!
+! If the keyboard was attached here, and this is NOT end-session, reattach
+! the KBD to the JRB below, if any exist. Else detach the KBD from everywhere.
+!
+IF NOT (.vsta$gl_end_session_flag)
+  THEN
+    BEGIN
+    IF (.wdb EQL .srv$gl_curr_kbd_wdb)
+      THEN
+	vsta$$srv_attached_gone (.wdb [wdb$a_jrb], 1)
+      ELSE
+	BEGIN
+	IF ((.wdb [wdb$l_hi_pb_id] NEQ 0)
+			AND
+	    (.wdb [wdb$l_hi_pb_id] EQL .vs$gl_e_vkb_id))
+	  THEN vsta$$srv_attached_gone (.wdb [wdb$a_jrb], 1);
+	END;
+    END;
+!
+! If the tablet was attached here, and this is NOT end-session, reattach
+! the tablet elsewhere, if any exist. Else detach the KBD from everywhere.
+!
+IF NOT (.vsta$gl_end_session_flag)
+  THEN
+    IF (.wdb EQL .srv$gl_curr_tablet_wdb)
+      THEN
+	vsta$$srv_tablet_gone (.wdb [wdb$a_jrb]);
+!
+! Delete main pasteboard (which will possibly delete a window)
+!
+IF (.wdb [wdb$l_hi_pb_id] NEQ 0)
+  THEN
+    BEGIN
+    srv_gl_ignore_delw = 1;	!Incase a window is on it, ignore delete w.
+    IF NOT (status =
+	vs$$vds_delete_pb (.wdb [wdb$l_hi_pb_id], .vs$gl_acp_pid)
+	   )
+      THEN
+	BEGIN
+	err_status = .status;
+	vsta$$error_logger
+			(vsta$_delpb_for
+			,string_type, %ASCID 'borders'
+			);
+	END;
+    srv_gl_ignore_delw = 0;	!Reset flag (incase there was no window).
+    END;
+!
+! Delete VD's, if any were there.
+!
+! Header VD
+IF (.wdb [wdb$l_header_vd_id] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vs$$vds_delete_vd (.wdb [wdb$l_header_vd_id], 0, .vs$gl_acp_pid)
+	   )
+      THEN
+	BEGIN
+	err_status = .status;
+	vsta$$error_logger	(vsta$_delvd_for
+				,string_type, %ASCID 'header'
+				);
+	END;
+    END;
+
+IF (.wdb [wdb$l_win_border_vd_id] NEQ 0)
+  THEN
+    BEGIN
+    IF NOT (status =
+	vs$$vds_delete_vd (.wdb [wdb$l_win_border_vd_id], 0, .vs$gl_acp_pid)
+	    )
+      THEN
+	BEGIN
+	err_status = .status;
+	vsta$$error_logger	(vsta$_delvd_for
+				,string_type, %ASCID 'border'
+				);
+	END;
+    END;
+
+RETURN .err_status;	!Hopefully this is SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_vss_end_session =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Do end session actions for the VSS module.
+!--
+BEGIN
+
+!
+! Clear some of the global variables we are in charge of.
+!
+srv$gl_curr_kbd_id = 0;
+srv$gl_curr_kbd_wdb = 0;
+srv$gl_curr_tablet_id = 0;
+srv$gl_curr_tablet_wdb = 0;
+vsta$gl_top_vp = 0;
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

@@ -1,0 +1,192 @@
+MODULE VS$SRV_HOLD (
+			IDENT = 'HI SERVER HOLD indicator support'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Human interface (VSSERVE).
+!
+! ABSTRACT:
+!
+!  This module handles the HOLD indicator.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$srv_hold_addone,		!Add a terminal to the list
+    vsta$$srv_hold_subone,		!Subtract a terminal from list
+    vsta$$srv_xon_xoff,			!vs$$vds_xon_xoff was called --
+					! possibly turn on or off a HOLD.
+    get_idx;				!Find the index in the table
+					! given the vd-id.
+! INCLUDE FILES:
+!
+
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like "$ertn"
+LIBRARY 'VSTA$LIBRARY:VSSRVDATA';	!Data definitions
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+
+! DEFINE PSECTS
+!
+
+$vsta_psect;
+
+EXTERNAL ROUTINE
+    vsta$$srv_vds_hold_on,		!Turn on HOLD indicator
+    vsta$$srv_vds_hold_off;		!Turn off HOLD indicator
+
+OWN
+    hold_list: REF VECTOR,		!Ptr to list of HOLD items
+    hold_list_len;			!Current # longwords in the HOLD list,
+					!not counting single longword header.
+!
+! An entry in the list has the form:
+!	longword 0 = vd-id
+!	longword 1 = wdb
+!
+
+GLOBAL ROUTINE vsta$$srv_hold_addone
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Add a terminal to the list
+! FORMAL PARAMETERS:
+	(vd_id
+	,wdb
+	) =
+!--
+BEGIN
+!
+! Add the display id to the list.
+!
+	if not $ertn (appendElement) (.hold_list_len, hold_list, .vd_id)
+	then return $sysres (vsta$_getmem
+			,integer_type, 4
+			,string_type, %ASCID '"Hold" list entry'
+			);
+	hold_list_len = .hold_list_len + 1;
+!
+! Add the window data block to the list.
+!
+	if not $ertn (appendElement) (.hold_list_len, hold_list, .wdb)
+	then return $sysres (vsta$_getmem
+			,integer_type, 4
+			,string_type, %ASCID '"Hold" list entry'
+			);
+	hold_list_len = .hold_list_len + 1;
+	
+	ss$_normal
+
+	end;
+
+GLOBAL ROUTINE vsta$$srv_hold_subone
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Subtract a terminal from the list
+!	If not found, no problem.
+! FORMAL PARAMETERS:
+	(vd_id
+	) =
+!--
+BEGIN
+LOCAL
+    idx;		!First item =0, next item = 1, etc.
+
+IF NOT (get_idx (.vd_id, idx))
+  THEN RETURN SS$_NORMAL;		!Not found
+!
+! Found it-- get rid of it.
+!
+	if not $ertn (deleteElements) (
+	    .hold_list_len, hold_list, .idx, .idx + 1)
+	then $error	(vsta$_freevm_for
+			,string_type, %ASCID 'old "Hold" list'
+			);
+
+hold_list_len = .hold_list_len - 2;	!One less item in the list.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$srv_xon_xoff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Turns on/off the HOLD indicator if the VD being
+!	Xon/Xoff'd has a HOLD indicator.
+!	Must be run at process level (not AST level).
+! FORMAL PARAMETERS:
+	(vd_id
+	,off_flag		!=1 if XOFF, =0 if XON
+	) =
+!--
+BEGIN
+LOCAL
+    idx,
+    wdb: REF window_data_block,
+    status;
+
+IF NOT (get_idx (.vd_id, idx))
+  THEN RETURN SS$_NORMAL;		!Not in list, no HOLD indicator
+!
+! Aha, it has a HOLD indicator. Turn it on or off.
+!
+wdb = .hold_list [.idx + 1];		!Get the wdb
+IF (.off_flag NEQ 0)
+  THEN
+    BEGIN
+    IF (.wdb [wdb$b_hold_on_flag] EQL 0)
+      THEN
+	BEGIN
+	IF NOT vsta$$srv_vds_hold_on (.wdb)
+	  THEN $error (vsta$_hold_ind_on);	!"Can't turn on HOLD indicator"
+	END;
+    wdb [wdb$b_hold_on_flag] = 1;
+    END
+  ELSE
+    BEGIN
+    IF (.wdb [wdb$b_hold_on_flag] NEQ 0)
+      THEN
+	BEGIN
+	IF NOT vsta$$srv_vds_hold_off (.wdb)
+	  THEN $error (vsta$_hold_ind_off);
+	END;
+    wdb [wdb$b_hold_on_flag] = 0;	!Remember it's off.
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_idx
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns the index of the entry that matches.
+!	If no entry matches, return status of 0.
+! FORMAL PARAMETERS:
+	(vd_id
+	,idx		!Address of index to return
+	) =
+!--
+BEGIN
+
+INCR i FROM 1 TO .hold_list_len BY 2 DO
+    BEGIN
+    IF (.vd_id EQL .hold_list [.i])
+      THEN
+	BEGIN
+	.idx = .i;
+	RETURN SS$_NORMAL
+	END;
+    END;
+
+RETURN 0		!Entry not found
+END;
+
+END
+ELUDOM

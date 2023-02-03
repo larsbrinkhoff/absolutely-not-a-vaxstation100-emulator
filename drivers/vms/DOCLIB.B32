@@ -1,0 +1,873 @@
+MODULE DOC$LIB (
+		IDENT = 'VSTADOC utility - VSTALIB interface'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!	This module calls the VAXStation User Library, VSTALIB.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$measure_text,		!Measure text string
+    doc$$get_space_width,	!Get width of space in current font
+    doc$$get_gen_vd,		!Get VD for GENERATE purposes
+    doc$$create_doc_pb,		!Create pasteboard for display
+    doc$$create_window,		!Create window on pasteboard
+    doc$$delete_vd,		!Delete virtual display
+    doc$$delete_pb,		!Delete pb
+    doc$$paste_vd,		!Paste VD to PB
+    doc$$get_doc_vd,		!Create VD to display on
+    doc$$add_lines,		!Add lines to VD
+    doc$$define_font,		!Call DEFINEFONT
+    doc$$set_typeface,		!Call SET TYPEFACE
+    doc$$set_typesize,		!Call SET TYPESIZE
+    doc$$set_rendition,		!Call SET RENDITION
+    doc$$define_field,		!Define a field
+    doc$$undefine_field,	!Undefine the default field
+    doc$$center_field,		!Set field format to center
+    doc$$rj_field,		!Set field format to right justify
+    doc$$insert_text,		!Insert text in field
+    doc$$append_text,		!append text to field
+    doc$$selectable;		!Make region selectable
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';	!Symbols needed by application programs
+				! when talking to VSTALIB
+EXTERNAL ROUTINE
+    vsta$add_lines,
+    vsta$append_text,
+    vsta$create_display,
+    vsta$create_pasteboard,
+    vsta$create_window,
+    vsta$define_field,
+    vsta$define_font,
+    vsta$delete_display,
+    vsta$delete_field,
+    vsta$delete_pasteboard,
+    vsta$get_conversion_units,
+    vsta$get_error_block,
+    vsta$insert_text,
+    vsta$measure_text,
+    vsta$paste_display,
+    vsta$set_field_format,
+    vsta$set_rendition,
+    vsta$set_typeface,
+    vsta$set_typesize,
+    doc$$error,
+    doc$$type_line;
+
+EXTERNAL
+    fatal_error,
+    num_user_errors;		!Number of user errors
+
+GLOBAL
+    doc$gl_cur_space_width,	!Width of space in current font
+    doc$gl_cur_space_height,	!Height of space in current font
+    doc$gl_cur_gen_vd;		!Current VD used for generate.
+
+
+GLOBAL ROUTINE doc$$measure_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Measures text in the current font.
+! FORMAL PARAMETERS:
+	(vd_id
+	,len			!Length (bytes)
+	,str			!Address of string
+	,returned_x_size
+	,returned_y_size
+	) =
+!--
+BEGIN
+LOCAL
+    text_desc: VECTOR [2],
+    status;
+
+text_desc [0] = .len;
+text_desc [1] = .str;
+
+IF NOT (status =
+    vsta$measure_text
+		(vd_id		!VD-id (address passed)
+		,text_desc	!Addr of string desc.
+		,UPLIT (vsta$K_none)	!Typeface name (use current)
+		,UPLIT (vsta$K_none)	!Typesize (use current)
+		,UPLIT (vsta$K_none)	!Rendition (use current)
+		,.returned_x_size	!Write width here
+		,.returned_y_size	!Write height here
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Measure text failed');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_space_width
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Get width of the space character in the current font,
+!	and store it in doc$gl_cur_space_width.
+! FORMAL PARAMETERS:
+	(vd_id
+	) =
+! IMPLICIT OUTPUTS:
+!	doc$gl_cur_space_width
+!	doc$gl_cur_space_height
+!--
+BEGIN
+OWN
+    a_space: INITIAL (%C' ');
+LOCAL
+    status;
+
+IF NOT (status =
+    doc$$measure_text	(.vd_id
+			,1		!Length of string
+			,a_space	!Address of string
+			,doc$gl_cur_space_width
+			,doc$gl_cur_space_height
+			)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_gen_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets a VD for GENERATE. (it doesn't have to be visible)
+! FORMAL PARAMETERS:
+	(width
+	,height
+	) =
+! IMPLICIT OUTPUTS:
+!	doc$gl_cur_gen_vd
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$create_display
+		(width		!"X"
+		,height		!"Y"
+		,%REF (1)	!"Z"
+		,%REF (1)	!Screen color number - white
+		,%REF (0)	!Text color number - black
+		,%REF (1)	!Number of lines
+		,%REF (15)	!Line height
+		,doc$gl_cur_gen_vd	!Returned channel number
+		,0		!Logical name
+		,0		!Perm flag
+		,0		!Protection
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Create display failed');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$create_doc_pb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create a pasteboard for viewing this document
+! FORMAL PARAMETERS:
+	(width
+	,height
+	,pb_id		!Returned pb-id
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$create_pasteboard
+		(width
+		,height
+		,pb_id		!Returned pb id
+		,0		!Keyboard flag
+		,0		!Tablet flag
+		,0		!Perm flag
+		,0		!Protection
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t create a pasteboard');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$create_window
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Creates a window on the PB
+! FORMAL PARAMETERS:
+	(pb_id
+	,width
+	,height
+	,win_id
+	) =
+!--
+BEGIN
+LOCAL
+    wm1, hm1,
+    status;
+
+wm1 = .width - 1;
+hm1 = .height - 1;
+IF NOT (status =
+    vsta$create_window
+		(width
+		,height
+		,pb_id
+		,%REF (0)	!At (0,0)
+		,%REF (0)
+		,win_id		!Addr of returned window id
+		,%ASCID 'Document'	!Window name
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t create a window');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$delete_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the given virtual display
+! FORMAL PARAMETERS:
+	(vd_id
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$delete_display	(vd_id)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$delete_pb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes the given pasteboard
+! FORMAL PARAMETERS:
+	(pb_id
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$delete_pasteboard (pb_id)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$paste_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Pastes VD to PB
+! FORMAL PARAMETERS:
+	(vd_id
+	,pb_id
+	,x_orig
+	,y_orig
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+
+IF NOT (status =
+    $fao	(%ASCID 'Paste vd to pb at (!SL,!SL)'
+		,str_len
+		,str_desc
+		,.x_orig
+		,.y_orig
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+str_desc [0] = .str_len;
+doc$$type_line (str_Desc);
+
+IF NOT (status =
+    vsta$paste_display
+		(vd_id		!Channel
+		,pb_id		!Pasteboard id
+		,x_orig		!X coordinate
+		,y_orig		!Y coordinate
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$get_doc_vd
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create virtual display for viewing
+! FORMAL PARAMETERS:
+	(width
+	,height
+	,num_lines
+	,line_size
+	,vd_id		!Returned VD-id
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Create VD, wid=!SL, height=!SL, nl=!SL, lsize=!SL'
+		,str_len
+		,str_desc
+		,.width
+		,.height
+		,.num_lines
+		,.line_size
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+IF NOT (status =
+    vsta$create_display
+		(width
+		,height
+		,%REF (1)		!Z
+		,%REF (1)		!Screen color number (white)
+		,%REF (0)		!Text color number (black)
+		,num_lines		!Number of lines
+		,line_size		!Line height
+		,.vd_id			!Returned channel
+		,0			!Logical name
+		,0			!Perm flag
+		,0			!Protection
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$add_lines
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Add lines to VD
+! FORMAL PARAMETERS:
+	(vd_id
+	,num_lines
+	,size
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Add !SL lines of height !SL'
+		,str_len
+		,str_desc
+		,.num_lines
+		,.size
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+str_desc [0] = .str_len;
+doc$$type_line (str_desc);
+
+IF NOT (status =
+    vsta$add_lines
+		(vd_id			!Channel
+		,num_lines		!Number of lines
+		,size			!Line height
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$define_font
+!++
+! FORMAL PARAMETERS:
+	(vd_id
+	,file_desc: REF VECTOR [2]
+	,tf_desc: REF VECTOR [2]
+	,typesize
+	,rendition
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$define_font
+		(vd_id		!Channel
+		,.file_desc	!File name
+		,.tf_desc	!Typeface
+		,typesize
+		,rendition
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Can''t define font');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$set_typeface
+!++
+! FORMAL PARAMETERS:
+	(vd_id
+	,tf_desc
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$set_typeface
+		(vd_id		!Channel
+		,.tf_desc
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Set typeface failed');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$set_typesize
+!++
+! FORMAL PARAMETERS:
+	(vd_id
+	,typesize
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$set_typesize
+		(vd_id		!Channel
+		,typesize	!Typesize
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Set typesize failed');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$set_rendition
+!++
+! FORMAL PARAMETERS:
+	(vd_id
+	,on_mask
+	,off_mask
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    vsta$set_rendition
+		(vd_id		!Channel
+		,off_mask
+		,on_mask
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('?Set rendition failed');
+    RETURN doc$$error (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$define_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Define field in line
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	,start
+	,len
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Define field, line !SL, start at !SL, len !SL'
+		,str_len
+		,str_desc
+		,.line
+		,.start
+		,.len
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+
+IF NOT (status =
+    vsta$define_field
+		(vd_id		!Channel
+		,line		!line number
+		,start		!Field position
+		,len		!Field width
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$undefine_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Undefine the default field
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Undefine default field on line !SL'
+		,str_len
+		,str_desc
+		,.line
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+
+IF NOT (status =
+    vsta$delete_field
+		(vd_id			!Channel
+		,line			!Line number
+		,%REF (1)		!Field position
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$center_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set field format to center
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	,field_id
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Center field, line !SL, start at !SL'
+		,str_len
+		,str_desc
+		,.line
+		,.field_id
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+
+IF NOT (status =
+    vsta$set_field_format
+		(vd_id		!channel
+		,line		!line number
+		,field_id	!Field position
+		,%REF (2)	!ff_center
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$rj_field
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Set field format to right justify
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	,field_id
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Right just field, line !SL, start at !SL'
+		,str_len
+		,str_desc
+		,.line
+		,.field_id
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+
+IF NOT (status =
+    vsta$set_field_format
+		(vd_id		!channel
+		,line		!line number
+		,field_id	!Field position
+		,%REF (1)	!ff_right
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$insert_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Insert text in field
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	,field_id
+	,text_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Ins text at line !SL, field !SL:'
+		,str_len
+		,str_desc
+		,.line
+		,.field_id
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+doc$$type_line (.text_desc);
+
+IF NOT (status =
+    vsta$insert_text
+		(vd_id		!Channel
+		,line		!Line number
+		,field_id	!Field position
+		,%REF (0)	!Put at end
+		,.text_desc
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$append_text
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Append text to existing text in field
+! FORMAL PARAMETERS:
+	(vd_id
+	,line
+	,field_id
+	,text_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Append text, line !SL, field !SL:'
+		,str_len
+		,str_desc
+		,.line
+		,.field_id
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+doc$$type_line (.text_desc);
+
+IF NOT (status =
+    vsta$append_text
+		(vd_id		!Channel
+		,line		!Line number
+		,field_id	!Field position
+		,.text_desc	!Message
+		)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$selectable
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create selectable field
+! FORMAL PARAMETERS:
+	(x
+	,y
+	,dx
+	,dy
+	,page
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,byte],
+    str_len: WORD,
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Selectable (x,y,dx,dy) = (!SL,!SL,!SL,!SL), page = !SL'
+		,str_len
+		,str_desc
+		,.x
+		,.y
+		,.dx
+		,.dy
+		,.page
+		)
+	)
+  THEN RETURN doc$$error (.status);
+str_desc [0] = .str_len;
+
+doc$$type_line (str_desc);
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

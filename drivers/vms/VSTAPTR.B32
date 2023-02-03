@@ -1,0 +1,475 @@
+%TITLE 'vsta$ptr -- VAXSTATION POINTER COMMON ROUTINES'
+MODULE vsta$ptr(
+		IDENT = '1-001',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the routines common to the pointing device
+!   modules within the ACP in the context of a VAX workstation running the
+!   associated workstation display software; an implementation of the
+!   System Display Architecture.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+!
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! symbols like irp_block
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VSACP specific IRP offsets to data
+REQUIRE 'VSTA$LIBRARY:VSVTB.FLD';	! Ptr I/O request block description
+LIBRARY 'SYS$LIBRARY:LIB';		! Get access to VMS system routines
+
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Public routines (public to the VAXstation ACP only)
+!
+	vsta$$ptr_fill_info_buffer,	!To fill the ptr device info buffer
+	vsta$$ptr_build_rb,		!To build ptr device I/O request block
+	vsta$$ptr_done_io: NOVALUE,	!Ptr device I/O post-processing routine
+	vsta$$ptr_insert_request,	! Put rb in queue and set timer ast
+	ptr_establish_timeout;		! Used internally for setting timer ast
+!
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	vs$$acp_done_io: NOVALUE,	!ACP I/O completion routine
+	vsta$$error,			!ACP error return handler
+	vsta$$read_kernel_long,		! Read longword in kernel mode
+	vs$$acp_get_vm,			!RTL memory allocation routine
+	vs$$acp_free_vm;		!RTL memory deallocation routine
+!
+! EXTERNAL DATA
+!
+EXTERNAL
+	vs$a_lirp: REF BLOCK[0,BYTE],	!Local copy of acp I/O request packet
+	vs$a_irp: REF BLOCK[0,BYTE];	!Current acp I/O request packet
+!
+! BLISS-32 BUILT-IN MACHINE INSTRUCTIONS
+!
+BUILTIN
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+!
+! OWN STORAGE:
+!
+LITERAL
+	true = 1,
+	false = 0;
+
+
+
+%SBTTL 'vsta$$ptr_fill_info_buffer - Fill Ptr Device Return Info Buffer'
+GLOBAL ROUTINE vsta$$ptr_fill_info_buffer
+!++
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for filling pointer device info buffers
+! with the specified parameters. The IRP address is used to locate the
+! address and size of the user's buffer and as much as is humanly
+! possible will be copied into that buffer.
+!
+!	This routine must be called in kernel mode, since it references
+! the irp data in system space.
+!
+! FORMAL PARAMETERS:
+ (
+	irp_adr : ref block[0,byte],! Address of irp for qio being completed.
+				! for identifying the ast to deliver
+	param1, param2! . . .	! Longwords to be sent back in the qio
+				! "read" buffer.
+ ) =
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successful completion
+!
+! SIDE EFFECTS:
+!
+!--
+
+	BEGIN
+
+	BUILTIN
+
+	    ! Function for determining how many parameters are being passed.
+	    actualCount,
+
+	    ! Access the variable number of parameters being passed back.
+	    ap;
+
+	MAP
+
+	    ! Declare that ap points to a vector.
+	    ap : REF VECTOR;
+
+	BIND
+
+	    ! Calculate address of read buffer.
+	    !
+	    read_buffer = .irp_adr[irp$l_svapte] +
+		vs$k_tty_data		! offset to skip header information
+		: VECTOR,
+
+	    ! Calculate how many parameters are being passed back.
+	    n_params = actualCount() - 1,
+
+	    ! Calculate how many bytes of parameters there are, but trim amount
+	    ! so as not to return more bytes than user allowed in buffer.
+	    !
+	    n_bytes = MIN (.irp_adr[irp$w_bcnt], n_params * 4),
+
+	    ! Get address of data being passed back as result of read.
+	    params = ap[2] : VECTOR;
+
+	    
+	! Copy the parameters into the read buffer for delivering to the
+	! calling program.
+	!
+	IF n_bytes GTR 0 THEN
+	  CH$MOVE (n_bytes, params[0], read_buffer[0]);
+
+	SS$_NORMAL
+
+	END;
+
+
+%SBTTL 'vsta$$ptr_build_rb -- Build Ptr Device I/O Request Block'
+GLOBAL ROUTINE vsta$$ptr_build_rb(
+			request_adr,		!Where to store request adr.
+			user_last_x,		!User last known X-coordinate
+			user_last_y,		!User last known Y-coordinate
+			distance,		!Movement distance
+			user_up_mask,		!User button up mask
+			user_down_mask,		!User button down mask
+			irp : ref irp_block	! Irp of io request
+				) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for building a ptr device I/O request
+! block and initializing it with the specified parameters. This request block
+! contains all the information for pointer position requests, pointer movement
+! requests, and button pressing requests. This routine will only allocate and
+! initialize the block. It will be added to the appropriate queue by the
+! caller.
+!
+! FORMAL PARAMETERS:
+!
+!	REQUEST_ADR	: Address to store request block allocated
+!				(output parameter)
+!	USER_LAST_X	: Longword user last known X-coordinate
+!				(input parameter)
+!	USER_LAST_Y	: Longword user last known Y-coordinate
+!				(input parameter)
+!	DISTANCE	: Longword user movement distance
+!				(input parameter)
+!	USER_UP_MASK	: Longword user button up mask
+!				(input parameter)
+!	USER_DOWN_MASK	: Longword user button down mask
+!				(input parameter)
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	SS$_NORMAL : Normal successful completion
+!	VSTA$_xxx  : Error status returned by acp_get_vm
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+LOCAL
+	status,					!Return status value
+	new_request: REF RB_BLOCK;		!New I/O request for VTB
+
+!
+! Allocate memory for the new virtual tablet I/O request block
+!
+	IF (NOT (status = vs$$acp_get_vm(
+				UPLIT (vs$rb_k_block_size),
+				new_request,0))) THEN
+	  RETURN .status;
+!
+! Clear entire block, which causes various fields to be 0 whose 0-ness
+! "means" something (such as the flink field!).
+!
+	ch$fill (0, vs$rb_k_block_size, new_request[$base]);
+!
+! Now initialize the block with the specified parameters
+!
+	new_request[vs$rb_w_size] = vs$rb_k_block_size;
+	new_request[vs$rb_l_user_last_x] = .user_last_x;
+	new_request[vs$rb_l_user_last_y] = .user_last_y;
+	new_request[vs$rb_l_distance] = .distance;
+	new_request[vs$rb_l_user_up_mask] = .user_up_mask;
+	new_request[vs$rb_l_user_down_mask] = .user_down_mask;
+!
+	new_request[vs$rb_l_pid] = vsta$$read_kernel_long (irp[irp$l_pid]);
+	new_request[vs$rb_a_irp] = irp[$base];
+!
+	.request_adr = .new_request;
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vsta$$ptr_build_rb
+
+
+%SBTTL 'vsta$$ptr_done_io -- Ptr Device I/O Post-processing Routine'
+GLOBAL ROUTINE vsta$$ptr_done_io(
+		info_adr: REF VECTOR,		!Info block address (or 0)
+		request_adr: REF RB_BLOCK,	!I/O request block (or 0)
+		status				!Return status value
+				): NOVALUE =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for ptr device I/O completion processing.
+! This involves copying the buffer into the caller's area, and delivering
+! any AST's.
+!
+! This routine allows info_adr to be 0 so that if it is called for timeout's
+! or other situations in which no information is being returned, then so be it.
+!
+! Similarly, the request_adr may be 0, which is useful when this routine
+! is being called because the request block couldn't be created.  In that
+! case, the "current" irp (in vs$a_irp) is used.
+!
+! FORMAL PARAMETERS:
+!
+!	INFO_ADR	: Address of pointer device information block
+!				(input parameter)
+!	REQUEST_ADR	: Address of pointer device I/O request block
+!				(input parameter)
+!	STATUS		: Longword operation completion status
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+
+	external routine
+
+	    vsta$$irp_int_done_io;
+
+    LOCAL
+	arg_list: VECTOR[6];			!$CMKRNL argument block
+!
+! If no request block given, merely finish current i/o request.
+!
+	if .request_adr eql 0
+	then return vs$$acp_done_io (.status, 0, .vs$a_irp);
+!
+! Cancel any timeouts for this request
+!
+	$CANTIM( REQIDT = .request_adr[vs$rb_a_irp] );
+!
+! Fill in the user's buffer and complete the I/O operation on behalf
+! of the user
+!
+! Note: This setup passes four parameters, presumably x, y, buttons, and
+!	enter_flag.  If we're not doing a boundary delivery, there really
+!	isn't any boundary flag, and this will be taken care of due to
+!	the user's buffer not being big enough to receive it anyway.  (See
+!	use of "min" in fill_info_buffer.
+!
+
+	! If info block non-0, use it, else don't supply it at all.
+	!
+	if info_adr[0] neq 0
+	then
+	    begin
+	    arg_list[0] = 5;
+	    arg_list[1] = .request_adr[vs$rb_a_irp];
+	    arg_list[2] = .info_adr[0];
+	    arg_list[3] = .info_adr[1];
+	    arg_list[4] = .info_adr[2];
+	    arg_list[5] = .info_adr[3]
+	    end
+	else
+	    begin
+	    arg_list[0] = 1;
+	    arg_list[1] = .request_adr[vs$rb_a_irp]
+	    end;
+!
+	$CMKRNL(
+		ROUTIN = vsta$$ptr_fill_info_buffer,
+		ARGLST = arg_list[0]);
+!
+! If irp address is not in system space, then complete the io assuming we're
+! dealing with an INTERNAL request.  Otherwise treat it as an external request.
+!
+	if .request_adr[vs$rb_a_irp] gtr 0
+	then vsta$$irp_int_done_io (
+	    .status,
+	    0,
+	    .request_adr[vs$rb_a_irp]
+	    )
+	else vs$$acp_done_io (
+	    .status,
+	    0,
+	    .request_adr[vs$rb_a_irp]
+	    );
+!
+! Remove this VTB I/O request block from whatever queue its in and
+! deallocate the block.  Note that we check to see if it's even in a queue
+! before trying to remove it, which it won't be if something like
+! set-button-ast is requested on a nonexistent pasteboard.
+!
+	if .request_adr[vs$rb_a_flink] neq 0
+	then REMQUE(.request_adr,request_adr);
+	vs$$acp_free_vm(
+		UPLIT(vs$rb_k_block_size),
+		request_adr,0);
+!
+	RETURN;			!return
+END;				! of routine vsta$$ptr_done_io
+
+global routine vsta$$ptr_insert_request
+!++
+! Functional description:
+!
+!	Given a request block, queue header, timeout value, and timeout routine,
+!	insert the block into the queue, and arrange for the timeout routine
+!	to be called when the timeout value has elapsed (so to speak).
+!
+! Formal parameters:
+ (
+	rb : ref rb_block,	! Address of request block
+	queue_head : ref vector[2],	! address of quadword queue header
+	timeout,		! Timeout value or 0.
+	astadr,			! Address of timeout routine
+	irp : ref irp_block	! Irp address
+ ) =
+
+	begin
+
+	bind
+
+	    ! Turn off asts (and remember what state they were in).  This
+	    ! prevents danger of rb being done_io'ed (due to pointer activity)
+	    ! just after we've inserted rb into queue but before we've
+	    ! established timer ast.  In such a case, the later timer ast would
+	    ! possibly find an rb with the same irp address, and would done_io
+	    ! it even though it's an entirely different request !
+	    !
+	    ! By turning off ast's, the "worst" that will happen is that
+	    ! the pointer activity ast will happen right after we turn
+	    ! ast's back on, which is o.k., since the pointer activity will
+	    ! do a cancel-timer ($CANTIM) call AFTER we've set up the timer.
+	    !
+	    old_ast_flag = $setast (enbflg = 0) eql ss$_wasset;
+
+	! Insert request block into secified queue.
+	!
+	insque (.rb, queue_head[0]);
+
+	! Establish timeout if requested.
+	!
+	ptr_establish_timeout (.timeout, .astadr, irp[$base]);
+
+	! Restore ast state and return.
+	!
+	$setast (enbflg = old_ast_flag)
+
+	end;
+
+routine ptr_establish_timeout
+!++
+! Functional description:
+!
+!	Establish timeout ast if timeout value is non-0.
+!
+! Formal parameters:
+ (
+	timeout,		! When to time out (same as qio timeout parameter)
+	astadr,			! Routine to call when timeout happens
+	irp : ref irp_block	! Irp address
+ ) =
+!
+!--
+
+	begin
+
+BUILTIN
+	EMUL;					!Extended multiply instruction
+LOCAL
+	system_timeout: VECTOR[2];		!System delta timeout time
+
+!
+! Set the timer if this operation has an associated timeout > 0
+!
+	IF .timeout GTR 0 THEN
+	  BEGIN
+	    EMUL(
+		%REF(-10000000),
+		timeout,
+		%REF(0),
+		system_timeout);
+!
+	    RETURN $SETIMR(
+			DAYTIM = system_timeout[0],
+			ASTADR = .astadr,
+			REQIDT = irp[$base]);
+	  END;
+!
+	SS$_NORMAL	!return success
+
+	end;
+
+END
+ELUDOM

@@ -1,0 +1,1040 @@
+MODULE MF (
+		IDENT = 'VSTA V1.2-01'
+		,MAIN = mf$$start
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!	Create encoded message file for a language.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    mf$$start,			!Start here
+    do_create,			!Create MF file from SRC
+    do_read,			!Read MF file and display it
+    set_lang_default,		!Set language defaults
+    open_mf_out,		!Open MF file for output
+    open_mf_in,			!Open MF file for input
+    open_src,			!Open SRC file for input
+    get_src_line,		!Read line from SRC file
+    open_lines_file,		!open temporary lines file
+    put_line,			!Write a line to the lines file
+    rewind_lines_file,		!Rewind lines file and prepare to read
+    get_line,			!Read a line from the lines file
+    close_lines_file,		!Close and delete the temp lines file
+    transl_tilda,		!Find tilda seq's and translate them
+    encode_line,		!Encode the line and store it on queue
+    write_mf,			!Write the MF file
+    write_mf_block,		!Write a block in MF file
+    read_disp_mf_file,		!Read and display the MF file
+    read_mf_block,		!Read a block from MF file
+    close_src,			!Close src file
+    close_mf,			!Close mf file
+    abort_mf,			!Abort mf file
+    put_status;			!Write status value on TTY
+
+! INCLUDE FILES:
+!
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	! doc_lang symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:VSTAMF';
+
+EXTERNAL ROUTINE
+    init_ans,			!Init the answer module
+    get_ans,
+    lib$put_output,
+    lib$lookup_key,
+    lib$get_vm,
+    lib$free_vm;
+OWN
+    lang,			!Which language
+    links_addr,			!Ptr to links block
+    links_actual_num,		!How much space in links block
+    links_count,		!How many links actually used.
+    last_link_num,		!Last link number seen
+    src_buf: VECTOR [512,byte],
+    src_buf_len: WORD,		!How many chars in src_buf
+    lines_buf: VECTOR [512,byte],
+    lines_buf_len: WORD,	!How many chars in lines_buf
+    src_nam_string: VECTOR [256,BYTE],
+    mf_nam_string: VECTOR [256,BYTE],
+    src_fab: $FAB
+		(DNM = '.TXT'
+		,FAC = <GET,PUT>
+		),
+    src_rab: $RAB
+		(FAB = src_fab
+		,UBF = src_buf
+		,USZ = 512
+		),
+    mf_fab: $FAB
+		(DNM = '.MF'
+		,FAC = <BIO,GET,PUT>
+		,MRS = 512
+		,ALQ = 50
+		,DEQ = 50
+		,FOP = <CBT>		!Contig. best try
+		,RFM = FIX
+		),
+    mf_rab: $RAB
+		(FAB = mf_fab
+		),
+    linefab: $FAB
+		(ORG = SEQ
+		,FNM = 'LINES.TMP'
+		,FAC = <GET,PUT>
+		,ALQ = 50
+		,DEQ = 50
+		,BKS = 4
+		,FOP = <CBT,DFW,TMD,TMP>
+		,MRS = 512
+		,RFM = VAR
+		),
+    linerab: $RAB
+		(FAB = linefab
+		,UBF = lines_buf
+		,USZ = 512		!User buffer size
+		);
+
+GLOBAL ROUTINE mf$$start =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize this program.
+!--
+BEGIN
+LOCAL
+    s,
+    str_desc: VECTOR [2],
+    str_itself: VECTOR [256,BYTE],
+    status;
+
+IF NOT (status =
+    init_ans ()			!Initialize the GETANS module
+	)
+  THEN $exit (CODE = SS$_NORMAL);	!Error already printed
+
+WHILE 1 DO
+    BEGIN
+    str_desc [0] = 256;
+    str_desc [1] = str_itself;
+    if not (s = get_ans (%ASCID '[C]REATE or [R]EAD message file? ', str_desc))
+    then
+	if .s eql rms$_eof	! if no more commands, just exit.
+	then $exit (code = ss$_normal)
+	else $exit (code = .s);
+    IF (.str_itself [0] EQL %C'C')
+      THEN do_create ()
+      ELSE do_read ();
+    END;
+
+RETURN SS$_NORMAL		!This exits.
+END;
+
+ROUTINE do_create =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Create new message file
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    lang_desc: VECTOR [2],
+    lang_itself: VECTOR [256,BYTE],
+    status;
+
+str_desc [0] = 256;
+str_desc [1] = src_nam_string;
+lang_desc [0] = 256;
+lang_desc [1] = lang_itself;
+
+get_ans (%ASCID 'Source file: ', str_desc);
+src_fab [fab$b_fns] = .str_desc [0];
+src_fab [fab$l_fna] = src_nam_string;
+
+get_ans (%ASCID 'Language: ', lang_desc);
+IF NOT (status =
+    set_lang_default (lang_desc)	!Includes name of MF file
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    open_src ()
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    open_lines_file ()
+	)
+  THEN RETURN .status;
+!
+! Get initial memory for links block
+!
+IF NOT (status =
+    lib$get_vm	(%REF (1000 * 4), links_addr)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Can''t get memory for links block');
+    RETURN put_status (.status);
+    END;
+links_actual_num = 1000;
+links_count = 0;
+!
+! Loop processing source lines
+!
+last_link_num = 0;		!Pretend last link we saw was 0.
+WHILE 1 DO			!Actually until EOF seen...
+    BEGIN
+    IF NOT (status =
+	get_src_line ()
+	    )
+      THEN
+	BEGIN
+	IF (.status EQL 0)
+	  THEN EXITLOOP;	!EOF on source.. ok
+	RETURN .status;		!Else return with error.
+	END;
+    IF NOT (status =
+	transl_tilda ()		!Translate tilda sequences
+	    )
+      THEN RETURN .status;
+    IF NOT (status =
+	encode_line ()		!Encode line, write line to lines file
+	    )
+      THEN RETURN .status;
+    END;			!Of processing source lines
+!
+! All source lines processed.
+!
+IF NOT (status =
+    rewind_lines_file ()	!prepare to read lines file
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    write_mf ()			!Open and write out the MF file
+	)			! and close it.
+  THEN RETURN .status;
+
+IF NOT (status =
+    close_lines_file ()		!Close the temp lines file
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    close_src ()		!Close the source file
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE do_read =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads and displays message file
+!--
+BEGIN
+LOCAL
+    lang_desc: VECTOR [2],
+    lang_itself: VECTOR [256,BYTE],
+    status;
+
+lang_desc [0] = 256;
+lang_desc [1] = lang_itself;
+get_ans (%ASCID 'Language: ', lang_desc);
+IF NOT (status =
+    set_lang_default (lang_desc)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    open_mf_in ()
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    read_disp_mf_file ()
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    close_mf ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE set_lang_default
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses language and sets defaults.
+!	Types error if language is unknown.
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+! IMPLICIT OUTPUTS:
+!	lang - which language
+!	mf_fab [fab$b_fns, fab$l_fna]
+!--
+BEGIN
+OWN
+    key_tab: $lib_key_table (
+		(ENGLISH, doc_lang$k_english) ,
+		(FRENCH, doc_lang$k_french) ,
+		(GERMAN, doc_lang$k_german) ,
+		(HELP, doc_lang$k_help));
+LOCAL
+    status;
+
+IF NOT (status =
+    lib$lookup_key (.str_desc, key_tab, lang)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Language is unknown to VSTAMF');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Setup MF filename depending on language
+!
+mf_fab [fab$b_fns] = 8;
+(CASE .lang FROM 0 TO doc_lang$k_next_type - 1 OF
+    SET
+    [doc_lang$k_english]:
+	BEGIN
+	mf_fab [fab$l_fna] = UPLIT ('MFENG.MF');
+	END;
+    [doc_lang$k_french]:
+	BEGIN
+	mf_fab [fab$l_fna] = UPLIT ('MFFRE.MF');
+	END;
+    [doc_lang$k_german]:
+	BEGIN
+	mf_fab [fab$l_fna] = UPLIT ('MFGER.MF');
+	END;
+    [doc_lang$k_help]:
+	BEGIN
+	mf_fab [fab$l_fna] = UPLIT ('MFHLP.MF');
+	END;
+    [inrange]:0
+    TES
+);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE open_mf_out =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open MF file for output
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $create	(FAB = mf_fab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $create mf file:');
+    RETURN put_status (.status);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = mf_rab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $connect mf file:');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE open_mf_in =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open MF file for input
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $open	(FAB = mf_fab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Can''t $open MF file:');
+    RETURN put_status (.status);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = mf_rab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $connect mf file:');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE open_src =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open source file for input
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $open	(FAB = src_fab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t open source file');
+    RETURN put_status (.status)
+    END;
+
+IF NOT (status =
+    $connect	(RAB = src_rab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $connect source file');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_src_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Returns next non-blank source line.
+!	If eof, returns "0".
+! IMPLICIT OUTPUTS:
+!	src_buf, src_buf_len
+!--
+BEGIN
+LOCAL
+    status;
+
+src_buf_len = 0;
+WHILE (.src_buf_len EQL 0) DO		!Until we get a non-blank line
+    BEGIN
+    IF NOT (status =
+	$get	(RAB = src_rab)
+	    )
+      THEN
+	BEGIN
+	IF (.src_rab [rab$l_sts] EQL rms$_eof)
+	  THEN RETURN 0;
+	lib$put_output (%ASCID '? $Get failed for source file:');
+	RETURN put_status (.status);
+	END;
+    src_buf_len = .src_rab [rab$w_rsz];	!Get length of buffer
+
+    IF (.src_buf_len NEQ 0)
+      THEN
+	BEGIN
+	IF (.src_buf [0] EQL %C'!')
+	  THEN src_buf_len = 0;		!Ignore comment lines
+	END;
+
+    IF (.src_buf_len NEQ 0)
+      THEN
+	BEGIN
+	IF (.src_buf [.src_buf_len - 1] EQL %O'14')	!<FF>
+	  THEN
+	    src_buf_len = .src_buf_len - 1;
+	END;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE open_lines_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Open (temporary) lines file for I/O
+!
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $create	(FAB = linefab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $create temporary "lines" file');
+    RETURN put_status (.status);
+    END;
+
+IF NOT (status =
+    $connect	(RAB = linerab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Can''t $connect to temporary "lines" file');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE put_line
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes line to "lines" file
+! FORMAL PARAMETERS:
+	(len
+	,addr
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+linerab [RAB$W_RSZ] = .len;
+linerab [RAB$L_RBF] = .addr;
+IF NOT (status =
+    $put	(RAB = linerab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Error writing to lines file');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE rewind_lines_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Rewind the lines file so we can read it.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $rewind	(RAB = linerab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Error rewinding lines file');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read next line from lines file
+! IMPLICIT OUTPUTS:
+!	lines_buf, lines_buf_len
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $get	(RAB = linerab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?$get failed on "lines" file');
+    RETURN put_status (.status);
+    END;
+
+lines_buf_len = .linerab [RAB$W_RSZ];
+RETURN SS$_NORMAL
+END;
+
+ROUTINE close_lines_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the temporary lines file, (automatically deleting it).
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = linefab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Error $close''ing "lines" file');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE transl_tilda =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Translates tilda sequences in line and writes updated
+!	line back out.
+! IMPLICIT I/O:
+!	src_buf, src_buf_len
+!--
+BEGIN
+LOCAL
+    status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE encode_line =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Encodes the source line
+! IMPLICIT INPUTS:
+!	src_buf, src_buf_len
+!--
+BEGIN
+LOCAL
+    line_idx,
+    dec_num,
+    line_desc: VECTOR [2],
+    ladr1,		!New links address
+    status;
+
+line_Desc [0] = .src_buf_len;
+line_desc [1] = src_buf;
+
+line_idx = 1;
+dec_num = 0;
+INCR i FROM 0 TO .src_buf_len-1 DO
+    BEGIN
+    IF (.src_buf [.i] EQL %C'-')
+      THEN EXITLOOP;
+    IF ((.src_buf [.i] GTR %C'9') OR (.src_buf [.i] LSS %C'0'))
+      THEN
+	BEGIN
+	lib$put_output (line_desc);
+	lib$put_output (%ASCID '?Bad decimal number at start of line');
+	RETURN SS$_BADPARAM
+	END;
+    dec_num = .dec_num * 10 + (.src_buf [.i] - %C'0');
+    line_idx = .line_idx + 1;
+    END;
+
+IF (.src_buf [.line_idx - 1] NEQ %C'-')
+  THEN
+    BEGIN
+    lib$put_output (line_desc);
+    lib$put_output (%ASCID '?Line must be of form "nnn-text"');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Make sure this link is gtr last
+!
+IF (.dec_num LEQ .last_link_num)
+  THEN
+    BEGIN
+    lib$put_output (line_desc);
+    lib$put_output (%ASCID '?Link number LEQ last number');
+    RETURN SS$_BADPARAM
+    END;
+!
+! Link number is ok - find space for it.
+!
+IF (.links_count EQL .links_actual_num)
+  THEN
+    BEGIN			!Make room
+    IF NOT (status =
+	lib$get_vm	(%REF (4 * (.links_actual_num + 1000)), ladr1)
+	    )
+      THEN
+	BEGIN
+	lib$put_output (%ASCID '?Error getting memory for new links addr');
+	RETURN put_status (.status);
+	END;
+    CH$MOVE	(4 * .links_actual_num
+		,.links_addr
+		,.ladr1
+		);
+    IF NOT (status =
+	lib$free_vm	(%REF (4 * .links_actual_num), links_addr)
+	    )
+      THEN RETURN put_status (.status);
+    links_addr = .ladr1;
+    links_actual_num = .links_actual_num + 1000;
+    END;
+!
+! Store link
+!
+ladr1 = .links_addr + (.links_count * 4); !Get addr of location to store link
+.ladr1 = .dec_num;			!Store link here
+links_count = .links_count + 1;		!One more link stored
+!
+! Write rest of line to lines file
+!
+IF NOT (status =
+    put_line (.src_buf_len - .line_idx, src_buf + .line_idx)
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_mf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the MF file out.
+!--
+BEGIN
+LITERAL
+    num_mfps_per_block = 512 / mfp$S_mf_page_block;
+LOCAL
+    buffer: VECTOR [512,BYTE],
+    buf_space_left,		!# bytes free in buffer
+    mft: REF mf_txt_block,	!Addr of TXT block
+    hdr_block: REF mf_header_block,
+    blknum,
+    pb_block,			!Next PB block number to write out
+    num_hdr_blks,		!Number of header blocks used
+    pbbuf: VECTOR [512,BYTE],	!Buffer for pbbuf's
+    num_pbs,			!Number of PB's in the current pbbuf
+    cur_pb: REF mf_page_block,	!Current PB
+    lidx,			!Index to next link
+    links_left_to_do,		!# links left to write out
+    status;
+
+IF (.links_count EQL 0)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '%Null input file; MF not written');
+    RETURN SS$_NORMAL
+    END;
+
+links_left_to_do = .links_count;
+lidx = .links_addr;		!Ptr to next link
+
+IF NOT (status =
+    open_mf_out ()
+	)
+  THEN RETURN .status;
+!
+! Write header block
+!
+hdr_block = buffer;
+hdr_block [mfh$l_sanity] = mfh$K_sanity_data;
+hdr_block [mfh$l_version] = 1;
+hdr_block [mfh$l_language_key] = .lang;
+hdr_block [mfh$l_num_msgs] = .links_count;
+num_hdr_blks = (.links_count + num_mfps_per_block - 1) / num_mfps_per_block;
+hdr_block [mfh$l_num_hdr_blks] = .num_hdr_blks;
+IF NOT (status =
+    write_mf_block	(1, buffer)
+	)
+  THEN RETURN .status;
+
+pb_block = 2;			!First PB block
+blknum = .pb_block + .num_hdr_blks;	!First data block
+!
+! Prime the pump. (Read 1st line)
+!
+
+IF NOT (status =
+    get_line ()
+	)
+  THEN RETURN .status;
+
+num_pbs = 0;		!No page entries in first hdr block yet.,
+
+WHILE 1 DO		!Loop until links run out
+    BEGIN
+  !
+  ! Setup next pbbuf entry
+  !
+    buf_space_left = 512;		!Space left in next buffer
+    IF (.num_pbs EQL num_mfps_per_block)
+      THEN
+	BEGIN		!Write out next PB block
+	IF NOT (status =
+	    write_mf_block	(.pb_block, pbbuf)
+		)
+	  THEN RETURN .status;
+	num_pbs = 0;
+	pb_block = .pb_block + 1;	!Next PB block
+	END;
+    cur_pb = pbbuf + (.num_pbs * mfp$S_mf_page_block);
+    cur_pb [mfp$w_first] = ..lidx;	!Get number of 1st link
+    num_pbs = .num_pbs + 1;		!Another PB, now.
+  !
+  ! Keep going with this block until entries no longer fit
+  !
+    WHILE 1 DO
+	BEGIN
+	IF ((.lines_buf_len + mft$S_mf_txt_block) GTR .buf_space_left)
+	  THEN EXITLOOP;
+	mft = buffer + (512 - .buf_space_left);
+	mft [mft$w_size] = .lines_buf_len;
+	mft [mft$w_link] = ..lidx;
+	CH$MOVE	(.lines_buf_len
+		,lines_buf
+		,.mft + mft$K_hdr_size
+		);
+	links_left_to_do = .links_left_to_do - 1;
+	cur_pb [mfp$w_last] = ..lidx;	!Maybe this is the last
+	IF (.links_left_to_do EQL 0)
+	  THEN EXITLOOP;
+	buf_space_left = .buf_space_left - (.lines_buf_len + mft$S_mf_txt_block);
+	lidx = .lidx + 4;		!Point to next link
+	IF NOT (status =
+	    get_line ()
+		)
+	  THEN RETURN .status;
+	END;
+  !
+  ! Data block full or no entries left - Write out current data block
+  !
+    IF NOT (status =
+	write_mf_block	(.blknum, buffer)
+	    )
+      THEN RETURN .status;
+    IF (.links_left_to_do EQL 0)
+      THEN EXITLOOP;
+    blknum = .blknum + 1;		!Next data block...
+    END;
+!
+! Write out last PB block
+!
+IF NOT (status =
+    write_mf_block (.pb_block, pbbuf)
+	)
+  THEN RETURN .status;
+
+IF NOT (status =
+    close_mf ()
+	)
+  THEN RETURN .status;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE read_disp_mf_file =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read and display the MF file
+!--
+BEGIN
+LITERAL
+    num_mpfs_per_block = 512 / mfp$S_mf_page_block;
+LOCAL
+    buffer: VECTOR [512,BYTE],
+    hdr_block: REF mf_header_block,
+    num_hdr_blocks,
+    str_itself: VECTOR [256,BYTE],
+    str_desc: VECTOR [2],
+    str_len: WORD,
+    blknum,		!Which block we're on now.
+    pbbuf: VECTOR [512,BYTE],
+    status;
+!
+! Read and display the header block
+!
+IF NOT (status =
+    read_mf_block (1, buffer)
+	)
+  THEN RETURN .status;
+
+hdr_block = buffer;		!Point to header
+IF (.hdr_block [mfh$l_sanity] NEQ mfh$K_sanity_data)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Not a valid message file');
+    RETURN SS$_BADPARAM
+    END;
+
+num_hdr_blocks = .hdr_block [mfh$l_num_hdr_blks];
+
+str_desc [0] = 256;
+str_desc [1] = str_itself;
+IF NOT (status =
+    $fao	(%ASCID 'Num hdr blocks: !SL'
+		,str_len
+		,str_desc
+		,.num_hdr_blocks
+		)
+	)
+  THEN RETURN .status;
+str_desc [0] = .str_len;
+lib$put_output (str_desc);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE write_mf_block
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes 1 block of the MF file
+! FORMAL PARAMETERS:
+	(bucket
+	,bufadr
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+mf_rab [rab$w_rsz] = 512;	!Always 512 bytes
+mf_rab [rab$l_rbf] = .bufadr;	!Put bufaddr
+mf_rab [rab$l_bkt] = .bucket;	!Write this block
+
+IF NOT (status =
+    $write	(RAB = mf_rab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Write failed for MF file:');
+    RETURN put_status (.status)
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE read_mf_block
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads 1 block of the MF file
+! FORMAL PARAMETERS:
+	(bucket
+	,bufadr
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+mf_rab [rab$l_ubf] = .bufadr;
+mf_rab [rab$w_usz] = 512;
+mf_rab [rab$l_bkt] = .bucket;
+
+IF NOT (status =
+    $read	(RAB = mf_rab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? $read failed for MF file: ');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE close_src =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the source file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = src_fab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Can''t $close source file:');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE close_mf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Closes the MF file
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    $close	(FAB = mf_fab)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '?Can''t $close MF file:');
+    RETURN put_status (.status);
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE abort_mf =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Close with delete the MF file
+!--
+BEGIN
+
+RETURN close_mf ();
+END;
+
+ROUTINE put_status
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes status value on the terminal
+! FORMAL PARAMETERS:
+	(code
+	) =
+!--
+BEGIN
+LOCAL
+    msg_desc: VECTOR [2],
+    msg_itself: VECTOR [256,BYTE],
+    msg_len: WORD,
+    status;
+
+msg_desc [0] = 256;
+msg_desc [1] = msg_itself;
+
+IF NOT (status =
+    $getmsg	(MSGID = .code
+		,MSGLEN = msg_len
+		,BUFADR = msg_desc
+		)
+	)
+  THEN
+    BEGIN
+    lib$put_output (%ASCID '? Error in $getmsg');
+    $exit (CODE = .status);
+    END;
+
+msg_desc[0] = .msg_len;
+lib$put_output (msg_desc);
+RETURN .code;
+END;
+
+END
+ELUDOM

@@ -1,0 +1,1456 @@
+%title 'vsta$vds_native - ACP interface to native graphics'
+MODULE vsta$vds_native (ADDRESSING_MODE(
+					EXTERNAL=GENERAL,
+					NONEXTERNAL=GENERAL
+				       )) =
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---This module interfaces between ACP control and the native graphics routines
+!   The entry routine is VSTA$$NAT_WRITE which recieves the packed block 
+!   created in the vaxstation library and unpacks it and calls the appropriated
+!---native graphics routine
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE!S
+	 get_font_address
+	,vsta$$nat_write		       
+	,vsta$$ngi_dispatch_copy_area	       
+	,vsta$$ngi_dispatch_draw_curve	       
+	,vsta$$ngi_dispatch_print_text         
+	,vsta$$ngi_dispatch_fill_area
+	,vsta$$ngi_dispatch_flood_area	       
+	,vsta$$ngi_complete
+	,vsta$$ngi_complete_k
+	,vsta$$ngi_get_qxbds_k		       
+	;
+
+LIBRARY 'SYS$LIBRARY:LIB.L32';
+LIBRARY 'VSTA$LIBRARY:VSTANATIV';
+LIBRARY 'VSTA$LIBRARY:VSTADEF';
+LIBRARY 'VSTA$LIBRARY:VSTAMACS';
+LIBRARY 'VSTA$LIBRARY:VSTAGBL';
+LIBRARY 'VSTA$LIBRARY:TXTSYM';
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! symbols like $string_descriptor
+
+EXTERNAL ROUTINE!S
+
+!--------------------------target routines--------------------------------
+	 vsta$$nat_copy_area
+	,vsta$$nat_draw_curve
+	,vsta$$nat_print_text
+	,vsta$$nat_fill_area
+	,vsta$$nat_flood_area
+
+!--------------------------support routines-------------------------------
+	,vsta$$error:
+	,vsta$$kernel_call
+	,fibDereference
+	;
+
+! PSECT Definitions
+$vsta_psect;
+
+EXTERNAL
+	 vs$a_irp: REF irp_block
+	;
+
+MACRO
+
+	$REPORT_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 (vsta$$error(status)))%
+	;
+
+routine get_font_address
+!++
+! Functional description:
+!
+!	Given channel, typeface, typesize, and rendition, look up a
+!	font.  This is exactly the same as VS$$TXT_GET_FONT_ADDRESS
+!	except that we uppercase the typeface first in order that
+!	user be allowed to pass any case of typeface, and we make sure
+!	that the font we get has built into it whatever renditions the user
+!	requested, since native operations don't perform any algorithmic
+!	renditions.
+!	
+! Formal parameters:
+ (
+	id,			! Virtual display id, or 0 for none
+
+	typeface : ref $string_descriptor,
+	typesize,		! description of font to look up
+	rendition,
+
+	image_adr,		! Receives address of font image.
+	fib_adr			! Receives fib
+ ) =
+!
+!--
+	begin
+
+	bind
+!
+! Get address that will be filled in with address of font index block.
+!
+	    fiBlk = .fib_adr : ref fib;
+
+	local
+
+	    font_rend,
+	    txtBlk : ref text_block,	! text block for virtual display
+	    n_fonts,			! number of custom fonts
+	    fntLst : ref vector,	! vector of font block addresses
+	    fnt_id,			! holds font id.
+	    caller_alg_rends,
+	    font_alg_rends,
+	    font_score,
+	    font_status,
+	    s,
+	    up_desc : $string_descriptor;
+!
+! Get upcased version of typeface.
+!
+	if not (s = $ertn (clone_upcased_string) (typeface[$base],
+	    up_desc[$base]))
+	then return .s;
+!
+! Establish number of custom fonts and address of list.  These we establish
+! as 0's if no vd id is supplied.
+!
+	if .id neq 0
+	then
+	    begin
+	    txtBlk = getTextBlock (.id);
+	    n_fonts = .txtBlk[txt_nFonts];
+	    fntLst = .txtBlk[txt_fonts]
+	    end
+	else n_fonts = fntLst = txtBlk = 0;
+!
+! Choose which font is involved.
+!
+	font_status = $ertn (chooseFont) (.n_fonts, fntLst[0],
+!
+! Give large positive number for line height, so that all fonts
+! will appear to fit in chooseFont.
+!
+	    $extsym (positive_infinity),
+
+	     up_desc[$base], .typesize, .rendition, 0, fnt_id, font_rend);
+!
+! Release storage used for upcased typeface.
+!
+	if not (s = $ertn (forgetString) (up_desc[$base]))
+	then return .s;
+!
+! If failure looking up font, return error.
+!
+	if not .font_status
+	then return .font_status;
+!
+!  chooseFont increments the font reference count so call font dereference.
+!
+	$ertn (fibDereference) (.fnt_id);
+!
+! Find fib for the font.
+!
+	if not (s = $ertn (findFib) (.fnt_id, fiBlk))
+	then return .s;
+!
+! Tell caller the address of the font image.
+!
+	.image_adr = .fiBlk[fib_imageAdr];
+!
+! If chosen font has all the renditions caller asked for, indicate
+! success.
+!
+	if (.rendition and not .font_rend) eql 0
+	then return ss$_normal;
+!
+! Chosen font does NOT have all renditions caller asked for.  If caller
+! asked for any ALGORITHMIC renditions that the chosen font does not have
+! built into it already, give an error.  For instance, if caller requested
+! reversal or underlining, and the font does not already contain reversed
+! or underlined characters, give an error.  Otherwise, the caller would
+! get a success indication and expect the requested reversal or underlining
+! to have happened when in fact it didn't.  (For VSTA$WRITE_TEXT it would
+! have happened, since VS$$VDS_STAGE_TEXT does it algorithmically).
+!
+! Get algorithmic renditions requested by caller.
+!
+	caller_alg_rends = $extsym (algorithmic_renditions) and .rendition;
+!
+! Get algorithmic renditions already built in to the chosen font.
+!
+	font_alg_rends = $extsym (algorithmic_renditions) and .font_rend;
+!
+! If any of the caller's requested algorithmic rendition bits are not in
+! the font, give an error.
+!
+	if (.caller_alg_rends and not .font_alg_rends) neq 0
+	then return $extsym (vsta$_no_such_rend);
+!
+! At this point, we know that if the rendition doesn't match exactly,
+! the extent of the mismatch is such that VSTA$WRITE_TEXT would produce
+! the same result, and hence we can indicate success.
+!
+	ss$_normal
+
+	end;
+
+GLOBAL ROUTINE vsta$$nat_write:=
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives a buffer from ACP control and checks the second long-
+!   word to see which native graphics routine was called and thus dispatches
+!---the buffer to the appropriate native graphics dispatch routine.
+!
+!  FORMAL PARAMETERS:
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  INPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---Error is returned if the native graphics routine indicated is not valid
+!---Any status generated from a lower level
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---One of 5 native graphics dispatch routines listed in this module is called
+!
+!--
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL 
+	 stat
+	,qxbds: VECTOR [20,LONG]
+	,qxb_count
+	,args: VECTOR [3,LONG]
+	,qxb : REF ngi_dsc
+	;
+
+!
+!  Get the qxbds block from the linked irpe list off from the irp
+!
+VSTA$$kernel_CALL( vsta$$ngi_get_qxbds_k, qxbds, qxb_count);
+
+!
+!  Check if we have the minimum amount of locked areas
+!
+IF .qxb_count LSS 1
+THEN return ss$_badparam;
+
+qxb = .qxbds [0];
+
+CASE .qxb [ngi$l_opcode] FROM 0 TO vsta$k_opcode_types
+OF SET
+	[vsta$k_copy_area]:	stat = 	vsta$$ngi_dispatch_copy_area(
+								 qxbds
+								,.qxb_count
+								);
+
+	[vsta$k_draw_curve]:	stat =	vsta$$ngi_dispatch_draw_curve(
+								 qxbds
+								,.qxb_count
+								);
+
+	[vsta$k_print_text]:	stat =	vsta$$ngi_dispatch_print_text(
+								 qxbds
+								,.qxb_count
+								);
+
+	[vsta$k_fill_area]:	stat =	vsta$$ngi_dispatch_fill_area(
+								 qxbds
+								,.qxb_count
+								);
+	[vsta$k_flood_area]:	stat =	vsta$$ngi_dispatch_flood_area(
+								 qxbds
+								,.qxb_count
+								);
+
+	[INRANGE]: stat = $REPORT_ERROR(vsta$_noschfuncode);
+	[OUTRANGE]: stat = $REPORT_ERROR(vsta$_noschfuncode);
+
+   TES;
+
+IF NOT .stat THEN RETURN .stat;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+ROUTINE vsta$$ngi_dispatch_copy_area
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives a buffer from vsta$$nat_write and breaks it down into
+!   its component arguments for vsta$$nat_copy_area and proceedes to call that
+!---routine.  
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 qxbds: REF VECTOR [,LONG]
+	,qxb_count
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---If the buffer does not decode into actual native graphics parameters then
+!---then a specific error is returned. Else errors generated are propagated.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls vsta$$nat_copy_area 
+!
+!--
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL
+	 stat
+	,map_type
+	,qxbds$a_qxb_addr: INITIAL (2)
+	,qxbds$l_qxb_bcnt: INITIAL (3)
+	,qxb : REF ngi_dsc
+	,arg: REF cop 
+	,src_mbmd: REF modified_bmds
+	,msk_msbmd: ref modified_sbmds
+	,msk_mbmd: ref modified_bmds
+	,msk_rec: REF VECTOR [,LONG]
+	,dst_mbmd: ref modified_bmds
+	;
+
+!
+! Map the special qxb which contains all the parameters and descriptors to
+! construct the calls to the NAT routine.
+!
+qxb = .qxbds [0];
+arg = qxb [ngi$w_cop_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+msk_mbmd = qxb [ngi$w_msk_mbmd];
+msk_msbmd = qxb [ngi$w_msk_msbmd];
+msk_rec = .msk_mbmd;
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+
+!
+!  retrieve the source information
+!
+IF (.arg [cop$l_src_type] EQL vsta$k_src_bm) OR
+   (.arg [cop$l_src_type] EQL vsta$k_src_ht_bitmap)
+THEN BEGIN
+	!
+	!  If the source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the source
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+
+	src_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [cop$a_src] = .src_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+!
+!  retrieve the mask information
+!
+IF .arg [cop$l_msk_type] EQL vsta$k_msk_bitmap
+THEN BEGIN
+	!
+	!  If the mask is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the mask
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+
+	msk_msbmd [msbmd$a_mbmd_addr] = .msk_mbmd;
+	msk_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	msk_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [cop$a_msk] = .msk_msbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [cop$l_msk_type] EQL vsta$k_msk_rectangle
+THEN BEGIN
+	msk_rec [0] = .arg [cop$a_msk];
+	arg [cop$a_msk] = .msk_rec;
+     END
+ELSE BEGIN				! Msk = vd
+
+	arg [cop$a_msk] = qxb [ngi$r_msk_vd];
+
+     END;				! End of msk=vd section
+
+!
+!  retrieve the dest information
+!
+IF .arg [cop$l_dst_type] EQL vsta$k_dst_bitmap
+THEN BEGIN
+	!
+	!  If the dest is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the dest 
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+
+	dst_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [cop$a_dst] = .dst_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+
+map_type = .arg [cop$l_map_type];
+arg [cop$l_map_type] = vsta$k_map_sourcedest;
+arg [cop$a_map_address] = map_type;
+
+!
+!  Retrieve the rectangle information from the qxbds
+!
+IF .arg [cop$l_rc_count] GTR 1
+THEN BEGIN
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [cop$a_rc_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [cop$l_rc_count] EQL 1
+THEN BEGIN
+	arg [cop$a_rc_addr] = qxb [ngi$w_rc_1];
+     END;
+
+
+!
+!  Use a callg to the nat routine since the NGI QXB is already of the form
+!  with the parameters in the correct order.  Note this would be a real 
+!  problem if the parameters of the nat routine should change or if the
+!  structure of the QXB should change
+!
+arg [cop$l_arg_num] = vsta$k_cop_arg_num;
+arg [cop$l_efn] = 0;
+arg [cop$l_astadr] = vsta$$ngi_complete;
+arg [cop$l_astprm] = .vs$a_irp;
+stat = CALLG(arg [cop$l_arg_num],vsta$$nat_copy_area);
+				 
+RETURN .stat;
+
+END;
+
+
+
+
+
+
+ROUTINE vsta$$ngi_dispatch_draw_curve
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives a buffer from vsta$$nat_write and breaks it down into
+!   its component arguments for vsta$$nat_draw_curve and proceedes to call that
+!---routine.  
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 qxbds: REF VECTOR [,LONG]
+	,qxb_count
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---If the buffer does not decode into actual native graphics parameters then
+!---then a specific error is returned. Else errors generated are propagated.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls vsta$$nat_draw_curve
+!
+!--
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL
+	 stat
+	,map_type
+	,msk_rec: REF VECTOR [,LONG]
+	,qxbds$a_qxb_addr: INITIAL (2)
+	,qxbds$l_qxb_bcnt: INITIAL (3)
+	,qxb : REF ngi_dsc
+	,arg: REF drw 
+	,src_mbmd: REF modified_bmds
+	,ssr_mbmd: ref modified_bmds
+	,msk_msbmd: ref modified_sbmds
+	,msk_mbmd: ref modified_bmds
+	,dst_mbmd: ref modified_bmds
+	;
+
+!
+! Map the special qxb which contains all the parameters and descriptors to
+! construct the calls to the NAT routine.
+!
+qxb = .qxbds [0];
+arg = qxb [ngi$w_drw_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+ssr_mbmd = qxb [ngi$w_ssr_mbmd];
+msk_mbmd = qxb [ngi$w_msk_mbmd];
+msk_msbmd = qxb [ngi$w_msk_msbmd];
+msk_rec = .msk_mbmd;
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+
+!
+!  retrieve the source information
+!
+IF (.arg [drw$l_src_type] EQL vsta$k_src_bm) OR
+   (.arg [drw$l_src_type] EQL vsta$k_src_ht_bitmap)
+THEN BEGIN
+	!
+	!  If the source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the source
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [drw$a_src] = .src_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+!
+!  retrieve the second source information
+!
+IF (.arg [drw$l_pattern_mode] EQL vsta$k_ptn_altern_src) AND
+   ((.arg [drw$l_second_src_type] EQL vsta$k_src_bm) OR
+    (.arg [drw$l_second_src_type] EQL vsta$k_src_ht_bitmap))
+THEN BEGIN
+	!
+	!  If the second source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the second 
+	!  source parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	ssr_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	ssr_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [drw$a_second_src] = .ssr_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+!
+!  retrieve the mask information
+!
+IF .arg [drw$l_msk_type] EQL vsta$k_msk_bitmap
+THEN BEGIN
+	!
+	!  If the mask is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the mask
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	msk_msbmd [msbmd$a_mbmd_addr] = .msk_mbmd;
+	msk_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	msk_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [drw$a_msk] = .msk_msbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [drw$l_msk_type] EQL vsta$k_msk_rectangle
+THEN BEGIN
+	msk_rec [0] = .arg [drw$a_msk];
+	arg [drw$a_msk] = .msk_rec;
+     END
+ELSE BEGIN				! Msk = vd
+
+	arg [drw$a_msk] = qxb [ngi$r_msk_vd];
+
+     END;				! End of msk=vd section
+
+
+!
+!  retrieve the dest information
+!
+IF .arg [drw$l_dst_type] EQL vsta$k_dst_bitmap
+THEN BEGIN
+	!
+	!  If the dest is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the dest 
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	dst_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [drw$a_dst] = .dst_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+
+!
+!  Retrieve the map information
+!
+map_type = .arg [drw$l_map_type];
+arg [drw$l_map_type] = vsta$k_map_sourcedest;
+arg [drw$a_map_address] = map_type;
+
+!
+!  Retrieve the rectangle information from the qxbds
+!
+IF .arg [drw$l_rc_count] GTR 1
+THEN BEGIN
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [drw$a_rc_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [drw$l_rc_count] EQL 1
+THEN BEGIN
+	arg [drw$a_rc_addr] = qxb [ngi$w_rc_1];
+     END;
+
+!
+!  Retrieve the path information from the qxbds
+!
+IF .arg [drw$l_path_count] GTR 0
+THEN BEGIN		! Path exists
+
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [drw$a_path_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+     END;		! End of path exists
+
+!
+!  Retrieve the pattern state information from the qxbds
+!
+IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+THEN RETURN ss$_badparam;
+arg [drw$a_pattern_state] = .qxbds [.qxbds$a_qxb_addr];
+qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+!
+!  The pattern block is in the NGI QXB 
+!
+arg [drw$a_pattern_block] = qxb [ngi$w_pattern_block];
+
+!
+!  Use a callg to the nat routine since the NGI QXB is already of the form
+!  with the parameters in the correct order.  Note this would be a real 
+!  problem if the parameters of the nat routine should change or if the
+!  structure of the QXB should change
+!
+arg [drw$l_arg_num] = vsta$k_drw_arg_num;
+arg [drw$l_efn] = 0;
+arg [drw$l_astadr] = vsta$$ngi_complete;
+arg [drw$l_astprm] = .vs$a_irp;
+stat = CALLG(arg [drw$l_arg_num],vsta$$nat_draw_curve);
+				 
+RETURN .stat;
+
+END;
+
+
+
+
+
+
+
+
+
+
+ROUTINE vsta$$ngi_dispatch_print_text
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives a buffer from vsta$$nat_write and breaks it down into
+!   its component arguments for vsta$$nat_print_text and proceedes to call that
+!---routine.  
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 qxbds: REF VECTOR [,LONG]
+	,qxb_count
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---If the buffer does not decode into actual native graphics parameters then
+!---then a specific error is returned. Else errors generated are propagated.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls vsta$$nat_print_text
+!
+!--
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL
+	 stat
+	,map_type
+	,msk_rec		: REF VECTOR [,LONG]
+	,qxbds$a_qxb_addr	: INITIAL (2)
+	,qxbds$l_qxb_bcnt	: INITIAL (3)
+	,qxb			: REF ngi_dsc
+	,arg			: REF prn
+	,src_mbmd		: REF modified_bmds
+	,src_mfbmd		: REF modified_fbmds
+	,src_deffb		: REF deffb_block
+	,msk_mfbmd		: REF modified_fbmds
+	,msk_deffb		: REF deffb_block
+	,dst_mbmd		: REF modified_bmds
+	,text_desc 		: REF VECTOR [,LONG]
+	,fib_adr		: REF fib
+	,disp_adr
+	;
+
+!
+! Map the special qxb which contains all the parameters and descriptors to
+! construct the calls to the NAT routine.
+!
+qxb = .qxbds [0];
+arg = qxb [ngi$w_prn_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+src_mfbmd = qxb [ngi$w_src_mfbmd];
+src_deffb = qxb [ngi$w_src_deffb];
+msk_mfbmd = qxb [ngi$w_msk_mfbmd];
+msk_deffb = qxb [ngi$w_msk_deffb];
+msk_rec = .msk_mfbmd;
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+text_desc= qxb [ngi$l_text_desc];
+
+!
+!  retrieve the source information
+!
+IF .arg [prn$l_src_type] EQL vsta$k_src_ht_bitmap
+THEN BEGIN
+	!
+	!  If the source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the source
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [prn$a_src] = .src_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [prn$l_src_type] EQL vsta$k_src_font_bitmap
+THEN BEGIN
+	!
+	!  If the source is a font bitmap then we must complete the modified
+	!  bitmap descriptor to contain the address of the standard bitmap.  
+	!  Which resides in the QXB.  
+	!
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_mfbmd [mfbmd$a_sfbmd_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mfbmd [mfbmd$w_locate] = vsta$k_vaxmem;
+	arg [prn$a_src] = .src_mfbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+     END
+ELSE IF (.arg [prn$l_src_type] EQL vsta$k_src_defined_font) OR
+	(.arg [prn$l_src_type] EQL vsta$k_src_private_font)
+THEN BEGIN
+	!
+	!  NOTE: the dst must be a virtual display id . . .
+	!  must get the font address from the text services.  Must get
+	!  the address of the typeface name string from the qxbds since
+	!  it was a locked down data item
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_deffb [deffb$a_tf_name_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+	IF NOT (stat = get_font_address (
+				 .src_deffb [deffb$l_tf_vd]
+				,src_deffb [deffb$l_tf_name_size]
+				,.src_deffb [deffb$l_tf_size]
+				,.src_deffb [deffb$l_tf_rend]
+				,src_mfbmd [mfbmd$a_sfbmd_addr]
+				,fib_adr
+				))
+	THEN RETURN .stat;
+
+	!
+	!  Check to see if font is disp mem
+	!
+	IF (disp_adr = .fib_adr [fib_display_adr]) NEQ 0
+	THEN BEGIN
+		src_mfbmd [mfbmd$w_locate] = vsta$k_dispmem;
+		src_mfbmd [mfbmd$a_sfbmd_addr] = .disp_adr;
+	     END
+	ELSE	src_mfbmd [mfbmd$w_locate] = vsta$k_vaxmem;
+
+	arg [prn$a_src] = .src_mfbmd;
+	arg [prn$l_src_type] = vsta$k_src_font_bitmap;
+
+     END;
+	
+
+!
+!  retrieve the mask information
+!
+IF .arg [prn$l_msk_type] EQL vsta$k_msk_font_bitmap
+THEN BEGIN
+	!
+	!  If the source is a font bitmap then we must complete the modified
+	!  bitmap descriptor to contain the address of the standard bitmap.  
+	!  Which resides in the QXB.  Then we must fill in the standard 
+	!  font bitmap to point at the users bitmap as well as the left array
+	!  both of which are QXB'S and are pointed to by the QXBDS.
+	!
+	!  remember the pointer to the font bitmap is an offset from the 
+	!  start of the standard font descriptor. Same with the left array
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	msk_mfbmd [mfbmd$w_locate] = vsta$k_vaxmem;
+	msk_mfbmd [mfbmd$a_sfbmd_addr] = .qxbds [.qxbds$a_qxb_addr];
+	arg [prn$a_msk] = .msk_mfbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+     END
+ELSE IF (.arg [prn$l_msk_type] EQL vsta$k_msk_defined_font) OR
+	(.arg [prn$l_msk_type] EQL vsta$k_msk_private_font)
+THEN BEGIN
+	!
+	!  NOTE: destination must be a virtual display id . . .
+	!  must get the font address from the text services.  Must get
+	!  the address of the typeface name string from the qxbds since
+	!  it was a locked down data item
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	msk_deffb [deffb$a_tf_name_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+	IF NOT (stat = get_font_address (
+				 .msk_deffb [deffb$l_tf_vd]
+				,msk_deffb [deffb$l_tf_name_size]
+				,.msk_deffb [deffb$l_tf_size]
+				,.msk_deffb [deffb$l_tf_rend]
+				,msk_mfbmd [mfbmd$a_sfbmd_addr]
+				,fib_adr
+				))
+	THEN RETURN .stat;
+
+	!
+	!  Check to see if font is disp mem
+	!
+	IF (disp_adr = .fib_adr [fib_display_adr]) NEQ 0
+	THEN BEGIN
+		msk_mfbmd [mfbmd$a_sfbmd_addr] = .disp_adr;
+		msk_mfbmd [mfbmd$w_locate] = vsta$k_dispmem;
+	     END
+	ELSE	msk_mfbmd [mfbmd$w_locate] = vsta$k_vaxmem;
+
+	arg [prn$a_msk] = .msk_mfbmd;
+	arg [prn$l_msk_type] = vsta$k_msk_font_bitmap;
+
+     END
+ELSE IF .arg [prn$l_msk_type] EQL vsta$k_msk_rectangle
+THEN BEGIN
+	msk_rec [0] = .arg [prn$a_msk];
+	arg [prn$a_msk] = .msk_rec;
+     END;
+
+
+!
+!  retrieve the dest information
+!
+IF .arg [prn$l_dst_type] EQL vsta$k_dst_bitmap
+THEN BEGIN
+	!
+	!  If the dest is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the dest 
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	dst_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [prn$a_dst] = .dst_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+
+!
+!  Retrieve the map information
+!
+map_type = .arg [prn$l_map_type];
+arg [prn$l_map_type] = vsta$k_map_sourcedest;
+arg [prn$a_map_address] = map_type;
+
+!
+!  Retrieve the rectangle information from the qxbds
+!
+IF .arg [prn$l_rc_count] GTR 1
+THEN BEGIN
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [prn$a_rc_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END
+ELSE IF .arg [prn$l_rc_count] EQL 1
+THEN BEGIN
+	arg [prn$a_rc_addr] = qxb [ngi$w_rc_1];
+     END;
+
+!
+!  Retrieve the destination offset
+!
+IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+THEN RETURN ss$_badparam;
+arg [prn$a_dst_offset] = .qxbds [.qxbds$a_qxb_addr];
+qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+!
+!  Retrieve the text string
+!
+IF .text_desc [0] GTR 0
+THEN BEGIN		! If text exists
+
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [prn$a_text_desc] = .text_desc;
+	text_desc [1] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     
+     END;		! End if text exists
+
+!
+!  Retrieve the control string
+!
+IF .arg [prn$l_control_count] GTR 0
+THEN BEGIN		! If control exists
+	
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [prn$a_control_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+     END;		! End if control exists
+!
+!  Use a callg to the nat routine since the NGI QXB is already of the form
+!  with the parameters in the correct order.  Note this would be a real 
+!  problem if the parameters of the nat routine should change or if the
+!  structure of the QXB should change
+!
+arg [prn$l_arg_num] = vsta$k_prn_arg_num;
+arg [prn$l_efn] = 0;
+arg [prn$l_astadr] = vsta$$ngi_complete;
+arg [prn$l_astprm] = .vs$a_irp;
+stat = CALLG(arg [prn$l_arg_num],vsta$$nat_print_text);
+				 
+RETURN .stat;
+
+END;
+
+
+
+
+
+ROUTINE vsta$$ngi_dispatch_fill_area
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 qxbds: REF VECTOR [,LONG]
+	,qxb_count
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---If the buffer does not decode into actual native graphics parameters then
+!---then a specific error is returned. Else errors generated are propagated.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls vsta$$nat_fill_area
+!
+!--
+
+
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL
+	 stat
+	,qxbds$a_qxb_addr: INITIAL (2)
+	,qxb : REF ngi_dsc
+	,arg: REF fil
+	,src_mbmd: REF modified_bmds
+	,dst_mbmd: ref modified_bmds
+	,map_type
+	;
+
+!
+! Map the special qxb which contains all the parameters and descriptors to
+! construct the calls to the NAT routine.
+!
+qxb = .qxbds [0];
+arg = qxb [ngi$w_fil_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+
+
+!
+!  retrieve the source information
+!
+IF (.arg [fil$l_src_type] EQL vsta$k_src_bm) OR
+   (.arg [fil$l_src_type] EQL vsta$k_src_ht_bitmap)
+THEN BEGIN
+	!
+	!  If the source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the source
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [fil$a_src] = .src_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+!
+!  retrieve the dest information
+!
+IF .arg [fil$l_dst_type] EQL vsta$k_dst_bitmap
+THEN BEGIN
+	!
+	!  If the dest is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the dest 
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	dst_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [fil$a_dst] = .dst_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+
+
+!
+!  Retrieve the map information
+!
+map_type = .arg [fil$l_map_type];
+arg [fil$l_map_type] = vsta$k_map_sourcedest;
+arg [fil$a_map_address] = map_type;
+
+
+!
+!  Retrieve the rectangle information from the ngi qxb Its in there because
+!  There can only be one rectangle.
+!
+
+IF .arg [fil$l_rc_count] EQL 1
+THEN arg [fil$a_rc_addr] = qxb [ngi$w_rc_1];
+
+
+!
+!  Retrieve the path info. from the QXDBS
+!
+IF .arg [fil$l_path_count] GTR 0
+THEN BEGIN		! Path exists
+
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	arg [fil$a_path_addr] = .qxbds [.qxbds$a_qxb_addr];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+
+     END;		! End if path exists
+
+
+
+!
+!  Use a callg to the nat routine since the NGI QXB is already of the form
+!  with the parameters in the correct order.  Note this would be a real 
+!  problem if the parameters of the nat routine should change or if the
+!  structure of the QXB should change
+!
+arg [fil$l_arg_num] = vsta$k_fil_arg_num;
+arg [fil$l_efn] = 0;
+arg [fil$l_astadr] = vsta$$ngi_complete;
+arg [fil$l_astprm] = .vs$a_irp;
+stat = CALLG(arg [fil$l_arg_num],vsta$$nat_fill_area);
+				 
+RETURN .stat;
+
+END;
+
+
+
+
+
+
+
+ROUTINE vsta$$ngi_dispatch_flood_area
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine receives a buffer from vsta$$nat_write and breaks it down into
+!   its component arguments for vsta$$nat_flood_area and proceedes to call that
+!---routine.  
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 qxbds: REF VECTOR [,LONG]
+	,qxb_count
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---If the buffer does not decode into actual native graphics parameters then
+!---then a specific error is returned. Else errors generated are propagated.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Calls vsta$$nat_flood_area
+!
+!--
+BEGIN
+
+BUILTIN
+	 callg
+	;
+
+LOCAL
+	 stat
+	,qxbds$a_qxb_addr: INITIAL (2)
+	,qxbds$l_qxb_bcnt: INITIAL (3)
+	,qxb : REF ngi_dsc
+	,arg: REF flood_blk
+	,src_mbmd: REF modified_bmds
+	,dst_mbmd: ref modified_bmds
+	;
+
+!
+! Map the special qxb which contains all the parameters and descriptors to
+! construct the calls to the NAT routine.
+!
+qxb = .qxbds [0];
+arg = qxb [ngi$w_fld_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+
+!
+!  retrieve the source information
+!
+IF (.arg [fld$l_src_type] EQL vsta$k_src_bm) OR
+   (.arg [fld$l_src_type] EQL vsta$k_src_ht_bitmap)
+THEN BEGIN
+	!
+	!  If the source is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the source
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	src_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [fld$a_src] = .src_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+!
+!  retrieve the dest information
+!
+IF .arg [fld$l_dst_type] EQL vsta$k_dst_bitmap
+THEN BEGIN
+	!
+	!  If the dest is a bitmap then we must complete the bitmap
+	!  descriptor to contain the address of the bitmap.  The address
+	!  of the bitmap is contained in the qxbds.
+	!  and then put the address of the bitmap descriptor in the dest 
+	!  parameter to pass to the nat routine
+	!
+	IF .qxb_count LSS .qxbds$a_qxb_addr/2 + 1
+	THEN RETURN ss$_badparam;
+	dst_mbmd [mbmd$a_addr] = .qxbds [.qxbds$a_qxb_addr];
+	dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+	arg [fld$a_dst] = .dst_mbmd;
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+     END;
+
+!
+!  Retrieve the rectangle information from the ngi qxb Its in there because
+!  There can only be one rectangle.
+!
+IF .arg [fld$l_rc_count] EQL 1
+THEN arg [fld$a_rc_addr] = qxb [ngi$w_rc_1];
+
+
+!
+!  Use a callg to the nat routine since the NGI QXB is already of the form
+!  with the parameters in the correct order.  Note this would be a real 
+!  problem if the parameters of the nat routine should change or if the
+!  structure of the QXB should change
+!
+arg [fld$l_arg_num] = vsta$k_fld_arg_num;
+arg [fld$l_efn] = 0;
+arg [fld$l_astadr] = vsta$$ngi_complete;
+arg [fld$l_astprm] = .vs$a_irp;
+stat = CALLG(arg [fld$l_arg_num],vsta$$nat_flood_area);
+				 
+RETURN .stat;
+
+END;
+
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$ngi_complete
+!++
+! FUNCTIONAL DESCRIPTION
+!
+!---This routine is called upon completion of the native graphics device
+!   requests.  It will call a kernel Mode routine to put the status of
+!---the reqest into the IRP.
+!
+! FORMAL PARAMETERS: 
+!
+	(
+	 irp		! Address of this request irp
+	,status		! Device status returned
+	):=
+!
+!  IMPLICIT INPUT: NONE
+!
+!  IMPLICIT OUTPUT: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS: 
+!
+!
+!--
+BEGIN
+
+IF NOT .status
+THEN VSTA$$kernel_CALL( vsta$$ngi_complete_k, .irp, .status, 0);
+
+RETURN ss$_normal;
+END;
+
+
+
+GLOBAL ROUTINE vsta$$ngi_complete_k(irp: REF irp_block
+					,iost1,iost2)=
+!
+!  Functional description
+!
+!  This routine fills the iost areas of the irp on completion of a
+!  write operation to a vd. Runs in kernel mode.
+!
+!
+begin
+
+IRP [IRP$L_IOST1] = .IOST1;
+IRP [IRP$L_IOST2] = .IOST2;
+
+return ss$_normal;
+
+end;
+
+
+
+GLOBAL ROUTINE vsta$$ngi_get_qxbds_k
+!++
+! FUNCTIONAL DESCRIPTION
+!
+! This routine retrieves a descriptor block (Qio Transfer Block Descriptor)
+! (qxbds) from the irp and irpe linked list.    (NOte that only the address 
+! is retrieved not the byte count) Each descriptor in the qxbds points to a 
+! data packet which was tranfered accrossed the qio hence the name 
+! Qio Transfer Block (qxb) given to these specific kinds of packets.
+!
+! FORMAL PARAMETERS: 
+!
+	(
+	 qxbds: REF VECTOR [,LONG]	! Place to return the addresses of the 
+					! qxb's
+	,qxb_count_a			! Place to return the number of qxb's
+					! found.
+	):=
+!
+!  IMPLICIT INPUT: NONE
+!
+!  IMPLICIT OUTPUT: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: ???
+!
+!  SIDE EFFECTS: 
+!
+!---This routine must be called in kernel mode.  It is going to look at
+!---IRP's
+!
+!--
+BEGIN
+
+LOCAL
+	 qxbds$a_qxb_addr: INITIAL (0)
+	,qxbds$l_qxb_bcnt: INITIAL (1)
+	,irpe: REF irp_block
+	,new_irpe
+	,stat
+	;
+
+.qxb_count_a = 0;
+
+!
+!  Get the one buffer pointed to by the svapte of the irp
+!
+IF .vs$a_irp [irp$l_svapte] NEQ 0
+THEN BEGIN
+	!
+	!  If the irp points at a user area then the ACP mapped address resides
+	!  in ABCNT of the irp.
+	!
+	qxbds [.qxbds$a_qxb_addr] = .vs$a_irp [irp$l_abcnt];
+	qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+	.qxb_count_a = ..qxb_count_a + 1;
+     END;
+
+!
+!  For all the irpe's linked off this irp get there qxb addresses
+!
+IF .vs$a_irp [irp$v_extend]
+THEN BEGIN
+	new_irpe = .vs$a_irp [irp$l_extend];
+	DO BEGIN
+	 	!
+		!  Get pointer to the irpe
+		!
+		irpe = .new_irpe;
+
+		!
+		!  Get the address of the one qxb from the 4th longword
+		!
+		IF .irpe [irpe$l_svapte1] NEQ 0
+		THEN BEGIN
+			qxbds [.qxbds$a_qxb_addr] = .(.irpe + 12);
+			qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+			.qxb_count_a = ..qxb_count_a + 1;
+		     END;
+	
+		!
+		!  Get the address of the other qxb from the 6th longword
+		!
+		IF .irpe [irpe$l_svapte2] NEQ 0
+		THEN BEGIN
+			qxbds [.qxbds$a_qxb_addr] = .(.irpe + 20);
+			qxbds$a_qxb_addr = .qxbds$a_qxb_addr + 2;
+			.qxb_count_a = ..qxb_count_a + 1;
+		     END;
+		
+		!
+		!  Get pointer to next irpe
+		!
+		new_irpe = .irpe [irpe$l_extend]
+
+	   END
+
+	UNTIL NOT .irpe [irpe$v_extend];
+
+     END;
+
+RETURN ss$_normal;
+
+END;
+
+END			
+ELUDOM

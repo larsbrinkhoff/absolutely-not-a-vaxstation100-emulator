@@ -1,0 +1,71 @@
+!  VSGISB.REQ - Require file for VaxStation GIdis State Block structure
+!
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!	This is the basic data structure for things in Gidis, and the
+!	definitons of fields for some global data types.
+!
+! Environment:
+!
+!--
+
+	       !------------------------------------------!
+	       !     Macros for defining state blocks     !
+	       !------------------------------------------!
+
+
+STRUCTURE state_instance[		! State instance reference mechanism
+    offset,				! Offset in bytes from start of block
+    size,				! Size, in bytes, of each data element
+    signextend,				! Sign-extend flag
+    index] =				! For vectors, the index
+    (state_instance + offset + index*size)<0,8*size, signextend>;
+
+
+MACRO
+    block_allocate(		! Define an entry in the state file
+	eltsize,		! Size of each element in bytes
+	nelts)			! Number of elements (of eltsize) in this entry
+				! Sign Extend Flag and default index optional
+    = [ state_file_size, eltsize, %REMAINING]
+	%assign( state_file_size, state_file_size + nelts*eltsize)%,
+
+!	"name = byte_scalar" (or word or longword) defines a field name for,
+!	and allocates space in the structure for a byte/word/longowrd. The item
+!	may be reffered to as "sf[ name]" (or .sf[ name] to get the value).
+
+    byte_scalar = block_allocate( 1, 1, 1, 0)%,
+    word_scalar = block_allocate( 2, 1, 1, 0)%,
+    longword_scalar = block_allocate( 4, 1, 1, 0)%,
+
+!	"name = byte_scalar/word/longword_vector( n)" defines a field name for,
+!	and allocates space in, the structure for a vector of bytes/words/ or
+!	longwords.  The size is the number of elements in the vector.  Items in
+!	the vector may be refferd to as "sf[ name, i]", where i is the index
+!	into the vector.  To pass the address of a vector to a routine, use
+!	sf[ name, 0].
+
+    byte_vector( size) = block_allocate( 1, size, 1)%,
+    word_vector( size) = block_allocate( 2, size, 1)%,
+    longword_vector( size) = block_allocate( 4, size, 1)%,
+!
+!	"What follows" defines a synonym for whatever follows is the
+!	declaration.  As an address, it is the address of the next element.
+!	The vector forms may be indexed, as in word_vector, to access
+!	the words the follow.
+!
+    what_follows = block_allocate( 4, 0, 0, 0)%,
+    what_follows_word_vector = block_allocate( 2, 0, 1)%,
+    what_follows_byte_vector = block_allocate( 1, 0, 1)%,
+!
+!	A declaration may be preceeded by an alignment requirement that will
+!	align the next item to a word or longword boundary.
+!
+    longword_align = %assign( state_file_size, (state_file_size+3) AND NOT 3)%,
+    word_align = %assign( state_file_size, (state_file_size+1) AND NOT 1)%;
+
+!	End of VSGISB.REQ

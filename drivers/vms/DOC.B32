@@ -1,0 +1,587 @@
+MODULE DOC (
+		IDENT = 'VSTADOC utility'
+		,MAIN = doc$$start
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module starts the utility. It shows the high level flow of
+! control of the utility.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$start,			!Start here
+    doc$$init,			!Initialize
+    doc$$par_generate,		!Go read "GENERATE" command
+    doc$$par_view,		!Handle "VIEW" command
+    doc$$par_lang,		!handle "LANGUAGE" command
+    doc$$par_display,		!handle "DISPLAY" command
+    usual_header,		!Write usual header information
+    generate_header,		!Write generate header information
+    view_header,		!Write VIEW header information
+    doc$$update_lang,		!Update language
+    doc$$update_pagenum,	!Update page number
+    doc$$update_srcfil,		!Update source file name
+    doc$$update_lisfil,		!Update listing file name
+    doc$$update_edffil,		!Update edffil name
+    doc$$update_rvwfil;		!Update review file name
+
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File defs.
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$error,			!Report an error
+    doc$$type_line,		!Type a line out
+    doc$$type_sts,		!Type a status value out
+
+    doc$$get_command,		!Go read a command
+    doc$$cmd_generate,		!Parse the GENERATE command
+    doc$$cmd_view,		!Parse the VIEW command
+    doc$$cmd_display,		!Parse the DISPLAY command
+    doc$$cmd_lang,		!Parse the LANGUAGE command
+
+    doc$$generate_file,		!Read in file and write to encoded file.
+    doc$$setup_view,		!Setup to view the encoded document file
+    doc$$display_page,		!Display a page on the ONYX screen
+    doc$$quit_display,		!Quit displaying a page on the ONYX screen
+
+    vt100$$_init,		!Initialize VT100 module
+    vt100$$_clearpage,		!Clear page
+    vt100$$_writestring,	!Write a string at current position
+    vt100$$_write_crlfs,	!Write CRLFs at current position
+    vt100$$_setpos,		!Set current writing position
+    vt100$$_getpos,		!Return current line, char positions
+    vt100$$_set_scroll;		!Set scrolling region
+
+EXTERNAL
+    doc$_setscroll;		!"Can't set scrolling region"
+
+GLOBAL
+    doc_input_file_desc: VECTOR [2],
+    doc_edf_file_desc: VECTOR [2],
+    doc_list_file_desc: VECTOR [2],
+    doc_rvw_file_desc: VECTOR [2],
+    doc_init_flag: INITIAL (0),	!Set to 1 when we are initialized
+    doc_exit_flag: INITIAL (0),	!Set to 1 when we want to exit
+    doc_gen_flags: BITVECTOR [32],	!Flags on GENERATE command
+    doc_language: INITIAL (doc_lang$K_english),
+    doc_display_page: INITIAL (0),	!Page being displayed on ONYX
+    doc_firstline_scroll: INITIAL (1),	!First line in scrolling region
+    fatal_error,		!Set to 1 if fatal error detected
+    num_user_errors;		!Count of number of user errors detected
+
+OWN
+    eighty_char_line: VECTOR [80,BYTE] INITIAL (REP 20 OF ('====')),
+    line_desc: VECTOR [2] INITIAL (80, eighty_char_line),
+    lang_pos_line, lang_pos_char,
+    page_pos_line, page_pos_char,
+    src_pos_line, src_pos_char,
+    rvw_pos_line, rvw_pos_char,
+    lis_pos_line, lis_pos_char,
+    edf_pos_line, edf_pos_char;
+
+
+GLOBAL ROUTINE doc$$start =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initialize this program. Then loop until EXIT command:
+!		Get VSTADOC command.
+!		Execute command.
+!--
+BEGIN
+EXTERNAL
+    doc$_init;		!"?Could not initialize" error code
+LOCAL
+    status;
+
+IF NOT (status =
+    doc$$init ()
+	)
+  THEN RETURN doc$_init;	!"Could not initialize" error code
+!
+! Remember we are initialized
+!
+doc_init_flag = 1;
+
+UNTIL (.doc_exit_flag NEQ 0) DO
+    BEGIN
+    $setpos (24, 1);
+
+    IF NOT (status =
+	doc$$get_command ()
+	   )
+      THEN RETURN .status;
+    END;				!of "until EXIT command given"
+!
+! EXIT command given
+!
+RETURN SS$_NORMAL		!This exits.
+END;
+
+ROUTINE doc$$init =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Initializes the VSTADOC program.
+!--
+BEGIN
+EXTERNAL
+    doc$_initvt100,		!"Can't init VT100"
+    doc$_header;		!"Can't write header"
+LOCAL
+    status;
+
+IF NOT (status =
+    vt100$$_init ()			!This clears the page automatically
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_initvt100);
+	doc$$error (.status);		!Report error from VT100 module
+	RETURN .status
+	END;
+
+IF NOT (usual_header ()
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_header);
+    RETURN SS$_BADPARAM
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$par_generate =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called from command scanner when "GENERATE" seen.
+!	Call back parser to read the switches, etc.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    doc$$cmd_generate	(doc_input_file_desc	!Input file desc here
+			,doc_edf_file_desc	!Encoded doc file desc here
+			,doc_list_file_desc	!Listing file desc
+			,doc_rvw_file_desc	!Review file desc
+			,doc_gen_flags		!Generate flags here
+			)
+	)
+  THEN RETURN SS$_NORMAL;
+!
+! Ok, generate command is ok - go do it.
+!
+generate_header ();		!Put up the GENERATE header
+doc$$generate_file ();		!GENERATE the file
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$par_view =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Come here when VIEW command has been given
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    doc$$cmd_view	(doc_edf_file_desc)
+	)
+  THEN RETURN SS$_NORMAL;
+
+view_header ();		!Put up a VIEW header
+
+doc$$setup_view ();	!Go setup the VIEW
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$par_display =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Come here when DISPLAY command has been given
+!--
+BEGIN
+LOCAL
+    type,
+    page_num,
+    status;
+!
+! Finish getting command.
+!
+IF NOT (status =
+    doc$$cmd_display	(type, page_num)
+	)
+  THEN RETURN SS$_NORMAL;		!Forget it if error
+!
+! Make sure we have a file to view
+!
+IF (.doc_edf_file_desc[0] EQL 0)
+  THEN
+    BEGIN
+    $typeline ('? Use VIEW command to specify the encoded document file');
+    RETURN SS$_NORMAL
+    END;
+!
+! Call display processor to do it
+!
+doc$$display_page (.type, .page_num);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$par_lang =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Come here when "LANGUAGE" has been typed.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    doc$$cmd_lang (doc_language)
+	)
+  THEN RETURN SS$_NORMAL;
+!
+! Update language in display (it is always there)
+!
+doc$$update_lang (.doc_language);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE usual_header =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the usual header.
+!
+! SIDE EFFECTS:
+!	Leaves cursor at random place.
+!--
+BEGIN
+LOCAL
+    end_pos_line,
+    junk,
+    status;
+
+$setpos (1,1);
+$writestring (%ASCID '                    VSTADOC Utility');
+$writecrlfs (3);
+$writestring (%ASCID ' Language: ');
+$getpos (lang_pos_line, lang_pos_char);
+$writecrlfs (2);
+
+$writestring (line_desc);
+$getpos (end_pos_line, junk);
+doc_firstline_scroll = .end_pos_line + 1;	!First line to scroll
+
+doc$$update_lang (.doc_language);
+
+!Scroll near the bottom of the page
+IF NOT (status =
+    vt100$$_set_scroll (.doc_firstline_scroll, 24)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_setscroll);	!"Cant set scrolling region"
+	doc$$error (.status);		!Report error from VT100 module
+	RETURN .status
+	END;
+
+$setpos (.doc_firstline_scroll + 1, 1);
+$typeline ('You may use "?" and recognition');
+$typeline (' ');
+$typeline ('        -- Quick command summary --');
+$typeline (' ');
+$typeline ('LANGUAGE - Set language (e.g. ENGLISH) ');
+$typeline ('GENERATE source [/list=list][/edf=file][/review=file] - ');
+$typeline ('	[/language=xxx][/nolist][/noreview][/noedf]');
+$typeline ('        Generates the encoded document file from the source,');
+$typeline ('        checks syntax errors, writes a listing and');
+$typeline ('        optionally a printable review copy');
+$typeline ('VIEW edf-file - Display page 1 of the specified document');
+$typeline ('        on the VAXstation');
+$typeline ('DISPLAY nn - Displays page nn of the document being VIEWed');
+$typeline ('        on the VAXstation');
+$typeline (' ');
+$typeline (' Once a page is displayed, you may use the mouse to interact');
+$typeline ('with the document.');
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE generate_header =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes the header for GENERATE
+!--
+BEGIN
+LOCAL
+    end_pos_line,
+    junk,
+    status;
+
+$setpos (1,1);
+$writestring (%ASCID '                VSTADOC GENERATE');
+$writecrlfs (3);
+$writestring (%ASCID ' Language: ');
+$getpos (lang_pos_line, lang_pos_char);
+$writestring (%ASCID '                      ');
+$writestring (%ASCID 'Page number: ');
+$getpos (page_pos_line, page_pos_char);
+$writecrlfs (2);
+$writestring (%ASCID ' ASCII Input file:           ');
+$getpos (src_pos_line, src_pos_char);
+$writestring (doc_input_file_desc);
+$writecrlfs (1);
+$writestring (%ASCID ' Listing file:               ');
+$getpos (lis_pos_line, lis_pos_char);
+$writestring (doc_list_file_desc);
+$writecrlfs (1);
+$writestring (%ASCID ' Review file (ASCII output): ');
+$getpos (rvw_pos_line, rvw_pos_char);
+$writestring (doc_rvw_file_desc);
+$writecrlfs (1);
+$writestring (%ASCID ' Encoded document file:      ');
+$getpos (edf_pos_line, edf_pos_char);
+$writestring (doc_edf_file_desc);
+$writecrlfs (1);
+
+$writestring (line_desc);
+$getpos (end_pos_line, junk);
+doc_firstline_scroll = .end_pos_line + 1;	!First line to scroll
+
+doc$$update_lang (.doc_language);
+doc$$update_pagenum (1);		!Start at page 1
+
+!Scroll near the bottom of the page
+IF NOT (status =
+    vt100$$_set_scroll (.doc_firstline_scroll, 24)
+	)
+  THEN
+	BEGIN
+	doc$$error (doc$_setscroll);	!"Cant set scrolling region"
+	doc$$error (.status);		!Report error from VT100 module
+	RETURN .status
+	END;
+
+$setpos (24,1);		!Put cursor at bottom of screen
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE view_header =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Put up the VIEW header
+!--
+BEGIN
+LOCAL
+    end_pos_line,
+    junk,
+    status;
+
+$setpos (1,1);
+$writestring (%ASCID '            VSTADOC VIEW');
+$writecrlfs (3);
+$writestring (%ASCID ' Language: ');
+$getpos (lang_pos_line, lang_pos_char);
+$writestring (%ASCID '             ');
+$writestring (%ASCID 'Page number: ');
+$getpos (page_pos_line, page_pos_char);
+$writecrlfs (2);
+$writestring (%ASCID ' Encoded document file:      ');
+$getpos (edf_pos_line, edf_pos_char);
+$writestring (doc_edf_file_desc);
+$writecrlfs (1);
+
+$writestring (line_desc);
+$getpos (end_pos_line, junk);
+doc_firstline_scroll = .end_pos_line + 1;	!First line to scroll
+$writecrlfs (3);
+!
+! Set scrolling region
+!
+IF NOT (status =
+    vt100$$_set_scroll (.doc_firstline_scroll, 24)
+	)
+  THEN
+    BEGIN
+    doc$$error (doc$_setscroll);
+    RETURN doc$$error (.status)
+    END;
+
+$setpos (24,1);		!Put cursor at bottom of screen
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_lang
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes language in language field
+! FORMAL PARAMETERS:
+	(lang
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc,
+    status;
+
+$setpos (.lang_pos_line, .lang_pos_char);
+str_desc =
+	(CASE .lang FROM 0 TO doc_lang$K_next_type - 1 OF
+	    SET
+		[doc_lang$K_english]:	%ASCID 'ENGLISH';
+		[doc_lang$K_french]:	%ASCID 'FRENCH ';
+		[doc_lang$K_german]:	%ASCID 'GERMAN ';
+		[doc_lang$K_italian]:	%ASCID 'ITALIAN';
+		[doc_lang$K_swedish]:	%ASCID 'SWEDISH';
+		[doc_lang$K_dutch]:	%ASCID 'DUTCH  ';
+		[inrange]:		%ASCID '???????';
+		[outrange]:		%ASCID '???????';
+	    TES
+	);
+
+$writestring (.str_desc);
+$setpos (24,1);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_pagenum
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes new pagenumber in field
+! FORMAL PARAMETERS:
+	(page_num
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_itself: BLOCK [20,BYTE],
+    str_real_len: WORD,
+    status;
+
+str_desc [0] = 20;
+str_desc [1] = str_itself;
+
+IF NOT (status =
+    $fao	(%ASCID '!ZW'	!CTRSTR
+		,str_real_len	!OUTLEN
+		,str_desc	!OUTBUF
+		,.page_num	!P1
+		)
+	)
+  THEN
+    BEGIN
+    $typeline ('? $fao failed trying to update pagenum');
+    $typests (.status);
+    RETURN .status
+    END;
+
+str_desc [0] = .str_real_len;
+
+$setpos (.page_pos_line, .page_pos_char);
+$writestring (str_desc);
+$setpos (24,1);
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_srcfil
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update source file name string
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+$setpos (.src_pos_line, .src_pos_char);
+$writestring (.str_desc);
+$setpos (24,1);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_lisfil
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update listing file name string
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+$setpos (.lis_pos_line, .lis_pos_char);
+$writestring (.str_desc);
+$setpos (24,1);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_edffil
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update encoded document file name string
+! FORMAL PARAMETERS:
+	(str_desc
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+$setpos (.edf_pos_line, .edf_pos_char);
+$writestring (.str_desc);
+$setpos (24,1);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$update_rvwfil
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Update review file name string
+! FORMAL PARAMETERS:
+	(str_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+LOCAL
+    status;
+
+$setpos (.rvw_pos_line, .rvw_pos_char);
+$writestring (.str_desc);
+$setpos (24,1);
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

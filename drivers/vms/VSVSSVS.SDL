@@ -1,0 +1,286 @@
+module $VS;
+
+/*+++
+/* Facility:
+/*
+/*	VAX Workstation Virtual Display and Physical Screen data structures
+/*
+/* Abstract:
+/*
+/*	This file contains all the Workstation Virtual Display and
+/*	Physical Screen data structures.  Various constants are also 
+/*	defined. The data
+/*	definitions are defined to be language independent.
+/*
+/* Environment:
+/*
+/*	SDAACP process.
+/*
+/*---
+
+/*	Virtual Screen Service Constants
+
+constant VS_BLOCK_TYPE equals 250
+				prefix VSS$;
+constant VP_BLOCK_TYPE equals 251
+				prefix VSS$;
+constant PS_BLOCK_TYPE equals 252
+				prefix VSS$;
+
+/*
+/* Virtual Screen Block -- VSB
+/*
+aggregate VS_BLOCK structure prefix VSS$;
+	VS_FL		address; /* Forward link to next VS_BLOCK
+	VS_BL		address; /* Backward link.
+	VS_SIZE	word unsigned;	 /* VMS block size/type info conventions
+	VS_TYPE	byte unsigned;	 /* Ditto
+	VS_spare1	byte;	 /* Ditto
+	VS_ID		longword unsigned; /* ID of this VS
+	VS_CHAR		longword unsigned; /* Color of this VS
+	VS_TOP		longword unsigned; /* Paste order of topmost VP
+	VS_VP_QUEUE_FL	address; /* Forward link into list of Viewports.
+	VS_VP_QUEUE_BL	address; /* Backward link.
+	VS_PS_QUEUE_FL	address; /* Forward link into list of Physical Screens.
+	VS_PS_QUEUE_BL	address; /* Backward link.
+constant VS_BLOCK_LENGTH equals .;
+end VS_BLOCK;
+
+/* Virtual Screen Viewport queue block
+	aggregate VS_VP_BLOCK structure prefix VSS$;
+		VS_VP_BLOCK_FL		address; /* Link to next VS_VP block
+		VS_VP_BLOCK_BL		address; /* Backward link
+		VS_VP_BLOCK_SIZE	word unsigned; /* VMS block conventions
+		VS_VP_BLOCK_TYPE	byte unsigned; /* Ditto
+		VS_VP_BLOCK_SPARE1	byte;		/* Ditto
+		VS_VP_ID		longword unsigned; /* ID of this VP
+		VS_VP_PASTE_ORDER	longword unsigned; /* P.O. of this VP
+
+		/* Rectangle block, keep together and in order !
+		/*
+		VS_VP_X_ORIGIN		longword; /* Location of this VP in this VS
+		VS_VP_Y_ORIGIN		longword;
+		VS_VP_WIDTH		longword;/* Cached width for mouse code
+		VS_VP_HEIGHT		longword;/* Cached height
+		/*
+		/* End of rectangle block.
+
+		VS_VP_VIS_SEG_QUEUE_FL	address; /* List of visible segments.
+		VS_VP_VIS_SEG_QUEUE_BL	address; /* Backward link into same.
+		VS_VP_OCC_SEG_QUEUE_FL	address; /* List of occluded segments.
+		VS_VP_OCC_SEG_QUEUE_BL	address; /* Backward link into same.
+	end VS_VP_BLOCK;	
+
+/* Virtual Screen Viewport block visible segment block.
+		aggregate VS_VP_VIS_SEG_BLOCK structure prefix VSS$;
+		VS_VP_VIS_SEG_FL		address; /* Link to next.
+		VS_VP_VIS_SEG_BL		address; /* Backward link.
+		VS_VP_VIS_SEG_SIZE	word unsigned; /* VMS conventions
+		VS_VP_VIS_SEG_TYPE	byte unsigned; /* Ditto
+		VS_VP_VIS_SEG_spare1	byte; /* Ditto
+
+		/* Rectangle block, keep together and in order !
+		/*
+		VS_VP_VIS_SEG_X_ORIGIN	longword; /* Location in the VS of this seg.
+		VS_VP_VIS_SEG_Y_ORIGIN	longword; /*
+		VS_VP_VIS_SEG_LENGTH	longword unsigned;
+		VS_VP_VIS_SEG_HEIGHT	longword unsigned; /* Size info. for seg.
+		/*
+		/* End of rectangle block.
+
+		VS_VP_VIS_SEG_R_Q_FL	address; /* Q Header for vd rectangles
+		VS_VP_VIS_SEG_R_Q_BL	address; /* Q Header back link.
+	constant VS_VP_VIS_SEG_BLK_LEN equals .; /* Overall size of this block
+		end VS_VP_VIS_SEG_BLOCK;
+
+/* Virtual Screen Viewport block occluded segment block.
+		aggregate VS_VP_OCC_SEG_BLOCK structure prefix VSS$;
+		VS_VP_OCC_SEG_FL		address; /* Link to next
+		VS_VP_OCC_SEG_BL		address; /* Link to last
+		VS_VP_OCC_SEG_SIZE	word unsigned; /* VMS convention
+		VS_VP_OCC_SEG_TYPE	byte unsigned; /* Ditto
+		VS_VP_OCC_SEG_spare1	byte;		/* Ditto
+
+		/* Rectangle block, keep together and in order !
+		/*
+		VS_VP_OCC_SEG_X_ORIGIN	longword;	/* Location in VS of this seg
+		VS_VP_OCC_SEG_Y_ORIGIN	longword;
+		VS_VP_OCC_SEG_LENGTH	longword unsigned;
+		VS_VP_OCC_SEG_HEIGHT	longword unsigned; /* Size of this seeg
+		/*
+		/* End of rectangle block.
+
+		VS_VP_OCC_SEG_ID	longword unsigned; /* Occluding VP_ID
+		VS_VP_OCC_SEG_OCC_Q_FL	address; /* List of occluding VP_IDs,
+		VS_VP_OCC_SEG_OCC_Q_BL	address; /* See next section
+		VS_VP_OCC_SEG_R_Q_FL	address; /* Q of VD rectangles
+		VS_VP_OCC_SEG_R_Q_BL	address; /*
+	constant VS_VP_OCC_SEG_BLK_LEN equals .; /* Overall size of block
+	end VS_VP_OCC_SEG_BLOCK;
+
+
+/* Next is the list of VP's that occlude an occluded segment.
+
+/* Virtual Screen Viewport block occluded segment occluded-by block.
+		aggregate OCC_SEG_OCC_BLOCK structure prefix VSS$;
+			OCC_SEG_OCC_FL	address; /* Link to next
+			OCC_SEG_OCC_BL	address; /* Link to last
+			OCC_SEG_OCC_SIZE	word unsigned; /* VMS...
+			OCC_SEG_OCC_TYPE	byte unsigned; /* Ditto
+			OCC_SEG_OCC_spare1	byte;		/* Ditto
+			OCC_SEG_OCC_VP_ID	longword unsigned; /* VP_ID
+		constant OCC_SEG_OCC_BLK_LEN equals .; /* Overall size (Oshkosh)
+		end OCC_SEG_OCC_BLOCK;
+
+
+
+/*
+/* Viewport Visible Segment Visible Rectangle Block (
+/*	(Visible segments have no occluded rectangles)
+aggregate VIS_R_BLOCK structure prefix VSS$;
+	VIS_R_FL		address; /* Link to next
+	VIS_R_BL		address; /* Link to last
+	VIS_R_SIZE	word unsigned; /* VMS convention
+	VIS_R_TYPE	byte unsigned; /* Ditto
+	VIS_R_spare1	byte;		/* Ditto
+
+		/* Rectangle block, keep together and in order !
+		/*
+	VIS_R_X_ORIGIN	longword;		/* VP coordinate location of this reect.
+	VIS_R_Y_ORIGIN	longword;
+	VIS_R_LENGTH	longword unsigned;
+	VIS_R_HEIGHT	longword unsigned; /* Size info for this rectangle.
+		/*
+		/* End of rectangle block.
+
+	VIS_R_VD_ID	longword unsigned;	/* VD owning this R.
+constant VIS_R_BLK_LEN equals .; /* Overall size of this block
+end VIS_R_BLOCK;
+
+
+/*
+/* Viewport occluded Segment occluded Rectangle Block (
+/*	(occluded segments have no visible rectangles)
+aggregate OCC_R_BLOCK structure prefix VSS$;
+	OCC_R_FL		address; /* Link to next
+	OCC_R_BL		address; /* Link to last
+	OCC_R_SIZE	word unsigned; /* VMS convention
+	OCC_R_TYPE	byte unsigned; /* Ditto
+	OCC_R_spare1	byte;		/* Ditto
+
+		/* Rectangle block, keep together and in order !
+		/*
+	OCC_R_X_ORIGIN	longword;	/* VP coordinate location of this rectangle.
+	OCC_R_Y_ORIGIN	longword;
+	OCC_R_LENGTH	longword unsigned;
+	OCC_R_HEIGHT	longword unsigned; /* Size info for this rectangle
+		/*
+		/* End of rectangle block.
+
+	OCC_R_VD_ID	longword unsigned;	/* VD owning this R.
+constant OCC_R_BLK_LEN equals .;
+end OCC_R_BLOCK;
+
+/*
+/* Virtual Screen's Physical Screen queue block
+	aggregate VS_PS_BLOCK structure prefix VSS$;
+		VS_PS_BLOCK_FL		address; /* Link to next
+		VS_PS_BLOCK_BL		address; /* Link to last
+		VS_PS_BLOCK_SIZE	word unsigned; /* VMS convention
+		VS_PS_BLOCK_TYPE byte unsigned; /* Ditto
+		VS_PS_BLOCK_SPARE1	byte; /* Ditto
+		VS_PS_ID		longword unsigned; /* ID of this PS
+		VS_PS_X_ORIGIN		longword; /* VS coordinate origin of this PS
+		VS_PS_Y_ORIGIN		longword;
+	constant VS_PS_BLOCK_LENGTH equals.; /* Overall size of this block.
+	end VS_PS_BLOCK;	
+
+
+/*
+/* Viewport Data Block
+/*
+aggregate VP_BLOCK structure prefix VSS$;
+	VP_FL		address; /* Link to next
+	VP_BL		address; /* Link to last
+	VP_SIZE		word unsigned; /* Three entries for VMS block structure.
+	VP_TYPE		byte unsigned;
+	VP_spare1	byte;
+	VP_ID		longword unsigned; /* This VP's ID
+	VP_WINDOW_ID	longword unsigned; /* ID of window in this VP.
+	VP_VS_ID	longword unsigned; /* ID of VS this VP is on.
+	VP_VS_VP_PTR	longword unsigned; /* Pointer to VS_VP.
+	VP_HEIGHT	longword unsigned; /* X and Y coordinates are found in
+	VP_LENGTH	longword unsigned; /* each VS's VS_VP block for this VP.
+	VP_CHAR		longword unsigned; /*
+	VP_COLOR	longword unsigned; /* Makes life easier for removals.
+	VP_STATE	longword unsigned; /* 
+	VP_HELP_ROUTINE address;	   /* help routine
+	VP_HELP_DATA	longword;	   /* data to pass to help routine
+	VP_POPUP_PB	longword;	   /* id of popped up pasteboard
+end VP_BLOCK;
+
+
+
+/*
+/* Physical Screen Data structure -- Physical Screen Block (PS_BLOCK)
+/*
+aggregate PS_BLOCK structure prefix VSS$;
+	PS_FL		address; /* Link to next
+	PS_BL		address; /* Link to last
+	PS_SIZE	word unsigned; /* Three entries for a standard block.
+	PS_TYPE	byte unsigned;
+	PS_spare1	byte;
+	PS_ID		longword unsigned; /* ID of this PS
+	PS_CHAR		longword unsigned; /* Not used by anything yet...
+
+		/* Rectangle block, keep together and in order !
+		/*
+	PS_X_ORIGIN	longword;	/* This is probably redunant with info-
+	PS_Y_ORIGIN	longword;	/* stored in the VS_PS block.
+	PS_LENGTH	longword unsigned;
+	PS_HEIGHT	longword unsigned; /* Size info for this PS
+		/*
+		/* End of rectangle block.
+
+	PS_VS_ID	longword unsigned; /* VS that this PS is on.
+	PS_VIS_R_QUEUE_FL	address; /* Queue of VD rectangles
+	PS_VIS_R_QUEUE_BL	address;
+	PS_MOUSE_PB_ID	longword; /* pb mouse is in
+	PS_MOUSE_VP_ID	longword; /* vp mouse is in
+	PS_MOUSE_VD_ID	longword; /* vd mouse is in
+	PS_SEL_VD_ID	longword; /* also vd mouse is in, IF mouse is in a rgn
+	PS_SEL_X	longword; /* origin x coordinate for region mouse is in
+	PS_SEL_Y	longword; /* origin y coordinate for region mouse is in
+	PS_HELP_ROUTINE address;  /* help routine
+	PS_HELP_DATA	longword; /* data to pass to help routine
+constant PS_BLOCK_LENGTH equals .; /* Overall size. 
+end PS_BLOCK;
+
+/*
+/* Physical Screen Visible Rectangle Block -- (PS_VIS_R_BLOCK)
+/*
+aggregate PS_VIS_R_BLOCK structure prefix VSS$;
+	PS_VIS_R_FL		address; /* Link to next.
+	PS_VIS_R_BL		address; /* Link to last.
+	PS_VIS_R_SIZE	word unsigned; /* VMS convention
+	PS_VIS_R_TYPE	byte unsigned; /* Ditto
+	PS_VIS_R_spare1	byte;		/* Ditto
+
+		/* Rectangle block, keep together and in order !
+		/*
+	PS_VIS_R_X_ORIGIN	longword; /* Location in PS coordinates.
+	PS_VIS_R_Y_ORIGIN	longword;
+	PS_VIS_R_LENGTH	longword unsigned;
+	PS_VIS_R_HEIGHT	longword unsigned; /* Size info.
+		/*
+		/* End of rectangle block.
+
+	PS_VIS_R_VD_ID	longword unsigned;	/* VD owning this R.
+	PS_VIS_R_VP_ID	longword unsigned;	/* VP owning this R.
+constant PS_VIS_R_BLK_LEN equals .;
+end PS_VIS_R_BLOCK;
+
+/*
+/* End of module $VS
+/*
+end_module;

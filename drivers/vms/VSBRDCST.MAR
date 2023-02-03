@@ -1,0 +1,74 @@
+	.TITLE	VS$BRDCST  --  Broadcast Completion Routine for VS$ACP
+	.IDENT	'V00-000'
+;++
+;
+; FACILITY:
+;
+;	VAXStation ACP
+;
+; ABSTRACT:
+;	Broadcast completion routine
+;
+;
+;--
+
+	.SBTTL	External and local symbol definitions
+
+;
+; External symbols
+;
+
+	$IPLDEF				; Hardware IPL definitions
+	$SSDEF				; System status codes
+	$TTDEF				; Terminal definitions
+	$TT2DEF				; More definitions
+	$TTYDEF				; Terminal driver definitions
+	$TTYDEFS			; MORE Terminal driver definitions
+	$UCBDEF				; Unit control block
+	$VSACPDEF			; General constants
+
+;
+; Local symbols
+;
+
+	.PSECT	_VSTA$CODE	RD,NOWRT,PIC,SHR,LONG,EXE
+	.SBTTL	VS$$ACP_DONE_BROADCAST
+;++
+; VS$$ACP_DONE_BROADCAST  --  Broadcast Completion Routine
+;
+; Functional description:
+;
+;	VS$ACP_BROADCAST calls this routine (with a CALL) when it
+;	has finished writing a broadcast message to a terminal.  This 
+;	routine FORKs to the system routine EXE$BRDCSTCOM, or whatever
+;	other address is contained in the TTY$L_WB_RETADDR field of the
+;	Broadcast Write Packet (the TWP), using the TWP as the fork block.
+;	After the fork process is queued, control returns to the calling
+;	routine (VS$$ACP_BROADCAST) with a RET.
+;
+; Inputs:
+;	4(AP)	Address of buffer header block
+;
+; Outputs:
+;	In the fork process
+;		R3	contents of TTY$L_WB_END field
+;			(address of end of message)
+;		R5	Address of buffer header block
+;
+;--
+VS$$ACP_DONE_BROADCAST::		; Broadcast completion
+	.WORD	^M<R3,R4,R5>		; Called as a procedure; save regs
+	MOVL	4(AP),R5		; Only argument is address of TWP
+	PUSHAB	10$			; Set up return from Fork Process
+	PUSHL	TTY$L_WB_RETADDR(R5)	; Set up address of Fork Routine
+	MOVB	#IPL$_QUEUEAST,-	; Re-set Fork IPL = 6
+		TTY$B_WB_FIPL(R5)	;	in case we destroyed it.
+	MOVL	TTY$L_WB_END(R5),R3	; Set up end address for Fork routine's use
+	JMP	G^EXE$FORK		; Fork
+;
+;
+  10$:
+	MOVZWL	#SS$_NORMAL,R0		; Indicate success
+	RET				; Return to caller
+
+	.END

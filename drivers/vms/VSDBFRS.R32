@@ -1,0 +1,43 @@
+ 
+!*** MODULE VSTA$DBFR ***
+! 
+!  FUNCTIONAL DESCRIPTION:
+! 
+!  This module contains the definition of the data buffering structures
+! 
+! ---
+! 
+!   Define the dbfr types
+! 
+literal DBFR$K_REFERENCE = 1;
+literal DBFR$K_IMMEDIATE = 2;
+! 
+!  Define the allocation classes
+! 
+literal DBFR$K_SRP_CLASS = 1;
+literal DBFR$K_MRP_CLASS = 2;
+literal DBFR$K_NRP_CLASS = 3;
+literal DBFR$K_LRP_CLASS = 4;
+! 
+!  Define the allocation class sizes
+! 
+literal DBFR$K_SRP_SIZE = 64;
+literal DBFR$K_MRP_SIZE = 128;
+literal DBFR$K_NRP_SIZE = 256;
+literal DBFR$K_LRP_SIZE = 2048;
+! 
+!  Define the structure of the dbfr descriptor
+! 
+literal DBFR$K_DESC_SIZE = 12;
+macro DBFR_BLOCK = 0,0,0,0 %;
+literal DBFR$S_DBFR_BLOCK = 12;
+macro DBFR$B_TYPE = 0,0,8,0 %;          !  Type field one of above types
+macro DBFR$B_UNIT_SIZE = 1,0,8,0 %;     !  Unit size 
+macro DBFR$W_ALOCLS = 2,0,16,0 %;       !  Allocation class
+macro DBFR$L_DATA_SIZE = 4,0,32,0 %;    !  Number of data bytes 
+macro DBFR$R_DBFR_REDEF = 8,0,32,0 %;
+literal DBFR$S_DBFR_REDEF = 4;
+macro DBFR$L_REFCNT = 8,0,32,0 %;       !  Reference count for 
+!  immediate dbfrs
+macro DBFR$A_DATA = 8,0,32,0 %;         !  Data pointer for 
+!  reference dbfrs

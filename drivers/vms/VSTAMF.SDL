@@ -1,0 +1,27 @@
+MODULE vstamf;
+/*
+/* Binary document file offsets used by VSTAMF and the human interface.
+/*
+/* Header
+AGGREGATE mf_header_block STRUCTURE PREFIX mfh$;
+	sanity		LONGWORD;	/* Sanity word
+CONSTANT sanity_data EQUALS %X55561010;	/* The value that must be there.
+
+	version		LONGWORD;	/* version number
+	language_key	LONGWORD;	/* which language
+	num_msgs	LONGWORD;	/* Number of messages in the file
+	num_hdr_blks	LONGWORD;	/* how many header blocks
+END mf_header_block;
+
+AGGREGATE mf_page_block STRUCTURE PREFIX mfp$;
+	first		WORD UNSIGNED;	/* First number used
+	last		WORD UNSIGNED;	/* Last number used
+END mf_page_block;
+
+AGGREGATE mf_txt_block STRUCTURE PREFIX mft$;
+	link		WORD UNSIGNED;	/* Link number
+	size		WORD UNSIGNED;	/* Size of string
+CONSTANT hdr_size EQUALS .;		/* Place where string is
+END mf_txt_block;
+ 
+END_MODULE;

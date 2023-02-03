@@ -1,0 +1,144 @@
+module $VSVDSVDC;
+
+/*--
+/*
+/* Data structure constants
+/*
+	CONSTANT (
+		int_type
+			) EQUALS 80 INCREMENT 1 PREFIX vs$;
+
+/*--
+/*
+/* Define the structure for the Internal IO Request Packet (INT)
+/*
+AGGREGATE int_db STRUCTURE PREFIX int$;
+
+	flink			ADDRESS;
+	blink			ADDRESS;
+	size			WORD;
+	type			BYTE;
+	int_spare_1		BYTE;
+
+/* Flags longword
+	vdc_int UNION;
+	    vdc_int_flags STRUCTURE PREFIX int$;
+		done_io_request		BITFIELD	MASK;
+		done_io_mexclf		BITFIELD	MASK;
+		flag_spares		BITFIELD	LENGTH 30;
+	    END vdc_int_flags;
+	END vdc_int;
+/* End of Flags	longword	
+
+	iip_count		LONGWORD;
+	iost1			LONGWORD;
+	iost2			LONGWORD;
+	routine			ADDRESS;
+CONSTANT header_len EQUALS .;
+	arglist			LONGWORD;
+	p1			LONGWORD;
+	p2			LONGWORD;
+	p3			LONGWORD;
+	p4			LONGWORD;
+	p5			LONGWORD;
+	p6			LONGWORD;
+	p7			LONGWORD;
+	p8			LONGWORD;
+	p9			LONGWORD;
+	p10			LONGWORD;
+	p11			LONGWORD;
+	p12			LONGWORD;
+
+END int_db;
+
+
+/*.
+/*	IRP redefinitions
+/*.
+
+AGGREGATE vdc_irp_block STRUCTURE PREFIX irp$;
+
+	vdc_irp_sys_defined	BYTE UNSIGNED DIMENSION 42; /* IRP$W_STS = 2A
+
+	vdc_irp_sts UNION;
+	    vdc_irp_sts_flags STRUCTURE PREFIX irp$;
+		vcd_irp_spare1	BITFIELD	LENGTH 4;
+		done_io_mexclf	BITFIELD	MASK;	   /* IRP$V_VIRTUAL
+		vcd_irp_spare2	BITFIELD	LENGTH 3;
+		done_io_request	BITFIELD	MASK;	   /*  IRP$V_PHYSIO
+		vcd_irp_spare3	BITFIELD	LENGTH 7;
+	    END vdc_irp_sts_flags;
+	END vdc_irp_sts;
+
+	vdc_irp_sys_defined2	BYTE UNSIGNED DIMENSION 28; /* IRP$L_SEGVBN = 48
+
+	iip_count		LONGWORD;
+
+END vdc_irp_block;
+
+
+AGGREGATE vdc_blk STRUCTURE PREFIX vdc$;
+
+	flink			ADDRESS;
+	blink			ADDRESS;
+	type			LONGWORD;
+	refcnt			LONGWORD;
+	sts			LONGWORD;
+	rca			ADDRESS;
+	rcc			WORD;
+	efn			LONGWORD;
+	astadr			ADDRESS;
+	astprm			LONGWORD;
+	src_type		WORD;
+	src			ADDRESS;
+	so_blk UNION;
+		norm_blk STRUCTURE;
+			sox			WORD;
+			soy			WORD;
+		END norm_blk;
+		back_blk STRUCTURE;
+			width			WORD;
+			height			WORD;
+		END back_blk;
+	END so_blk;
+	msk_type		WORD;
+	msk			ADDRESS;
+	map_type		WORD;
+	map			ADDRESS;
+	dst_off UNION;
+		dst_off_xy STRUCTURE;
+			dox	WORD;
+			doy	WORD;
+		END dst_off_xy;
+		dst_off_a STRUCTURE;
+			doa	WORD;
+			dof	ADDRESS;
+		END dst_off_a;
+	END dst_off;
+	cmd_blk UNION;
+		drw_blk STRUCTURE;
+			path_count	WORD;
+			path		ADDRESS;
+			pattern_mode	WORD;
+			pattern_action	WORD;
+			pattern_block	ADDRESS;
+			pattern_state	ADDRESS;
+			sec_type	WORD;
+			sec		ADDRESS;
+			ssx		WORD;
+			ssy		WORD;
+		END drw_blk;
+		prn_blk STRUCTURE;
+			txt_type	WORD;
+			txtnum		WORD;
+			txtadr		ADDRESS;
+			control_count	WORD;
+			control_addr	ADDRESS;
+			char_pad	WORD;
+			space_pad	WORD;
+		END prn_blk;
+	END cmd_blk;
+END vdc_blk;
+
+
+END_MODULE;

@@ -1,0 +1,443 @@
+module txtpublic (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! This module contains miscellaneous storage and routines.
+
+forward routine!s . . .
+
+	vsta$$report_bug,		! report bug
+	vs$$txt_displayAlltext,		! refresh all text in virtual display
+	vs$$txt_initializeText,		! initialize entire database
+	vs$$txt_create_Text_Block,	! initialize text block for new vd
+	vs$$txt_delete_Text_Block,	! expunge a text block no longer needed
+	find_text_block,		! find a text block
+	sniff_text_block;		! find text block but don't record
+					! error if can't.
+
+external routine!s . . .
+
+	refreshLines,		! refresh specific range of lines
+	releaseFontsBetween,	! release group of fonts
+	deallocate_text_block,	! deallocate a text block
+	deleteElements,		! delete elements from a list
+	appendElement,		! add one element to end of a list
+	findElement,		! search list for an element
+	alcful,			! allocate block
+	alcbyt;			! allocate string (or other byte array)
+
+library 'vsta$library:txtsym';
+library 'vsta$library:termio';
+library 'vsta$library:libmacros';	! symbols like $log_error_and_return
+library 'vsta$library:vsvdsvd';	! symbols like vdb$w_background
+
+library 'sys$library:starlet';
+
+$vsta_psect;			! PSECT definitions
+
+    global			! instead of "own", so diagnostics can reference them
+	tb_head : vector [2] preset (
+	    [0] = tb_head[0],	! Linked list queue header for text blocks
+	    [1] = tb_head[0]
+	    ),
+	swfonts:ref vector,	! system-wide fonts
+	nswfonts;		! number of defined system-wide fonts
+
+builtin
+
+	remque, insque;		! Queue operations
+
+global routine vsta$$report_bug
+!++
+! Functional description:
+!
+!	This routine reports an unexpected software situation, i.e. one
+!	that shouldn't happen regardless of what the caller supplies as
+!	parameters to the original call.
+!
+!	Specifically, this routine logs the error on the standard vms
+!	error log file.
+!
+!	A useful restraint might be to not report errors more than, say.
+!	one a minute to protect against malicious users discovering a
+!	bug, and looping until the disk is full of log entries !!
+!
+! Formal parameters:
+ (
+	status,			! status code for error
+	first_fao_arg		!
+!	. . . ,			!	args for error message
+!	last fao arg		!
+ ) =
+!
+! Completion codes:
+!
+!	Whatever services such as $snderr give back (status of first one to
+!	fail).
+!--
+
+	begin
+
+	builtin
+
+	    actualCount;	! Function to count args passed to routine
+
+	literal
+
+	    ! Most bytes $getmsg can return
+	    maxlen = 256;
+
+	bind
+
+	    ! Get number of fao args.
+	    n_params = actualCount() - 1,
+
+	    ! Get address of fao args.
+	    fao_arg_buf = first_fao_arg;
+
+	local
+
+	    ! Descriptor for pre-string (before fao parameters filled in)
+	    pre_str_desc : string_descriptor initial (maxlen),
+
+	    ! Descriptor for final-string (after fao parameters filled in)
+	    final_str_desc : string_descriptor initial (maxlen),
+
+	    ! buffer to hold error string before fao substitution
+	    pre_str_buf : vector [maxlen, byte],
+
+	    ! buffer to hold error string after fao substitution
+	    final_str_buf : vector [maxlen, byte],
+
+	    ! Status cell for system service completion code.
+	    s;
+
+	! Set up pre-string descriptor to point at buffer.
+	pre_str_desc[sd_adr] = pre_str_buf;
+
+	! Get error string with fao directives possibly embedded in it.
+	!
+	if not (s = $getmsg (
+	    msgid = .status,
+	    msglen = pre_str_desc[sd_len],	! overwrite max length with real one
+	    bufadr = pre_str_desc
+	))
+	then return .s;
+
+	! Set up final-string descriptor to point at buffer.
+	final_str_desc[sd_adr] = final_str_buf;
+
+	! Create final string with fao args filled in.
+	!
+	if not (s = $faol (
+	    ctrstr = pre_str_desc,
+	    outlen = final_str_desc[sd_len],
+	    outbuf = final_str_desc,
+	    prmlst = fao_arg_buf
+	))
+	then return .s;
+
+	! Write the error into onto the standard system error file.
+	!
+	if not (s = $snderr (msgbuf = final_str_desc))
+	then return .s;
+
+	! Give successful return from this reporting routine.
+	true
+
+	end;
+
+global routine vs$$txt_displayAllText
+!++
+!
+! Functional description:
+!
+!	When all text needs to be reshown, the following routine is called,
+!	which in turn updates all text for a virtual display.
+!
+! Formal parameters:
+ (
+    id			! id of display whose text is to be updated
+	       ) =
+!--
+
+	begin
+	bind
+	    ! Get text block for this virtual display id
+	    txtBlk = getTextBlock(.id):text_block,
+
+	    ! Get number of lines in this text block
+	    nLines = .txtBlk[txt_nLines];
+
+	! refresh all lines
+	refreshLines(.id, txtBlk, 1, nLines);
+
+	! Return true to indicate success
+	true
+
+	end;
+
+global routine vs$$txt_initializeText
+!++
+! Functional description:
+!
+!	Initialize parameters which must be initialized before any text
+!	databases are created.
+!--
+ =
+	begin
+
+	! Start with no system-wide fonts
+	nswfonts = 0;
+
+	! Give success return
+	true
+
+	end;
+
+global routine vs$$txt_create_Text_Block
+!++
+! Functional description:
+!
+!	Create a text block for a new virtual display, given its id.
+!	Fill in initial settings for line height etc.
+!
+! Formal parameters:
+ (
+    id,			! virtual display id
+    displayHeight,	! height of virtual display
+    width		! width of virtual display
+		) =
+!--
+
+	begin
+
+	external routine
+
+	    vs$$txt_setTypeface,
+	    vs$$vds_vd_pointer;
+
+	local
+
+	    s,
+	    txtBlk:ref text_block,
+	    vd : ref vdblock;
+!
+! If this display id already has a text block, give an error return
+!
+	if (s = sniff_text_block (.id, txtBlk))
+	then $return_error (vsta$_mltpl_blk);
+!
+! allocate text block
+!
+	txtBlk = allocateFullwords(text_Block_length);
+!
+! Insert new block into queue of text blocks.
+!
+	insque (txtBlk[base], tb_head[0]);
+!
+! Remember virtual display id in the text block.
+!
+	txtBlk[txt_vd_id] = .id;
+
+	! Remember height of entire virtual display
+	txtBlk[txt_height] = .displayHeight;
+
+	! Remember width of lines
+	txtBlk[txt_width] = .width;
+
+	! Set typeface to standard.  This prevents unwary writer from
+	! getting some wierd font (like vt100 top half) when they write on
+	! display before setting any particular typeface.
+	!
+	vs$$txt_setTypeface (
+	    .id,
+	    %ascid 'vsta$standard_typeface'
+	    );
+!
+! Get vd database for interrogating various defaults.
+!
+	if not (s = vs$$vds_vd_pointer (.id, vd))
+	then $log_error_and_return (.s);
+!
+! Remember vd color so we don't have to keep asking.
+!
+	txtBlk[txt_vd_color] = .vd[vdb$w_background];
+!
+! Default text writing and background colors to the graphics ones.
+!
+	txtBlk[txt_curInk] = .vd[vdb$w_foreground];
+	txtBlk[txt_curBack] = .vd[vdb$w_background];
+
+	! Return true to indicate success
+	true
+
+	end;
+
+global routine vs$$txt_delete_Text_Block
+!++
+! Functional description:
+!
+!	Delete a text block no longer needed, such as when a virtual display is
+!	being expunged.
+!
+! Formal parameters:
+ (
+    id		! id of virtual display whose text block is being deleted
+		) =
+! Value:
+!
+!	This routine returns SS$_NORMAL if there is no text block to delete for
+!	the specified display.  Such complacency prevents end-session from
+!	returning an error when those displays having no textiblks are
+!	deleted.
+!--
+
+	begin
+
+	local s, txtBlk : ref text_block;
+!
+! Find block being deleted.  If can't, give a success return, i.e. quietly
+! assume the block has already been deleted or never existed.
+!
+	if not (s = sniff_text_block (.id, txtBlk))
+	then return ss$_normal;
+!
+! Delete the text block itself.
+!
+	deallocate_text_block (txtBlk[base]);
+!
+! Give success return
+!
+	ss$_normal
+
+	end;
+
+global routine find_text_block
+!++
+! Functional description:
+!
+!	Get address of text block, given a virtual display id.
+!
+! Formal parameters:
+ (
+    id,				! virtual display id whose text block is sought
+    txt_blk_adr			! where to write address of block
+	     ) =
+!--
+
+	begin
+
+	local txtBlk : ref text_block;
+!
+! Get address of first text block in chain.
+!
+	txtBlk = .tb_head[0];
+!
+! Scan until either the sought one is found, or we don't find it.
+!
+	until txtBlk[base] eql tb_head[0] do
+	if .txtBlk[txt_vd_id] eql .id
+	then
+	    begin
+!
+! Tell caller address of block.
+!
+	    .txt_blk_adr = txtBlk[base];
+!
+! If it's not the first one on the chain, make it so,
+! in order that it be found more quickly in the case of looking up the
+! same one hundreds of times in a row.
+!
+	    if .txtBlk[txt_blink] neq tb_head[0]
+	    then
+		begin
+		remque (txtBlk[base], txtBlk);
+		insque (txtBlk[base], tb_head[0])
+		end;
+!
+! Give success return so caller knows we found it.
+!
+	    return ss$_normal
+
+	    end
+	else
+!
+! Didn't find it yet, proceed to next block.
+!
+	    txtBlk = .txtBlk[txt_flink];
+!
+! We didn't find it at all, so generate an error.
+!
+	$return_error (vsta$_no_txtblk)
+
+	end;
+
+routine sniff_text_block
+!++
+! Functional description:
+!
+!	Find text block but don't record the error if can't.  Use this
+!	routine instead of find_text_block when you want to take special
+!	action on an error (rather than merely assuming error has been
+!	recorded and returning).
+!
+! Formal parameters:
+ (
+    id,				! virtual display id whose text block is sought
+    txt_blk_adr			! where to write address of block
+	     ) =
+!--
+
+	begin
+
+	local txtBlk : ref text_block;
+!
+! Get address of first text block in chain.
+!
+	txtBlk = .tb_head[0];
+!
+! Scan until either the sought one is found, or we don't find it.
+!
+	until txtBlk[base] eql tb_head[0] do
+	if .txtBlk[txt_vd_id] eql .id
+	then
+	    begin
+!
+! Tell caller address of block.
+!
+	    .txt_blk_adr = txtBlk[base];
+!
+! If it's not the first one on the chain, make it so,
+! in order that it be found more quickly in the case of looking up the
+! same one hundreds of times in a row.
+!
+	    if .txtBlk[txt_blink] neq tb_head[0]
+	    then
+		begin
+		remque (txtBlk[base], txtBlk);
+		insque (txtBlk[base], tb_head[0])
+		end;
+!
+! Give success return so caller knows we found it.
+!
+	    return ss$_normal
+
+	    end
+	else
+!
+! Didn't find it yet, proceed to next block.
+!
+	    txtBlk = .txtBlk[txt_flink];
+!
+! We didn't find it at all, so return an error.
+!
+	(external literal vsta$_no_txtblk ; vsta$_no_txtblk)
+
+	end;
+
+end
+eludom

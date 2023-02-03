@@ -1,0 +1,449 @@
+module mousebtns (
+	addressing_mode (
+	    external = general,
+	    nonexternal = general
+	)) = begin
+
+
+! VAXstation mouse routines concerning the buttons.
+
+forward routine!s . . .
+
+	vsta$$mouse_set_button_request,
+	vsta$$mouse_buttons,	! Called when buttons have changed state.
+	mouse_buttons;		! Does the work at non-ast level.
+
+library 'sys$library:starlet';	! Symbols like ss$_normal.
+library 'vsta$library:vsvtb';	! rb_block data structure
+library 'vsta$library:vstagbl';	! symbols like "vsta$k_select_button"
+library 'vsta$library:libmacros';	! thing like "$base"
+library 'vsta$library:vstadef';	! Symbols like io$_vb_button
+library 'vsta$library:vsvssvs';	! Symbols like vp_block.
+library 'vsta$library:vsvdspb';	! Symbols like vs$vds_l_pb_mouse_button_val
+
+$vsta_psect;			! Define PSECTs
+
+
+global literal
+!
+! Number of button transitions possible (currently 6, 3 different buttons may
+! be pressed, same three may be released)
+!
+	n_button_states = 6,
+!
+! Here are the modifiers sent to the vbdriver for enabling button ast's.
+! We keep them here in a literal so that when we want to change them, we need
+! only do it in one place.
+!
+	mse_btn_ast_modifiers = 
+	    io$_vb_button + io$m_vb_mouse + io$m_vb_ret_pos;
+
+global
+	!
+	! Added by in order to not lose tracking we now keep track of
+	! the number of outstanding ast's.  There should always be exactly
+	! one and no more.  Starts at one to allow for the first ast request
+	! performed at initialization.
+	!
+	button_ast_request_count : vector [n_button_states] initial
+	    (rep n_button_states of (1)),
+!
+! Button state event flags, one for each possible button state.
+!
+	mouse_button_event_flags : vector [n_button_states],
+!
+! Table of ast routines.  We use this table instead of a single ast routine,
+! so that the routine in the table can stick on the appropriate transition
+! code revealing what button action occurred.  VMS only allows one actual
+! ast parameter, and we've already used that up to store the x,y of the button
+! event.
+!
+	mse_btn_ast_tab : vector [n_button_states] initial (
+	    (routine r (xy) = vsta$$mouse_buttons (0, .xy) ; r),
+	    (routine r (xy) = vsta$$mouse_buttons (1, .xy) ; r),
+	    (routine r (xy) = vsta$$mouse_buttons (2, .xy) ; r),
+	    (routine r (xy) = vsta$$mouse_buttons (3, .xy) ; r),
+	    (routine r (xy) = vsta$$mouse_buttons (4, .xy) ; r),
+	    (routine r (xy) = vsta$$mouse_buttons (5, .xy) ; r)
+	    ),
+!
+! Here's the table that allows mouse_buttons to be called with TWO parameters,
+! namely button transition code AND position of button event, even though
+! vs$$post_ast_request only allows ONE parameter.
+!
+	mse_btn_nonast_tab : vector [n_button_states] initial (
+	    (routine r (xy) = mouse_buttons (0, .xy) ; r),
+	    (routine r (xy) = mouse_buttons (1, .xy) ; r),
+	    (routine r (xy) = mouse_buttons (2, .xy) ; r),
+	    (routine r (xy) = mouse_buttons (3, .xy) ; r),
+	    (routine r (xy) = mouse_buttons (4, .xy) ; r),
+	    (routine r (xy) = mouse_buttons (5, .xy) ; r)
+	    ),
+
+!
+!
+! Table indicating which buttons were pressed for transition codes.  This table
+! is used when talking intra-acp and to user programs.  It make SENSE because
+! the LEFT button is represented by the bit on the LEFT etc.
+!
+	pressed_mask_table : vector [n_button_states] initial (
+	    0,
+	    0,			! codes 0 through 2 are for releases.
+	    0,
+	    4,			! code 3 means left button pressed.
+	    2,			! code 4 means middle button pressed.
+	    1			! code 5 means right button pressed.
+	    ),
+!
+! This table is used when talking to the hardware and microcode ONLY.  It makes
+! NO sense, since the left button is represented by a bit on the RIGHT etc.
+!
+	hardware_press_table : vector [n_button_states] initial (
+	    0,
+	    0,			! codes 0 through 2 are for releases.
+	    0,
+	    1,			! code 3 means left button pressed.
+	    2,			! code 4 means middle button pressed.
+	    4			! code 5 means right button pressed.
+	    ),
+!
+! Table indicating which buttons were released for transition codes
+!
+	released_mask_table : vector [n_button_states] initial (
+	    4,			! code 0 means left button released.
+	    2,			! code 1 means middle button released.
+	    1,			! code 2 means right button released.
+	    0,
+	    0,			! codes 3 through 5 are for presses.
+	    0
+	    ),
+!
+! This table is used when talking to the hardware and microcode ONLY.  It makes
+! NO sense, since the left button is represented by a bit on the RIGHT etc.
+!
+	hardware_release_table : vector [n_button_states] initial (
+	    1,			! code 0 means left button released.
+	    2,			! code 1 means middle button released.
+	    4,			! code 2 means right button released.
+	    0,
+	    0,			! codes 3 through 5 are for presses.
+	    0
+	    );
+
+external routine!s . . .
+
+	vsta$$mouse_post_vb_ast,! Set hardware ast.
+	vsta$$mouse_get_vb_info,! Talk to hardware to get mouse info.
+	vsta$$mouse_get_visible_pb,
+				! Get information about visible pasteboard.
+	vsta$$mouse_get_visible_vp,
+				! See if mouse in a viewport.
+	vsta$$popup_main_menu,	! Put up the main menu.
+	vsta$$ptr_done_io,	! Deliver pointer ast.
+	vsta$$rgn_mouse_squeaked;
+				! Worry about regions when mouse "does"
+				! something.
+
+external literal
+
+	mouse_info_x,		! offset in mouse_info where x is stored
+	mouse_info_y,		! offset in mouse_info where y is stored
+	mouse_info_buttons;	! offset info mouse_info where buttons are
+				! found
+
+external
+
+	vsta$gl_end_session_flag,
+				!Session has ended if = 1.
+
+	!
+	!  the passall variables for fast vp move module
+	!
+	mouse_passall_routine,
+	mouse_passall_argument,
+
+	mouse_info : vector,	! buffer of latest mouse x, y, buttons
+	vs$a_irp;		! Latest irp being processed.
+
+
+
+global routine vsta$$mouse_set_button_request( ps_id, transition_code) =
+!
+!  This routine determines if there is a request outstanding to the device
+!  by looking at the reference count and if it is zero then it gets another
+!  request.
+!
+!--
+begin
+
+local
+	s
+	;
+!
+! Check button state, and if it isn't currently enabled for
+! interrupts (because the user hit the button real fast after entering move
+! mode), enable it.
+!
+	if .button_ast_request_count[.transition_code] GTR 0
+	then return ss$_normal;
+
+	button_ast_request_count[.transition_code] = 1;
+
+	if not (s = vsta$$mouse_post_vb_ast (
+	    .mouse_button_event_flags[.transition_code],
+	    .transition_code,	! Use transition code as ast parameter
+	    mse_btn_ast_modifiers,
+	    .mse_btn_ast_tab[.transition_code],
+				! same ast routine as last time
+	    .hardware_press_table[.transition_code],
+	    .hardware_release_table[.transition_code]
+	    ))
+	then $log_error_and_return (.s);
+
+	ss$_normal
+
+end;
+
+
+
+
+routine vsta$$mouse_buttons
+!++
+! Functional description:
+!
+!	Routine executed at ast level when mouse buttons change state.
+!	This routine arranges for most of the work to be done at non-ast
+!	level.
+!
+! Formal parameters:
+ (
+	transition_code,		! Tells which button action happened.
+	new_xy : vector [2, word]	! x, y coordinates of button action.
+ ) =
+!
+!--
+
+	begin
+
+	external routine vs$$post_ast_request;
+
+	local
+		s;
+!
+! If the workstation session has just ended, then ignore this
+! request. The VB channel has been deassigned.
+!
+	if .vsta$gl_end_session_flag
+	then return ss$_normal;
+!
+!  Decrement the ast count since the ast is no longer outstanding
+!
+	button_ast_request_count[.transition_code] = 0;
+
+	if .mouse_passall_routine gtr 0
+	then begin
+
+		bind
+!
+! Calculate masks for which buttons have gone up (released) and
+! which have gone down (pressed).
+!
+		    up_mask = .released_mask_table[.transition_code],
+		    down_mask = .pressed_mask_table[.transition_code];
+!
+! Update global button state with latest data.
+! First, clear any bits representing buttons that were released (went up).
+!
+		mouse_info[mouse_info_buttons] =
+		    .mouse_info[mouse_info_buttons] and not up_mask;
+!
+! Then, set any bits representing buttons that were pressed (went down).
+!
+		mouse_info[mouse_info_buttons] =
+		    .mouse_info[mouse_info_buttons] or down_mask;
+!
+!  Call the passall routine with the specified argument and
+!  mouse information.
+!
+		if not (s = (.mouse_passall_routine)(
+		     .mouse_passall_argument,
+		    .new_xy[mouse_info_x],
+		    .new_xy[mouse_info_y],
+		    down_mask			! what was just pressed
+		    ))
+		then return .s;
+!
+! After calling routine, arrange for another interrupt to
+! be delivered the next time the mouse moves.  We do this FIRST,
+! in order to minimize the chance of losing a movement notification.
+!
+	if not (s = vsta$$mouse_post_vb_ast (
+	    .mouse_button_event_flags[.transition_code],
+	    .transition_code,
+			! Use transition code as ast parameter
+	    mse_btn_ast_modifiers,
+	    .mse_btn_ast_tab[.transition_code],
+			! same ast routine as last time
+	    .hardware_press_table[.transition_code],
+	    .hardware_release_table[.transition_code]
+	    ))		! catch SAME set of buttons
+	then $log_error_and_return (.s);
+
+		button_ast_request_count = 1;
+
+		return ss$_normal
+
+	     end;
+
+	vs$$post_ast_request (
+	    .mse_btn_nonast_tab[.transition_code],
+	    .new_xy			! position of mouse when event occurred
+	    )
+
+	end;
+
+routine mouse_buttons
+!++
+! Functional description:
+!
+!	When mouse buttons have changed state, execute this routine (probably
+!	as an ast routine) to decide what user program ast's to deliver due to
+!	the button change.
+!
+! Formal parameters:
+ (
+	transition_code,	! if 3-button mouse, this is 0 through 5,
+				! revealing which of six events happened.
+	new_xy : vector [2, word]
+				! position of mouse when event happened
+ ) =
+!
+! Side effects:
+!
+!	Asts are delivered if appropriate.
+!--
+
+	begin
+
+	external vsta$mouse_tell_hi_flag;
+
+	local
+
+	    s,			! Status from routines.
+	    bot_pb_id,		! id of bottom pb.
+	    bot_pb_ms_x,	! location of mouse on bottom pb.
+	    bot_pb_ms_y,
+	    pb_id,		! Id of visible pasteboard at mouse.
+	    pb : ref pb_block,	! Data for visible pasteboard at mouse.
+	    ps : ref ps_block,	! Filled in with address of ps database.
+	    vp : ref vp_block,	! Target viewport database.
+	    rb : ref rb_block,	! Request block
+	    vs_ms_x, vs_ms_y,	! vs mouse coordinates.
+	    pb_ms_x, pb_ms_y,	! Pasteboard mouse coordinates.
+	    vp_ms_x, vp_ms_y;	! Viewport mouse coordinates.
+
+	bind
+!
+! For now, assume physical screen is always the same one.
+!
+	    ps_id = (external srv_ps_id ; srv_ps_id),
+!
+! Calculate masks for which buttons have gone up (released) and
+! which have gone down (pressed).
+!
+	    up_mask = .released_mask_table[.transition_code],
+	    down_mask = .pressed_mask_table[.transition_code];
+!
+! If the workstation session has just ended, then ignore this
+! request. The VB channel has been deassigned.
+!
+	if .vsta$gl_end_session_flag
+	then return ss$_normal;
+!
+! Before doing anything else, arrange for another interrupt to
+! be delivered the next time a button is pressed or released.
+!
+	if not (s = vsta$$mouse_set_button_request ( .ps_id, .transition_code))
+	then $log_error_and_return (.s);
+!
+! Update global button state with latest data.
+! First, clear any bits representing buttons that were released (went up).
+!
+	mouse_info[mouse_info_buttons] =
+	    .mouse_info[mouse_info_buttons] and not up_mask;
+!
+! Then, set any bits representing buttons that were pressed (went down).
+!
+	mouse_info[mouse_info_buttons] =
+	    .mouse_info[mouse_info_buttons] or down_mask;
+!
+! See if the mouse is within a viewport, and if not, return immediately.
+!
+	if not
+	    (s = vsta$$mouse_get_visible_vp (
+		.ps_id,
+		.new_xy[mouse_info_x],
+		.new_xy[mouse_info_y],
+		ps,
+		vs_ms_x,
+		vs_ms_y,
+		vp,
+		vp_ms_x,
+		vp_ms_y
+		))
+	then return .s;
+	if vp[$base] eql 0 then
+	 	 if (down_mask and vsta$k_select_button) neq 0		
+	then return vsta$$popup_main_menu() ! User selected empty space.
+	else return SS$_NORMAL;						
+
+	! Mouse is within viewport.  Find out which pasteboard, and
+	! where on the pasteboard the mouse is.
+	!
+	if not (s = vsta$$mouse_get_visible_pb (vp[$base], .vp_ms_x, .vp_ms_y,
+	    pb_id, pb, pb_ms_x, pb_ms_y, bot_pb_id, bot_pb_ms_x, bot_pb_ms_y))
+	then return .s;
+
+	! Remember the latest mouse info for this pasteboard.
+	!
+	pb[vs$vds_l_pb_mouse_x_coor] = .pb_ms_x;
+	pb[vs$vds_l_pb_mouse_y_coor] = .pb_ms_y;
+	pb[vs$vds_l_pb_mouse_button_val] = .mouse_info[mouse_info_buttons];
+
+	! If the select button was pressed, tell region server what pb the
+	! mouse is in, so that region can be notified.
+	!
+	if (down_mask and vsta$k_select_button) neq 0
+	then
+	    if not (s = vsta$$rgn_mouse_squeaked (
+		ps[$base],
+		.vs_ms_x,
+		.vs_ms_y,
+		.vp[vss$l_vp_id],
+		.bot_pb_id,
+		.bot_pb_ms_x,
+		.bot_pb_ms_y,
+		pb[$base],
+		1
+		))
+	    then return .s;
+
+	! Scan outstanding button qio's for this pasteboard, and complete
+	! those ones whose masks match the current masks.
+	!
+	rb = .pb[vs$vds_a_pb_btn_ptr];
+	until rb[$base] eql pb[vs$vds_a_pb_btn_ptr] do
+	begin
+	bind next_rb = .rb[vs$rb_a_flink] : rb_block;
+	if (.rb[vs$rb_l_user_up_mask] and up_mask) neq 0
+	   or (.rb[vs$rb_l_user_down_mask] and down_mask) neq 0
+	then vsta$$ptr_done_io (pb[vs$vds_l_pb_mouse_x_coor], rb[$base], ss$_normal);
+	rb = next_rb[$base]
+	end;
+
+	ss$_normal
+
+	end;
+
+end
+eludom

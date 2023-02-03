@@ -1,0 +1,2832 @@
+%title 'VAXstation Display Device Driver Operand Setup Routines'
+module VBSET (	! VAX/VMS VS100 display device driver operand setup routines
+		ident = 'V1.2-01'
+		) =
+begin
+!++
+! Facility:
+!
+!	VAX/VMS VS100 display driver
+!
+! Abstract:
+!
+!	This file contains the operand setup routines used by the FDT
+!	routines to create a VAXstation display output command packet.
+!
+! Environment:
+!
+!	These routines operate in conjunction with the VS100 device
+!	under VMS. They execute in the context of the calling process.
+!
+!--
+
+!
+! Psect definitions
+!
+!    It is necessary to force all data and code into the device
+!    driver psect $$$115_DRIVER for driver loading by sysgen.
+!
+    psect own = $$$115_DRIVER(align(4),execute);
+    psect global = $$$115_DRIVER(align(4),execute);
+    psect plit = $$$115_DRIVER(align(4),execute);
+    psect code = $$$115_DRIVER(align(4),execute);
+!
+! Include files:
+!
+!    These are the system and VS100 specific libraries used by the
+!    driver.
+!
+    library 'SYS$LIBRARY:LIB.L32';	! System macro library
+    require 'VSTA$LIBRARY:VBDEF.R32';	! VS100 specific definitions
+    require 'VSTA$LIBRARY:VSTADEF.R32';	! VAXstation specific definitions
+    require 'VSTA$LIBRARY:LINKAGE.R32';	! VMS routine linkage definitions
+    require 'VSTA$LIBRARY:VBLINKAGE.R32'; ! VS100 routine linkage definitions
+!
+! Table of contents:
+!
+forward routine
+
+    VB$$SET_PREP_COPY:	FDT_JSB,	! Prepare copy command
+    VB$$SET_PREP_DRAW:	FDT_JSB,	! Prepare draw command
+    VB$$SET_PREP_PRINT:	FDT_JSB,	! Prepare print command
+    VB$$SET_PREP_FILL:	FDT_JSB,	! Prepare fill command
+    VB$$SET_PREP_FLOOD:	FDT_JSB,	! Prepare flood command
+    VB$$SET_PREP_LOAD:	FDT_JSB,	! Prepare load cursor command
+
+    VB$$SET_SETUP_CMD:	FDT_JSB,	! Setup command packet
+    VB$$SET_SETUP_AST:	FDT_JSB,	! Setup ast block
+    VB$$SET_SETUP_SAST:	FDT_JSB,	! Setup single ast block
+    SETUP_SRC:		FDT_JSB,	! Setup source argument
+    SETUP_SRCMASK:	FDT_JSB,	! Setup source mask argument
+    SETUP_DST:		FDT_JSB,	! Setup destination argument
+    SETUP_DST_ALT:	FDT_JSB,	! Setup destination argument (alt)
+    SETUP_MAP:		FDT_JSB,	! Setup map argument
+    SETUP_DSTMASK:	FDT_JSB,	! Setup destination mask argument
+    SETUP_PATH:		FDT_JSB,	! Setup path argument
+    SETUP_PATTERN:	FDT_JSB,	! Setup pattern argument
+    SETUP_SECOND:	FDT_JSB,	! Setup second source argument
+    SETUP_FONT:		FDT_JSB,	! Setup font argument
+    SETUP_INIT:		FDT_JSB,	! Setup initial point argument
+    SETUP_TEXT:		FDT_JSB,	! Setup text string argument
+    SETUP_CONTROL:	FDT_JSB,	! Setup control string argument
+    SETUP_BOUND:	FDT_JSB,	! Setup boundry map argument
+
+    VB$$SET_STORE_IRPE:	FDT_JSB,	! Move data from IRP to IRPE
+    GET_IRPE:		FDT_JSB,	! Get and initialize and IRPE
+    VB$$SET_RETURN_IRPE:FDT_JSB;	! Unlock buffers and return IRPE's
+!
+! Macros:
+!
+macro
+
+    IRP$L_CMD_BLK = IRP$L_IOST1 %,
+    IRP$L_CMD_COUNT = IRP$L_IOST2 %,
+    FDT_ARGS =
+	.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY %;
+!
+! External references:
+!
+external
+
+    EXE$READLOCKR :	addressing_mode(general),
+    EXE$MODIFYLOCKR:	addressing_mode(general),
+    EXE$WRITELOCKR :	addressing_mode(general),
+    MMG$GL_SPTBASE :	addressing_mode(general),
+    SCH$GL_PCBVEC :	addressing_mode(general) ref vector[,long];
+
+external routine
+
+    EXE$ALLOCBUF :	ALLOCBUF addressing_mode(general),
+    EXE$ALLOCIRP :	ALLOCIRP addressing_mode(general),
+    EXE$DEANONPAGED :	DEANONPAGED addressing_mode(general),
+
+    VB$$SUB_UNLOCK :	SUB_UNLOCK;
+
+%sbttl 'VB$$SET_PREP_COPY - Prepare the copy command packet'
+global routine VB$$SET_PREP_COPY( ! FDT routine to prepare copy command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a copy area command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_COP_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_COP_SMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_COP_DST  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_COP_POS  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_COP_MAP  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_COP_DMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	STATUS;
+
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_COPY;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Desination - We process destinatin bitmap first is because it usually 
+    ! 		   requires the largest buffer and therefore the largest 
+    !		   number of UMRs to map. In doing so, we put DST in the head
+    ! 		   of the IRPE list and it will be mapped first. At the UMR
+    !		   requesting time, Once we satisfied the largest requriement, 
+    !		   the rest requests should be relatively easy to fulfill.
+    !
+    if not (STATUS = SETUP_DST_ALT(	FDT_ARGS,
+					CMD_PKT[VB$W_COP_SRC],
+					CMD_PKT[VB$W_COP_DST]
+				   ))
+	then return .STATUS;
+    !
+    ! Source
+    !
+    if not (STATUS = SETUP_SRC(FDT_ARGS,CMD_PKT[VB$W_COP_SRC]))
+	then return .STATUS;
+    !
+    ! Source mask
+    !
+    if not (STATUS = SETUP_SRCMASK(FDT_ARGS,CMD_PKT[VB$W_COP_SMK]))
+	then return .STATUS;
+    !
+    ! Map
+    !
+    if not (STATUS = SETUP_MAP(FDT_ARGS,CMD_PKT[VB$W_COP_MAP]))
+	then return .STATUS;
+    !
+    ! Desination mask
+    !
+    if not (STATUS = SETUP_DSTMASK(FDT_ARGS,CMD_PKT[VB$W_COP_DMK]))
+	then return .STATUS;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_PREP_COPY
+
+%sbttl 'VB$$SET_PREP_DRAW - Prepare the draw command packet'
+global routine VB$$SET_PREP_DRAW( ! FDT routine to prepare draw command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a draw curve command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_DRW_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_SMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_DST  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_POS  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_MAP  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_DMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_DRW_DRAW |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_DRAW;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Desination- We process destinatin bitmap first is because it usually 
+    ! 		   requires the largest buffer and therefore the largest 
+    !		   number of UMRs to map. In doing so, we put DST in the head
+    ! 		   of the IRPE list and it will be mapped first. At the UMR
+    !		   requesting time, Once we satisfied the largest requriement, 
+    !		   the rest requests should be relatively easy to fulfill.
+    !
+    if not (STATUS = SETUP_DST(FDT_ARGS,CMD_PKT[VB$W_DRW_DST]))
+	then return .STATUS;
+    !
+    ! Source
+    !
+    if not (STATUS = SETUP_SRC(FDT_ARGS,CMD_PKT[VB$W_DRW_SRC]))
+	then return .STATUS;
+    !
+    ! Source mask
+    !
+    if not (STATUS = SETUP_SRCMASK(FDT_ARGS,CMD_PKT[VB$W_DRW_SMK]))
+	then return .STATUS;
+    !
+    ! Map
+    !
+    if not (STATUS = SETUP_MAP(FDT_ARGS,CMD_PKT[VB$W_DRW_MAP]))
+	then return .STATUS;
+    !
+    ! Desination mask
+    !
+    if not (STATUS = SETUP_DSTMASK(FDT_ARGS,CMD_PKT[VB$W_DRW_DMK]))
+	then return .STATUS;
+    !
+    ! Path
+    !
+    if not (STATUS = SETUP_PATH(FDT_ARGS,CMD_PKT[VB$W_DRW_DRAW]))
+	then return .STATUS;
+    !
+    ! Pattern
+    !
+    if not (STATUS = SETUP_PATTERN(FDT_ARGS,CMD_PKT[VB$W_DRW_DRAW]))
+	then return .STATUS;
+    !
+    ! Second source
+    !
+    if not (STATUS = SETUP_SECOND(FDT_ARGS,CMD_PKT[VB$W_DRW_DRAW]))
+	then return .STATUS;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$_SET_PREP_DRAW
+
+%sbttl 'VB$$SET_PREP_PRINT - Prepare the print command packet'
+global routine VB$$SET_PREP_PRINT( ! FDT routine to prepare print command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a print text command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_PRT_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_PRT_FNT  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_PRT_DST  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_PRT_INI  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_PRT_MAP  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_PRT_DMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  | W_PRT_PRINT |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+    builtin ap;
+    map	ap :  ref block[,byte];
+
+    local
+	STATUS;
+
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	P1	= .ap[ARG$L_P1] : block[,byte],
+	SRC_DESC = P1[DSC$W_SRC_DESC] : block[,byte],
+	SMK_DESC = P1[DSC$W_SMK_DESC] : block[,byte];
+
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_PRINT;
+    CMD_PKT[VB$L_LINK] = 0;
+
+    !
+    ! Desination- We process destinatin bitmap first is because it usually 
+    ! 		   requires the largest buffer and therefore the largest 
+    !		   number of UMRs to map. In doing so, we put DST in the head
+    ! 		   of the IRPE list and it will be mapped first. At the UMR
+    !		   requesting time, Once we satisfied the largest requriement, 
+    !		   the rest requests should be relatively easy to fulfill.
+    !
+    if not (STATUS = SETUP_DST(FDT_ARGS,CMD_PKT[VB$W_PRT_DST]))
+	then return .STATUS;
+
+    !
+    ! Source
+    !	- check to see if Source Font
+    !
+    if .SRC_DESC[VSTA$B_TYPE] eql VSTA$K_SRC_FONT then
+	begin
+        if ( .SRC_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8 ) then
+	    ! Font is in VAX memory.
+	    if not (STATUS = SETUP_FONT( FDT_ARGS, CMD_PKT[VB$W_PRT_SRC]))
+			then return .STATUS;
+
+	CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SRC_FONT;
+	end
+    else
+	begin
+	if not (STATUS = SETUP_SRC( FDT_ARGS, CMD_PKT[VB$W_PRT_SRC]))
+		then return .STATUS;
+	end;
+
+    !
+    ! Mask
+    !
+
+    if .SMK_DESC[VSTA$B_TYPE] neq VSTA$K_SMK_NONE then
+	begin
+        if ( .SMK_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8 ) then
+	    ! Font is in VAX memory.
+	    if not (STATUS = SETUP_FONT( FDT_ARGS, CMD_PKT[VB$W_PRT_FNT]))
+			then return .STATUS;
+
+	CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SMK_FONT;
+	end
+    else
+	begin
+	CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SMK_NONE;
+	end;
+
+    !
+    ! Initial position
+    !
+    if not (STATUS = SETUP_INIT(FDT_ARGS,CMD_PKT[VB$W_PRT_INI]))
+	then return .STATUS;
+    !
+    ! Map
+    !
+    if not (STATUS = SETUP_MAP(FDT_ARGS,CMD_PKT[VB$W_PRT_MAP]))
+	then return .STATUS;
+    !
+    ! Desination mask
+    !
+    if not (STATUS = SETUP_DSTMASK(FDT_ARGS,CMD_PKT[VB$W_PRT_DMK]))
+	then return .STATUS;
+    !
+    ! Text string
+    !
+    if not (STATUS = SETUP_TEXT(FDT_ARGS,CMD_PKT[VB$W_PRT_PRINT]))
+	then return .STATUS;
+    !
+    ! Control string
+    !
+    if not (STATUS = SETUP_CONTROL(FDT_ARGS,CMD_PKT[VB$W_PRT_PRINT]))
+	then return .STATUS;
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_PREP_PRINT
+
+%sbttl 'VB$$SET_PREP_FILL - Prepare the fill command packet'
+global routine VB$$SET_PREP_FILL( ! FDT routine to prepare fill command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a fill area command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_FIL_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FIL_DST  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FIL_POS  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FIL_MAP  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FIL_DMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FIL_FILL |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_FILL;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Desination- We process destinatin bitmap first is because it usually 
+    ! 		   requires the largest buffer and therefore the largest 
+    !		   number of UMRs to map. In doing so, we put DST in the head
+    ! 		   of the IRPE list and it will be mapped first. At the UMR
+    !		   requesting time, Once we satisfied the largest requriement, 
+    !		   the rest requests should be relatively easy to fulfill.
+    !
+    if not (STATUS = SETUP_DST(FDT_ARGS,CMD_PKT[VB$W_FIL_DST]))
+	then return .STATUS;
+    !
+    ! Source
+    !
+    if not (STATUS = SETUP_SRC(FDT_ARGS,CMD_PKT[VB$W_FIL_SRC]))
+	then return .STATUS;
+    !
+    ! Map
+    !
+    if not (STATUS = SETUP_MAP(FDT_ARGS,CMD_PKT[VB$W_FIL_MAP]))
+	then return .STATUS;
+    !
+    ! Desination mask
+    !
+    if not (STATUS = SETUP_DSTMASK(FDT_ARGS,CMD_PKT[VB$W_FIL_DMK]))
+	then return .STATUS;
+    !
+    ! Path
+    !
+    if not (STATUS = SETUP_PATH(FDT_ARGS,CMD_PKT[VB$W_FIL_FILL]))
+	then return .STATUS;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$_SET_PREP_FILL
+
+%sbttl 'VB$$SET_PREP_FLOOD - Prepare the flood command packet'
+global routine VB$$SET_PREP_FLOOD( ! FDT routine to prepare flood command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		PACKET: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a flood area command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_FLD_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FLD_DST  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FLD_POS  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_FLD_DMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  | W_FLD_FLOOD |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_FLOOD;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Desination- We process destinatin bitmap first is because it usually 
+    ! 		   requires the largest buffer and therefore the largest 
+    !		   number of UMRs to map. In doing so, we put DST in the head
+    ! 		   of the IRPE list and it will be mapped first. At the UMR
+    !		   requesting time, Once we satisfied the largest requriement, 
+    !		   the rest requests should be relatively easy to fulfill.
+    !
+    if not (STATUS = SETUP_DST(FDT_ARGS,CMD_PKT[VB$W_FLD_DST]))
+	then return .STATUS;
+    !
+    ! Source
+    !
+    if not (STATUS = SETUP_SRC(FDT_ARGS,CMD_PKT[VB$W_FLD_SRC]))
+	then return .STATUS;
+    !
+    ! Desination mask
+    !
+    if not (STATUS = SETUP_DSTMASK(FDT_ARGS,CMD_PKT[VB$W_FLD_DMK]))
+	then return .STATUS;
+    !
+    ! Boundry map
+    !
+    if not (STATUS = SETUP_BOUND(FDT_ARGS,CMD_PKT[VB$W_FLD_FLOOD]))
+	then return .STATUS;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_PREP_FLOOD
+
+%sbttl 'VB$$SET_PREP_LOAD - Prepare the load cursor command packet'
+global routine VB$$SET_PREP_LOAD( ! FDT routine to prepare load cursor command packet
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		PACKET: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will take a load cursor command packet and process
+!	it into an acceptable form for the VS100 device and VMS. It
+!	will decode the operand descriptors then build an command
+!	opcode, verify argument accessability, and lock down VAX buffers.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+!	CMD_PKT[xxx]		- command packet initialized
+!
+!  Command packet:
+!
+!  +-------------+
+!  |  L_OPCODE   |
+!  +-------------+
+!  |  L_STATUS   |
+!  +-------------+
+!  |  W_LOD_SRC  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_LOD_SMK  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_LOD_MAP  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |  W_LOD_LOAD |
+!  +--         --+
+!  |             |
+!  +-------------+
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	SRC_DESC = P1[DSC$W_SRC_DESC] : block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_LOAD_CUR;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Source
+    !
+    if .SRC_DESC[VSTA$B_TYPE] eql VSTA$K_SRC_HALFTONE
+	then return SS$_BADPARAM;
+    if not (STATUS = SETUP_SRC(FDT_ARGS,CMD_PKT[VB$W_LOD_SRC]))
+	then return .STATUS;
+    !
+    ! Source mask
+    !
+    if not (STATUS = SETUP_SRCMASK(FDT_ARGS,CMD_PKT[VB$W_LOD_SMK]))
+	then return .STATUS;
+    !
+    ! Map
+    !
+    if not (STATUS = SETUP_MAP(FDT_ARGS,CMD_PKT[VB$W_LOD_MAP]))
+	then return .STATUS;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_PREP_LOAD
+
+%sbttl 'VB$$_SET_SETUP_CMD - Set up command packet blocks'
+global routine VB$$SET_SETUP_CMD( ! FDT routine to setup and initialize a command block
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine allocates and initializes a command block and a
+!	command packet. The command packet is an actual VS100 command
+!	packet while the block contains VMS type information about the
+!	command packet.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	MOVE_FLG - move descriptor block flag
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!
+! Implicit outputs:
+!
+!	CMD_PKT			- command packet
+!	CMD_BLK			- command descriptor block
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command counter
+!	IRP[IRP$L_SVAPTE]	- SVA of command packet
+!
+!    CMD_BLK:
+!
+!	+------------+------------+
+!	|         A_FLINK         |
+!	+------------+------------+
+!	|        L_OPERAND        |
+!	+------------+------------+
+!	|         reserved        |
+!	+------------+------------+
+!	| W_CMD_DESC | W_FUNCTION |
+!	+------------+------------+
+!	|            |  W_OFFSET  |
+!	+------------+------------+
+!	|            |            |
+!	+------------+------------+
+!	|            |            |
+!	+------------+------------+
+!	|            |            |
+!	+------------+------------+
+!	|          A_CMD          |
+!	+------------+------------+
+!	|        A_ADDRESS        |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!	|                         |
+!	+------------+------------+
+!
+!
+! Completion codes:
+!
+!	SS$_NORMAL 
+!	SS$_INSFMEM	- insufficient dynamic mamory
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin 
+	ap,
+	REMQUE;
+
+    map	ap : ref block[,byte];
+
+    local
+	SIZE,
+	PKT_TYPE,
+	STATUS;
+
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+
+    !
+    ! Allocate an IRP for the CMD_BLK, if failed, SS$_INSFMEM is returned
+    !
+    if not (STATUS = EXE$ALLOCIRP(.PCB; SIZE, CMD_BLK )) then
+	return .STATUS;	
+
+    !
+    ! Try to dequeue a PIO WCP
+    ! if one is not available then allocate an IRP for the CMD_PKT.
+    !
+    if (STATUS = REMQUE(.UCB[UCB$A_VB_PIO_WCP_FL], CMD_PKT )) then
+	begin
+	! queue empty so allocate an IRP, if failed, SS$_INSFMEM is returned
+	if not (STATUS = EXE$ALLOCIRP(.PCB; SIZE, CMD_PKT )) then
+		begin	! allocation failure
+		EXE$DEANONPAGED( .CMD_BLK );
+
+		return .STATUS;
+		end;
+  	!
+	! initialize command packet
+  	!
+	CMD_PKT[WCP$W_TYPE]   = WCP$K_TYPE_OR; ! command packet allocated on request
+	CMD_PKT[WCP$W_FLAGS]  = 0;
+	CMD_PKT[WCP$W_MAPREG] = 0;
+	CMD_PKT[WCP$W_NUMREG] = 0;
+	CMD_PKT[WCP$A_DAADDR] = 0;
+	CMD_PKT[WCP$W_DAS]    = 0;
+	CMD_PKT[WCP$W_DAU]    = 0;
+
+	! increment PIO WCP Not Available count
+  	!
+	UCB[UCB$L_VB_PIO_WCP_CNA] = .UCB[UCB$L_VB_PIO_WCP_CNA] + 1;
+	end
+    else
+	begin
+  	!
+	! PIO WCP available
+	! increment counts and compute max in use
+  	!
+	UCB[UCB$W_VB_PIO_WCP_CIU]  = .UCB[UCB$W_VB_PIO_WCP_CIU] + 1;
+	UCB[UCB$W_VB_PIO_WCP_CMIU] = MAXU(
+					.UCB[UCB$W_VB_PIO_WCP_CIU],
+					.UCB[UCB$W_VB_PIO_WCP_CMIU]
+				      );
+	end;
+
+    !
+    ! just one more counter to take care of...
+    !
+    UCB[UCB$L_VB_PIO_WCP_CTR] = .UCB[UCB$L_VB_PIO_WCP_CTR] + 1;
+
+    !
+    ! make CMD_PKT point to data area
+    !
+    CMD_PKT = .CMD_PKT + WCP$K_HEADER_LENGTH;
+
+    !
+    ! link the CMD_BLK to the QIO IRP
+    !
+    IRP[IRP$L_CMD_BLK]   = .CMD_BLK;
+    IRP[IRP$L_CMD_COUNT] = 1;
+
+    !
+    ! Initialize the CMD_BLK
+    ! 
+    CMD_BLK[CMD$A_FLINK]    = 0;
+    CMD_BLK[CMD$L_OPERAND]  = 0;
+    CMD_BLK[CMD$W_SBM_SRC]  = 0;
+    CMD_BLK[CMD$W_SBM_DEST] = 0;
+    CMD_BLK[CMD$W_CMD_DESC] = VSTA$K_CMD_IRP;
+
+    !
+    ! link the CMD_PKT to CMD_BLK
+    !
+    CMD_BLK[CMD$A_CMD]      = .CMD_PKT;
+
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_SETUP_CMD
+
+%sbttl 'VB$$_SET_SETUP_AST - Set up ast block'
+global routine VB$$SET_SETUP_AST( ! FDT routine to setup and initialize an ast block
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		ADDR,
+		VALUE,
+		FLAG
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will allocate and initialize an AST control block.
+!	This control block will then be queued into the correct ast
+!	queue.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+!	None
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	ACB : ref block[,byte],
+	TACB : ref block[,byte],
+	SIZE,
+  	OLD_IPL,
+	STATUS;
+
+!
+! Get an AST control block
+!
+    if .ap[ARG$L_P3] neq 0
+	then begin
+	    if not (STATUS = EXE$ALLOCBUF(ACB$K_VB_LENGTH,.PCB;SIZE,ACB))
+		then return .STATUS
+	    end; ! if not EXE$ALLOCBUFF()
+!
+! Initialize the AST control block
+!
+    ACB[ACB$L_ASTQFL] = 0;
+    ACB[ACB$B_RMOD] = IPL$_QUEUEAST;
+    ACB[ACB$A_TPC] = .ap[ARG$L_P3];
+    ACB[ACB$L_TASTPRM] = .ap[ARG$L_P4];
+    ACB[ACB$W_TMODE] = PSL$C_USER or ACB$M_QUOTA;
+    ACB[ACB$W_TCHAN] = .IRP[IRP$W_CHAN];
+    ACB[ACB$L_TPID] = .PCB[PCB$L_PID];
+    ACB[ACB$L_MASK] = .VALUE;
+    ACB[ACB$L_FLAG] = .FLAG;
+
+    PCB[PCB$W_ASTCNT] = .PCB[PCB$W_ASTCNT]-1;
+!
+! Link the ACB into the ast list
+! We need to raise IPL to 21 so that no interrupt that removes ACB from the
+! queue can come in while we are trversing it. The example interrupts are 
+! mouse/tablet button interrupts. If we don't do this, the button interrupts
+! may come in at IPL 21 to move ACB(s) from the queue while we are down here
+! at IPL 2 trying to insert an ACB into it. This may cause a system hang or
+! crash
+!
+
+    DSBINT (UCB[UCB$B_DIPL], OLD_IPL);
+
+    if ..ADDR eql 0
+	then .ADDR = .ACB
+	else begin
+	    TACB = ..ADDR;
+	    while .TACB[ACB$L_ASTQFL] neq 0 do TACB = .TACB[ACB$L_ASTQFL];
+	    TACB[ACB$L_ASTQFL] = .ACB
+	    end; ! if ..ADDR eql 0 else
+
+    ENBINT (OLD_IPL);
+
+!
+! Return success
+!
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_SETUP_AST
+
+%sbttl 'VB$$_SET_SETUP_SAST - Set up single ast block'
+global routine VB$$SET_SETUP_SAST( ! FDT routine to setup and initialize a single ast block
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		ADDR
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will allocate and initialize an AST control block.
+!	This control block will then be placed into the correct ast
+!	queue. This routine differs from SETUP_AST in that the ast queue
+!	this ast block is placed into only allows a single ast block
+!	of its type at one time.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+!	None
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	ACB : ref block[,byte],
+	OLD_IPL,
+	PID,
+	TPCB : ref block[,byte],
+	SIZE,
+	STATUS;
+
+!
+! See if there is an outstanding ast request, if so delete it. Also
+! get an ast control block
+!
+    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+    if ..ADDR neq 0
+	then begin
+	    ACB = ..ADDR;
+	    .ADDR = 0;
+	    ENBINT(OLD_IPL);
+	    PID = .ACB[ACB$L_TPID] and %x'ffff';
+	    TPCB = .SCH$GL_PCBVEC[.PID];
+	    TPCB[PCB$W_ASTCNT] = .TPCB[PCB$W_ASTCNT]+1;
+	    if .ap[ARG$L_P3] eql 0
+		then EXE$DEANONPAGED(.ACB);
+	    end ! if ..ADDR neq 0 then
+	else begin
+	    ENBINT(OLD_IPL);
+	    if .ap[ARG$L_P3] neq 0
+		then if not (STATUS = EXE$ALLOCBUF(ACB$K_VB_LENGTH,.PCB;SIZE,ACB))
+			then return .STATUS;
+	    end; ! if ..ADDR neq 0 else
+!
+! Initialize the ast control block
+!
+    if .ap[ARG$L_P3] neq 0
+	then begin
+	    ACB[ACB$L_ASTQFL] = 0;
+	    ACB[ACB$B_RMOD] = IPL$_QUEUEAST;
+	    ACB[ACB$A_TPC] = .ap[ARG$L_P3];
+	    ACB[ACB$L_TASTPRM] = .ap[ARG$L_P4];
+	    ACB[ACB$W_TMODE] = PSL$C_USER or ACB$M_QUOTA;
+	    ACB[ACB$W_TCHAN] = .IRP[IRP$W_CHAN];
+	    ACB[ACB$L_TPID] = .PCB[PCB$L_PID];
+	    ACB[ACB$L_MASK] = 0;
+	    ACB[ACB$L_FLAG] = 0;
+
+	    PCB[PCB$W_ASTCNT] = .PCB[PCB$W_ASTCNT]-1;
+	    .ADDR = .ACB;
+	    end; ! if .ap[ARG$L_P3] neq 0
+!
+! Return success
+!
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_SETUP_SAST
+
+%sbttl 'SETUP_SRC - Setup the source argument in command packet'
+routine SETUP_SRC( ! FDT routine to set source argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		SRC: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine takes a user specified command source operand and
+!	converts it to the format required by the hardware. This involves
+!	setting the apropriate bits in the opcode based on the descriptor
+!	low byte (VSTA$K_SRC_xxxx) and if the high byte specifies VAX memory
+!	(VSTA$K_VAXMEM) then locking the buffer in VAX memory and converting
+!	the address to VS100 format.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	SRC	- 
+!
+!  SRC format:
+!
+!    SRC_BITMAP         SRC_CONSTANT       SRC_HALFTONE
+!  +-------------+    +-------------+    +-------------+
+!  |  A_BM_ADDR  |    |W_CN_CONSTANT|    |  A_HT_ADDR  |
+!  +--         --+    +-------------+    +--         --+
+!  |             |    |             |    |             |
+!  +-------------+    |             |    +-------------+
+!  | W_BM_SIZE_X |    |             |    | W_HT_SIZE_X |
+!  +-------------+    |             |    +-------------+
+!  | W_BM_SIZE_Y |    |             |    | W_HT_SIZE_Y |
+!  +-------------+    |             |    +-------------+
+!  | W_BM_SIZE_Z |    |             |    | W_HT_SIZE_Z |
+!  +-------------+    |             |    +-------------+
+!  | W_BM_OFF_X  |    |             |    |             |
+!  +-------------+    |             |    |             |
+!  | W_BM_OFF_Y  |    |             |    |             |
+!  +-------------+    +-------------+    +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_SRC_DESC] : block[,byte];
+
+    !
+    ! Set the source type: Bitmap, Constant, or Halftone
+    !
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_SRC_INTRNL_BITMAP] :
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SRC_BITMAP;
+	[VSTA$K_SRC_CONSTANT] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SRC_CONSTANT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_SRC_CONSTANT]
+	[VSTA$K_SRC_HALFTONE] :
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SRC_HALFTONE;
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+    !
+    ! Lock the operand buffer if it resides in VAX memory
+    !
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = (((.SRC[SRC$W_BM_SIZE_X]+15)/16)*2)*.SRC[SRC$W_BM_SIZE_Y]*
+      .SRC[SRC$W_BM_SIZE_Z];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.SRC[SRC$A_BM_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.SRC-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+
+    ! save source operand number in command block incase
+    ! we have the same source and destination bitmaps.
+    CMD_BLK[CMD$W_SBM_SRC] = .CMD_BLK[CMD$L_OPERAND];
+
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_SRC
+
+%sbttl 'SETUP_SRCMASK - Setup the source mask argument in command packet'
+routine SETUP_SRCMASK( ! FDT routine to set source mask argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		SRCMASK: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine takes a user specified command source mask operand and
+!	converts it to the format required by the hardware. This involves
+!	setting the apropriate bits in the opcode based on the descriptor
+!	low byte (VSTA$K_SMK_xxxx) and if the high byte specifies VAX memory
+!	(VSTA$K_VAXMEM) then locking the buffer in VAX memory and converting
+!	the address to VS100 format.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	SRCMASK	-
+!
+!  SRCMASK format:
+!
+!    SMK_BITMAP        SMK_RECTANGLE
+!  +-------------+    +-------------+
+!  |  A_BM_ADDR  |    |             |
+!  +--         --+    |             |
+!  |             |    |             |
+!  +-------------+    |             |
+!  | W_BM_SIZE_X |    |             |
+!  +-------------+    |             |
+!  | W_BM_SIZE_Y |    |             |
+!  +-------------+    |             |
+!  | W_BM_SIZE_Z |    |             |
+!  +-------------+    |             |
+!  | W_BM_OFF_X  |    |             |
+!  +-------------+    |             |
+!  | W_BM_OFF_Y  |    |             |
+!  +-------------+    +-------------+
+!  | W_BM_EXT_X  |    | W_RC_EXT_X  |
+!  +-------------+    +-------------+
+!  | W_BM_EXT_Y  |    | W_RC_EXT_Y  |
+!  +-------------+    +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_SMK_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_SMK_BITMAP] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SMK_BITMAP;
+	    LOCK_SIZE = (((.SRCMASK[SMK$W_BM_SIZE_X]+15)/16)*2)*.SRCMASK[SMK$W_BM_SIZE_Y]*
+	      .SRCMASK[SMK$W_BM_SIZE_Z];
+	    end; ! [VSTA$K_SMK_BITMAP]
+	[VSTA$K_SMK_RECTANGLE] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SMK_RECTANGLE;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_SMK_RECTANGLE]
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.SRCMASK[SMK$A_BM_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.SRCMASK-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_SRCMASK
+
+%sbttl 'SETUP_DST - Setup the destination argument in command packet'
+routine SETUP_DST( ! FDT routine to set destination argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		DST: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	DST	-
+!
+!  DST format:
+!
+!  +-------------+
+!  |  A_BM_ADDR  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  | W_BM_SIZE_X |
+!  +-------------+
+!  | W_BM_SIZE_Y |
+!  +-------------+
+!  | W_BM_SIZE_Z |
+!  +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_DST_DESC] : block[,byte];
+
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = (((.DST[DST$W_BM_SIZE_X]+15)/16)*2)*.DST[DST$W_BM_SIZE_Y]*
+      .DST[DST$W_BM_SIZE_Z];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.DST[DST$A_BM_ADDR],
+  					.LOCK_SIZE,
+  					EXE$MODIFYLOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.DST-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_DST
+
+%sbttl 'SETUP_DST_ALT - Setup the destination argument in command packet'
+routine SETUP_DST_ALT( ! FDT routine to set destination argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		SRC: ref block[,byte],
+		DST: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!	Same as SETUP_DST except checks to see if the source and 
+!	destination bitmaps are the same, if so then we don't need
+!	to map the destination bitmap, should only map the bitmap (on
+!	the Unibus) once.   The graphics processor uses the starting
+!	address and size of the bitmap to determine if they are the
+!	same bitmaps.   If the bitmap is mapped twice (once for the
+!	source and again for the destination) then the VAX passes 
+!	two different starting addresses.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	SRC	-
+!	DST	-
+!
+!  DST format:
+!
+!  +-------------+
+!  |  A_BM_ADDR  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  | W_BM_SIZE_X |
+!  +-------------+
+!  | W_BM_SIZE_Y |
+!  +-------------+
+!  | W_BM_SIZE_Z |
+!  +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK  = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT  = IRP[IRP$L_OBCNT] : ref block[,byte],
+	SRC_DESC = P1[DSC$W_SRC_DESC] : block[,byte],
+	DST_DESC = P1[DSC$W_DST_DESC] : block[,byte];
+
+
+
+! Check to see if the destination bitmap is in VAX memory
+    if .DST_DESC[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+
+! Check to see if the destination bitmap is the same as the source bitmap.
+    if 	( .SRC_DESC[VSTA$B_TYPE] eql VSTA$K_SRC_INTRNL_BITMAP )	and
+	( .SRC_DESC[VSTA$B_ADDR] neq VSTA$K_DISPMEM^-8 ) 	and 
+	( .SRC[SRC$A_BM_ADDR]    eql .DST[DST$A_BM_ADDR] )	and
+	( .SRC[SRC$W_BM_SIZE_X]  eql .DST[DST$W_BM_SIZE_X] )	and
+	( .SRC[SRC$W_BM_SIZE_Y]  eql .DST[DST$W_BM_SIZE_Y] )	and
+	( .SRC[SRC$W_BM_SIZE_Z]  eql .DST[DST$W_BM_SIZE_Z] )
+	then
+		begin    ! same bitmap so save destination offset
+		CMD_BLK[CMD$W_SBM_DEST] = .DST - .CMD_PKT;
+		return  SS$_NORMAL;
+		end;
+
+
+    LOCK_SIZE = (((.DST[DST$W_BM_SIZE_X]+15)/16)*2)*.DST[DST$W_BM_SIZE_Y]*
+      .DST[DST$W_BM_SIZE_Z];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.DST[DST$A_BM_ADDR],
+  					.LOCK_SIZE,
+  					EXE$MODIFYLOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.DST-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_DST_ALT
+
+%sbttl 'SETUP_MAP - Setup the map argument in command packet'
+routine SETUP_MAP( ! FDT routine to set map argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		MAPP: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	MAPP	-
+!
+!  MAPP format:
+!
+!      MAP_SRC           MAP_SLIT
+!    MAP_SRCDST         MAP_SDLIT
+!  +-------------+    +-------------+
+!  |  A_MP_ADDR  |    | W_LT_LITERAL|
+!  +--         --+    +-------------+
+!  |             |    |             |
+!  +-------------+    +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_MAP_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_MAP_IDEN] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_MAP_IDEN;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_MAP_IDEN]
+
+	[VSTA$K_MAP_SRC_ADDR] :
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_MAP_SRC;
+
+	[VSTA$K_MAP_SLIT] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_MAP_SLIT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_MAP_SLIT]
+
+	[VSTA$K_MAP_SRCDST_ADDR] :
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_MAP_SRCDST;
+
+	[VSTA$K_MAP_SDLIT] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_MAP_SDLIT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_MAP_SDLIT]
+
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+
+
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(
+				.MAPP[MAP$A_MP_ADDR],
+				VSTA$K_MAP_LENGTH,
+				EXE$WRITELOCKR		))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+
+    if not (STATUS = VB$$SET_STORE_IRPE(
+					FDT_ARGS,
+					VSTA$K_MAP_LENGTH,
+					.MAPP-.CMD_PKT	   ))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+
+    return SS$_NORMAL;
+	
+	
+    end; ! routine SETUP_MAP
+
+%sbttl 'SETUP_DSTMASK - Setup the destination mask argument in command packet'
+routine SETUP_DSTMASK( ! FDT routine to set destination mask argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		DSTMASK: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	DSTMASK	-
+!
+!  DSTMASK format:
+!
+!    DMK_RECLIST       DMK_RECTANGLE
+!  +-------------+    +-------------+
+!  |  A_RC_ADDR  |    | W_LT_OFF_X  |
+!  +--         --+    +-------------+
+!  |             |    | W_LT_OFF_Y  |
+!  +-------------+    +-------------+ 
+!  | W_RC_COUNT  |    | W_LT_EXT_X  |
+!  +-------------+    +-------------+ 
+!  |             |    | W_LT_EXT_Y  |
+!  +-------------+    +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_DMK_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_DMK_NONE] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_DMK_NONE;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_DMK_NONE]
+	[VSTA$K_DMK_RECLIST] :
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_DMK_RECLIST;
+	[VSTA$K_DMK_RECTANGLE] :
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_DMK_RECTANGLE;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_DMK_RECTANGLE]
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = 8*.DSTMASK[DMK$W_RC_COUNT];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.DSTMASK[DMK$A_RC_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.DSTMASK-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_DSTMASK
+
+%sbttl 'SETUP_PATH - Setup the path argument in command packet'
+routine SETUP_PATH( ! FDT routine to set path argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		PATH: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	PATH	-
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_PTH_DESC] : block[,byte];
+
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+
+    LOCK_SIZE = 6*.PATH[DRW$W_PT_COUNT];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.PATH[DRW$A_PT_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,
+      PATH[DRW$A_PT_ADDR]-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_PATH
+
+%sbttl 'SETUP_PATTERN - Setup the pattern argument in command packet'
+routine SETUP_PATTERN( ! FDT routine to set pattern argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		PATTERN: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	PATTERN	-
+!
+!  PATTERN format:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_PTN_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_PTN_NONE]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_PTN_NONE;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_PTN_NONE]
+	[VSTA$K_PTN_LITERAL]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_PTN_LITERAL;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_PTN_LITERAL]
+	[VSTA$K_PTN_POINTER]:
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_PTN_POINTER;
+	[VSTA$K_PTN_UPDLIT]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_PTN_UPDLIT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_PTN_UPDPTR]
+	[VSTA$K_PTN_UPDPTR]:
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_PTN_UPDPTR;
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    if not (STATUS = $VB$$SUB_LOCK(.PATTERN[DRW$A_STATE],4,EXE$MODIFYLOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,4,
+      PATTERN[DRW$A_STATE]-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_PATTERN
+
+%sbttl 'SETUP_SECOND - Setup the second source argument in command packet'
+routine SETUP_SECOND( ! FDT routine to set second source argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		SECOND: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	SECOND	-
+!
+!  SECOND format:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_SEC_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_SEC_NONE]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SEC_NONE;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_SEC_NONE]
+	[VSTA$K_SEC_CONSTANT]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SEC_CONSTANT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_SEC_CONSTANT]
+	[VSTA$K_SEC_HALFTONE]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SEC_HALFTONE;
+	    end; ! [VSTA$K_SEC_HALFTONE]
+	[VSTA$K_SEC_BITMAP]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_SEC_BITMAP;
+	    end; ! [VSTA$K_SEC_BITMAP]
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+    !
+    ! Lock the operand buffer if it resides in VAX memory
+    !
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = (((.SECOND[DRW$W_BM_SIZE_X]+15)/16)*2)*.SECOND[DRW$W_BM_SIZE_Y]*
+      .SECOND[DRW$W_BM_SIZE_Z];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.SECOND[DRW$A_BM_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,
+      SECOND[DRW$A_BM_ADDR]-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_SECOND
+
+%sbttl 'SETUP_FONT - Setup the font argument in command packet'
+routine SETUP_FONT( ! FDT routine to set font argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		FONT: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	FONT	-
+!
+!  FONT format:
+!
+!  +-------------+
+!  |  A_FN_ADDR  |
+!  +--         --+
+!  |             |
+!  +-------------+
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  |             |
+!  +-------------+
+!
+! Implicit inputs:
+!	Assume that Font is in VAX memory.
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+    builtin ap;
+    map ap : ref block[,byte];
+
+    local
+	FTB: ref block[,byte],
+	LOCK_SIZE,
+	STATUS;
+
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+
+    FTB = .FONT[FNT$A_FN_ADDR];
+    LOCK_SIZE = VSTA$K_FTB_LENGTH+(.FTB[FTB$W_LAST]-.FTB[FTB$W_FIRST]+2)*2+
+      (((.FTB[FTB$W_BM_SIZE_X]+15)/16)*2)*.FTB[FTB$W_BM_SIZE_Y]*
+      .FTB[FTB$W_BM_SIZE_Z];
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.FONT[FNT$A_FN_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,.FONT-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_FONT
+
+%sbttl 'SETUP_INIT - Setup the initial point argument in command packet'
+routine SETUP_INIT( ! FDT routine to set initial point argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		INIT: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	INIT	-
+!
+!  INIT format:
+!
+!     INI_POINTER       INI_LITERAL
+!     INI_UPDPTR       INI_UPDLIT
+!  +-------------+    +-------------+
+!  |  A_IN_ADDR  |    | W_LT_OFF_X  |
+!  +--         --+    +-------------+
+!  |             |    | W_LT_OFF_Y  |
+!  +-------------+    +-------------+
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_INI_DESC] : block[,byte];
+
+    selectone .DESCRIPTOR[VSTA$B_TYPE] of
+	set
+	[VSTA$K_INI_LITERAL]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_INI_LITERAL;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_INI_LITERAL]
+
+	[VSTA$K_INI_UPDLIT]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_INI_UPDLIT;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_INI_LITERAL]
+
+	[VSTA$K_INI_POINTER]:
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_INI_POINTER;
+
+	[VSTA$K_INI_UPDPTR]:
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_INI_UPDPTR;
+
+	[otherwise] :
+	    begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return SS$_BADPARAM
+	    end; ! [otherwise]
+	tes;
+
+
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.INIT[POS$A_IN_ADDR],
+  					VSTA$K_POS_LENGTH,
+  					EXE$MODIFYLOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,VSTA$K_POS_LENGTH,.INIT-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_INIT
+
+%sbttl 'SETUP_TEXT - Setup the text string argument in command packet'
+routine SETUP_TEXT( ! FDT routine to set text string argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		TEXT: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	TEXT	-
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_TXT_DESC] : block[,byte];
+
+    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or
+      (if .DESCRIPTOR[VSTA$B_TYPE] eql VSTA$K_TXT_8BIT
+	    then VB$K_MOD_TXT_8BIT
+	    else VB$K_MOD_TXT_16BIT);
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = (if .DESCRIPTOR[VSTA$B_TYPE] eql VSTA$K_TXT_8BIT 
+	then .TEXT[PRT$W_TX_COUNT]
+	else .TEXT[PRT$W_TX_COUNT]*2);
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.TEXT[PRT$A_TX_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,
+      TEXT[PRT$A_TX_ADDR]-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_TEXT
+
+%sbttl 'SETUP_CONTROL - Setup the control string argument in command packet'
+routine SETUP_CONTROL( ! FDT routine to set control string argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		CONTROL: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	CONTROL	-
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	LOCK_SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_CTL_DESC] : block[,byte];
+
+    if (.DESCRIPTOR[VSTA$B_TYPE] eql VSTA$K_CTL_NONE)
+      or (.CONTROL[PRT$W_CN_COUNT] eql 0)
+	then begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_CTL_NONE;
+	    return SS$_NORMAL
+	    end
+	else CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_CTL_STRING;
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    LOCK_SIZE = .CONTROL[PRT$W_CN_COUNT]*2;
+
+    if (.LOCK_SIZE eql 0) then return SS$_NORMAL;
+
+    if not (STATUS = $VB$$SUB_LOCK(.CONTROL[PRT$A_CN_ADDR],.LOCK_SIZE,EXE$WRITELOCKR))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SUB_LOCK
+    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.LOCK_SIZE,
+      CONTROL[PRT$A_CN_ADDR]-.CMD_PKT))
+	then begin
+	    VB$$SET_RETURN_IRPE(FDT_ARGS);
+	    return .STATUS
+	    end; ! if not VB$$SET_STORE_IRPE
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_CONTROL
+
+%sbttl 'SETUP_BOUND - Setup the boundry map argument in command packet'
+routine SETUP_BOUND( ! FDT routine to set boundry map argument
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		BOUND: ref block[,byte]
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	BOUND	-
+!
+!  BOUND format:
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    builtin ap;
+    map ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	DESCRIPTOR = P1[DSC$W_BND_DESC] : block[,byte];
+
+    case .DESCRIPTOR[VSTA$B_TYPE] from 0 to 1 of
+	set
+	[VSTA$K_BND_LITERAL]:
+	    begin
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_BND_LITERAL;
+	    return SS$_NORMAL
+	    end; ! [VSTA$K_BND_LITERAL]
+	[VSTA$K_BND_POINTER]:
+	    CMD_PKT[VB$L_OPCODE] = .CMD_PKT[VB$L_OPCODE] or VB$K_MOD_BND_POINTER
+	tes;
+    if .DESCRIPTOR[VSTA$B_ADDR] eql VSTA$K_DISPMEM^-8
+	then return SS$_NORMAL;
+    return SS$_NORMAL;
+	
+    end; ! routine SETUP_BOUND
+
+%sbttl 'VB$$SET_STORE_IRPE - Store the IRP data in IRPE'
+global routine VB$$SET_STORE_IRPE( ! FDT routine to move IRP data to IRPE
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		BCNT,
+		OFF
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	BCNT	-
+!	ADDR	-
+!
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+    local
+	IRPE: ref block[,byte],
+	STATUS,
+	T_IRPE: ref block[,byte];
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	OPN_OFFSET = CMD_BLK[CMD$W_OFFSET] : vector[,word],
+	OPN_ADDRESS = CMD_BLK[CMD$A_ADDRESS] : vector[,long];
+
+    if .IRP[IRP$V_EXTEND] eql 0
+	then begin
+	    if not (STATUS = GET_IRPE(FDT_ARGS,IRPE))
+		then return .STATUS;
+	    IRP[IRP$L_EXTEND] = .IRPE;
+	    IRP[IRP$V_EXTEND] = 1;
+	    end ! if .IRP[IRP$V_EXTEND] eql 0 then
+	else begin
+	    IRPE = .IRP[IRP$L_EXTEND];
+	    while .IRPE[IRPE$L_SVAPTE1] neq 0 and .IRPE[IRPE$L_SVAPTE2] neq 0
+		do begin
+		    if .IRPE[IRPE$V_EXTEND] eql 1
+			then IRPE = .IRPE[IRPE$L_EXTEND]
+			else begin
+			    if not (STATUS = GET_IRPE(FDT_ARGS,T_IRPE))
+				then return .STATUS;
+			    IRPE[IRPE$L_EXTEND] = .T_IRPE;
+			    IRPE[IRPE$V_EXTEND] = 1;
+			    IRPE = .T_IRPE
+			    end ! if .IRPE[IRPE$V_EXTEND] eql 1 else
+		    end  ! while ...
+	    end; ! if .IRP[IRP$V_EXTEND] eql 0 else
+    CMD_BLK[CMD$L_OPERAND] = .CMD_BLK[CMD$L_OPERAND]+1;
+    OPN_OFFSET[.CMD_BLK[CMD$L_OPERAND]] = .OFF;
+    if .IRPE[IRPE$L_SVAPTE1] eql 0
+	then begin
+	    OPN_ADDRESS[.CMD_BLK[CMD$L_OPERAND]] = IRPE[IRPE$L_SVAPTE1];
+	    IRPE[IRPE$L_SVAPTE1] = .IRP[IRP$L_SVAPTE];
+	    IRPE[IRPE$W_BOFF1] = .IRP[IRP$W_BOFF];
+	    IRPE[IRPE$L_BCNT1] = .BCNT
+	    end ! if .IRPE[IRPE$L_SVAPTE1] eql 0 then
+	else begin
+	    OPN_ADDRESS[.CMD_BLK[CMD$L_OPERAND]] = IRPE[IRPE$L_SVAPTE2];
+	    IRPE[IRPE$L_SVAPTE2] = .IRP[IRP$L_SVAPTE];
+	    IRPE[IRPE$W_BOFF2] = .IRP[IRP$W_BOFF];
+	    IRPE[IRPE$L_BCNT2] = .BCNT
+	    end; ! if .IRPE[IRPE$L_SVAPTE1] eql 0 else
+    IRP[IRP$L_SVAPTE] = 0;
+    IRP[IRP$W_BOFF] = 0;
+    IRP[IRP$L_BCNT] = 0;
+    return SS$_NORMAL;
+	
+    end; ! routine VB$$SET_STORE_IRPE
+
+%sbttl 'GET_IRPE -  Get and initialize an IRPE'
+global routine GET_IRPE( ! FDT routine to get and initialize an IRPE
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY,
+		IRPE_ADDR
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine aloocates an IRPE from nonpaged memory and 
+!	returns it address.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!	IRPE_ADDR - location to write allocated IRPE
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRPE address
+!
+! Completion codes:
+!
+!	SS$_NORMAL
+!
+! Side effects:
+!
+!	None
+!--
+
+    begin
+
+    local
+	IRPE: ref block[,byte],
+	SIZE,
+	STATUS;
+
+    if not (STATUS = EXE$ALLOCIRP(.PCB;SIZE,IRPE))
+	then return .STATUS;
+    IRPE[IRPE$B_TYPE] = DYN$C_IRPE;
+    IRPE[IRPE$W_STS] = 0;
+    IRPE[IRPE$L_SVAPTE1] = 0;
+    IRPE[IRPE$L_SVAPTE2] = 0;
+    IRPE[IRPE$L_BCNT1] = 0;
+    IRPE[IRPE$L_BCNT2] = 0;
+    .IRPE_ADDR = .IRPE;
+    return SS$_NORMAL;
+
+    end; ! routine GET_IRPE
+
+%sbttl 'VB$$SET_RETURN_IRPE -  Unlock buffers and return IRPE'
+global routine VB$$SET_RETURN_IRPE( ! 
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT_JSB =
+
+!++
+! Functional description:
+!
+!	This routine will cause any locked buffers to be unlocked. It
+!	will then return any nonpaged buffers it owns (ie. IRPE's,
+!	CMD_BLK, and CMD_PKT).
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	None
+!
+! Completion codes:
+!
+!	SS$_NORMAL
+!
+! Side effects:
+!
+!	None
+!--
+
+    begin
+
+    builtin
+	ap,
+	INSQUE;
+
+    local
+	IRPE: ref block[,byte],
+	T_IRPE: ref block[,byte],
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte];
+
+    VB$$SUB_UNLOCK(.IRP);
+    if .IRP[IRP$V_EXTEND] neq 0
+	then IRPE = .IRP[IRP$L_EXTEND]
+	else IRPE = 0;
+    while .IRPE neq 0
+	do begin
+	    T_IRPE = 0;
+	    if .IRPE[IRPE$V_EXTEND] neq 0
+		then T_IRPE = .IRPE[IRPE$L_EXTEND];
+	    EXE$DEANONPAGED(.IRPE);
+	    IRPE = .T_IRPE
+	    end; ! while .IRPE neq 0
+    IRP[IRP$V_EXTEND] = 0;
+    if .CMD_BLK[CMD$W_CMD_DESC] eql VSTA$K_CMD_IRP
+	then begin
+	    IRP[IRP$L_SVAPTE] = 0;
+	    IRP[IRP$W_BOFF] = 0;
+	    IRP[IRP$L_BCNT] = 0;
+
+	    ! cleanup CMD_PKT
+	    CMD_PKT = .CMD_PKT - WCP$K_HEADER_LENGTH;
+	    UCB[UCB$L_VB_PIO_WCP_CTR] = .UCB[UCB$L_VB_PIO_WCP_CTR] - 1;
+
+	    if (.CMD_PKT[WCP$W_TYPE] eql WCP$K_TYPE_OR ) then
+		begin  ! OR (on request) WCP Type
+		EXE$DEANONPAGED(.CMD_PKT);
+		UCB[UCB$L_VB_PIO_WCP_CNA] = 
+			.UCB[UCB$L_VB_PIO_WCP_CNA] - 1;
+		end
+	      else
+	    	begin   ! assume PIO WCP Type
+		INSQUE( .CMD_PKT, .UCB[UCB$A_VB_PIO_WCP_FL] );
+		UCB[UCB$W_VB_PIO_WCP_CIU] = 
+			.UCB[UCB$W_VB_PIO_WCP_CIU] - 1;
+		end;
+	
+
+	    end; ! if .CMD_BLK[CMD$W_CMD_DESC] eql VSTA$K_CMD_IRP
+    EXE$DEANONPAGED(.CMD_BLK);
+    return SS$_NORMAL;
+
+    end; ! routine VB$$SET_RETURN_IRPE
+
+end ! module VBSET
+eludom

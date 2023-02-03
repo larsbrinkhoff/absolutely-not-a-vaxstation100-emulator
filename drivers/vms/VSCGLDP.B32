@@ -1,0 +1,1389 @@
+
+MODULE VSTA$CGL_INTERFACE (
+                       IDENT = 'VSTA_CGL',
+                       ADDRESSING_MODE (EXTERNAL = GENERAL,
+                                        NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+!
+!  FACILITY: VAXstation software  (VSTA)
+!
+!  Core Graphics Library (CGL)
+!
+!  ABSTRACT:
+!
+!---This module contains all the routines written for the conversion of the
+!---CGL sources to run on the VAXstation system.  
+!
+!  FUNCTIONAL DESCRIPTION:
+!
+!---The routines in this module are only a rewrite of the routines written for
+!   the pdp11 to tie the CGL routines, written in PASCAL, into its host system.
+!   The user entry routine, database reference routine, and the Gidis interface
+!---i/o routines are the only routines defined in this module. 
+!
+!  ENVIRONMENT:
+!
+!---VAXstation: 780, 750 or 730 running VMS with at least on ONYX or OPAL
+!---graphics subsystem.
+!
+!--
+!
+!
+!----------------------------------------
+!  TABLE OF CONTENTS
+!----------------------------------------
+FORWARD ROUTINE 
+
+	 cgl:				!GLOBAL user entry to xtig library
+	,g$get_ptr:			!GLOBAL cgl entry to get database ptr
+	,cgl$$dp_find_cgl:		!locate the data entry for this device
+	,g$read:		NOVALUE	!read to get gidis report
+	,g$write:		NOVALUE !write gidis code 
+	,g$flip:		NOVALUE
+	,g$print:		NOVALUE
+	,g$crlf:		NOVALUE
+	,g$open				!Debugging routine's
+	,g$close			!
+	;
+
+EXTERNAL ROUTINE
+
+	 vsta$get_selected_display
+	,vsta$$channel_found
+	,LIB$GET_VM
+	,LIB$FREE_VM
+	,LIB$GET_EF
+	,LIB$FREE_EF
+	,LIB$SIGNAL
+	,LIB$PUT_OUTPUT
+	;
+
+
+!----------------------------------------
+!  require the cgl data file
+!----------------------------------------
+REQUIRE 'vsta$library:vscgldp.r32';
+REQUIRE 'vsta$library:vxslib.r32';
+REQUIRE 'vsta$library:vsacpdef.r32';
+LIBRARY 'SYS$LIBRARY:LIB';
+
+
+!
+! PSECTS
+!
+PSECT
+	CODE   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	PLIT   = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	OWN    = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	GLOBAL = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL));
+OWN
+
+	disable: INITIAL (0),
+	outcount: INITIAL (0),
+        outbuf:VECTOR [132,BYTE],
+	outdsc:VECTOR [2,LONG],
+        outfab:$FAB(
+                    RAT=CR,
+                    FAC=PUT
+                   ),
+        outrab:$RAB(
+                    RSZ=80
+                   );
+
+
+BIND
+	 LOG_FILE_NAME = UPLIT BYTE ('CGL$OUTPUT:')
+	;
+
+EXTERNAL ROUTINE
+
+		G$MA	:NOVALUE,	!moves		1		2
+		G$MR	:NOVALUE,	!		2		2
+		G$ICP	:NOVALUE,	!		3		2	1
+
+		G$LA	:NOVALUE,	!lines		4		2
+		G$LR	:NOVALUE,	!		5		2 _
+		G$PLA	:NOVALUE,	!		6		3
+		G$PLR	:NOVALUE,	!		7		3
+		G$PGA	:NOVALUE,	!		8		3	2
+		G$PGR	:NOVALUE,	!		9		3
+		G$RA	:NOVALUE,	!		10		2 _
+		G$RR	:NOVALUE,	!		11		2
+		G$SLS	:NOVALUE,	!		12		3
+		G$ILS	:NOVALUE,	!		13		3	3
+		G$SLW	:NOVALUE,	!		14		2
+		G$ILW	:NOVALUE,	!		15		2 _
+
+		G$T	:NOVALUE,	!text		16		2
+		G$ITE	:NOVALUE,	!		17		3
+		G$SFO	:NOVALUE,	!		18		1	4
+		G$IFO	:NOVALUE,	!		19		1
+		G$SCS	:NOVALUE,	!		20		2 _
+		G$ICS	:NOVALUE,	!		21		2
+		G$SCA	:NOVALUE,	!		22		2
+		G$ICA	:NOVALUE,	!		23		2	5
+		G$SCM	:NOVALUE,	!		24		2
+		G$ICM	:NOVALUE,	!		25		2 _
+		G$SCJ	:NOVALUE,	!		26		2
+		G$ICJ	:NOVALUE,	!		27		2
+		G$SCI	:NOVALUE,	!		28		1	6
+		G$ICI	:NOVALUE,	!		29		1
+		G$SFS	:NOVALUE,	!		30		3 _
+		G$IFS	:NOVALUE,	!		31		3
+		G$LDC	:NOVALUE,	!		32		2
+
+		G$MRA	:NOVALUE,	!markers	33		2	7
+		G$MRR	:NOVALUE,	!		34		2
+		G$PMRA	:NOVALUE,	!		35		3 _
+		G$PMRR	:NOVALUE,	!		36		3 
+		G$SMS	:NOVALUE,	!		37		2
+		G$IMS	:NOVALUE,	!		38		2	8
+
+		G$AA	:NOVALUE,	!curves		39		3
+		G$AR	:NOVALUE,	!		40		3 _
+		G$CA	:NOVALUE,	!		41		4
+		G$CR	:NOVALUE,	!		42		4
+
+		G$CRS	:NOVALUE,	!segments	43		1	9
+		G$EXS	:NOVALUE,	!		44		1
+		G$IOS	:NOVALUE,	!		45		1 _
+		G$CLS	:NOVALUE,	!		46		0
+		G$DLS	:NOVALUE,	!		47		1
+		G$DLAS	:NOVALUE,	!		48		0	10
+		G$RNS	:NOVALUE,	!		49		2
+		G$SGV	:NOVALUE,	!		50		1 _
+		G$IGV	:NOVALUE,	!		51		1
+		G$SSV	:NOVALUE,	!		52		2
+		G$ISV	:NOVALUE,	!		53		2	11
+		G$SGA	:NOVALUE,	!		54		2
+		G$IGA	:NOVALUE,	!		55		2 _
+		G$SSA	:NOVALUE,	!		56		3
+		G$ISA	:NOVALUE,	!		57		3
+		G$SSS	:NOVALUE,	!		58		3	12
+		G$ISS	:NOVALUE,	!		59		3
+
+		G$SWI	:NOVALUE,	!atts		60		1 _
+		G$IWI	:NOVALUE,	!		61		1
+		G$SBI	:NOVALUE,	!		62		1
+		G$IBI	:NOVALUE,	!		63		1	13
+		G$SMP	:NOVALUE,	!		64		1
+		G$IMP	:NOVALUE,	!		65		1 _
+		G$SMPI	:NOVALUE,	!		66		2
+		G$IMPI	:NOVALUE,	!		67		2
+		G$SWP	:NOVALUE,	!		68		1	14
+		G$IWP	:NOVALUE,	!		69		1
+		G$SWM	:NOVALUE,	!		70		1 _
+		G$IWM	:NOVALUE,	!		71		1
+		G$SPA	:NOVALUE,	!		72		2
+		G$IPA	:NOVALUE,	!		73		2	15
+
+		G$SFM	:NOVALUE,	!fill		74		1
+		G$IFM	:NOVALUE,	!		75		1 _
+		G$SFA	:NOVALUE,	!		76		2
+		G$IFA	:NOVALUE,	!		77		2
+		G$SFC	:NOVALUE,	!		78		4
+		G$IFC	:NOVALUE,	!		79		4	16
+
+		G$SW	:NOVALUE,	!view		80		4 _
+		G$IW	:NOVALUE,	!		81		4
+		G$SV	:NOVALUE,	!		82		4
+		G$IV	:NOVALUE,	!		83		4	17
+		G$SC	:NOVALUE,	!		84		1
+		G$IC	:NOVALUE,	!		85		1 _
+		G$SO	:NOVALUE,	!		86		1
+		G$IO	:NOVALUE,	!		87		1
+		G$EV	:NOVALUE,	!		88		0	18
+		G$SCRL	:NOVALUE,	!		89		2
+
+		G$INIT	:NOVALUE,	!control	90		0 _
+		G$EXIT	:NOVALUE,	!		91		0
+		G$NF	:NOVALUE,	!		92		0
+		G$RMRE	:NOVALUE,	!		93		2     	19
+		G$PRNT	:NOVALUE,	!		94		6
+		G$WAIT	:NOVALUE,	!		95		1 _
+                
+                G$ERROR_HANDLER: NOVALUE;
+
+
+LITERAL gt$function_count = 98;
+
+!
+!  Set up the parameter count table it lists the number of parameters in each
+!  call to a cgl routine.  Order is very important.  The table is indexed by
+!  routine number
+!
+BIND gt$param_count = PLIT BYTE
+        (2,2,2,2,2,		! 1
+         3,3,3,3,2,		! 2
+	 2,3,3,2,2,		! 3
+	 2,3,1,1,2,		! 4
+	 2,2,2,2,2,		! 5
+	 2,2,1,1,3,		! 6
+	 3,2,2,2,3,		! 7
+	 3,2,2,3,3,		! 8
+	 4,4,1,1,1,		! 9
+	 0,1,0,2,1,		! 10
+	 1,2,2,2,2,		! 11
+	 3,3,3,3,1,		! 12
+         1,1,1,1,1,		! 13
+	 2,2,1,1,1,		! 14
+	 1,2,2,1,1,		! 15
+	 2,2,4,4,4,		! 16
+	 4,4,4,1,1,		! 17
+ 	 1,1,0,2,0,		! 18
+	 0,0,2,6,1,		! 19
+	 0,0,0):	
+
+      VECTOR[gt$function_count,BYTE];
+
+
+
+
+OWN 
+
+	 cgl_q_base: VECTOR [2,LONG] 			! BASE FOR CGL DEVICES
+	,cgl_ptr   : REF BLOCK [,BYTE]			! POINTER TO CURRENT CGL
+							! DEVICE QUEUE ENTRY
+	,cgl_init	: INITIAL (0)
+	;
+
+
+EXTERNAL LITERAL
+	 vsta$_cglerr
+	,vsta$_vstaerr
+	,vsta$_undchan
+	,vsta$_noseldisp
+	;
+
+
+
+		 
+
+
+
+GLOBAL ROUTINE cgl:=
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is the entry routine to the CGL library routines.  It
+!   receives the procedure number and a number of arguments.  A check is
+!   made to see if the we are properly initialized, if not then an error
+!   record is made and the initialization process is performed.  Also a 
+!   parameter count is made and checked against the number of parameters that
+!   the called routine is expecting if a mismatch is found a error record
+!   is made.  Finally if all is well the appropriate routine is called
+!---if an error is generated then must make a record in the impure data area.
+!
+!  FORMAL PARAMETERS: NONE
+!
+!  IMPLICIT INPUTS: 
+!
+!---The first actual parameter is the number of the routine to be called
+!---all other remaining parameters are the arguments of the called routine
+!
+!  IMPLICIT OUTPUTS:
+!
+!---If an error occurs an error log is made into the impure area
+!
+!  RETURN VALUE:
+!
+!---Returns ss$_normal is no error generated
+!---Returns vsta$_"code" when error is generated
+!
+!  COMPLETION CODES: carry bit is set if an error occurs
+!
+!  SIDE EFFECTS:
+!
+!---This routine calls an arbitrary routine specified by the cgl routine number
+!---the data base is either effected or an error is returned.
+!
+!--
+BEGIN
+
+LOCAL
+	 status
+	,channel
+	,func
+	,iosb: VECTOR [2,LONG]
+	,vd_adr: REF BLOCK [0,BYTE]
+	,vd_chars: BLOCK [24,BYTE]
+	;
+
+LITERAL 
+	 fn = 1
+	,a = 2
+	,b = 3
+	,c = 4
+	,d = 5
+	,e = 6
+	,f = 7
+	;
+
+BUILTIN 
+	 ACTUALCOUNT
+	,ACTUALPARAMETER
+	,INSQUE
+	,REMQUE
+	;
+
+MACRO 
+	 ARG(A1) = ACTUALPARAMETER(A1)%
+	;
+
+
+!-------------------------------
+!  IF TERMINAL NOT SELECTED THEN RETURN ERROR vsta$_noseldisp
+!-------------------------------
+IF NOT (status = vsta$get_selected_display(channel))
+THEN RETURN vsta$_noseldisp;
+
+!-------------------------------------------
+!  find the data area if none found then create new data area
+!-------------------------------------------
+IF NOT cgl$$dp_find_cgl( .channel) 
+THEN BEGIN
+
+	!------------------------------------
+	!  allocate memory for data
+	!------------------------------------
+	IF NOT (status = LIB$GET_VM
+	                 (%REF (gt$s_cgl_data_table),
+	                 cgl_ptr))
+	THEN RETURN .status;
+
+	!-----------------------------------
+	!  put into queue, set channel number, and set the module's data entry pointer
+	!-----------------------------------
+	insque( cgl_ptr[gt$a_forward_link], cgl_q_base[0]);
+	
+	cgl_ptr[gt$l_channel] = .channel;
+	cgl_ptr[gt$b_initialized] = 0;
+	cgl_ptr[gt$b_cluster_commands] = 0;
+
+	!-----------------------------------
+	! need to get virtual display screen size
+	!-----------------------------------
+	IF NOT vsta$$channel_found( channel, vd_adr)
+	THEN RETURN vsta$_undchan;
+
+	!
+	!  Get the vd data
+	!
+	IF NOT (status = $QIOW(
+		 CHAN = .channel
+		,FUNC = IO$_ACCESS+IO$M_VD
+		,IOSB = iosb
+		,P1 = vd_chars
+		,P2 = 24
+		,P3 = .vd_adr[vsta$ct_l_vd_id]
+	     ))
+	THEN BEGIN
+		LIB$FREE_VM(
+			 %REF(gt$s_cgl_data_table)
+			,cgl_ptr
+			   );
+		RETURN .status
+	     END;
+	!
+	!  Check to see if the data was aquired
+	!
+	IF NOT .iosb [0]
+	THEN BEGIN
+		LIB$FREE_VM(
+			 %REF(gt$s_cgl_data_table)
+			,cgl_ptr
+			   );
+		RETURN .status
+	     END;
+
+	cgl_ptr[gt$l_screen_top] = .vd_chars [ vsu$w_vd_height] - 1;
+	cgl_ptr[gt$l_screen_left] = 0;
+	cgl_ptr[gt$l_screen_bottom] = 0;
+	cgl_ptr[gt$l_screen_right] = .vd_chars[ vsu$w_vd_width] - 1;
+
+     END;
+
+!
+!  Get the function code
+!
+func = .ARG(fn);
+
+!-------------------------------
+!  ARE THERE ANY PARAMETERS. IF NOT THEN RETURN 
+!-------------------------------
+IF ACTUALCOUNT() LSS 1 
+THEN BEGIN
+	g$error_handler(
+			 %ref(0)
+			,%ref(801)
+		       );
+	RETURN vsta$_cglerr;
+
+     END;
+
+!------------------------------
+!  IS FUNCTION NUMBER VALID IF NOT THEN RETURN ERROR
+!------------------------------
+IF (.func LEQ 0) OR (.func GTR gt$function_count)
+THEN BEGIN
+
+	g$error_handler(
+			ARG(fn)
+			,%ref(900)
+		       );
+	RETURN vsta$_cglerr;
+     END;
+
+!-------------------------------
+! store the function number in db
+!-------------------------------
+cgl_ptr[gt$l_current_function] = .func;
+
+!-------------------------------    
+!  DO THE NUMBER OF PARAMETERS SENT MATCH THE NUMBER EXPECTED IF NOT THEN 
+!  RETURN ERROR.  Can add any number of debugging parameters before the 
+!  function number
+!-------------------------------
+IF ACTUALCOUNT() NEQ (.gt$param_count[.func-1]+fn) 
+THEN BEGIN
+
+	g$error_handler(
+			 ARG(fn)
+			,%ref(900)
+			);
+	RETURN vsta$_cglerr;
+
+     END;
+
+!-------------------------------
+!  If this is not a report error call then clear the error fields
+!-------------------------------
+IF .func NEQ 93 
+THEN BEGIN
+	cgl_ptr[gt$l_error_code] = 0;
+	cgl_ptr[gt$l_error_source_function] = 0;
+     END;
+ 
+!
+!-------------------------------
+!  ARE WE INITIALIZED IF NOT THEN WE MUST INITIALIZE AND RECORD THE ERROR
+!-------------------------------
+IF (.cgl_ptr[gt$b_initialized] EQL 0) AND (.func NEQ 90) 
+THEN g$init();
+
+CASE .func FROM 1 TO gt$function_count OF
+
+SET
+
+[1]:     	G$MA		!moves		1		2
+                                                (arg(a),arg(b));
+[2]:		G$MR		!		2		2
+                                                (arg(a),arg(b));
+[3]:		G$ICP		!		3		2	1
+                                                (arg(a),arg(b));
+[4]:		G$LA		!lines		4		2
+                                                (arg(a),arg(b));
+[5]:		G$LR		!		5		2 _
+                                                (arg(a),arg(b));
+[6]:		G$PLA		!		6		3
+                                                (arg(a),arg(b),arg(c));
+[7]:		G$PLR		!		7		3
+                                                (arg(a),arg(b),arg(c));
+[8]:		G$PGA		!		8		3	2
+                                                (arg(a),arg(b),arg(c));
+[9]:		G$PGR		!		9		3
+                                                (arg(a),arg(b),arg(c));
+[10]:		G$RA		!		10		2 _
+                                                (arg(a),arg(b));
+[11]:		G$RR		!		11		2
+                                                (arg(a),arg(b));
+[12]:		G$SLS		!		12		3
+                                                (arg(a),arg(b),arg(c));
+[13]:		G$ILS		!		13		3	3
+                                                (arg(a),arg(b),arg(c));
+[14]:		G$SLW		!		14		2
+                                                (arg(a),arg(b));
+[15]:		G$ILW		!		15		2 _
+                                                (arg(a),arg(b));
+
+[16]:		G$T		!text		16		2
+                                                (arg(a),arg(b));
+[17]:		G$ITE		!		17		3
+                                                (arg(a),arg(b),arg(c));
+[18]:		G$SFO		!		18		1	4
+                                                (arg(a));
+[19]:		G$IFO		!		19		1
+                                                (arg(a));
+[20]:		G$SCS		!		20		4 _
+                                                (arg(a),arg(b));
+[21]:		G$ICS		!		21		4
+                                                (arg(a),arg(b));
+[22]:		G$SCA		!		22		2
+                                                (arg(a),arg(b));
+[23]:		G$ICA		!		23		2	5
+                                                (arg(a),arg(b));
+[24]:		G$SCM		!		24		2
+                                                (arg(a),arg(b));
+[25]:		G$ICM		!		25		2 _
+                                                (arg(a),arg(b));
+[26]:		G$SCJ		!		26		2
+                                                (arg(a),arg(b));
+[27]:		G$ICJ		!		27		2
+                                                (arg(a),arg(b));
+[28]:		G$SCI		!		28		1	6
+                                                (arg(a));
+[29]:		G$ICI		!		29		1
+                                                (arg(a));
+[30]:		G$SFS		!		30		3 _
+                                                (arg(a),arg(b),arg(c));
+[31]:		G$IFS		!		31		3
+                                                (arg(a),arg(b),arg(c));
+[32]:		G$LDC		!		32		2
+                                                (arg(a),arg(b));
+
+[33]:		G$MRA		!markers	33		2	7
+                                                (arg(a),arg(b));
+[34]:		G$MRR		!		34		2
+                                                (arg(a),arg(b));
+[35]:		G$PMRA		!		35		3 _
+                                                (arg(a),arg(b),arg(c));
+[36]:		G$PMRR		!		36		3 
+                                                (arg(a),arg(b),arg(c));
+[37]:		G$SMS		!		37		2
+                                                (arg(a),arg(b));
+[38]:		G$IMS		!		38		2	8
+                                                (arg(a),arg(b));
+
+[39]:		G$AA		!curves		39		3
+                                                (arg(a),arg(b),arg(c));
+[40]:		G$AR		!		40		3 _
+                                                (arg(a),arg(b),arg(c));
+[41]:		G$CA		!		41		4
+                                                (arg(a),arg(b),arg(c),arg(d));
+[42]:		G$CR		!		42		4
+                                                (arg(a),arg(b),arg(c),arg(d));
+[43]:		G$CRS		!segments	43		1	95
+                                                (arg(a));
+[44]:		G$EXS		!		44		1
+                                                (arg(a));
+
+[45]:		G$IOS		!		45		1 _
+                                                (arg(a));
+[46]:		G$CLS		!		46		0
+                                                ();
+[47]:		G$DLS		!		47		1
+                                                (arg(a));
+[48]:		G$DLAS		!		48		0	10
+                                                ();
+[49]:		G$RNS		!		49		2
+                                                (arg(a),arg(b));
+[50]:		G$SGV		!		50		1 _
+                                                (arg(a));
+[51]:		G$IGV		!		51		1
+                                                (arg(a));
+[52]:		G$SSV		!		52		2
+                                                (arg(a),arg(b));
+[53]:		G$ISV		!		53		2	11
+                                                (arg(a),arg(b));
+[54]:		G$SGA		!		54		2
+                                                (arg(a),arg(b));
+[55]:		G$IGA		!		55		2 _
+                                                (arg(a),arg(b));
+[56]:		G$SSA		!		56		3
+                                                (arg(a),arg(b),arg(c));
+[57]:		G$ISA		!		57		3
+                                                (arg(a),arg(b),arg(c));
+[58]:		G$SSS		!		58		3	12
+                                                (arg(a),arg(b),arg(c));
+[59]:		G$ISS		!		59		3
+                                                (arg(a),arg(b),arg(c));
+
+[60]:		G$SWI		!atts		60		1 _
+                                                (arg(a));
+[61]:		G$IWI		!		61		1
+                                                (arg(a));
+[62]:		G$SBI		!		62		1
+                                                (arg(a));
+[63]:		G$IBI		!		63		1	13
+                                                (arg(a));
+[64]:		G$SMP		!		64		1
+                                                (arg(a));
+[65]:		G$IMP		!		65		1 _
+                                                (arg(a));
+[66]:		G$SMPI		!		66		2
+                                                (arg(a),arg(b));
+[67]:		G$IMPI		!		67		2
+                                                (arg(a),arg(b));
+[68]:		G$SWP		!		68		1	14
+                                                (arg(a));
+[69]:		G$IWP		!		69		1
+                                                (arg(a));
+[70]:		G$SWM		!		70		1 _
+                                                (arg(a));
+[71]:		G$IWM		!		71		1
+                                                (arg(a));
+[72]:		G$SPA		!		72		2
+                                                (arg(a),arg(b));
+[73]:		G$IPA		!		73		2	15
+                                                (arg(a),arg(b));
+
+[74]:		G$SFM		!fill		74		1
+                                                (arg(a));
+[75]:		G$IFM		!		75		1 _
+                                                (arg(a));
+[76]:		G$SFA		!		76		2
+                                                (arg(a),arg(b));
+[77]:		G$IFA		!		77		2
+                                                (arg(a),arg(b));
+[78]:		G$SFC		!		78		4
+                                                (arg(a),arg(b),arg(c),arg(d));
+[79]:		G$IFC		!		79		4	16
+                                                (arg(a),arg(b),arg(c),arg(d));
+
+[80]:		G$SW		!view		80		4 _
+                                                (arg(a),arg(b),arg(c),arg(d));
+[81]:		G$IW		!		81		4
+                                                (arg(a),arg(b),arg(c),arg(d));
+[82]:		G$SV		!		82		4
+                                                (arg(a),arg(b),arg(c),arg(d));
+[83]:		G$IV		!		83		4	17
+                                                (arg(a),arg(b),arg(c),arg(d));
+[84]:		G$SC		!		84		1
+                                                (arg(a));
+[85]:		G$IC		!		85		1 _
+                                                (arg(a));
+[86]:		G$SO		!		86		1
+                                                (arg(a));
+[87]:		G$IO		!		87		1
+                                                (arg(a));
+[88]:		G$EV		!		88		0	18
+                                                ();
+[89]:		G$SCRL		!		89		2
+                                                (arg(a),arg(b));
+
+[90]:		G$INIT		!control	90		0 _
+                                                ();
+[91]:		G$EXIT		!		91		0
+                                                ();
+[92]:		G$NF		!		92		0
+                                                ();
+[93]:		G$RMRE		!		93		2	19
+                                                (arg(a),arg(b));
+[94]:		G$PRNT		!		94		6
+                                                (arg(a),arg(b),arg(c),
+                                                 arg(d),arg(e),arg(f));
+[95]:		BEGIN
+
+		LOCAL	 mult
+			,l_tics	: SIGNED
+			,f_tics
+			,l_60	: INITIAL (60)
+			,f_60
+			,adder
+			,efn
+			,ns100_time: VECTOR [2,long]
+			,s
+			;
+
+		BUILTIN emul, mulf, cvtlf, cvtfl;
+
+		!
+		!  Flush any existing buffer
+		!
+		G$WRITE();
+
+		!
+		!  convert the time given in floating point seconds to
+		!  to floating point tics 60ths of seconds
+		!
+		cvtlf( l_60, f_60);
+		mulf( arg(a), f_60, f_tics);
+
+		!
+		!  Convert floating tics into longword integer tics
+		!
+		IF NOT cvtfl( f_tics, l_tics)
+		THEN l_tics = 0;
+
+
+		!
+		!  If the number of tics is negative then let them be
+		!  zero
+		!
+		IF .l_tics LSS 0
+		THEN l_tics = 0;
+
+		!
+		!  mult is the number of 100 nano seconds units in a 1/60 
+		!	 second
+		!  adder is set to 0 since we don't want to add anything to
+		!        the result
+		!  ns100_time is the number of 100 nano second units in the
+		!        time specified by the caller
+		!
+		mult = -10*1000*1000/60;
+		adder = 0;
+
+
+		!
+		!  Use the extended multiply to get the resulting system time
+		!  to wait
+		!
+		emul( mult, l_tics, adder, ns100_time);
+
+		!
+		!  Get a unique event flag
+		!
+		IF NOT (S = LIB$GET_EF( efn))
+		THEN RETURN .S;
+
+
+		!
+		!  Use the system service to wait this amount of time
+		!
+		s = $SETIMR(
+			 EFN 	= .efn
+			,DAYTIM	= ns100_time
+			);
+
+		IF NOT .s
+		THEN RETURN .s;
+
+		$WAITFR( EFN	= .efn);
+
+
+		!
+		!  Free the aquired efn
+		!
+		LIB$FREE_EF( efn);
+
+		END;
+
+		
+[96]:		cgl_ptr [gt$b_cluster_commands] = 1;
+
+[97]:		cgl_ptr [gt$b_cluster_commands] = 0;
+
+[98]:		G$WRITE();
+
+TES;
+
+!----------------------------------------
+! EMPTY REMAINING COMMANDS IN OUTPUT BUFFER
+!----------------------------------------
+IF NOT .cgl_ptr [gt$b_cluster_commands] 
+THEN G$WRITE();
+
+!----------------------------------------
+! Was this a request to cancel core or exit core for this view surface
+! IF so then take the data entry out of queue and deallocate the memory
+!----------------------------------------
+IF .func EQL 91
+THEN BEGIN
+	!
+	!  If we were in control update mode then clear out any remaining
+	!  buffer.
+	!
+	IF .cgl_ptr [gt$b_cluster_commands] 
+	THEN G$WRITE();
+
+	remque(
+		 cgl_ptr[gt$a_forward_link]
+		,cgl_ptr
+		);
+	
+	status = (.cgl_ptr[gt$l_error_code] EQL 0);
+
+	LIB$FREE_VM(
+		 %REF(gt$s_cgl_data_table)
+		,cgl_ptr
+		   );
+
+	IF NOT .status
+	THEN RETURN vsta$_cglerr;
+
+     END;
+
+IF .cgl_ptr[gt$l_error_code] EQL 719
+THEN BEGIN
+
+	cgl_ptr[gt$l_error_code] = 0;
+	
+	RETURN vsta$_vstaerr;
+
+     END;
+
+status = (.cgl_ptr[gt$l_error_code] EQL 0);
+
+IF NOT .status
+THEN RETURN vsta$_cglerr;
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE g$get_ptr
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine is called by all other routines that need access to the
+!   impure data area.  Its sole porpose is to return the starting address
+!---of the area declared for this porpose in this module.
+!
+!  FORMAL PARAMETERS: NONE
+!
+        :=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---The return value is the starting address of the impure area
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+RETURN .cgl_ptr;
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+
+ROUTINE cgl$$dp_find_cgl
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine looks for a data entry having the same channel number as the
+!   one specified.  If found the module's data pointer is set to point at
+!---this entry.
+!
+!  FORMAL PARAMETERS
+!
+       (channel):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: The module's data pointer is set to point at a data block
+!
+!  RETURN VALUE:
+!
+!---ss$_normal if entry found
+!---ss$_nosuchdev if entry not found
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: global data is set as described above
+!
+!--
+BEGIN
+
+LOCAL ptr: REF BLOCK [,BYTE];
+
+!
+!  If the cgl queue base is not initialize then do it
+!
+IF NOT .cgl_init
+THEN BEGIN
+	cgl_init = 1;
+	cgl_q_base [0] = cgl_q_base [0];
+	cgl_q_base [1] = cgl_q_base [0];
+     END;
+
+ptr = .cgl_q_base[0];
+
+UNTIL .ptr EQL cgl_q_base[0] DO BEGIN
+
+!-----------------------------------
+!  if correct entry is found then set module pointer and return
+!-----------------------------------
+IF .ptr[gt$l_channel] EQL .channel THEN BEGIN
+
+cgl_ptr = .ptr;
+RETURN ss$_normal;
+
+END;
+
+ptr = .ptr[gt$a_forward_link];
+
+END;
+
+!----------------------------------
+!  if loop ends then device not found
+!----------------------------------
+RETURN ss$_nosuchdev
+
+END;
+
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE g$read
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine performs the QIO (to the ACP) to read from gidis into a 
+!---specified buffer of a specified size.
+!
+!  FORMAL PARAMETERS:
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: qio to the ACP is performed
+!
+!  RETURN VALUE:
+!
+	: NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---Data is sent to the gidis graphics translator.  If the qio is not sucessful
+!---the error report routine is called to record the occurence of the failure
+!
+!--
+BEGIN
+
+local
+	 iosb: VECTOR [2,LONG]
+	,size
+	,efn
+	,vd_adr: REF BLOCK [,BYTE]
+	;
+
+!
+! need to get virtual display id
+!
+IF NOT vsta$$channel_found( cgl_ptr[gt$l_channel], vd_adr)
+THEN BEGIN
+	cgl_ptr[gt$l_io_buffer_count] = 0;
+	g$error_handler(
+			 cgl_ptr[gt$l_current_function]
+			,%ref(719)
+			);
+	RETURN;
+     END;
+
+
+!
+!  Calculate the size of the access buffer in bytes
+!
+size = .cgl_ptr [gt$l_io_buffer_count] * 2;
+
+LIB$GET_EF( efn);
+
+IF NOT $QIOW(
+             CHAN = .cgl_ptr[gt$l_channel],
+             FUNC = IO$_ACCESS+IO$M_GRAPHICS,
+	     EFN  = .efn,
+	     IOSB = iosb,
+             P1 = cgl_ptr [gt$w_io_buffer],
+             P2 = .size,                       !size of buffer
+	     P3 = .vd_adr[vsta$ct_l_vd_id]
+                   )
+
+THEN BEGIN
+
+	cgl_ptr[gt$l_io_buffer_count] = 0;
+	g$error_handler(
+			 cgl_ptr[gt$l_current_function]
+			,%ref(719)
+			);
+
+	!
+	!  Put back the event flag
+	!
+	LIB$FREE_EF( efn);
+	RETURN
+      END;
+
+IF NOT .iosb [0] 
+THEN BEGIN
+	cgl_ptr[gt$l_io_buffer_count] = 0;
+	g$error_handler(
+			 cgl_ptr[gt$l_current_function]
+			,%ref(719)
+			);
+	!
+	!  Put back the event flag
+	!
+	LIB$FREE_EF( efn);
+	RETURN
+     END;
+
+cgl_ptr[gt$l_io_buffer_count] = 0;
+
+LIB$FREE_EF( efn);
+
+END;
+
+
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE g$write
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine performs the QIO (to the ACP) necessary to send a buffer of
+!---output to the gidis processor.
+!
+!  FORMAL PARAMETERS: NONE
+!
+	:
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: a buffer in information is outputed to the gidis emulator
+!
+!  RETURN VALUE: 
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---A QIO operation is performed to transfer the data generated in the xtig
+!---library routines to the gidis emulator
+!
+!--
+BEGIN
+
+LOCAL  
+	 status
+	,size
+	,iosb: VECTOR [4,WORD]
+	,qio_desc: VECTOR [3,LONG]
+	,efn
+	;
+
+
+!
+!  If there is nothing in the gidis buffer then just return
+!
+IF .cgl_ptr[gt$l_io_buffer_count] LEQ 0
+THEN RETURN;
+
+!
+!  If the disable flag is set then just return
+!
+IF .disable
+THEN RETURN;
+
+!
+!  qio_desc <i> is the address of the direct io packet
+!  qio_desc <i + 1> is the number of bytes in the direct io packet
+!
+qio_desc [0] = cgl_ptr [gt$w_io_buffer];
+qio_desc [1] = .cgl_ptr [gt$l_io_buffer_count] * 2;
+qio_desc [2] = 0;		! Buffer will not be modified by QIO
+
+
+!
+!  Get a unique event flag to use
+!
+LIB$GET_EF( efn);
+
+!
+!  perform the QIO to Gidis for this output buffer
+!
+IF NOT (status = $QIOW
+
+	(
+	 CHAN 	= .cgl_ptr[gt$l_channel]		!send channel to use
+	,FUNC 	= IO$_WRITE_GRAPHICS			!send output to graphics term
+	,EFN	= .efn
+	,IOSB 	= iosb					!get back status
+	,P1	= qio_desc				!Descriptor of packets
+	,P2 	= 1					!Number of packets
+	,P3 	= .cgl_ptr[gt$l_io_buffer_count]	!some number of commands
+	,P4 	= 0					!send output to gidis
+	))
+
+THEN BEGIN
+
+	cgl_ptr[gt$l_io_buffer_count] = 0;
+	g$error_handler(
+			 cgl_ptr[gt$l_current_function]
+			,%ref(719)
+			);
+
+	!
+	!  Put back the event flag
+	!
+	LIB$FREE_EF( efn);
+	RETURN
+      END;
+
+IF NOT .iosb [0] 
+THEN BEGIN
+	cgl_ptr[gt$l_io_buffer_count] = 0;
+	g$error_handler(
+			 cgl_ptr[gt$l_current_function]
+			,%ref(719)
+			);
+	!
+	!  Put back the event flag
+	!
+	LIB$FREE_EF( efn);
+	RETURN
+     END;
+
+!
+!  Put back the event flag
+!
+LIB$FREE_EF( efn);
+
+cgl_ptr[gt$l_io_buffer_count] = 0;
+
+END;
+
+
+
+!
+!  Define cgl service routines.  G$flip, G$print, G$crlf
+!
+GLOBAL ROUTINE g$print( address_of_gidis_word: REF VECTOR [,WORD]): NOVALUE =
+BEGIN
+
+BIND
+	 fao_string = UPLIT BYTE ('!8<!XW!>')
+	;
+
+LOCAL
+	 dummy
+	,fao_desc: VECTOR [2,LONG] 
+	,s
+	;
+
+fao_desc [0] = %charcount('!8<!XW!>');
+fao_desc [1] = fao_string;
+
+outdsc [0] = 8;
+outdsc [1] = outbuf + .outcount;
+
+$FAO( fao_desc, dummy, outdsc, .address_of_gidis_word [0]);
+
+outcount = .outcount + 8;
+
+RETURN
+END;
+
+GLOBAL ROUTINE g$crlf: NOVALUE =
+BEGIN
+!
+!  Built in debugging routine used to output a line of gidis commands to
+!  the log file
+!
+
+LOCAL
+	 S
+	;
+
+outrab [RAB$W_RSZ] = .outcount;
+
+IF NOT (S = $PUT( 
+		RAB = outrab
+	     ))
+THEN BEGIN
+	outcount = 0;
+	cgl_ptr [gt$b_debug] = 0;
+	RETURN .S;
+     END;
+
+INCR i FROM 0 to 80
+DO outbuf [.i] = %C' ';
+
+outcount = 0;
+
+RETURN
+END;
+
+GLOBAL ROUTINE g$flip
+!++
+!  Functional Description
+!
+!---This routine recieves an address of a 16*16 bit (character array) and
+!---reverses the bits in each of the 16 bit words
+!
+!  Formal Parameters:
+!
+	(
+	 matrix_addr: REF VECTOR [16,WORD]
+	):
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+	NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+LOCAL
+	 src_bits: REF BITVECTOR[16]
+	,wrd: WORD
+	;
+
+BIND
+	 dst_bits = wrd: BITVECTOR[16]
+	;
+
+INCR i FROM 0 TO 15
+DO BEGIN
+	src_bits = matrix_addr[.i];
+	INCR j FROM 0 TO 15
+	DO 
+		dst_bits[15-.j] = .src_bits [.j];
+	matrix_addr [.i] = .wrd
+   END;
+
+		
+END;
+
+
+GLOBAL ROUTINE G$OPEN: =
+
+BEGIN
+
+LOCAL
+	 channel
+	,status
+	;
+
+IF NOT (status = vsta$get_selected_display(channel))
+THEN RETURN vsta$_noseldisp;
+
+IF NOT cgl$$dp_find_cgl(.channel) 
+THEN RETURN ss$_nosuchdev;
+
+
+INCR i FROM 0 to 80
+DO outbuf [.i] = %C' ';
+
+outcount = 0;
+
+outfab [ FAB$L_DNA] = LOG_FILE_NAME;
+outfab [ FAB$B_DNS] = %charcount('CGL$OUTPUT:');
+
+outrab [ RAB$L_FAB] = outfab;
+outrab [ RAB$L_RBF] = outbuf;
+
+IF NOT (Status = $CREATE(
+		 FAB	= outfab
+		     ))
+THEN RETURN .Status;
+
+IF NOT (Status = $CONNECT(
+		 RAB	= outrab
+		))
+THEN RETURN .Status;
+
+cgl_ptr [gt$b_debug] = 1;
+
+return ss$_normal;
+
+END;
+
+GLOBAL ROUTINE G$CLOSE:=
+BEGIN
+
+LOCAL
+	 channel
+	,status
+	;
+
+IF NOT (status = vsta$get_selected_display(channel))
+THEN RETURN vsta$_noseldisp;
+
+IF NOT cgl$$dp_find_cgl(.channel) 
+THEN RETURN ss$_nosuchdev;
+
+IF NOT .cgl_ptr [gt$b_debug]
+THEN RETURN ss$_normal;
+
+cgl_ptr [gt$b_debug] = 0;
+
+$PUT(
+	 RAB	= outrab
+     );
+
+$DISCONNECT(
+	 RAB	= outrab
+	);
+
+$CLOSE(
+	 FAB	= outfab
+	)
+
+END;
+
+GLOBAL ROUTINE G$DISABLE:=
+BEGIN
+
+disable = 1
+
+END;
+
+GLOBAL ROUTINE G$ENABLE:=
+BEGIN
+
+disable = 0;
+
+ss$_normal
+
+END;
+
+
+END
+ELUDOM

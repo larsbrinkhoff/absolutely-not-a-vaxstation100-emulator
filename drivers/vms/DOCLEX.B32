@@ -1,0 +1,449 @@
+MODULE DOC$LEX (
+		IDENT = 'VSTADOC Utility Lexical Scanner'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module scans the source file and gets the next set of text or
+! VSTADOC command. It returns these "tokens".
+!
+! ENVIRONMENT:
+!
+! VAX Workstation Document file utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$get_source_token,
+    get_line_for_listing,
+    put_list_linenum;
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$get_source_line,
+    doc$$append_list_line,
+    doc$$put_list_line,
+    doc$$error;
+
+EXTERNAL
+    doc$gl_src_desc,		!src file descriptor
+    num_user_errors,		!Number of user errors
+    fatal_error;
+
+GLOBAL
+    doc$gl_cur_line_num,	!Current line number (printed in listing)
+    doc$gl_in_command_text;	!Flag =1 if we think we are reading
+				! command text.
+OWN
+    have_a_saved_line,		!Flag, = 1 if line saved.
+    line_delim_token,		!Line delimiter token
+    next_delim_flag,		!Return delimiter next.
+    next_eof_flag,		!Return EOF next.
+    saved_src_line: VECTOR [512,BYTE],	!A saved source line
+    saved_src_desc: VECTOR [2] INITIAL (0, saved_src_line);
+
+
+GLOBAL ROUTINE doc$$get_source_token
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to return next source token and string descriptor
+!	Reads in lines of text until it finds a delimiter (so the
+!	listing line can be written). Then returns tokens to
+!	the caller.
+! FORMAL PARAMETERS:
+	(token			!Address of where to put token
+	,str_desc_addr		!Address of string descriptor
+	) =
+!--
+BEGIN
+OWN
+    line_desc_addr: REF VECTOR [2],	!Read-in line descriptor
+    rem_desc: VECTOR [2],	!Remainder of the line
+    returned_desc: VECTOR [2];	!Returned descriptor
+LOCAL
+    cbeg_len: WORD,
+    cend_len: WORD,
+    cend_loc,			!Loc of "cmd_end".
+    cbeg_loc,			!Loc of "cmd_start".
+    status;
+BIND
+    cbeg_desc = %ASCID '##:': VECTOR [2],
+    cend_desc = %ASCID ':##': VECTOR [2];
+!
+! If we don't have any stored-up tokens, read in a line and send to listing.
+!
+IF (NOT (.next_delim_flag)) AND (NOT (.have_a_saved_line))
+  THEN
+    BEGIN
+    IF NOT (status = get_line_for_listing (line_desc_addr)
+	   )
+      THEN
+	RETURN .status;
+    rem_desc [0] = .line_desc_addr [0];		!Copy line descriptor
+    rem_desc [1] = .line_desc_addr [1];		!To our save area.
+    IF (.next_eof_flag)		!Check for EOF immediately after read.
+      THEN
+	BEGIN
+	next_eof_flag = 0;
+	.token = doc_tok$_eof;
+	RETURN SS$_NORMAL
+	END;
+    END;
+!
+! We're able to send a token. If there's nothing left but the line
+! delimiter, then send it.
+!
+IF (.next_delim_flag)
+  THEN
+    BEGIN
+    next_delim_flag = 0;	!Next time, have to
+    have_a_saved_line = 0;	! read in and list another line.
+    .token = .line_delim_token;	!Return the line delimiter token
+    RETURN SS$_NORMAL		! . .
+    END;
+!
+! Return next (text) token from the line.
+! Update rem_desc, the descriptor of the remainder of the line.
+!    
+returned_desc [1] = .rem_desc [1]; !If we return text, it will be here.
+returned_desc [0] = 0;		!# chars being returned (make non-zero
+				! if we really return a string).
+.str_desc_addr = returned_desc;	!Returned descriptor addr.
+
+cend_len = .cend_desc [0];	!Get length of command end token
+cbeg_len = .cbeg_desc [0];	! and command begin token
+IF (.doc$gl_in_command_text)
+  THEN
+    BEGIN			!IN command text, next token is either more
+				! command text or command end.
+    cend_loc = CH$FIND_SUB
+		(.rem_desc [0]		!Context length
+		,.rem_desc [1]		!Context CPTR
+		,.cend_len		!Pattern length
+		,.cend_desc [1]		!Pattern CPTR
+		);
+    IF (.cend_loc EQL 0)
+      THEN
+	BEGIN	  ! Not found, return "command line" token with whole string
+	.token = doc_tok$_cmd_text;
+	returned_desc [0] = .rem_desc [0];
+	END
+      ELSE
+	IF (.cend_loc EQL .rem_desc [1])
+	  THEN			!Occurs at very start of string
+	    BEGIN
+	    .token = doc_tok$_cmd_end;
+	    doc$gl_in_command_text = 0;	!No longer in command text
+	    returned_desc [0] = .cend_len;
+	    END
+	  ELSE
+		BEGIN		!Found somewhere on line
+		.token = doc_tok$_cmd_text;
+		returned_desc [0] = .cend_loc - .rem_desc [1]; ! # Chars before
+		END;
+    END !Of command text processing
+  ELSE
+    BEGIN			!In regular text, next token is either
+				! more regular text or command text.
+    cbeg_loc = CH$FIND_SUB
+		(.rem_desc [0]		!Context length
+		,.rem_desc [1]		!Context CPTR
+		,.cbeg_len		!Pattern length
+		,.cbeg_desc [1]		!Pattern CPTR
+		);
+    IF (.cbeg_loc EQL 0)
+      THEN
+	BEGIN	  ! Not found, return "text line" token with whole string
+	.token = doc_tok$_text_line;
+	returned_desc [0] = .rem_desc [0];
+	END
+      ELSE
+	IF (.cbeg_loc EQL .rem_desc [1])
+	  THEN			!Occurs at very start of string
+	    BEGIN
+	    .token = doc_tok$_cmd_text;
+	    doc$gl_in_command_text = 1;	!Now in command text
+	    rem_desc [0] = .rem_desc [0] - .cbeg_len;		!Skip over cbeg
+	    rem_desc [1] = .rem_desc [1] + .cbeg_len;
+	    returned_desc [0] = .rem_desc [0];	!Whole rest of line (?)
+	    returned_desc [1] = .rem_desc [1];
+	!
+	! But, if command also ends within the line, just return the
+	! part of the line up to the command end token.
+	!
+	    cend_loc = CH$FIND_SUB
+			(.rem_desc [0]
+			,.rem_desc [1]
+			,.cend_len
+			,.cend_desc [1]
+			);
+	    IF (.cend_loc NEQ 0)
+	      THEN
+		BEGIN		!Command ends in line too!
+		returned_desc [0] = .cend_loc - .returned_desc [1];
+		END;
+	    END
+	  ELSE
+		BEGIN		!Found somewhere on line
+		.token = doc_tok$_text_line;
+		returned_desc [0] = .cbeg_loc - .rem_desc [1]; ! # Chars before
+		END;
+    END; !Of reg. text processing and IF
+
+rem_desc [0] = .rem_desc [0] - .returned_desc [0];
+rem_desc [1] = .rem_desc [1] + .returned_desc [0];
+
+! If no more characters on the line, set "next_delim_flag"
+!
+IF (.rem_desc [0] EQL 0)
+  THEN next_delim_flag = 1;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_line_for_listing
+!++
+! FUNCTIONAL DESCRIPTION:
+!	1. Read stuff from source file until we get a delimiter.
+!	2. Append text strings to each other, remembering if we have
+!	    to truncate to 512 chars (511 if delimiter is not LF).
+!	3. Write line to listing file.
+!	4. Check line for CR and if present, give warning.
+! FORMAL PARAMETERS:
+	(line_desc_addr		!Address of line descriptor
+	) =
+!--
+BEGIN
+EXTERNAL
+    doc$_fil_write_error;	!"File write error"
+OWN
+    last_was_ff,		!Last delimiter was FF
+    ff_char: INITIAL (%O'14'),	!Form feed character
+    ff_desc: VECTOR [2] INITIAL (1, ff_char),
+    eof_flag,			!Read EOF last time thru.
+    line_str: VECTOR [512,BYTE],	!Store line here.
+    line_str_desc: VECTOR [2] INITIAL (0, line_str);
+LOCAL
+    src_desc_addr: REF VECTOR [2],	!Returned by source_line routine
+    delim_flag,			!=1 if just read a delimiter
+    delim_char,			!Delimiter character
+    trunc_flag,			!=1 if had to truncate line
+    byte_adr: REF VECTOR [0,BYTE],	!Reference for byte string
+    chars_to_move,		!# chars to append in CH$MOVE
+    status;
+
+.line_desc_addr = UPLIT (0,0);	!May return null descriptor if no text.
+
+IF (.eof_flag)
+  THEN
+    BEGIN
+    eof_flag = 0;		!Try a real READ next time.
+    next_eof_flag = 1;		!Next thing is EOF.
+    RETURN SS$_NORMAL
+    END;
+
+IF (.last_was_ff)
+  THEN
+    BEGIN
+    last_was_ff = 0;
+    next_delim_flag = 1;
+    line_delim_token = doc_tok$_ff;
+    RETURN SS$_NORMAL
+    END;
+!
+! Init variables for read loop.
+!
+trunc_flag = 0;			!Didn't truncate string yet.
+line_str_desc [0] = 0;		!No chars on line yet.
+have_a_saved_line = 0;		!Don't have a saved line yet.
+
+WHILE 1 DO
+   BEGIN
+   IF NOT (status =
+ 	doc$$get_source_line (src_desc_addr, delim_flag)
+	   )
+      THEN
+	BEGIN		!Analyze error code from RMS
+	IF (.status EQL RMS$_EOF)
+	  THEN
+	    BEGIN
+	    eof_flag = 1;
+	    EXITLOOP
+	    END
+	  ELSE
+	    BEGIN
+	    doc$$error (doc$_fil_write_error, doc$gl_src_desc);
+	    RETURN doc$$error (.status);
+	    END;
+	END;
+
+    IF (.delim_flag)
+      THEN
+	BEGIN
+	byte_adr = .src_desc_addr [1];
+	delim_char = .byte_adr [0];	!Get first char of delimiter
+
+	IF (.delim_char EQL .ff_char)
+	  THEN line_delim_token = doc_tok$_ff
+	  ELSE line_delim_token = doc_tok$_eol;
+
+	EXITLOOP
+	END;
+  !
+  ! Regular text. Append to what we've got. If we must truncate,
+  ! set trunc_flag.
+  !
+    IF ((.line_str_desc [0] + .src_desc_addr [0]) GTR 512)
+      THEN				!Have to truncate
+	BEGIN
+	chars_to_move = 512 - .line_str_desc [0];
+	trunc_flag = 1
+	END
+      ELSE
+	chars_to_move = .src_desc_addr [0];
+
+    CH$MOVE	(.chars_to_move
+		,.src_desc_addr [1]
+		,.line_str_desc [1] + .line_str_desc [0]
+		);
+
+    line_str_desc [0] = .line_str_desc [0] + .chars_to_move;
+
+    END;	!WHILE 1 DO ...
+!
+! EXITLOOP comes here when we get an EOF or a line delimiter.
+!
+IF (.line_str_desc [0] EQL 0)
+  THEN
+    BEGIN			!No characters on line
+    IF (.eof_flag)
+      THEN
+	BEGIN
+	eof_flag = 0;		!Try real READ next time
+	next_eof_flag = 1;
+	RETURN SS$_NORMAL
+	END;
+    IF (.line_delim_token EQL doc_tok$_ff)
+      THEN
+	BEGIN
+	next_delim_flag = 1;	!Next token for user is a delimiter
+	RETURN SS$_NORMAL	! (already put FF token in "line_delim_token"
+	END;
+    END;		!Of actions for "no chars on line"
+!
+! If EOF read in before delimiter, fake a delimiter of CRLF.
+!
+IF (.eof_flag)
+  THEN
+    line_delim_token = doc_tok$_eol;	!Remember "EOL" token.
+!
+! If FF ends the line, pretend line ended with CRLF and remember
+! that next time we'll return a form feed.
+!
+IF (.line_delim_token EQL doc_tok$_ff)
+  THEN
+    BEGIN
+    line_delim_token = doc_tok$_eol;
+    last_was_ff = 1;			!Remember to return FF next.
+    END;
+!
+! Write out line to listing.
+!
+doc$gl_cur_line_num = .doc$gl_cur_line_num + 1;	!Next line.
+put_list_linenum (.doc$gl_cur_line_num);
+doc$$append_list_line (line_str_desc);
+doc$$put_list_line ();
+!
+! If line is empty, return EOL
+!
+IF (.line_str_desc [0] EQL 0)
+  THEN
+    BEGIN
+    next_delim_flag = 1;		!Next token for user is a delimiter.
+    RETURN SS$_NORMAL
+    END;
+!
+! Line has some text on it.
+!
+.line_desc_addr = line_str_desc;	!Tell caller where line is.
+have_a_saved_line = 1;
+!
+! Print warning if line was truncated.
+!
+IF (.trunc_flag)
+  THEN
+    BEGIN
+    doc$$append_list_line (%ASCID '%WARN: Line truncated to 512 characters');
+    doc$$put_list_line ();
+    END;
+!
+! Search for CR in text. If found, print a warning.
+!
+
+RETURN SS$_NORMAL		!Return to caller.
+END;
+
+ROUTINE put_list_linenum
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes <linenumber><TAB> to listing file.
+! FORMAL PARAMETERS:
+	(linenum		!Decimal line number
+	) =
+!--
+BEGIN
+LOCAL
+    str_desc: VECTOR [2],
+    str_hold: VECTOR [20,BYTE],	!ASCII string itself
+    str_out: VECTOR [5,BYTE],	!The string to output
+    num_chars: WORD,		!# chars in the string
+    status;
+
+str_out = '0000';		!Put in leading zeros
+str_out [4] = %C'	';	! and a tab.
+
+str_desc [1] = str_hold;
+str_desc [0] = 20;		!Make room for whole string
+
+IF NOT (status =
+    $fao	(%ASCID '!ZW'	!CTRSTR
+		,num_chars	!OUTLEN
+		,str_desc	!OUTBUF
+		,.linenum	!P1
+		)
+	)
+  THEN
+    RETURN doc$$error (.status);
+
+IF (.num_chars GTR 4)
+  THEN
+	BEGIN
+	str_desc [1] = .str_desc [1] + (.num_chars - 4);
+	num_chars = 4;
+	END;
+
+CH$MOVE	(.num_chars
+	,.str_desc [1]
+	,str_out + 4 - .num_chars
+	);
+
+str_desc [0] = 5;
+str_desc [1] = str_out;
+doc$$append_list_line (str_desc);	!Output computed string
+
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

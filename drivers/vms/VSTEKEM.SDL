@@ -1,0 +1,326 @@
+MODULE VS$VTEM_4014_SDL IDENT "TEK4014 EMULATOR";
+/*
+/*++
+/* FACILITY: VAXstation software (VS)
+/*
+/* Virtual Terminal Emulator (VTEM) for TEK4014
+/*
+/* ABSTRACT:
+/*
+/* This module defines the database and global constants to be used for
+/* emulating a group of TEKtronix 4014 terminals in the context of the
+/* VAX workstation software; specifically, the System Display Architecture.
+/* Access to the SDA is gained thru the GIDIS emulator.
+/*
+/* An instance of the database exists for each TEK4014 terminal being emulated
+/* at a given time, it is allocated dynamically and linked with other such
+/* instances to construct the overall database.  All data associated with
+/* an emulated TEK4014 is defined in this file along with any global constants
+/* that are used to define stationary qualities common to all TEK4014's.
+/*
+/*
+/* ENVIRONMENT:
+/*
+/* VAX workstation: 11/750 or 11/730 running VMS with at least one ONYX
+/* graphics subsystem.
+/*
+/*--
+/* GLOBAL CONSTANT DEFINITION:
+/*
+      CONSTANT uic           	EQUALS 0    			PREFIX tk$;
+      CONSTANT x_boarder     	EQUALS 48    			PREFIX tk$;
+      CONSTANT y_boarder     	EQUALS 0			PREFIX tk$;
+      CONSTANT tek_rows		EQUALS 35			PREFIX tk$;
+      CONSTANT tek_columns	EQUALS 74			PREFIX tk$;
+      CONSTANT tek_display_x	EQUALS 926			PREFIX tk$;
+      CONSTANT tek_display_y	EQUALS 746			PREFIX tk$;
+      CONSTANT tek_x_addressing EQUALS 16384			PREFIX tk$;
+      CONSTANT tek_y_addressing EQUALS 13170			PREFIX tk$;
+      CONSTANT tek_x_screen 	EQUALS tk$k_tek_x_addressing +
+				       2*tk$k_x_boarder 	PREFIX tk$;
+      CONSTANT tek_y_screen 	EQUALS tk$k_tek_y_addressing +
+				       2*tk$k_y_boarder 	PREFIX tk$;
+      CONSTANT screen_log_left	EQUALS tk$k_x_boarder		PREFIX tk$;
+      CONSTANT screen_log_right	EQUALS tk$k_x_boarder +
+				       tk$k_tek_x_addressing	PREFIX tk$;
+      CONSTANT screen_log_top	EQUALS tk$k_y_boarder		PREFIX tk$;
+      CONSTANT screen_log_bottom EQUALS tk$k_y_boarder +
+				       tk$k_tek_y_addressing	PREFIX tk$;
+      CONSTANT footer_vd_y	EQUALS 34			PREFIX tk$;
+      CONSTANT footer_back	EQUALS 1			PREFIX tk$;
+      CONSTANT gin_start_x	EQUALS 100			PREFIX tk$;
+      CONSTANT gin_start_y	EQUALS 100			PREFIX tk$;
+      CONSTANT margin_1      	EQUALS tk$k_x_boarder      	PREFIX tk$;
+      CONSTANT margin_2      	EQUALS tk$k_tek_x_addressing/2 +
+				       tk$k_x_boarder 		PREFIX tk$;
+/*
+/* DEFINE CELL DISPLAY SIZES, CELL UNIT SIZES AND CELL STORAGE SIZES
+/*
+      CONSTANT cdsx1      EQUALS 145 PREFIX tk$;
+      CONSTANT cdsx2      EQUALS 135 PREFIX tk$;
+      CONSTANT cdsx3      EQUALS 90 PREFIX tk$;
+      CONSTANT cdsx4      EQUALS 70 PREFIX tk$;
+
+      CONSTANT cdsy1      EQUALS 250 PREFIX tk$;
+      CONSTANT cdsy2      EQUALS 240 PREFIX tk$;
+      CONSTANT cdsy3      EQUALS 210 PREFIX tk$;
+      CONSTANT cdsy4      EQUALS 200 PREFIX tk$;
+
+      CONSTANT ccmx1      EQUALS 221 PREFIX tk$;
+      CONSTANT ccmx2      EQUALS 202 PREFIX tk$;
+      CONSTANT ccmx3      EQUALS 135 PREFIX tk$;
+      CONSTANT ccmx4      EQUALS 123 PREFIX tk$;
+
+      CONSTANT ccmy1      EQUALS 356 PREFIX tk$;
+      CONSTANT ccmy2      EQUALS 327 PREFIX tk$;
+      CONSTANT ccmy3      EQUALS 212 PREFIX tk$;
+      CONSTANT ccmy4      EQUALS 192 PREFIX tk$;
+
+
+/*
+/* DEFINE THE TOP OF THE DISPLAY FOR THE DIFFERENT TEXT SIZES
+/*
+      CONSTANT top1       EQUALS 640				 PREFIX tk$;
+      CONSTANT top2       EQUALS tk$k_top1+tk$k_ccmy1-tk$k_ccmy2 PREFIX tk$;
+      CONSTANT top3       EQUALS tk$k_top1+tk$k_ccmy1-tk$k_ccmy3 PREFIX tk$;
+      CONSTANT top4       EQUALS tk$k_top1+tk$k_ccmy1-tk$k_ccmy4 PREFIX tk$;
+
+/*
+/* DEFINE KEYWORD VALUES
+/*
+      CONSTANT alpha      EQUALS 0  PREFIX tk$;
+      CONSTANT graph      EQUALS 1  PREFIX tk$;
+      CONSTANT point      EQUALS 2  PREFIX tk$;
+      CONSTANT spec_point EQUALS 3  PREFIX tk$;
+      CONSTANT gin        EQUALS 4  PREFIX tk$;
+      CONSTANT incr       EQUALS 5  PREFIX tk$;
+      CONSTANT normal     EQUALS 0  PREFIX tk$;
+      CONSTANT defocused  EQUALS 1  PREFIX tk$;
+      CONSTANT write_thru EQUALS 2  PREFIX tk$;
+      CONSTANT dotted     EQUALS 1  PREFIX tk$;
+      CONSTANT dot_dashed EQUALS 2  PREFIX tk$;
+      CONSTANT short_dash EQUALS 3  PREFIX tk$;
+      CONSTANT long_dash  EQUALS 4  PREFIX tk$;
+      CONSTANT background EQUALS 0  PREFIX tk$;
+      CONSTANT footer_background EQUALS 5 PREFIX tk$;
+      CONSTANT foreground EQUALS 1  PREFIX tk$;
+      CONSTANT tek4014    EQUALS 2  PREFIX tk$;
+      CONSTANT graphics   EQUALS 1  PREFIX tk$;
+      CONSTANT pasteboard_color EQUALS 0 PREFIX tk$;
+/*
+/* ADDRESS KEY WORDS
+/*
+      CONSTANT (start,hiy,loy,hix,lox) EQUALS -1 INCREMENT 1;
+
+/*
+/* TEXT SIZE KEY WORDS
+/*
+      CONSTANT (largest,large,small,smallest) EQUALS 0 INCREMENT 1;   
+/*
+/* CONTROL WORDS
+/*
+/*
+      CONSTANT (nul,soh,stx,etx,eot,enq,ack,bel,bs,ht,lf,vt,
+                ff,cr,so,si,dle,dc1,dc2,dc3,dc4,nak,syn,
+                etb,can,em,sub,esc,fs,gs,rs,us) 
+                EQUALS 0 INCREMENT 1 PREFIX cc$;
+
+      CONSTANT del EQUALS 127 PREFIX cc$;
+/*
+/* Define constants for items being set.
+/*
+	CONSTANT (
+	    cr_send_cr,			/* when cr typed, send cr only
+	    cr_send_crlf,		/* when cr typed, send cr and lf
+	    lf_send_lf,			/* when lf typed, send lf only
+	    lf_send_lf_cr,		/* when lf typed, send lf and cr
+	    del_loy,			/* delete on low order y coordinate
+	    esc_q_loy,			/* escape ? on low order y coordinate
+	    gin_term_none,		/* no chars sent at end of grphcs input
+	    gin_term_cr,		/* cr sent at end of graphics input
+	    gin_term_cr_eot,		/* cr and eot sent at end of gin mode
+	    col1_full,			/* column 1 full
+	    stop_full,			/* stop on page full
+	    go_full,			/* keep going on page full
+	    level_1, level_2,		/* whether umlauts work or not
+	    first_non_setting		/* skin
+	    )
+	EQUALS 0 INCREMENT 1 PREFIX s4014$;
+
+/*
+/* DATABASE DESCRIPTION:
+/*
+AGGREGATE tek_blk STRUCTURE ORIGIN forward_link PREFIX tk$;
+
+tekblk STRUCTURE;
+
+      CONSTANT table_top    EQUALS .;
+
+      forward_link          ADDRESS;  /* pointer to next entry in terminal list
+      backward_link         ADDRESS;  /* pointer to previous entry
+      vms_stan_hdr	    LONGWORD; /* VMS standard headr field
+      vsta_field UNION;
+		vsta_blk_info	LONGWORD;
+		vsta_blk_bits	STRUCTURE;
+			cntr_o_flag	BITFIELD;
+			send_lf		BITFIELD;
+			vsta_reserved	BITFIELD LENGTH 30;
+		END vsta_blk_bits;
+      END vsta_field;
+      fullview_vd_id        LONGWORD UNSIGNED;
+                                      /* id from VDS given to the screen's vd
+      fullview_pb_id        LONGWORD UNSIGNED;
+                                      /* id from create pasteboard routine
+      fullview_w_id         LONGWORD UNSIGNED;
+      footer_vd_id          LONGWORD UNSIGNED;
+                                      /* id from create window id
+      footer_pb_id	    LONGWORD; /* id of pasteboard for footer
+      tek_pb_id		    LONGWORD; /* id of pasteboard for entire terminal
+      pb_width		    LONGWORD; /* width of main paste board
+      pb_height		    LONGWORD; /* height of main pb
+      bezel_vd_id	    LONGWORD; /* id of bezel vd
+      bezel_width	    LONGWORD; /* width of bezel
+      bezel_height	    LONGWORD; /* height of bezel
+      black_line_height	    LONGWORD; /* height of black line
+      mode                  LONGWORD; /* indicates (alpha|graph|gin: 1|2|3)
+      operation_status	    LONGWORD; /* indicates errors gererated during 
+				      /* the processing of a byte of output
+      
+      CONSTANT initial_status EQUALS 0;
+      status_field UNION;
+           status_byte      BYTE UNSIGNED; 
+                                      /* field to be reported upon request
+           sta STRUCTURE;
+                aux_unit    BITFIELD; /* true if there is no auxiliary unit
+                margin_bit  BITFIELD; /* true if margin 2 exists
+                graph_mode  BITFIELD; /* false if graph mode exists
+                vector_bit  BITFIELD; /* true if graph mode exists
+                hard_copy   BITFIELD; /* true if hard_copy unit attached
+                all1        BITFIELD; /* always 1
+                all0        BITFIELD; /* always 0
+                arb         BITFIELD; /* arbitrary
+           END sta;
+       END status_field;
+       filler_one           BYTE;     /* FOR DEBUGGING ALLIGNMENT ONLY ***
+/*
+/* strap options and variable conditions
+/*
+       char_status_field UNION;
+           char_status_word WORD UNSIGNED;
+           char STRUCTURE;
+              reserved      BITFIELD; 
+              margin_2      BITFIELD; /* true if margin 2 in use
+              margin_on     BITFIELD; /* true if margin_2 bit is enabled
+              ascii_alt     BITFIELD; /* true if alternate character set in use
+              prog_control  BITFIELD; /* true if program controls char. set
+              auto_creot    BITFIELD; /* true if creot is auto with gin data
+              creot_enabled BITFIELD; /* true means no auto_cr_eot
+              auto_cr_lf    BITFIELD; /* true if auto cr with lf
+              auto_lf_cr    BITFIELD; /* true if auto lf with cr
+              del_loy       BITFIELD; /* true if del used as low y address
+              filler        BITFIELD LENGTH 6;
+           END char;
+       END char_status_field;
+/*
+/* control code effected
+/*
+       bytesize		    WORD UNSIGNED;
+				      /* prof$k_tek_7bit or prof$k_tek_8bit
+				      /*
+       write_mode           WORD UNSIGNED;
+                                      /* (normal | defocused | write-thru:
+                                      /* 0,1,2) 
+       vector_mode          WORD UNSIGNED;
+                                      /* 0: normal
+                                      /* 1: dotted
+                                      /* 2: dot-dashed
+                                      /* 3: short-dash
+                                      /* 4: long-dash
+       text_size            WORD UNSIGNED;
+                                      /* 0: normal
+                                      /* 1: 81 col/line
+                                      /* 2: 121 col/line
+                                      /* 3: 133 col/line
+       char_set             BITFIELD; /* true if alt char set exists
+       lce_flag             BITFIELD; /* true if escape sequence is initiated
+       cr_ignore            BITFIELD; /* true if cr's are to be ignored
+       bypass_cond          BITFIELD; /* true if bypass condition in effect
+       page_full            BITFIELD; /* true if page full status exists
+       dark_vector          BITFIELD; /* true if next vector is to be a dark vector
+       mouse_select_down    BITFIELD; /* true if mouse select button is down
+       settings_exist	    BITFIELD; /* true if settings form exists for trmnl
+       ftr_select_flag   BITFIELD;
+       filler_two           BITFIELD LENGTH 8; /* TEST ALLIGNMENT ONLY ***
+/*
+/* functional data
+/*
+       field_y_max	    WORD;     /* max y field position
+       field_y_min          WORD;     /* min y field position
+       footer_vd_x          WORD;     /* store the dimmensions of the footer
+       footer_vd_y          WORD;     /* virtual display
+       screen_vd_x          WORD;     /* store the dimmensions of the screen
+       screen_vd_y          WORD;     /* virtual display
+       increme_command      WORD;     /* move or draw command for the incremental
+                                      /* plot mode
+       beam_x_address       WORD;     /* address of writing beam 
+       beam_y_address       WORD;    
+
+       xhairs_x	    	    LONGWORD;     /* crosshair trackers
+       xhairs_y	    	    LONGWORD;
+       mouse_ast_buffer	    LONGWORD DIMENSION 3;
+       mouse_ast_iosb	    LONGWORD DIMENSION 2;
+       ftr_mouse_buffer	    LONGWORD DIMENSION 3;
+       ftr_mouse_iosb       LONGWORD DIMENSION 2;
+
+       address_state        WORD;     /* 0: start
+                                      /* 1: hiy
+                                      /* 2: loy
+                                      /* 3: hix
+                                      /* 4: lox
+
+       graph_x              WORD;     /*graph mode x location
+       graph_y              WORD;     /*graph mode y location
+       graph_xt             WORD;     /* temporary graph addresses
+       graph_yt             WORD;     /* 
+/*
+/* Define the cursor variables here
+/*
+       alpha_cursor_on		BITFIELD; /* true: cursor is visible
+       alpha_cursor_off		BITFIELD; /* true: blinking cursor is turned off
+
+/*
+/* define the graphics input buffer to be used when returning status and 
+/* information from emulator to host, by request from host
+/*
+       vkbtran_buffer		BYTE DIMENSION 10;
+       vkbtran_buffer_index	LONGWORD; 
+       vkbtran_buffer_ptr	LONGWORD;
+/*
+/*  DEfine the page full backlog buffer
+/*
+	page_full_backlog	ADDRESS;
+	page_full_backlog_bcnt	LONGWORD;
+
+/*
+/*
+/* define a gidis output buffer
+/*
+/*       CONSTANT gidis_buffer_max EQUALS 450;
+/*       gidis_buffer         	WORD DIMENSION 450;
+/*       gidis_buffer_index 	LONGWORD;
+/*
+/* Define the line width, pattern and pattern state here
+/*
+       line_width		WORD DIMENSION 2;
+       ptn_count		WORD;
+       pattern			WORD;
+       ptn_mult			WORD;
+       ptn_state		WORD DIMENSION 2;
+/*
+/* store the size, in bytes, of the dsect
+/*
+       CONSTANT table_size EQUALS . - tk$k_table_top;
+/*
+END tekblk;
+END tek_blk;
+END_MODULE VS$VTEM_4014_SDL;

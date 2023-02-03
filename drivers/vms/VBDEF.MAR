@@ -1,0 +1,934 @@
+ 
+	.MACRO	$VBDEF,..EQU=<=>,..COL=<:>
+; 
+; 	$VBDEF - VS100 Device Definitions
+; 	Version 01-00
+; 
+; 
+; +++
+;  Facility:
+; 
+; 	VAX/VMS VS100 display driver
+; 
+;  Abstract:
+; 
+; 	This file contains the internal data structure and constant definitions
+; 	used by the VAXstation 100 display device driver.
+; 
+;  Environment:
+; 
+; 	The definitions in this file pertain to the VS100 graphics workstation
+; 	device.
+; 
+; ---
+; 
+; 
+;  Random internal constants
+; 
+; 
+; 
+;  ===== VAXSTATION INSTRUCTION OPCODES =====
+; 
+;  VS100 instruction opcodes: OpcodeWord<07:00>
+; 
+;  VS100 opcode word:
+; 
+;      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;   |             command modifier bits             |    opcode     |
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+; 
+; 
+;  ===== VAXSTATION INSTRUCTION OPCODES DEFINITIONS =====
+; 
+VB$K_OPC_NOP'..equ'0                    ;  NoOperation
+VB$K_OPC_COPY'..equ'1                   ;  CopyArea
+VB$K_OPC_DRAW'..equ'2                   ;  DrawCurve
+VB$K_OPC_PRINT'..equ'3                  ;  PrintText
+VB$K_OPC_FLOOD'..equ'4                  ;  FloodArea
+VB$K_OPC_LOAD_CUR'..equ'5               ;  LoadCursor
+VB$K_OPC_SET_CUR'..equ'6                ;  SetCursorPosition
+VB$K_OPC_ATT_CUR'..equ'7                ;  AttachCursor
+VB$K_OPC_GET_CUR'..equ'8                ;  GetCursorPosition
+VB$K_OPC_MOVE'..equ'9                   ;  MoveObject
+VB$K_OPC_MOVEROM'..equ'128              ;  RomMoveObject
+VB$K_OPC_REPORT'..equ'10                ;  ReportStatus
+VB$K_OPC_REPORTROM'..equ'129            ;  RomReportStatus
+VB$K_OPC_FILL'..equ'11                  ;  FillArea
+VB$K_OPC_GET_MOU'..equ'12               ;  GetMousePosition
+VB$K_OPC_SET_MOU'..equ'13               ;  SetMouseCharacteristics
+VB$K_OPC_GET_TAB'..equ'14               ;  GetTabletPosition
+VB$K_OPC_SET_RPT'..equ'15               ;  SetEventReporting
+; 
+; 
+;  ===== VAXSTATION INSTRUCTION MODIFIERS =====
+; 
+;  VS100 instruction opcodes modifiers: OpcodeWord<31:08>
+; 
+;  VS100 opcode word for copy area:
+; 
+;      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;   |                 | dmk | map | off | smk | src |    opcode     |
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+; 
+; 	src -
+; 	    SourceConstant
+; 	    SourceBitmap
+; 	    SourceHalftone
+; 	smk -
+; 	    SourceMaskRectangle
+; 	    SourceMaskBitmap
+; 	off -
+; 	    (not used)
+; 	map -
+; 	    IdentityMap
+; 	    SourceMapAddress
+; 	    SourceMapLiteral
+; 	    Source/DestinationMapAddress
+; 	    Source/DestinationMapLiteral
+; 	dmk -
+; 	    DestinationMaskNone
+; 	    DestinationMaskLiteralRectangle
+; 	    DestinationMaskRectangleList
+; 
+;  VS100 opcode word for draw curve:
+; 
+;      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;   |     | sec | ptn | dmk | map | off | smk | src |    opcode     |
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+; 
+; 	src -
+; 	    (see copy area)
+; 	smk -
+; 	    (see copy area)
+; 	off -
+; 	    (see copy area)
+; 	map -
+; 	    (see copy area)
+; 	dmk -
+; 	    (see copy area)
+; 	ptn -
+; 	    NoPatternString
+; 	    LiteralPatternState
+; 	    IndirectPatternState
+; 	    UpdateLiteralPatternState
+; 	    UpdateIndirectPatternState
+; 	sec -
+; 	    NoSecondSource
+; 	    ConstantSecondSource
+; 	    HalftoneSecondSource
+; 	    BitmapSecondSource
+; 
+;  VS100 opcode word for print text:
+; 
+;      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;   |             |c|t| dmk | map | ini | fnt | src |    opcode     |
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+; 
+; 	src -
+; 	    SourceConstant
+; 	    SourceFont
+; 	    SourceHalftone
+; 	fnt -
+; 	    FontNoMast
+; 	    FontMask
+; 	ini -
+; 	    DestinationOffsetLiteral
+; 	    DestinationOffsetAddress
+; 	    DestinationOffsetLiteralUpdate
+; 	    DestinationOffsetAddressUpdate
+; 	map -
+; 	    (see copy area)
+; 	dmk -
+; 	    (see copy area)
+; 	t -
+; 	     8BitCharacters
+; 	     16BitCharacters
+; 	c -
+; 	     NoControlString
+; 	     ControlString
+; 
+;  VS100 opcode word for flood area:
+; 
+;      30  28  26  24  22  20  18  16  14  12  10  08  06  04  02  00
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;   |                 | dmk |     |seed | smk | src |    opcode     |
+;   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;    31  29  27  25  23  21  19  17  15  13  11  09  07  05  03  01
+; 
+; 	src -
+; 	    (see copy area)
+; 	smk -
+; 	    (see copy area)
+; 	off -
+; 	    (see copy area)
+; 	dmk -
+; 	    (see copy area)
+; 	bnd - 
+; 	    BoundryMapLiteral
+; 	    BoundryMapPointer
+; 
+; 
+;  ===== VAXSTATION INSTRUCTION MODIFIERS DEFINITIONS =====
+; 
+VB$K_MOD_SRC_CONSTANT'..equ'0           ;  SourceConstant
+VB$K_MOD_SRC_BITMAP'..equ'256           ;  SourceBitmap
+VB$K_MOD_SRC_FONT'..equ'256             ;  SourceFont
+VB$K_MOD_SRC_HALFTONE'..equ'512         ;  SourceHalftone
+VB$K_MOD_SMK_RECTANGLE'..equ'0          ;  SourceMaskRectangle
+VB$K_MOD_SMK_NONE'..equ'0               ;  SourceMaskNoFont
+VB$K_MOD_SMK_BITMAP'..equ'2048          ;  SourceMaskBitmap
+VB$K_MOD_SMK_FONT'..equ'2048            ;  SourceMaskFont
+VB$K_MOD_INI_LITERAL'..equ'0            ;  DestinationOffsetLiteral
+VB$K_MOD_INI_POINTER'..equ'16384        ;  DestinationOffsetAddress
+VB$K_MOD_INI_UPDLIT'..equ'32768         ;  DestinationOffsetLiteralUpdate
+VB$K_MOD_INI_UPDPTR'..equ'49152         ;  DestinationOffsetAddressUpdate
+VB$K_MOD_MAP_IDEN'..equ'0               ;  IdentityMap
+VB$K_MOD_MAP_SRC'..equ'131072           ;  SourceMapAddress
+VB$K_MOD_MAP_SLIT'..equ'262144          ;  SourceMapLiteral
+VB$K_MOD_MAP_SRCDST'..equ'393216        ;  Source/DestinationMapAddress
+VB$K_MOD_MAP_SDLIT'..equ'524288         ;  Source/DestinationMapLiteral
+VB$K_MOD_DMK_NONE'..equ'0               ;  DestinationMaskNone
+VB$K_MOD_DMK_RECTANGLE'..equ'1048576    ;  DestinationMaskLiteralRectangle
+VB$K_MOD_DMK_RECLIST'..equ'2097152      ;  DestinationMaskRectangleList
+VB$K_MOD_PTN_NONE'..equ'0               ;  NoPatternString
+VB$K_MOD_PTN_LITERAL'..equ'8388608      ;  PatternStringLiteral
+VB$K_MOD_PTN_POINTER'..equ'25165824     ;  PatternStringPointer
+VB$K_MOD_PTN_UPDLIT'..equ'41943040      ;  PatternStringUpdateLiteral
+VB$K_MOD_PTN_UPDPTR'..equ'58720256      ;  PatternStringUpdatePointer
+VB$K_MOD_SEC_NONE'..equ'0               ;  SecondSourceNone
+VB$K_MOD_SEC_CONSTANT'..equ'67108864    ;  SecondSourceConstant
+VB$K_MOD_SEC_BITMAP'..equ'134217728     ;  SecondSourceBitmap
+VB$K_MOD_SEC_HALFTONE'..equ'201326592   ;  SecondSourceHalftone
+VB$K_MOD_TXT_8BIT'..equ'0               ;  8BitCharacters
+VB$K_MOD_TXT_16BIT'..equ'8388608        ;  16BitCharacters
+VB$K_MOD_CTL_NONE'..equ'0               ;  NoControlString
+VB$K_MOD_CTL_STRING'..equ'16777216      ;  ControlString
+VB$K_MOD_BND_LITERAL'..equ'0            ;  BoundryMapLiteral
+VB$K_MOD_BND_POINTER'..equ'0            ;  BoundryMapPointer
+; 
+; 
+;  ===== VAXSTATION FUNCTION CODES =====
+; 
+;  VS100 function codes: CSR0Word<05:01>
+; 
+VB$K_FUN_INIT'..equ'2                   ;  InitializeDisplay
+VB$K_FUN_SEND'..equ'4                   ;  SendPacket
+VB$K_FUN_START'..equ'6                  ;  StartMicrocode
+VB$K_FUN_PWRUP'..equ'10                 ;  PowerupReset
+VB$K_FUN_ABORT'..equ'18                 ;  Abort
+VB$K_FUN_STATUS'..equ'20                ;  Status
+VB$K_FUN_SAVE_SCREEN'..equ'22           ;  Save screen
+VB$K_FUN_ENABBA'..equ'32                ;  EnableBBA
+VB$K_FUN_DISBBA'..equ'34                ;  DisableBBA
+VB$K_FUN_INFINITE'..equ'36              ;  InfiniteRetry
+VB$K_FUN_FINITE'..equ'38                ;  FiniteRetry
+; 
+; 
+;  ===== VAXSTATION DEVICE DEFINITIONS =====
+; 
+VB$K_DEV_NONE'..equ'0                   ;  NoDevice
+VB$K_DEV_MOUSE'..equ'1                  ;  Mouse
+VB$K_DEV_KEY'..equ'2                    ;  Keyboard
+VB$K_DEV_TABLET'..equ'3                 ;  Tablet
+VB$K_DEV_AUX'..equ'4                    ;  Auxilliry
+VB$K_DEV_CONSOLE'..equ'5                ;  Console
+VBM_NONE'..equ'1
+VBM_MOUSE'..equ'2
+VBM_KEY'..equ'4
+VBM_TABLET'..equ'8
+VBM_AUX'..equ'16
+VBM_CONSOLE'..equ'32
+VBS_DEV_BLOCK'..equ'1
+DEV_BLOCK'..equ'0
+VBV_NONE'..equ'0                        ;  NoDevice
+VBV_MOUSE'..equ'1                       ;  Mouse
+VBV_KEY'..equ'2                         ;  Keyboard
+VBV_TABLET'..equ'3                      ;  Tablet
+VBV_AUX'..equ'4                         ;  Auxilliry
+VBV_CONSOLE'..equ'5                     ;  Console
+; 
+; 
+;  ===== VAXSTATION CSR DEFINITIONS =====
+; 
+;  VS100 CSR definitions
+; 
+VB$M_CSR_GO'..equ'1
+VB$M_CSR_FUNCTION'..equ'62
+VB$M_CSR_IE'..equ'64
+VB$M_CSR_SPARE_1'..equ'128
+VB$M_CSR_SPARE_2'..equ'256
+VB$M_CSR_MAINT_DONE'..equ'512
+VB$M_CSR_CRC_DISABLE'..equ'1024
+VB$M_CSR_MAINT_MODE'..equ'2048
+VB$M_CSR_XMIT_ON'..equ'4096
+VB$M_CSR_LINK_ERR'..equ'8192
+VB$M_CSR_LINK_AVAIL'..equ'16384
+VB$M_CSR_LINK_TRANS'..equ'32768
+VB$M_IRR_REASON'..equ'32767
+VB$M_IRR_ERROR'..equ'32768
+VB$M_KRR_CODE'..equ'255
+VB$M_KRR_TRAN'..equ'256
+VB$M_KRR_DEV'..equ'7680
+VBS_CSR_BLOCK'..equ'16
+CSR_BLOCK'..equ'0
+; 
+;     CSR0 (+^o00) - Control and Status Register
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|Link|Link|Link|Xmit|Main|CRC |Main|    |    |Intr|        Function        | Go |
+; 	|Tran|Aval|Err | On |Mode|Disa|Done|    |    |Enab|          Code          | Bit|
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VBS_CSR_WORD'..equ'2
+VBR_CSR_WORD'..equ'0
+VB_CSR'..equ'0                          ;  ControlStatusCSR
+VB$S_CSR_BITS'..equ'2
+VBR_CSR_BITS'..equ'0
+VB$V_CSR_GO'..equ'0                     ;  Go
+VB$S_CSR_FUNCTION'..equ'5
+VB$V_CSR_FUNCTION'..equ'1               ;  Function
+VB$V_CSR_IE'..equ'6                     ;  InterruptEnable
+VB$V_CSR_SPARE_1'..equ'7                ;  Spare
+VB$V_CSR_SPARE_2'..equ'8                ;  Spare
+VB$V_CSR_MAINT_DONE'..equ'9             ;  MaintenanceDone
+VB$V_CSR_CRC_DISABLE'..equ'10           ;  CRCDisable
+VB$V_CSR_MAINT_MODE'..equ'11            ;  MaintenanceMode
+VB$V_CSR_XMIT_ON'..equ'12               ;  TransmitterOn
+VB$V_CSR_LINK_ERR'..equ'13              ;  LinkError
+VB$V_CSR_LINK_AVAIL'..equ'14            ;  LinkAvailable
+VB$V_CSR_LINK_TRANS'..equ'15            ;  LinkTransition
+; 
+;     CSR1 (+^o02) - Interrupt Reason Register
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|Err |    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+; 	|Flag|    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VBS_INT_WORD'..equ'2
+VBR_INT_WORD'..equ'2
+VB_IRR'..equ'2                          ;  InterruptReasonCSR
+VB$S_INT_BITS'..equ'2
+VBR_INT_BITS'..equ'2
+VB$S_IRR_REASON'..equ'15
+VB$V_IRR_REASON'..equ'0                 ;  ErrorReason
+VB$V_IRR_ERROR'..equ'15                 ;  ErrorFlag
+; 
+;     CSR2 (+^o04) - Keyboard Receive Register
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|    |    |    |      Device       | Up/|                  Key                  |
+; 	|    |    |    |       Code        |Down|                  Code                 |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VBS_KEY_WORD'..equ'2
+VBR_KEY_WORD'..equ'4
+VB_KRR'..equ'4                          ;  KeyboardReceiveCSR
+VB$S_KEY_BITS'..equ'2
+VBR_KEY_BITS'..equ'4
+VB$S_KRR_CODE'..equ'8
+VB$V_KRR_CODE'..equ'0                   ;  KeyCode
+VB$V_KRR_TRAN'..equ'8                   ;  TranslationFlag
+VB$S_KRR_DEV'..equ'4
+VB$V_KRR_DEV'..equ'9                    ;  DeviceCode
+; 
+;     CSR3 (+^o06) - Function Parameter Register (low address)
+;     CSR4 (+^o10) - Function Parameter Register (high address)
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|                                    Packet                                     |
+; 	|                                  Low Address                                  |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 	|                                    Packet                                     |
+; 	|                                 High Address                                  |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VB_PR1'..equ'6                          ;  FunctionParameterLowCSR
+VB_PR2'..equ'8                          ;  FunctionParameterHighCSR
+; 
+;     CSR5 (+^o12) - Cursor Position Register X
+;     CSR6 (+^o14) - Cursor Position Register Y
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|                                    Cursor                                     |
+; 	|                                  X Position                                   |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 	|                                    Cursor                                     |
+; 	|                                  Y Position                                   |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VB_CXR'..equ'10                         ;  CursorPositionXCSR
+VB_CYR'..equ'12                         ;  CursorPositionYCSR
+; 
+;     CSR7 (+^o36) - Interrupt Vector Register
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|                                Interrupt Vector                               |
+; 	|                                    Address                                    |    
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VB_IVR'..equ'14                         ;  InterruptVectorRegister
+; 
+; 
+;  ==== Interrupt Reason Codes ====
+; 
+VB$K_CC_INIT'..equ'1
+VB$K_CC_CMD'..equ'2
+VB$K_CC_START'..equ'4
+VB$K_CC_BUTTON'..equ'8
+VB$K_CC_CURSOR'..equ'16
+VB$K_CC_TABLET'..equ'32
+VB$K_CC_MOUSE'..equ'64
+VB$K_CC_PWRUP'..equ'128
+VB$K_CC_ABORT'..equ'256
+VB$K_CC_STATUS'..equ'512
+; 
+;  ==== Sub-Status Reason Codes ====
+; 
+VB$K_CCS_SUCCESS'..equ'1
+VB$K_CCS_FAILURE'..equ'2
+VB$K_CCS_WHAT'..equ'3
+; 
+; 
+;  ===== ERROR LOGGING CODES =====
+; 
+;  Error logging reasons
+VB$K_ELG_CMD_TIME'..equ'101             ;  CommandTimeout
+VB$K_ELG_FUN_TIME'..equ'102             ;  Function timeout
+VB$K_ELG_LINK_TIME'..equ'103            ;  LightTransitionTimeout
+VB$K_ELG_LINK_ERR'..equ'104             ;  LinkError
+VB$K_ELG_LINK_ON'..equ'105              ;  Link Transition To On During Session
+VB$K_ELG_LINK_OFF'..equ'106             ;  Link Transition To Off During Session
+VB$K_ELG_VAX_SPUR'..equ'107             ;  VAXUBWSpuriousInterrupt
+VB$K_ELG_WGA_HW'..equ'108               ;  WGA hardware error
+VB$K_ELG_WGA_POWERUP'..equ'109          ;  WGA powerup error
+VB$K_ELG_POWERFAIL'..equ'110            ;  Host system power failed
+VB$K_ELG_BREAK_LINK'..equ'111           ;  Turn link off from host when ABORT timed out or 
+;  report status timed out
+; 
+;  WGA Hardware Error Codes
+; 
+VB$K_ELG_WGA_ERR_NYI'..equ'32768        ;  Not Yet Implemented
+VB$K_ELG_WGA_ERR_IFC'..equ'32769        ;  Invalid Function Code
+VB$K_ELG_WGA_ERR_ICC'..equ'32770        ;  Invalid Command Code
+VB$K_ELG_WGA_ERR_RNXM'..equ'32771       ;  Bus Error: Non-Existent Memory
+VB$K_ELG_WGA_ERR_RO'..equ'32772         ;  Bus Error: Retry Overflow
+VB$K_ELG_WGA_ERR_LD'..equ'32773         ;  Bus Error: Link Down
+VB$K_ELG_WGA_ERR_SBE'..equ'32774        ;  Bus Error: Unexplained
+VB$K_ELG_WGA_ERR_AE'..equ'32775         ;  Address Error
+VB$K_ELG_WGA_ERR_ZD'..equ'32776         ;  Spurious Interrupt
+VB$K_ELG_WGA_ERR_II'..equ'32777         ;  Illegal Instruction
+VB$K_ELG_WGA_ERR_BNXM'..equ'32778       ;  BBA NXM (Non-Existent Memory)
+VB$K_ELG_WGA_ERR_BNI'..equ'32779        ;  BBA Not Installed
+VB$K_ELG_WGA_ERR_KCQO'..equ'32780       ;  Keyboard Command Queue Overflow
+VB$K_ELG_WGA_ERR_TCQO'..equ'32781       ;  Tablet Command Queue Overflow (no longer used)
+VB$K_ELG_WGA_ERR_MEQO'..equ'32782       ;  Mouse Event Queue Overflow
+VB$K_ELG_WGA_ERR_TEQO'..equ'32783       ;  Tablet Event Queue Overflow
+VB$K_ELG_WGA_ERR_ABORT'..equ'32784      ;  Unable to Abort BBA
+VB$K_ELG_WGA_ERR_KEQO'..equ'32785       ;  Keyboard Event Queue Overflow
+VB$K_ELG_WGA_ERR_KOR'..equ'32786        ;  Keyboard Overrun
+VB$K_ELG_WGA_ERR_TOR'..equ'32787        ;  Tablet Overrun
+VB$K_ELG_WGA_ERR_KFE'..equ'32788        ;  Keyboard Framming Error
+VB$K_ELG_WGA_ERR_TFE'..equ'32789        ;  Tablet Framming Error
+; 
+;  WGA Powerup Error
+;  
+VB$K_ELG_WGA_ERR_PASS'..equ'32896       ;  Base for Test Numbers
+VB$K_ELG_WGA_ERR_REG'..equ'32897        ;  68000 Processor Register
+VB$K_ELG_WGA_ERR_RHB'..equ'32898        ;  ROM Checksum High Byte
+VB$K_ELG_WGA_ERR_PR'..equ'32899         ;  Program RAM
+VB$K_ELG_WGA_ERR_CRTC'..equ'32900       ;  CRTC Registers
+VB$K_ELG_WGA_ERR_TU'..equ'32901         ;  Tablet USART
+VB$K_ELG_WGA_ERR_KU'..equ'32902         ;  Keyboard USART
+VB$K_ELG_WGA_ERR_FOE'..equ'32903        ;  FOTR Electrical Loop Back
+VB$K_ELG_WGA_ERR_VTO'..equ'32904        ;  Vsync Time Out (no longer used)
+VB$K_ELG_WGA_ERR_0FRAME'..equ'32905     ;  Frame 0 of the Frame Buffer
+VB$K_ELG_WGA_ERR_BS'..equ'32906         ;  BBA Scratchpad RAM
+VB$K_ELG_WGA_ERR_BC'..equ'32907         ;  BBA Copyarea Command
+VB$K_ELG_WGA_ERR_TTO'..equ'32908        ;  Tablet Time Out
+VB$K_ELG_WGA_ERR_FOO'..equ'32909        ;  FOTR Optical Loop Back
+VB$K_ELG_WGA_ERR_KTO'..equ'32910        ;  Keyboard Time Out
+VB$K_ELG_WGA_ERR_KST'..equ'32911        ;  Keyboard Self-Test
+VB$K_ELG_WGA_ERR_VR'..equ'32912         ;  Vector RAM
+VB$K_ELG_WGA_ERR_1FRAME'..equ'32913     ;  Frame 1 of the Frame Buffer
+VB$K_ELG_WGA_ERR_2FRAME'..equ'32914     ;  Frame 2 of the Frame Buffer
+VB$K_ELG_WGA_ERR_3FRAME'..equ'32915     ;  Frame 3 of the Frame Buffer
+VB$K_ELG_WGA_ERR_TP'..equ'32916         ;  Tablet Port Loop Back
+VB$K_ELG_WGA_ERR_KP'..equ'32917         ;  Keyboard Port Loop Back
+VB$K_ELG_WGA_ERR_FOED'..equ'32918       ;  FOTR Electrical CRC Disabled
+VB$K_ELG_WGA_ERR_FOOD'..equ'32919       ;  FOTR Optical CRC Disabled
+VB$K_ELG_WGA_ERR_BT'..equ'32920         ;  BBA Time Out
+VB$K_ELG_WGA_ERR_RLB'..equ'32921        ;  ROM Checksum Low Byte
+; 
+; 
+;  ===== KEYBOARD DEFINITIONS =====
+; 
+;  Keyboard character buffer:
+; 
+; 	+-----------+
+; 	| W_KB_HEAD |
+; 	+-----------+
+; 	| W_KB_TAIL |
+; 	+-----------+
+;       | W_KB_BUFF |
+; 	+--       --+
+;       |           |
+; 	+-----------+
+; 
+VB$S_CHAR_BLOCK'..equ'6
+CHAR_BLOCK'..equ'0
+VB$W_KB_HEAD'..equ'0                    ;  Ring buffer head pointer
+VB$W_KB_TAIL'..equ'2                    ;  Ring buffer tail pointer
+VB$W_KB_BUFF'..equ'4                    ;  Ring buffer
+; 
+;  Character bit definitions
+; 
+; 	+-15-+-14-+-13-+-12-+-11-+-10-+-09-+-08-+-07-+-06-+-05-+-04-+-03-+-02-+-01-+-00-+
+; 	|         | Del| Sym|Cntl|Shft|Caps| Up/|               Character               |
+; 	|         |Flag|Down|Down|Down|Lock|Down|                  Code                 |
+; 	+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+; 
+VB$M_CHAR_CODE'..equ'255
+VB$M_CHAR_TRAN'..equ'256
+VB$M_CHAR_CAPS'..equ'512
+VB$K_CHAR_CAPS'..equ'176
+VB$M_CHAR_SHFT'..equ'1024
+VB$K_CHAR_SHFT'..equ'174
+VB$M_CHAR_CNTL'..equ'2048
+VB$K_CHAR_CNTL'..equ'175
+VB$M_CHAR_SYM'..equ'4096
+VB$K_CHAR_SYM'..equ'177
+VB$M_CHAR_DEL'..equ'8192
+VB$S_CHAR_BIT'..equ'2
+CHAR_BIT'..equ'0
+VB$S_CHAR_CODE'..equ'8
+VB$V_CHAR_CODE'..equ'0                  ;  CharacterCode
+VB$V_CHAR_TRAN'..equ'8                  ;  UpDownTransition
+VB$V_CHAR_CAPS'..equ'9                  ;  CapitalLock
+VB$V_CHAR_SHFT'..equ'10                 ;  Shift
+VB$V_CHAR_CNTL'..equ'11                 ;  Control
+VB$V_CHAR_SYM'..equ'12                  ;  Symbol
+VB$V_CHAR_DEL'..equ'13                  ;  Delete
+; 
+; 
+;  Random constants
+; 
+VB$K_TIMEOUT'..equ'10                   ;  Command timeout in seconds
+VB$K_SCMAX'..equ'10                     ;  Max number of Status
+;  Requests before aborting
+;  a command.
+; 
+; 
+;  ===== AST CONTROL BLOCK DEFINITIONS =====
+; 
+;  ACB definitions
+; 
+ACB$K_VB_LENGTH'..equ'48                ;  ACBSize
+ACB$S_ACB_BLOCK'..equ'48
+ACB_BLOCK'..equ'0
+ACB$S_SYS_DEFINED'..equ'24
+ACB$B_SYS_DEFINED'..equ'0
+ACB$A_TPC'..equ'24                      ;  AST routine address
+ACB$L_TASTPRM'..equ'28                  ;  AST parameter
+ACB$W_TMODE'..equ'32                    ;  AST access mode
+ACB$W_TCHAN'..equ'34                    ;  AST channel number
+ACB$L_TPID'..equ'36                     ;  AST requestor PID
+ACB$L_MASK'..equ'40                     ;  Button mask
+ACB$L_FLAG'..equ'44                     ;  Action flags
+;   ACB Flag definitions
+ACB_FLAG$M_RETPOS'..equ'1
+ACB_FLAG$M_RETBUT'..equ'2
+ACB_FLAG$S_ACB_FLAG'..equ'1
+ACB_FLAG'..equ'0
+ACB_FLAG$V_RETPOS'..equ'0               ;  Return Position
+ACB_FLAG$V_RETBUT'..equ'1               ;  Return Button Info
+; 
+; 
+;  ===== UNIT CONTROL BLOCK DEFINTIONS =====
+; 
+;  UCB definitions following standard system definitions
+; 
+FKB$K_FR5'..equ'24                      ;  SavedR5Offset
+UCB$K_VB_LENGTH'..equ'482               ;  UCBSize
+UCB$S_UCB_BLOCK'..equ'482
+UCB_BLOCK'..equ'0
+UCB$S_SYS_DEFINED'..equ'160
+UCB$B_SYS_DEFINED'..equ'0
+UCB$W_VB_CSR_REG'..equ'160              ;  SavedCSR
+UCB$W_VB_KEY_REG'..equ'162              ;  SavedKeyboardRegister
+UCB$W_VB_CSR3'..equ'164                 ;  Saved CSR3
+UCB$W_VB_CSR4'..equ'166                 ;  Saved CSR4
+UCB$W_VB_XPOS_REG'..equ'168             ;  SavedXPositionRegister
+UCB$W_VB_YPOS_REG'..equ'170             ;  SavedYPositionRegister
+UCB$W_VB_ROM'..equ'172                  ;  ROMVersion
+UCB$L_VB_DEV_TYPE'..equ'174             ;  DeviceType
+UCB$W_VB_DEV_VERSION'..equ'178          ;  DeviceVersion
+UCB$W_VB_MCODE'..equ'180                ;  MicrocodeVersion
+UCB$A_VB_SCREEN'..equ'182               ;  VisibleFrameBuffer
+UCB$W_VB_SCREEN_X'..equ'186             ;  VisibleFrameBufferX
+UCB$W_VB_SCREEN_Y'..equ'188             ;  VisibleFrameBufferY
+UCB$W_VB_SCREEN_Z'..equ'190             ;  VisibleFrameBufferZ
+UCB$A_VB_FRAME'..equ'192                ;  FreeFrameBuffer
+UCB$L_VB_FRAME_SIZE'..equ'196           ;  FreeFrameBufferSize
+UCB$A_VB_PROGRAM'..equ'200              ;  FreeProgramSpace
+UCB$L_VB_PROGRAM_SIZE'..equ'204         ;  FreeProgramSpaceSize
+UCB$A_VB_UNIBUS'..equ'208               ;  UnibusOffset
+UCB$L_VB_UNIBUS_SIZE'..equ'212          ;  UnibusSize
+UCB$W_VB_DRIVER'..equ'216               ;  DriverVersion
+UCB$W_VB_COMMAND'..equ'218              ;  CurrentCommandCode
+UCB$L_VB_SAVER3'..equ'220               ;  TemporarySaveR3
+UCB$W_VB_INT_REASON'..equ'224           ;  Interrupt Reason
+UCB$W_VB_CC_REASON'..equ'226            ;  Command Completion Reason
+UCB$W_VB_TEMP_DEVSTS'..equ'228          ;  Temporary Device Status
+UCB$W_VB_SUB_STATUS'..equ'230           ;  SubStatus (ABORT and STATUS)
+UCB$W_VB_SCNT'..equ'232                 ;  Count of Status Requests
+UCB$W_VB_SPRG'..equ'234                 ;  Value of Status Progress
+UCB$W_VB_SPRGU'..equ'236                ;  Value of Status Update
+UCB$W_VB_STEMP'..equ'238                ;  alignment only !!!
+UCB$L_VB_FELG_FLINK'..equ'240           ;  ErrorLogForkForwardLink
+UCB$L_VB_FELG_BLINK'..equ'244           ;  ErrorLogForkBackwardLink
+UCB$W_VB_FELG_SIZE'..equ'248            ;  ErrorLogForkSize
+UCB$B_VB_FELG_TYPE'..equ'250            ;  ErrorLogForkType
+UCB$B_VB_FELG_FIPL'..equ'251            ;  ErrorLogForkIPL
+UCB$L_VB_FELG_FPC'..equ'252             ;  ErrorLogForkPC
+UCB$L_VB_FELG_FR3'..equ'256             ;  ErrorLogForkR3
+UCB$L_VB_FELG_FR4'..equ'260             ;  ErrorLogForkR4
+UCB$L_VB_FELG_FR5'..equ'264             ;  ErrorLogForkR5
+UCB$W_VB_ELG_DEVDEPEND'..equ'268        ;  devdepend for error logging
+UCB$W_VB_ELG_REASON'..equ'270           ;  error log reason
+UCB$W_VB_ELG_STS'..equ'272              ;  sts for error logging
+UCB$W_VB_ELG_DROPPED_ERROR'..equ'274    ;  dropped error count
+UCB$W_VB_ELG_UNSOL'..equ'276            ;  unsolicit interrupt count
+UCB$W_VB_ELG_UNKNOWN'..equ'278          ;  unknown interrupt count
+UCB$W_VB_ELG_LINK_ERROR'..equ'280       ;  link error count
+UCB$W_VB_ELG_FLASH'..equ'282            ;  flash count
+UCB$W_VB_ELG_LIGHT_ON'..equ'284         ;  light on count
+UCB$W_VB_ELG_LIGHT_OFF'..equ'286        ;  light off count
+UCB$W_VB_ELG_COMMAND'..equ'288          ;  command code at error
+UCB$W_VB_ELG_CSR0'..equ'290             ;  csr 0 for error logging
+UCB$W_VB_ELG_CSR1'..equ'292             ;  csr 1 for error logging
+UCB$W_VB_ELG_CSR2'..equ'294             ;  csr 2 for error logging
+UCB$W_VB_ELG_CSR3'..equ'296             ;  csr 3 for error logging
+UCB$W_VB_ELG_CSR4'..equ'298             ;  csr 4 for error logging
+UCB$W_VB_ELG_CSR5'..equ'300             ;  csr 5 for error logging
+UCB$W_VB_ELG_CSR6'..equ'302             ;  csr 6 for error logging
+UCB$W_VB_ERROR'..equ'304                ;  ErrorLogReason
+UCB$L_VB_UNKNOWN'..equ'306              ;  UnknownInterruptCounter
+UCB$L_VB_UNSOL'..equ'310                ;  UnsolicitedInterruptCounter
+UCB$L_VB_LINK_ERROR'..equ'314           ;  LinkError
+UCB$L_VB_FLASH'..equ'318                ;  LightFlash
+UCB$L_VB_LIGHT_ON'..equ'322             ;  LightOnTransition
+UCB$L_VB_LIGHT_OFF'..equ'326            ;  LightOffTransition
+UCB$L_VB_ERROR_LOST'..equ'330           ;  Count of Errors Lost
+UCB$L_VB_KB_OWNER'..equ'334             ;  Keyboard Owner's PID
+UCB$W_VB_KB_STATE'..equ'338             ;  KeyboardCharacterState
+UCB$A_VB_KB_BUFFER'..equ'340            ;  VirtualKeyboardBuffer
+UCB$W_VB_KB_SIZE'..equ'344              ;  VirtualKeyboardBufferSize
+UCB$A_VB_KB_FULL_AST'..equ'346          ;  KeyboardFullASTBlock
+UCB$W_VB_KB_FULL_THRESH'..equ'350       ;  KeyboardFullThreshold
+UCB$A_VB_KB_WAKE_AST'..equ'352          ;  KeyboardWakeupASTBlock
+UCB$W_VB_KB_WAKE_THRESH'..equ'356       ;  KeyboardWakeupThreshold
+UCB$A_VB_MOUSE_MOVE'..equ'358           ;  CursorMovementASTBlock
+UCB$W_VB_MOUSE_STATE'..equ'362          ;  MouseButtonState
+UCB$A_VB_MOUSE_BUTTON'..equ'364         ;  MouseButtonASTBlock
+UCB$A_VB_MOUSE_LIST'..equ'368           ;  MouseButtonASTList
+UCB$W_VB_MOUSE_X'..equ'372              ;  MouseXPosition
+UCB$W_VB_MOUSE_Y'..equ'374              ;  MouseYPosition
+UCB$A_VB_TABLET_MOVE'..equ'376          ;  TabletMovementASTBlock
+UCB$W_VB_TABLET_STATE'..equ'380         ;  TabletButtonState
+UCB$A_VB_TABLET_BUTTON'..equ'382        ;  TabletButtonASTBlock
+UCB$A_VB_TABLET_LIST'..equ'386          ;  TabletButtonASTList
+UCB$W_VB_TABLET_X'..equ'390             ;  TabletXPosition
+UCB$W_VB_TABLET_Y'..equ'392             ;  TabletYPosition
+UCB$A_VB_EXIT_IDLE'..equ'394            ;  ExitIdleLoopASTBlock
+UCB$A_VB_LINK_AST'..equ'398             ;  LinkTransitionASTBlock
+UCB$L_VB_LINK_ONEXIT_PID'..equ'402      ;  OnExit Cleanup PID
+UCB$L_VB_PIO_OWNER'..equ'406            ;  PIO Owner's PID
+UCB$W_VB_PIO_STATE'..equ'410            ;  PIO State
+UCB$W_VB_PIO_TIMEOUT'..equ'412          ;  PIO timeout counter
+UCB$A_VB_PIO_WCP_FL'..equ'414           ;  WCP queue forward link
+UCB$A_VB_PIO_WCP_BL'..equ'418           ;  WCP queue backward link
+UCB$W_VB_PIO_WCP_CT'..equ'422           ;  WCP Count - total
+UCB$W_VB_PIO_WCP_CMR'..equ'424          ;  WCP Count - # of UMRs used
+UCB$W_VB_PIO_WCP_CIU'..equ'426          ;  WCP Count - in use
+UCB$W_VB_PIO_WCP_CMIU'..equ'428         ;  WCP Count - Max in use
+UCB$L_VB_PIO_WCP_CNA'..equ'430          ;  WCP Count - not available
+UCB$L_VB_PIO_WCP_CTR'..equ'434          ;  WCP Count - total request
+UCB$A_VB_PIO_DBD_FL'..equ'438           ;  DB queue forward link
+UCB$A_VB_PIO_DBD_BL'..equ'442           ;  DB queue backward link
+UCB$W_VB_PIO_DB_CT'..equ'446            ;  DB Count - # of buffers
+UCB$W_VB_PIO_DB_CMR'..equ'448           ;  DB Count - # of UMRs used
+UCB$W_VB_CMD_SS_CNT'..equ'450           ;  Status Send count
+UCB$W_VB_ABORT_CMD_CNT'..equ'452        ;  Abort Command count
+UCB$W_VB_FO_SHUTDOWN_CNT'..equ'454      ;  Fiber Optics Shutdown count
+UCB$W_VB_ABORT_WHAT_CNT'..equ'456       ;  Abort What count
+UCB$W_VB_UMR_RETRY'..equ'458            ;  UMR allocation retry counter
+UCB$W_VB_UMR_ALLOC_FAIL'..equ'460       ;  UMR allocation Fail count
+UCB$L_VB_PIO_POST_FL'..equ'462          ;  PIO post processing queue forward link
+UCB$L_VB_PIO_POST_BL'..equ'466          ;  PIO post processing queue backward link
+UCB$L_VB_PIO_CNT'..equ'470              ;  Count of PIOs performed
+UCB$A_VB_KB_SYSRTN'..equ'474            ;  slot to put in system routine address
+UCB$A_VB_SAVE_SCREEN_AST'..equ'478      ;  list head for save screen ASt block
+VB$M_MCVALID'..equ'1
+VB$M_LINK_AVAIL'..equ'2
+VB$M_TRANS_EXP'..equ'4
+VB$M_DEBUG_MCODE'..equ'8
+VB$M_ERRLOG_IP'..equ'16
+VB$M_CMD_IP'..equ'32
+VB$M_ABORT_IP'..equ'64
+VB$M_STATUS_IP'..equ'128
+VB$S_DEVDEPEND'..equ'1
+DEVDEPEND'..equ'0
+VB$V_MCVALID'..equ'0
+VB$V_LINK_AVAIL'..equ'1
+VB$V_TRANS_EXP'..equ'2
+VB$V_DEBUG_MCODE'..equ'3
+VB$V_ERRLOG_IP'..equ'4
+VB$V_CMD_IP'..equ'5
+VB$V_ABORT_IP'..equ'6
+VB$V_STATUS_IP'..equ'7
+; 
+; 
+;  ===== COMMAND DESCRIPTOR BLOCK =====
+; 
+;  Command descriptor Block:
+;     size = 
+; 
+;   +-------------+-------------+
+;   |          A_FLINK          |
+;   +-------------+-------------+
+;   |         L_OPERAND         |
+;   +-------------+-------------+
+;   |      (VMS reserved)       |
+;   +-------------+-------------+
+;   | W_CMD_DESC  | W_FUNCTION  |
+;   +-------------+-------------+
+;   | W_SBM_DEST  | W_SBM_SRC   |
+;   +-------------+-------------+
+;   |             |  W_OFFSET   | 
+;   +-------------+-------------+
+;   |             |             |
+;   +-------------+-------------+
+;   |             |             |
+;   +-------------+-------------+
+;   |             |             |
+;   +-------------+-------------+
+;   |           A_CMD           |
+;   +---------------------------+
+;   |         A_ADDRESS         |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+; 
+CMD$S_COMMAND_BLOCK'..equ'72
+COMMAND_BLOCK'..equ'0
+CMD$A_FLINK'..equ'0                     ;  ForwardLink
+CMD$L_OPERAND'..equ'4                   ;  CommandHostOperandCount
+CMD$L_RESERVED'..equ'8                  ;  VMSReserved
+CMD$W_FUNCTION'..equ'12                 ;  CommandFunctionCode
+CMD$W_CMD_DESC'..equ'14                 ;  CommandDescriptor
+CMD$W_SBM_SRC'..equ'16                  ;  Same Bitmap Source Offset
+CMD$W_SBM_DEST'..equ'18                 ;  Same Bitmap Dest.  Offset
+CMD$S_OFFSET'..equ'16
+CMD$W_OFFSET'..equ'20                   ;  OperandOffset
+CMD$A_CMD'..equ'36                      ;  Command
+CMD$S_ADDRESS'..equ'32
+CMD$A_ADDRESS'..equ'40                  ;  OperandSVAddress
+; 
+; 
+;  ===== WGA COMMAND PACKET (WCP) BLOCK =====
+; 
+;  WCP Block:
+;     header size = WCP$K_HEADER_LENGTH
+; 
+;   +-------------+-------------+
+;   |          A_IOQFL          |
+;   +-------------+-------------+
+;   |          A_IOQBL		|
+;   +-------------+-------------+
+;   |      (VMS reserved)       |
+;   +-------------+-------------+
+;   |   W_FLAGS   |   W_TYPE	|
+;   +-------------+-------------+
+;   |   W_NUMREG  |  W_MAPREG	|
+;   +-------------+-------------+
+;   |         A_DAADDR		| 
+;   +-------------+-------------+
+;   |    W_DAU    |    W_DAS	|
+;   +-------------+-------------+
+;   |         L_SPARE_1		|
+;   +===========================+
+;   | <start of command packet> |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+;   |                           |
+;   +---------------------------+
+; 
+WCP$K_HEADER_LENGTH'..equ'32            ;  Header Size
+WCP$S_WGA_COMMAND_PACKET'..equ'32
+WGA_COMMAND_PACKET'..equ'0
+WCP$A_IOQFL'..equ'0                     ;  ForwardLink
+WCP$A_IOQBL'..equ'4                     ;  BackwardLink
+WCP$L_RESERVED'..equ'8                  ;  VMSReserved
+; 
+WCP$W_TYPE'..equ'12                     ;  Type
+WCP$W_FLAGS'..equ'14                    ;  Flags
+WCP$W_MAPREG'..equ'16                   ;  Starting UBA Map Register
+WCP$W_NUMREG'..equ'18                   ;  Number of UBA Map Registers
+WCP$A_DAADDR'..equ'20                   ;  Address of Data Area
+WCP$W_DAS'..equ'24                      ;  Data Area Size
+WCP$W_DAU'..equ'26                      ;  Data Area Used
+WCP$L_SPARE_1'..equ'28                  ;  Spare
+; 
+;   WCP Types
+; 
+WCP$K_TYPE_OR'..equ'1                   ;  On Request
+WCP$K_TYPE_PIO'..equ'2                  ;  Pre-Alloc-Locked-Mapped
+WCP$K_TYPE_US'..equ'3                   ;  User Supplied
+; 
+;   WCP Flags
+; 
+WCP$M_FLAG_LCK'..equ'1
+WCP$M_FLAG_MAP'..equ'2
+WCP$M_FLAG_ULCK'..equ'4
+WCP$M_FLAG_UMAP'..equ'8
+WCP$M_FLAG_DALLOC'..equ'16
+WCP$S_WCP_FLAGS'..equ'1
+WCP_FLAGS'..equ'0
+WCP$V_FLAG_LCK'..equ'0
+WCP$V_FLAG_MAP'..equ'1
+WCP$V_FLAG_ULCK'..equ'2
+WCP$V_FLAG_UMAP'..equ'3
+WCP$V_FLAG_DALLOC'..equ'4
+; 
+; 
+; 
+;  ===== Data Buffer Descriptor (DBD) BLOCK =====
+; 
+;  DBD Block:
+; 
+; 
+;   +-------------+-------------+
+;   |          A_IOQFL          |
+;   +-------------+-------------+
+;   |          A_IOQBL		|
+;   +-------------+-------------+
+;   |      (VMS reserved)       |
+;   +-------------+-------------+
+;   |   W_FLAGS   |   W_TYPE	|
+;   +-------------+-------------+
+;   |   W_NUMREG  |  W_MAPREG	|
+;   +-------------+-------------+
+;   |         A_VAX_ADDR	| 
+;   +-------------+-------------+
+;   |          L_SVAPTE		| 
+;   +-------------+-------------+
+;   |           L_BCNT		| 
+;   +-------------+-------------+
+;   |   W_SPARE_1 |   W_BOFF    |
+;   +---------------------------+
+;   |         A_GP_ADDR		| 
+;   +-------------+-------------+
+;   |         L_CREATOR         |
+;   `---------------------------'
+; 
+DBD$S_DB_DESC_BLOCK'..equ'44
+DB_DESC_BLOCK'..equ'0
+DBD$A_IOQFL'..equ'0                     ;  ForwardLink
+DBD$A_IOQBL'..equ'4                     ;  BackwardLink
+DBD$L_RESERVED'..equ'8                  ;  VMSReserved
+; 
+DBD$W_TYPE'..equ'12                     ;  Type
+DBD$W_FLAGS'..equ'14                    ;  Flags
+DBD$W_MAPREG'..equ'16                   ;  Starting UBA Map Register
+DBD$W_NUMREG'..equ'18                   ;  Number of UBA Map Registers
+DBD$A_VAX_ADDR'..equ'20                 ;  VAX Address
+DBD$L_SVAPTE'..equ'24                   ;  SVAPTE of Buffer
+DBD$L_BCNT'..equ'28                     ;  Byte Count
+DBD$W_BOFF'..equ'32                     ;  Byte Offset
+DBD$W_SPARE_1'..equ'34                  ;  Spare
+DBD$A_GP_ADDR'..equ'36                  ;  Graphics Processor Address
+DBD$L_CREATOR'..equ'40                  ;  creator's pid 
+; 
+;   DBD Types
+; 
+; 	constant(
+; 		) equals 1 increment 1   prefix  DBD$K_TYPE tag "";
+; 
+; 
+;   DBD Flags
+; 
+; 	aggregate  DBD_FLAGS structure  prefix  DBD$;
+; 	end  DBD_FLAGS;
+; 
+; 
+; 
+;  Argument block definitions
+; 
+ARG$S_ARG_BLOCK'..equ'24
+ARG_BLOCK'..equ'0
+ARG$S_ARG1_BLOCK'..equ'4
+ARG$R_ARG1_BLOCK'..equ'0
+ARG$B_P1'..equ'0
+ARG$W_P1'..equ'0
+ARG$L_P1'..equ'0
+ARG$S_ARG2_BLOCK'..equ'4
+ARG$R_ARG2_BLOCK'..equ'4
+ARG$B_P2'..equ'4
+ARG$W_P2'..equ'4
+ARG$L_P2'..equ'4
+ARG$S_ARG3_BLOCK'..equ'4
+ARG$R_ARG3_BLOCK'..equ'8
+ARG$B_P3'..equ'8
+ARG$W_P3'..equ'8
+ARG$L_P3'..equ'8
+ARG$S_ARG4_BLOCK'..equ'4
+ARG$R_ARG4_BLOCK'..equ'12
+ARG$B_P4'..equ'12
+ARG$W_P4'..equ'12
+ARG$L_P4'..equ'12
+ARG$S_ARG5_BLOCK'..equ'4
+ARG$R_ARG5_BLOCK'..equ'16
+ARG$B_P5'..equ'16
+ARG$W_P5'..equ'16
+ARG$L_P5'..equ'16
+ARG$S_ARG6_BLOCK'..equ'4
+ARG$R_ARG6_BLOCK'..equ'20
+ARG$B_P6'..equ'20
+ARG$W_P6'..equ'20
+ARG$L_P6'..equ'20
+; 
+; 
+;   WGA Device Types
+; 
+VB$K_DT_UNKNOWN'..equ'0
+VB$K_DT_VS100'..equ'256
+;   constant	VS125	  equals  %x0125  prefix VB$K_DT tag"";
+;   constant	VS300	  equals  %x0300  prefix VB$K_DT tag"";
+; 
+; 
+; 
+;  End of module $VBDEF
+; 
+	.ENDM

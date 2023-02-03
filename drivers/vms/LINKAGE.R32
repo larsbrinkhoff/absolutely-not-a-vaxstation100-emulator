@@ -1,0 +1,790 @@
+!
+!	LINKAGE.R32
+!	Version 01-000
+!
+
+
+!++
+! Facility:
+!
+!	VAX/VMS BLISS routines
+!
+! Abstract:
+!
+!	This file contains the necessary linkage definitions for BLISS
+!	routines to access VMS system routines.
+!
+!	These routines are called from Bliss routines after a call to $CMKRNL.
+!	It often happens that the $CMKRNL call also appeared in a Bliss 
+!	routine, and, since the $CMKRNL is entered with a call_s, Bliss assumes
+!	that all the registers have been preserved.  However, the $CMKRNL 
+!	call only preserves R4 (since that's all IT uses), so any registers
+!	not preserved by kernel-mode routines will be trashed for the 
+!	user_mode routine.
+!	THEREFORE:
+!		We make sure that these linkages preserve all non-output
+!			registers. (One might think that simply preserving
+!			any registers not used by the routine itself would
+!			suffice, but, no, we learn from painful experience 
+!			that these routines might call other system routines,
+!			that, several levels deep, might trash a register.
+!
+! Environment:
+!	VSTA
+!
+!--
+
+linkage FDT_JSB =
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    preserve( ! Routine arguments
+	3,4,5,6,7,8)
+    nopreserve( ! Scratch registers
+	0,1,2,9,10,11);
+
+linkage FDT =
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    preserve( ! Routine arguments
+	3,4,5,6,7,8)
+    nopreserve( ! Scratch registers
+	0,1,2,9,10,11);
+
+linkage CONTROL =
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4,	! CSR - Controller status register
+	register=5,	! IDB - Interrupt data block
+	register=6,	! DDB - Device data block
+	register=8):	! CRB - Channel request block
+    preserve( ! Routine arguments
+	4,5,6,7,8,9,10,11)
+    nopreserve( ! Scratch registers
+	0,1,2,3);
+
+linkage UNIT =
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4,	! CSR - Controller status register
+	register=5):	! UCB - Unit control block
+    preserve( ! Routine arguments
+	4,5,6,7,8,9,10,11)
+    nopreserve( ! Scratch registers
+	0,1,2,3);
+
+!++
+! COM$DELATTNAST in module COMDRVSUB
+!--
+
+linkage DELATTNAST = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4,	! AST Control Block list head address
+	register=5):	! UCB - unit control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! COM$DELCTRLAST in module COMDRVSUB
+!--
+
+linkage DELCTRLAST = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! Match character to deliver AST on
+	register=4,	! AST Control Block list head address
+	register=5;	! UCB - unit control block
+	register=3):	! Character to include in data stream or null (bit 15)
+    nopreserve( ! Scratch and output registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! COM$FLUSHATTNS in module COMDRVSUB
+!--
+
+linkage FLUSHATTNS = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4,	! Process Control Block address (PCB)
+	register=5,	! UCB - unit control block address
+	register=6,	! Channel number to device
+	register=7):	! AQB list head address
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! COM$FLUSHCTRLS in module COMDRVSUB
+!--
+
+linkage FLUSHCTRLS = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=2,	! Summary mask address of control AQB's
+	register=4,	! Process Control Block address (PCB)
+	register=5,	! UCB - unit control block address
+	register=6,	! Channel number to device
+	register=7):	! Control AQB list head address
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! COM$POST in module COMDRVSUB
+!--
+
+linkage POST = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! IRP - I/O request packet
+	register=5):	! UCB - unit control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+
+!++
+! EXE$ABORTIO in module SYSQIOREQ
+!
+!	This routine does not return to caller
+!--
+
+linkage ABORTIO = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! First longword of status for I/O status block
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$ALLOCATE in module MEMORYALC
+!--
+
+linkage GENERAL_ALLOCATE = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Size of requested buffer in bytes
+	register=3;	! Address of memory block list head
+	register=1,	! Size of allocated buffer in bytes
+	register=2):	! Address of buffer
+    nopreserve( ! Scratch and output registers
+	0,1,2,3,4,5,6,7,8);
+
+!++
+! EXE$ALLOCBUF in module MEMORYALC
+!--
+
+linkage ALLOCBUF = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Size of requested buffer in bytes
+	register=4;	! PCB - process control block
+	register=1,	! Size of allocated buffer in bytes
+	register=2):	! Address of buffer
+    nopreserve( ! Scratch and output registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$ALLOCIRP in module MEMORYALC
+!--
+
+linkage ALLOCIRP = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4;	! PCB - process control block
+	register=1,	! Size of allocated buffer in bytes
+	register=2):	! Address of buffer
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$ALONONPAGED in module MEMORYALC
+!--
+
+linkage ALONONPAGED = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1;	! Size of requested buffer in bytes
+	register=1,	! Size of allocated buffer in bytes
+	register=2):	! Address of buffer
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$BUFFRQUOTA in module EXESUBROUT
+!--
+
+linkage BUFFRQUOTA = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Number of requested bytes
+	register=4):	! PCB - process control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$BUFQUOPRC in module EXESUBROUT
+!--
+
+linkage BUFQUOPRC = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Number of requested bytes
+	register=4):	! PCB - process control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$CHKRDACCES,EXE$CHKWRTACCES,EXE$CHKDELACCES in module EXESUBROUT
+!--
+
+linkage CHKACCESS = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of process access rights block
+	register=1,	! Address of object's rights block
+	register=5):	! UCB address or zero
+    preserve(
+	2,3,4)
+    nopreserve( ! Scratch registers
+	0,1,5,6,7,8,9,10,11);
+
+!++
+! EXE$IPID_TO_EPID,EXE$EPID_TO_IPID in module SYSPCNTRL
+!--
+
+linkage EXECVTPID =
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0):	! PID to convert
+    preserve(
+	1,2,3,4,5)
+    notused(		! Scratch registers
+	6,7,8,9,10,11);
+
+
+!++
+! EXE$DEANONPAGED in module MEMORYALC
+!--
+
+linkage DEANONPAGED = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0):	! Address of returned buffer
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$FINISHIO in module SYSQIOREQ
+!
+!	This routine does not return to caller
+!--
+
+linkage FINISHIO = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! First longword of status for I/O status block
+	register=1,	! Second longword of status for I/O status block
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$FINISHIOC in module SYSQIOREQ
+!
+!	This routine does not return to caller
+!--
+
+linkage FINISHIOC = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! First longword of status for I/O status block
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$FORK in module FORKCNTRL
+!--
+
+linkage FORK = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register = 3,	! Address of end of message + 1
+	register = 5):	! Address of buffer block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$INSIOQ in module SYSQIOREQ
+!--
+
+linkage INSIOQ = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! IRP - I/O request packet
+	register=5):	! UCB - unit control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$MAXACMODE in module EXESUBROUT
+!--
+
+linkage MAXACMODE = ! returns maximized access mode in r0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0):	! Requested access mode
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$NAMPID in module SYSPCNTRL
+!
+! NOTE: This routine also looks at and possibly modifies the argument list of
+!	the routine which calls it. Because of the linkage, it is not necessary
+!	to explicitly mention these as parameters. However, they are defined
+!	as follows:
+!		    Input:
+!			4(AP)  => Address of PID argument or zero
+!			8(AP)  => Address of process name desc. or zero
+!		    Output:
+!			@4(AP) => Updated PID if address in 4(AP) writeable
+!--
+
+linkage NAMPID = ! returns PCB address from PID or Process name
+    jsb ! Linkage type
+    ( ! Parameter locations (Status returned in R0)
+	register = 4;	! PCB address of requesting process
+	register = 4):	! PCB address when match found
+    nopreserve( ! Scratch registers
+	0,1,2,3,5,6,7,8);
+
+
+!++
+! EXE$SNDEVMSG in module MBDRIVER
+!--
+
+linkage SNDEVMSG = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! Mailbox UCB address
+	register=4,	! Message type
+	register=5):	! UCB - unit control block to deliver on
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$MODIFYLOCKR in module SYSQIOFDT
+!
+!	This routine may return as a coroutine
+!--
+
+linkage MODIFYLOCKR= ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Starting address of buffer
+	register=1,	! Length of buffer in bytes
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=6;	! CCB - channel control block
+	register=1,	! Address of PTE that maps the first page of buffer
+	register=2):	! Function indicator
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$QIODRVPKT in module SYSQIOREQ
+!--
+
+linkage QIODRVPKT = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$READCHK in module SYSQIOFDT
+!--
+
+linkage READCHK= ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of buffer
+	register=1,	! Size of transfer in bytes
+	register=3;	! IRP - I/O request packet
+	register=2):	! Value of 1 (to indicate a read)
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$MODIFYLOCK in module SYSQIOFDT
+!
+!	This routine may not return to caller
+!--
+
+linkage MODIFYLOCK = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of buffer
+	register=1,	! Size of transfer in bytes
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8;	! ENTRY - address of FDT table entry for this routine
+	register=1):	! SVAPTE of buffer
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$READLOCK in module SYSQIOFDT
+!
+!	This routine may not return to caller
+!--
+
+linkage READLOCK = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of buffer
+	register=1,	! Size of transfer in bytes
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$WRITELOCK in module SYSQIOFDT
+!
+!	This routine may not return to caller
+!--
+
+linkage WRITELOCK = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of buffer
+	register=1,	! Size of transfer in bytes
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=5,	! UCB - unit control block
+	register=6,	! CCB - channel control block
+	register=7,	! CODE - bit number of the I/O function code
+	register=8):	! ENTRY - address of FDT table entry for this routine
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$WRITECHK in module SYSQIOFDT
+!--
+
+linkage WRITECHK= ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Address of buffer
+	register=1,	! Size of transfer in bytes
+	register=3;	! IRP - I/O request packet
+	register=2):	! Value of 1 (to indicate a read)
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! EXE$WRITELOCKR in module SYSQIOFDT
+!
+!	This routine may return as a coroutine
+!--
+
+linkage WRITELOCKR= ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0,	! Starting address of buffer
+	register=1,	! Length of buffer in bytes
+	register=3,	! IRP - I/O request packet
+	register=4,	! PCB - process control block
+	register=6;	! CCB - channel control block
+	register=1,	! Address of PTE that maps the first page of buffer
+	register=2):	! Function indicator
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+! ioc$create_ucb and ioc$delmbx have fallen out of favor in the
+! system as of V4.0.  I've added linkages to the new routines which are
+! all in module UCBCREDEL.  If create_ucb and delmbx have not actually
+! disappeared, they may at any time.
+!
+
+!++
+! IOC$CREATE_UCB in module IOSUBPAGD
+!--
+! 
+linkage CREATEUCB  = ! returns status in R0
+     jsb ! Linkage type
+     ( ! Parameter locations
+ 	register=4,	! PCB - process control block
+ 	register=5;	! Template UCB
+ 	register=2):	! UCB - unit control block
+     nopreserve( ! Scratch and Return value registers
+ 	0,1,2,3,4,5,6,7,8);
+ 
+
+!++
+! IOC$DELMBX in module IOSUBNPAG
+!--
+! 
+ linkage DELMBX = ! returns status in R0
+     jsb ! Linkage type
+     ( ! Parameter locations
+ 	register=4,	! PCB - process control block
+ 	register=5):	! UCB - unit control block of deletee
+     nopreserve( ! Scratch registers
+ 	0,1,2,3,4,5,6,7,8);
+
+!++
+! IOC$CHKUCBQUOTA in module UCBCREDEL
+!--
+
+linkage CHKUCBQUOTA = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4,	! PCB - process control block
+	register=5):	! Template UCB
+    nopreserve( ! Scratch and Return value registers
+	0,1);
+
+!++
+! IOC$CLONE_UCB in module UCBCREDEL
+!--
+
+linkage CLONEUCB = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=5;	! Template UCB
+	register=2):	! UCB - unit control block
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5);
+
+!++
+! IOC$DEBIT_UCB in module UCBCREDEL
+!--
+
+linkage DEBITUCB = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=2,	! new ucb
+	register=4):	! PCB - process control block
+    nopreserve( ! Scratch and Return value registers
+	0,1);
+
+!++
+! IOC$CREDIT_UCB in module UCBCREDEL
+!--
+
+linkage CREDITUCB = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=5):	! Template UCB
+    nopreserve( ! Scratch and Return value registers
+	0,1);
+
+!++
+! IOC$DELETE_UCB in module UCBCREDEL
+!--
+
+linkage DELETEUCB = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=5):	! Template UCB
+    nopreserve( ! Scratch and Return value registers
+	0,1);
+
+!++
+! CLASS_SETUP_UCB in module Terminal Class driver
+!--
+
+linkage SETUPUCB = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=5):	! UCB to initialize
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5);
+
+!++
+! IOC$SEARCHDEV in module
+!--
+
+linkage SEARCHDEV = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Address of logical string descriptor
+	register=4;	! PCB - process control block
+	register=1):	! UCB - unit control block
+    nopreserve( ! Scratch and output registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! IOC$VERIFYCHAN in module IOSUBPAGED
+!--
+
+linkage VERIFYCHAN = ! returns status in R0
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=0;	! Channel number
+	register=1,	! CCB - channel control block
+	register=2):	! Channel index
+    nopreserve( ! Scratch and Return value registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! MMG$UNLOCK in module
+!--
+
+linkage UNLOCK = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=1,	! Page count
+	register=3):	! Starting SVAPTE
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! SCH$IOLOCKW in module
+!--
+
+linkage IOLOCKW = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4):	! PCB - process control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+!++
+! SCH$IOUNLOCK in module
+!--
+
+linkage IOUNLOCK = ! novalue
+    jsb ! Linkage type
+    ( ! Parameter locations
+	register=4):	! PCB - process control block
+    nopreserve( ! Scratch registers
+	0,1,2,3,4,5,6,7,8);
+
+
+macro
+
+    $EXE$ABORTIO(STATUS) =
+	(external routine EXE$ABORTIO: ABORTIO addressing_mode(general);
+	EXE$ABORTIO(STATUS,.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY);
+	return) %,
+
+    $EXE$FINISHIOC(STATUS) =
+	(external routine EXE$FINISHIOC: FINISHIOC addressing_mode(general);
+	EXE$FINISHIOC(STATUS,.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY);
+	return) %,
+
+    $EXE$FINISHIO(STATUS0,STATUS1) =
+	(external routine EXE$FINISHIO: FINISHIO addressing_mode(general);
+	EXE$FINISHIO(STATUS0,STATUS1,.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY);
+	return) %,
+
+    $EXE$QIODRVPKT =
+	(external routine EXE$QIODRVPKT: QIODRVPKT addressing_mode(general);
+	EXE$QIODRVPKT(.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY);
+	return) %,
+
+    $BREAKPOINT =
+	(linkage BREAK = jsb;
+	external routine INI$BRK: BREAK addressing_mode(general);
+	INI$BRK()) %;
+
+macro
+
+    DSBINT(IPL,DST) =
+	(builtin mfpr,mtpr;
+	mfpr(PR$_IPL,DST);
+	%if %null(ipl)
+	    %then mtpr(%ref(31),PR$_IPL)
+	    %else mtpr(IPL,PR$_IPL)
+	    %fi) %,
+
+    ENBINT(SRC) =
+	(builtin mfpr,mtpr;
+	mtpr(SRC,PR$_IPL)) %,
+
+    IFNORD(SIZE,ADDR,MODE) =
+	(builtin prober;
+	not %if %null(MODE)
+		%then prober(%ref(PSL$C_USER),%ref(SIZE),ADDR)
+		%else prober(%ref(MODE),%ref(SIZE),ADDR)
+		%fi) %,
+
+    IFNOWRT(SIZE,ADDR,MODE) =
+	(builtin probew;
+	not %if %null(MODE)
+		%then probew(%ref(PSL$C_USER),%ref(SIZE),ADDR)
+		%else probew(%ref(MODE),%ref(SIZE),ADDR)
+		%fi) %;

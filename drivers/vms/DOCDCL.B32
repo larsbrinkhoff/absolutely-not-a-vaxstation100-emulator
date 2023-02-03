@@ -1,0 +1,796 @@
+MODULE DOC$DCL (
+		IDENT = 'VSTADOC Utility DCL command parser'
+		,ADDRESSING_MODE (EXTERNAL = GENERAL, NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+!++
+!
+! ABSTRACT:
+!
+! This module parses "DCL" commands for VSTADOC.
+!
+! ENVIRONMENT:
+!
+! VAX Workstation document utility.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    doc$$get_command,		!Get a valid DCL-type command
+    cmd_parser,			!Parse a command
+    confirm,			!Confirm end of line
+    parse_help,			!Parse "HELP" command
+    parse_exit,			!Parse "EXIT" command
+    doc$$cmd_generate,		!Parse "GENERATE" command
+    get_gen_switches,		!Parse the GENERATE optional switches
+    sw_list,			!GENERATE /LIST=
+    sw_nolist,			!GENERATE /NOLIST
+    sw_review,			!GENERATE /REVIEW=
+    sw_noreview,		!GENERATE /NOREVIEW
+    sw_encod,			!GENERATE /ENCODED_FILE=
+    sw_noencod,			!GENERATE /NOENCODED_FILE
+    doc$$cmd_view,		!Parse "VIEW" command
+    doc$$cmd_lang,		!Parse "LANGUAGE" command
+    doc$$cmd_display,		!Parse "DISPLAY" command
+    check_colon_eq;		!Check for : or = (args coming)
+!
+! INCLUDE FILES:
+!
+LIBRARY 'SYS$LIBRARY:STARLET';
+LIBRARY 'SYS$LIBRARY:HELPUSER';
+LIBRARY 'VSTA$LIBRARY:DOCDATA';	!Various internal data structures
+				! and constants.
+LIBRARY 'VSTA$LIBRARY:DOCFILE';	!File constants
+LIBRARY 'VSTA$LIBRARY:DOCMACS';	!Macros
+
+EXTERNAL ROUTINE
+    doc$$type_line,
+    doc$$type_sts,
+    doc$$error,			!Report an error
+    doc$$par_lang,
+    doc$$par_generate,
+    doc$$par_view,
+    doc$$par_display,
+    lib$parse_line,		!Parse a line
+    lib$parse_field;		!Parse a field
+
+EXTERNAL
+    doc$_argreq,		!":" or "=" argument required
+    doc_exit_flag;		!Set to 1 if "EXIT" command given
+
+COMPILETIME
+    param$k_command_length = 512,	!# characters in whole command
+    param$k_atom_buf_length = 128;	!# characters in an atom buffer
+
+OWN
+    dcl_string: BLOCK [param$k_command_length,BYTE],	!DCL string
+    dcl_str_desc: VECTOR[2]
+		INITIAL (0		!Length, filled in
+			,dcl_string),	!Address of string
+    atom_buffer: BLOCK [param$k_atom_buf_length,BYTE],
+					!Atom buffer for DCL command
+    atom_str_desc: VECTOR [2]
+		INITIAL (param$k_atom_buf_length
+			,atom_buffer),
+    parsed_file_desc: VECTOR [2]
+		INITIAL (param$K_atom_buf_length, 0),
+    src_fil_string: BLOCK [param$k_atom_buf_length,BYTE],
+					!Place where source file string goes
+    rvw_fil_string: BLOCK [param$k_atom_buf_length,BYTE],
+					!PLace where review file string goes
+    edf_fil_string: BLOCK [param$k_atom_buf_length,BYTE],
+					!Place where encoded doc file
+					! string goes
+    lis_fil_string: BLOCK [param$k_atom_buf_length,BYTE],
+					!Place where listing file string goes
+    srcfil_str_len,
+    rvwfil_str_len,
+    edffil_str_len,
+    lisfil_str_len,
+    ccab: $CAB		(PMT = %ASCID 'VSTADOC> '
+			,CMD = dcl_str_desc
+			),
+    eol_pat: $PAB	(TYP = END		!Pure and simple EOL
+			,CAB = ccab
+			);
+
+
+GLOBAL ROUTINE doc$$get_command =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Reads command from SYS$INPUT. Return when
+!	command parsed and completed.
+!--
+BEGIN
+EXTERNAL
+    doc$_parse_error;		!Error code "parse error"
+LOCAL
+    status;
+
+WHILE 1 DO			!Return when successfully parsed command
+    BEGIN
+    dcl_str_desc [0] = param$k_command_length;	!Get full descriptor.
+
+    doc$$type_line (%ASCID ' ');	!So line won't be overwritten
+
+    IF NOT (
+	lib$parse_line (ccab, cmd_parser)
+	    )
+      THEN doc$$error (doc$_parse_error)
+      ELSE RETURN SS$_NORMAL;		!Command parsed ok, return
+    END			!Of "WHILE 1 DO"
+
+END;
+
+ROUTINE cmd_parser =
+BEGIN
+LOCAL
+    routin,
+    status;
+OWN				! Keyword table entries
+    kithelp: $KIT	(VAL = parse_help	!"HELP"
+			),
+    kitlang: $KIT	(VAL = doc$$par_lang	!"LANGUAGE"
+			),
+    kitgen: $KIT	(VAL = doc$$par_generate !"GENERATE"
+			),
+    kitexit: $KIT	(VAL = parse_exit	!"EXIT"
+			),
+    kitview: $KIT	(VAL = doc$$par_view	!"VIEW"
+			),
+    kitdisp: $KIT	(VAL = doc$$par_display	!"DISPLAY"
+			);
+LITERAL
+    num_options = 6;	!# of commands
+OWN
+    mainkeytab: VECTOR [2 + 2*num_options]	!Main switch table
+	    INITIAL	(1^31 + num_options !1 in 1st bit + max size
+			,num_options		!Flags,,cur size
+			,%ASCID 'DISPLAY'
+			,kitdisp
+			,%ASCID 'EXIT'
+			,kitexit
+			,%ASCID 'GENERATE'
+			,kitgen
+			,%ASCID 'HELP'
+			,kithelp
+			,%ASCID 'LANGUAGE'
+			,kitlang
+			,%ASCID 'VIEW'
+			,kitview
+			);
+OWN
+    kwd_pat: $PAB	(TYP = KEYWORD		!Keyword
+			,ARG = mainkeytab
+			,CAB = ccab
+			,NXT = eol_pat
+			);
+
+WHILE 1 DO		!Loop until valid keyword
+BEGIN
+! Read keyword or eol
+!
+ccab [cab$a_atm] = atom_str_desc;	!Set normal atom buffer
+
+IF NOT (status =
+	lib$parse_field (kwd_pat)		!Keyword or EOL
+	   )
+  THEN RETURN doc$$error (.status);
+
+SELECTONE (.ccab [cab$a_curpab]) OF
+    SET
+	[kwd_pat]:
+	    BEGIN
+	    routin = ..kwd_pat [pab$l_val];
+	    IF NOT (status =
+		(.routin)()		!Call routine
+		    )
+	      THEN RETURN .status;
+	    RETURN SS$_NORMAL		!Return ok
+	    END;
+	[eol_pat]:
+	    SS$_NORMAL;			!Yeah, yeah.
+    TES;			!End of SELECTONE
+END			!of "WHILE 1 DO"
+
+END;			!of routine
+
+ROUTINE confirm =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses "confirm"
+! SIDE EFFECTS:
+!	Sets atom buffer to "atom_buffer".
+!--
+BEGIN
+LOCAL
+    status;
+
+ccab [cab$a_atm] = atom_str_desc;	!Set normal atom buffer
+IF NOT (status =
+    lib$parse_field (eol_pat)
+	)
+  THEN RETURN doc$$error (.status);
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$cmd_display
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parse display page number
+! FORMAL PARAMETERS:
+	(type			!Returned type of page (body, idx, toc)
+	,page_num		!Returned page number
+	) =
+!--
+BEGIN
+OWN
+    kittoc: $KIT	(VAL = 1
+			),
+    kitbody: $KIT	(VAL = 0
+			),
+    kitidx: $KIT	(VAL = 2
+			);
+LITERAL
+    num_switches = 3;		!# of switches
+OWN
+    swtab: VECTOR [2 + 2*num_switches]
+		INITIAL	(1^31 + num_switches
+			,num_switches
+			,%ASCID 'BODY'
+			,kitbody
+			,%ASCID 'INDEX'
+			,kitidx
+			,%ASCID 'TOC'
+			,kittoc
+			);
+OWN
+    nnpat:	$PAB	(TYP = NUMBER	!Number field
+			,HLP = %ASCID 'page to display'
+			,DEF = %ASCID '1'	!Default is 1
+			,CAB = ccab
+			),
+    swpat:	$PAB	(TYP = QUALIFIER
+			,ARG = swtab
+!			,DEF = %ASCID 'BODY'
+			,NXT = nnpat
+			,CAB = ccab
+			);
+LOCAL
+    nn,
+    status;
+
+.type = 0;		!Assume page in body to be displayed
+
+!
+! Parse switch or nn
+!
+IF NOT (status =
+    lib$parse_field (swpat)
+	)
+  THEN RETURN doc$$error (.status);
+
+IF (.ccab [cab$a_curpab] EQL swpat)
+  THEN
+    BEGIN
+    .type = ..swpat [pab$l_val];	!Return correct type
+    IF NOT (status =
+	lib$parse_field (nnpat)
+	    )
+      THEN RETURN doc$$error (.status);
+    END;
+
+nn = .nnpat [PAB$L_VAL];
+
+IF NOT (status =
+    confirm ()
+	)
+  THEN RETURN .status;
+
+.page_num = .nn;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$cmd_generate
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses GENERATE command
+! FORMAL PARAMETERS:
+	(input_desc: REF VECTOR [2]
+	,edf_desc: REF VECTOR [2]
+	,list_desc: REF VECTOR [2]
+	,review_desc: REF VECTOR [2]
+	,gen_flags
+	) =
+!--
+BEGIN
+OWN
+    ifile_pat: $PAB	(TYP = INPUT_FILE
+			,ARG = UPLIT (%ASCID '.TXT', 0)
+			,CAB = ccab
+			),
+    src_esa: BLOCK [NAM$C_MAXRSS, BYTE],	!Where expanded string goes
+    parse_nam: $NAM	(ESA = src_esa		!Expanded string bufadr
+			,ESS = NAM$C_MAXRSS	!Expanded string size
+			),
+    parse_fab: $FAB	(NAM = parse_nam
+			,DNM = '.TXT'
+			,FNA = src_fil_string
+			);
+LOCAL
+    name_len,
+    name_addr,
+    status;
+
+.gen_flags = 0;		!Return 0 flags
+
+!
+! Source file string is required
+!
+parsed_file_desc [1] = src_fil_string;
+ccab [cab$a_atm] = parsed_file_desc;
+
+IF NOT (status =
+    lib$parse_field	(ifile_pat)
+	)
+  THEN RETURN doc$$error (.status);
+
+srcfil_str_len = .ccab [cab$w_aln];	!Get real length of string
+ccab [cab$a_atm] = atom_str_desc;	!Put other atom buffer back
+!
+! Set defaults of other files from the name of the source file
+!
+parse_fab [FAB$B_FNS] = .srcfil_str_len;
+IF NOT (status =
+    $parse	(FAB = parse_fab)
+	)
+  THEN
+    BEGIN
+    $typeline ('? Error parsing input file');
+    $typests (.status);
+    RETURN .status
+    END;
+
+name_len = .parse_nam [NAM$B_NAME];
+name_addr = .parse_nam [NAM$L_NAME]; 
+
+IF (.name_len GTR 0)
+  THEN
+    BEGIN
+    CH$MOVE	(.name_len
+		,.name_addr
+		,lis_fil_string
+		);
+    CH$MOVE	(.name_len
+		,.name_addr
+		,rvw_fil_string
+		);
+    CH$MOVE	(.name_len
+		,.name_addr
+		,edf_fil_string
+		);
+    END;
+!
+! Append the appropriate default extensions
+!
+CH$MOVE	(4
+	,UPLIT ('.LIS')
+	,lis_fil_string + .name_len
+	);
+CH$MOVE	(4
+	,UPLIT ('.EDF')
+	,edf_fil_string + .name_len
+	);
+CH$MOVE	(4
+	,UPLIT ('.RVW')
+	,rvw_fil_string + .name_len
+	);
+
+lisfil_str_len = 4 + .name_len;
+rvwfil_str_len = 4 + .name_len;
+edffil_str_len = 4 + .name_len;
+
+IF NOT (status =
+    get_gen_switches ()
+	)
+  THEN RETURN .status;
+
+!
+! Return descriptors to caller
+!
+input_desc [0] = .srcfil_str_len;
+input_desc [1] = src_fil_string;
+edf_desc [0] = .edffil_str_len;
+edf_desc [1] = edf_fil_string;
+list_desc [0] = .lisfil_str_len;
+list_desc [1] = lis_fil_string;
+review_desc [0] = .rvwfil_str_len;
+review_desc [1] = rvw_fil_string;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE get_gen_switches =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Read GENERATE switches until EOL.
+! 	Return bad status and type error if bad command.
+!
+!--
+BEGIN
+OWN
+    kitlist: $KIT	(VAL = sw_list
+			),
+    kitnolist: $KIT	(VAL = sw_nolist
+			),
+    kitreview: $KIT	(VAL = sw_review
+			),
+    kitnorev: $KIT	(VAL = sw_noreview
+			),
+    kitencod: $KIT	(VAL = sw_encod
+			),
+    kitnoencod: $KIT	(VAL = sw_noencod
+			);
+LITERAL
+    num_switches = 6;
+OWN
+    swtab: VECTOR [2 + 2*num_switches]
+		INITIAL	(1^31 + num_switches
+			,num_switches
+			,%ASCID 'ENCODED_DOCUMENT'
+			,kitencod
+			,%ASCID 'LISTING'
+			,kitlist
+			,%ASCID 'NOENCODED_DOCUMENT'
+			,kitnoencod
+			,%ASCID 'NOLISTING'
+			,kitnolist
+			,%ASCID 'NOREVIEW'
+			,kitnorev
+			,%ASCID 'REVIEW'
+			,kitreview
+			);
+OWN
+    swpat: $PAB	(TYP = QUALIFIER
+		,ARG = swtab
+		,CAB = ccab
+		,NXT = eol_pat
+		);
+LOCAL
+    routin,
+    status;
+
+WHILE 1 DO		!Loop until eol
+    BEGIN
+    ccab [cab$a_atm] = atom_str_desc;		!Set normal atom buffer
+
+    IF NOT (status =
+	lib$parse_field	(swpat)		!Switch or eol
+	    )
+      THEN RETURN doc$$error (.status);
+    IF (.ccab [cab$a_curpab] EQL eol_pat)
+      THEN EXITLOOP;
+    routin = ..swpat [pab$l_val];
+    IF NOT (status =
+	(.routin)()		!Call routine
+	    )
+      THEN RETURN .status;
+    END;			!Of WHILE 1 DO..
+!
+! We get here if there was an EOL.
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_list =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses GENERATE /LIST=filespec
+!--
+BEGIN
+OWN
+    lispat:	$PAB	(TYP = OUTPUT_FILE
+			,ARG = UPLIT (%ASCID '.LIS', 0)
+			,CAB = ccab
+			);
+LOCAL
+    status;
+
+IF NOT (status =
+    check_colon_eq ()
+	)
+  THEN RETURN doc$$error (.status);
+
+ccab [cab$a_atm] = UPLIT	(param$K_atom_buf_length
+				,lis_fil_string
+				);
+IF NOT (status =
+    lib$parse_field	(lispat)
+	)
+  THEN RETURN doc$$error (.status);
+
+lisfil_str_len = .ccab [cab$w_aln];	!Get real length of buffer
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_encod =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses GENERATE /ENCODED_FILE=filespec
+!--
+BEGIN
+OWN
+    edfpat:	$PAB	(TYP = OUTPUT_FILE
+			,ARG = UPLIT (%ASCID '.EDF', 0)
+			,CAB = ccab
+			);
+LOCAL
+    status;
+
+IF NOT (status =
+    check_colon_eq ()
+	)
+  THEN RETURN doc$$error (.status);
+
+ccab [cab$a_atm] = UPLIT	(param$K_atom_buf_length
+				,edf_fil_string
+				);
+IF NOT (status =
+    lib$parse_field	(edfpat)
+	)
+  THEN RETURN doc$$error (.status);
+
+edffil_str_len = .ccab [cab$w_aln];	!Get real length of buffer
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_review =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses GENERATE /REVIEW=filespec
+!--
+BEGIN
+OWN
+    rvwpat:	$PAB	(TYP = OUTPUT_FILE
+			,ARG = UPLIT (%ASCID '.RVW', 0)
+			,CAB = ccab
+			);
+LOCAL
+    status;
+
+IF NOT (status =
+    check_colon_eq ()
+	)
+  THEN RETURN doc$$error (.status);
+
+ccab [cab$a_atm] = UPLIT	(param$K_atom_buf_length
+				,rvw_fil_string
+				);
+IF NOT (status =
+    lib$parse_field	(rvwpat)
+	)
+  THEN RETURN doc$$error (.status);
+
+rvwfil_str_len = .ccab [cab$w_aln];	!Get real length of buffer
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_nolist =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	GENERATE /NOLIST
+!--
+BEGIN
+
+lisfil_str_len = 0;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_noreview =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	GENERATE /NOREVIEW
+!--
+BEGIN
+
+rvwfil_str_len = 0;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE sw_noencod =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	GENERATE /NOENCODE
+!--
+BEGIN
+
+edffil_str_len = 0;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_exit =
+!++
+! FUNCTIONAL DESCRIPTION:
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    confirm ()
+	)
+  THEN RETURN .status;
+!
+! Set exit flag and return
+!
+doc_exit_flag = 1;
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$cmd_lang
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses LANGUAGE {keyword}
+! FORMAL PARAMETERS:
+	(lang_type
+	) =
+!--
+BEGIN
+OWN
+    kiteng: $KIT	(VAL = doc_lang$k_english
+			),
+    kitfre: $KIT	(VAL = doc_lang$k_french
+			),
+    kitger: $KIT	(VAL = doc_lang$k_german
+			),
+    kitital: $KIT	(VAL = doc_lang$K_italian
+			),
+    kitswed: $KIT	(VAL = doc_lang$K_swedish
+			),
+    kitdut: $KIT	(VAL = doc_lang$K_dutch
+			);
+LITERAL
+    num_langs = 6;	!# of language choices available
+OWN
+    langtab: VECTOR [2 + 2*num_langs]
+	INITIAL	(1^31 + num_langs	!1 in 1st bit + max size
+		,num_langs		!flags,, cur size
+		,%ASCID 'DUTCH'
+		,kitdut
+		,%ASCID 'ENGLISH'
+		,kiteng
+		,%ASCID 'FRENCH'
+		,kitfre
+		,%ASCID 'GERMAN'
+		,kitger
+		,%ASCID 'ITALIAN'
+		,kitital
+		,%ASCID 'SWEDISH'
+		,kitswed
+		);
+OWN
+    lang_pat: $PAB	(TYP = KEYWORD
+			,ARG = langtab
+			,CAB = ccab
+			);
+LOCAL
+    ltype,
+    status;
+
+IF NOT (status =
+    lib$parse_field (lang_pat)
+	)
+  THEN RETURN doc$$error (.status);
+
+ltype = ..lang_pat [pab$l_val];
+
+IF NOT (status =
+    confirm ()
+	)
+  THEN RETURN .status;
+
+.lang_type = .ltype;		!ok, return language type to user.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE doc$$cmd_view
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the VIEW command
+! FORMAL PARAMETERS:
+	(edf_desc: REF VECTOR [2]
+	) =
+!--
+BEGIN
+OWN
+    ifile_pat: $PAB	(TYP = INPUT_FILE
+			,ARG = UPLIT (%ASCID '.EDF', 0)
+			,CAB = ccab
+			);
+LOCAL
+    status;
+!
+! Parse the EDF spec
+!
+parsed_file_Desc [1] = edf_fil_string;
+ccab [cab$a_atm] = parsed_file_desc;
+
+IF NOT (status =
+    lib$parse_field	(ifile_pat)
+	)
+  THEN RETURN doc$$error (.status);
+
+edffil_str_len = .ccab [cab$w_aln];	!Get real length of string
+ccab [cab$a_atm] = atom_str_desc;	!Put other atom buffer back
+
+IF NOT (status =
+    confirm ()
+	)
+  THEN RETURN .status;
+!
+! Return descriptors to caller
+!
+edf_desc [0] = .edffil_str_len;
+edf_desc [1] = edf_fil_string;
+RETURN SS$_NORMAL
+END;
+
+ROUTINE parse_help =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Parses the HELP command.
+!--
+BEGIN
+LOCAL
+    status;
+
+IF NOT (status =
+    confirm ()
+	)
+  THEN RETURN .status;
+
+$typeline ('VSTADOC -- VAXstation DOCUMENT file utility');
+$typeline ('-------------------------------------------');
+$typeline (' ');
+$typeline ('  Commands are:');
+$typeline (' ');
+$typeline ('LANGUAGE [ENGLISH!FRENCH!GERMAN!...] ');
+$typeline ('GENERATE source [/switch../switch]');
+$typeline ('VIEW docfil');
+$typeline ('DISPLAY page-num');
+$typeline ('EXIT');
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE check_colon_eq =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Routine to check command option for : or = qualifier.
+!	Returns SS_$NORMAL if : or = parsed, else returns doc$_argreq
+!--
+BEGIN
+OWN
+    eqlpat:	$PAB	(TYP = TOKEN	!To see if there is an argument
+			,ARG = %ASCID '='
+			,HLP = %ASCID '"=", to specify argument(s)'
+			,CAB = ccab
+			),
+    colon_pat:	$PAB	(TYP = TOKEN
+			,ARG = %ASCID ':'
+			,HLP = %ASCID '":"'
+			,NXT = eqlpat
+			,CAB = ccab
+			);
+
+IF NOT (lib$parse_field (colon_pat))
+   THEN RETURN doc$_argreq;
+
+RETURN SS$_NORMAL	!: or = seen
+END;
+
+END
+ELUDOM

@@ -1,0 +1,480 @@
+MODULE PIDACCESS (
+			IDENT = 'Check PID access to ACP'
+			,ADDRESSING_MODE (EXTERNAL = GENERAL,
+					NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! ABSTRACT:
+!
+!  This module keeps track of which processes are allowed
+! to create things in the ACP.
+!
+! ENVIRONMENT:
+!
+! Vax Workstation VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE
+    vsta$$pid_check_access,		!Check for access by a process.
+    hard_way,				!Ask VMS to get the top-level process
+					! so we can check its access.
+    vsta$$pid_add_one,			!Remember the pid of a process we
+					! just created.
+    vsta$$pid_del_one,			!Get rid of entries for a process
+					! that was just deleted.
+    vsta$$pid_get_top,			!Get top-level PID for a PID
+    add_one_sub_entry;			!Add an entry to the subprocess list
+
+! INCLUDE FILES:
+!
+
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	!Symbols like $log_error_and_return
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	!Error symbols
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+!
+! PSECTS
+!
+$VSTA_PSECT;
+
+EXTERNAL ROUTINE
+    vsta$$error,			!General error routine
+    vsta$$error_Logger,			!Log errors that are unexpected
+    vs$$acp_get_vm,			!Get memory
+    vs$$acp_free_vm,			! Release memory
+    vs$$acp_cvt_epid,			! Convert to external PID format
+    vs$$acp_cvt_ipid,			! Convert to internal PID format
+    vs$$acp_save_tmbu,			! To find out about process deletion
+    vsta$$kernel_call,			! Call routine in kernel mode
+    vsta$$report_free_vm_error;		! broadcast message if couldn't
+					! release VM.
+EXTERNAL
+    vs$gl_oem_flags;			!OEM mode flags
+
+OWN
+    top_list: REF VECTOR,		!List of top PIDs
+    num_top_pids,			!Number of PIDs in the top list
+    sub_list: REF VECTOR,		!List of (subprocess PID, top PID)
+    num_sub_pids;			!Number of entries in the list.
+
+GLOBAL ROUTINE vsta$$pid_check_access
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Check this pid's access to the ACP CREATE function.
+!	All QIO's that want to CREATE something call this routine
+!	which will return 0 if the PID was not created by the
+!	human interface or a subprocess thereof.
+! 	NOTE: The PID passed to this routine is assumed to be in internal
+!	      format. The human interface maintains its PID list in external
+!	      format. So the PID must be converted here before checked.
+!
+! FORMAL PARAMETERS:
+	(pid
+	) =
+!--
+BEGIN
+!++
+!
+!   We keep two linear lists (for runtime speed). One is a list of
+! all process id's created by the human interface. MOST LIKELY,
+! the process doing the CREATE will be found in that list. The other
+! list is the processes that have tried to create something and found
+! to be a subprocess of a process created by the human interface.
+! Once a process is in the 2nd list, any further CREATEs that it does
+! will be quick.
+!   If the process id is not in either list, a search is made in a third
+! list, which is a list of process id's specifically barred from doing
+! QIO's to the ACP. Only the last 5 process id's that tried QIO's and
+! failed are kept in this list. If not found there, then a search is made
+! for the top-level PID in the job (detached PID). This PID is checked
+! against the PIDs created by the human interface, and if it is there we
+! are ok. If not, we put it in the "denied access" list and return 0.
+!--
+EXTERNAL
+    vs$gl_proc_name_desc: VECTOR;	!This ACP's process name
+COMPILETIME
+    deny_num = 5;			!Number of items in deny-list
+OWN
+    deny_list: VECTOR [deny_num],	!Process id's that are denied access
+    deny_ptr: INITIAL (0);		!Note: Doesn't have to be
+					!     re-initialized between sessions
+LOCAL
+    epid;				!PID converted to external format
+!
+! In OEM mode, we allow create access to any and all deviant processes
+!
+IF .vs$gl_oem_flags
+  THEN RETURN SS$_NORMAL;
+!
+! Convert specified PID into external format
+!
+epid = vs$$acp_cvt_epid(.pid);
+!
+! Check to see if this PID is a top-level created by the HI.
+!
+INCR i FROM 1 TO .num_top_pids DO
+    BEGIN
+    IF (.top_list [.i] EQL .epid)
+      THEN RETURN SS$_NORMAL;		!There it is, access granted.
+    END;
+
+!
+! Check to see if this PID is already known to be a subprocess allowed access.
+!
+INCR i FROM 1 to .num_sub_pids DO
+    BEGIN
+    IF (.sub_list [.i * 2 - 1] EQL .epid)
+      THEN RETURN SS$_NORMAL;		!There it is, access granted.
+    END;
+
+!
+! Check to see if this process is a known troublemaker.
+!
+INCR i FROM 0 TO deny_num - 1 DO
+    BEGIN
+    IF (.deny_list [.i] EQL .epid)
+      THEN RETURN $error(
+			vsta$_badegg,
+			integer_type, .epid,
+			string_type, vs$gl_proc_name_desc);
+    END;
+
+!
+! Gotta find PID the hard way
+!
+IF NOT (hard_way (.epid))
+  THEN
+    BEGIN
+    deny_list [.deny_ptr] = .epid;	!Remember this troublemaker
+    deny_ptr = (.deny_ptr + 1) MOD deny_num; !Get new index into circular list
+    RETURN 0;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE hard_way
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Search through the process data base to find the
+! top-level PID, and check it against the HI-created ones. If found,
+! put a list entry into sub_list and return SS$_NORMAL. Else return 0.
+!
+! NOTE: This routine assumes that the PID is in EXTERNAL format.
+!
+! FORMAL PARAMETERS:
+	(pid
+	) =
+!--
+BEGIN
+EXTERNAL
+    vs$gl_vd_name_desc: VECTOR;
+OWN
+    login_term: VECTOR [8,BYTE],
+    login_term_len,
+    curr_pid,
+    top_pid;		!Owner PID of curr_pid
+LOCAL
+    gj_iosb: VECTOR [4,WORD],
+    status;
+
+top_pid = .pid;
+
+WHILE (.top_pid NEQ 0) DO
+    BEGIN
+    curr_pid = .top_pid;
+    IF NOT (status =
+	$getjpiw(PIDADR = curr_pid
+		,EFN = 12		!An EFN not used by anything else
+		,IOSB = gj_iosb		!IOSB
+		,ITMLST = (UPLIT (WORD (4, JPI$_OWNER), top_pid, 0, 0))
+		)
+	)
+      THEN
+	BEGIN
+	IF ((.status EQL SS$_NONEXPR)		!If proc went away,
+		OR				! or
+	    (.status EQL SS$_SUSPENDED))	!If proc suspended, then
+	  THEN RETURN 0;			! give up
+	$system_error (.status);		!No, error should not happen
+	RETURN $bug (vsta$_getjpi);
+	END;
+
+  !
+  ! Oh! Poor ACP if this takes a while!!
+  ! But there's nothing else we can do.
+  !
+    IF (.gj_iosb [0] NEQ SS$_NORMAL)
+      THEN
+	BEGIN
+	$system_error (.gj_iosb [0]);
+	RETURN $bug (vsta$_getjpi);
+	END;
+    END;
+!
+! "curr_pid" now contains the actual top pid of the process.
+!
+top_pid = .curr_pid;		!Get in this variable to avoid confusion
+
+!
+! Check top_pid against the main HI-created PIDs. If it is one,
+! write the subprocess entry and return SS$_NORMAL.
+!
+INCR i FROM 1 TO .num_top_pids DO
+    BEGIN
+    IF (.top_list [.i] EQL .top_pid)
+      THEN
+	BEGIN			!This is a subprocess of the HI-created proc.
+      !
+      ! Write a subprocess entry of (.pid, .top_pid)
+      !
+	add_one_sub_entry (.pid, .top_pid);
+	RETURN SS$_NORMAL	!Give "success" return.
+	END;
+    END;
+!
+! If the top_pid belongs to a detached process which logged in on this
+! VAXstation, then it deserves create access
+!
+    IF NOT (status =
+	$getjpiw(PIDADR = top_pid
+		,EFN = 12		!An EFN not used by anything else
+		,IOSB = gj_iosb		!IOSB
+		,ITMLST = (UPLIT (WORD (8, JPI$_TERMINAL),
+			login_term, login_term_len, 0))
+		)
+	)
+      THEN
+	BEGIN
+	IF ((.status EQL SS$_NONEXPR)		!If proc went away,
+		OR				! or
+	    (.status EQL SS$_SUSPENDED))	!If proc suspended, then
+	  THEN RETURN 0;			! give up
+	$system_error (.status);		!No, error should not happen
+	RETURN $bug (vsta$_getjpi);
+	END;
+!
+! Make sure we got the login terminal name
+!
+    IF (.gj_iosb [0] NEQ SS$_NORMAL)
+      THEN
+	BEGIN
+	$system_error (.gj_iosb [0]);
+	RETURN $bug (vsta$_getjpi);
+	END;
+!
+! Did this process login on a virtual terminal created by us?
+!
+    IF ch$find_sub(
+		.login_term_len,	!Login terminal name length
+		login_term[0],		!Login terminal name address
+		3,			!Length of unique device identifier
+		.vs$gl_vd_name_desc[1])	!Unique device ID adr. (VDA,VDB, etc.)
+	EQL 0 THEN RETURN 0;
+!
+! This top-level process is okay. Add him to our list and make sure we find
+! out about this process going away. Also if this was really the subprocess of
+! a detached process which was not in the list before, add the subprocess entry.
+!
+    vsta$$pid_add_one(.top_pid);
+    vsta$$kernel_call(
+		vs$$acp_save_tmbu,
+		.top_pid);
+    IF .pid NEQ .top_pid THEN
+      add_one_sub_entry (.pid, .top_pid);
+
+RETURN SS$_NORMAL;			!Return success indication
+END;
+
+GLOBAL ROUTINE vsta$$pid_add_one
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by the human interface when a PID is created,
+! to put it into our list of PID's that have create access.
+!
+! NOTE: This routine assumes that the PID is in EXTERNAL format.
+!
+! FORMAL PARAMETERS:
+	(pid
+	) =
+! VALUES RETURNED:
+!	$sysres (vsta$_getmem)
+!	SS$_NORMAL
+!--
+BEGIN
+!
+! OK, stick it on the end.
+!
+if not $ertn (appendElement) (.num_top_pids, top_list, .pid)
+then return $sysres (vsta$_getmem
+			,integer_type, 4
+			,string_type, %ASCID 'access checking'
+			);
+num_top_pids = .num_top_pids + 1;	!Bump count.
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$pid_del_one
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Called by the human interface when a PID is deleted,
+! to remove it and it's subprocesses from the known list of PIDs.
+!
+! NOTE: This routine assumes that the PID is in EXTERNAL format.
+!
+! FORMAL PARAMETERS:
+	(pid
+	) =
+!--
+BEGIN
+LOCAL
+    j;		!Used as a loop index.
+
+!
+! Remove it from the main list.
+!
+INCR i FROM 1 TO .num_top_pids DO
+    BEGIN
+    IF (.pid EQL .top_list [.i])
+      THEN
+	BEGIN
+!
+! Found it-- get rid of it.
+!
+	if not $ertn (deleteElements) (
+	    .num_top_pids, top_list, .i, .i)
+	then $error	(vsta$_freevm_for
+			,string_type, %ASCID 'old pid list'
+			);
+
+	num_top_pids = .num_top_pids - 1;	!One less item in the list.
+	EXITLOOP
+	END;
+    END;
+!
+! Look for it in the sub entries, and delete if found.
+!
+j = 1;
+WHILE (.j LEQ .num_sub_pids) DO
+    BEGIN
+    IF (.pid EQL .sub_list [.j * 2])
+      THEN
+	BEGIN
+!
+! Found it-- get rid of it.
+!
+	if not $ertn (deleteElements) (
+	    .num_sub_pids * 2, sub_list, .j * 2 - 1, .j * 2)
+	then $error	(vsta$_freevm_for
+			,string_type, %ASCID 'old pid list'
+			);
+
+	num_sub_pids = .num_sub_pids - 1	!One less item in the list.
+        END
+      ELSE j = .j + 1;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+GLOBAL ROUTINE vsta$$pid_get_top
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Given a PID, find the top-level pid for the job.
+!	This routine is called by the HI when a PID is creating
+!	something, so we MUST have an entry in either top_List or sub_list.
+!
+! NOTE: This routine assumes that the PID is in INTERNAL format.
+!
+! FORMAL PARAMETERS:
+	(pid
+	,top_pid
+	) =
+!--
+BEGIN
+LOCAL
+    epid;				!PID in external format
+!
+! Convert specified PID into external format
+!
+epid = vs$$acp_cvt_epid(.pid);
+!
+! First look for the PID in top-list.
+!
+INCR i FROM 1 TO .num_top_pids DO
+    BEGIN
+    IF (.epid EQL .top_list [.i])
+      THEN
+	BEGIN
+	.top_pid = .epid;
+	RETURN SS$_NORMAL;
+	END;
+    END;
+!
+! Not found there, look for the PID in sub-list.
+!
+INCR j FROM 1 TO .num_sub_pids DO
+    BEGIN
+    IF (.epid EQL .sub_list [.j * 2 - 1])
+      THEN
+	BEGIN
+	.top_pid = .sub_list [.j * 2];
+	RETURN SS$_NORMAL;
+        END;
+    END;
+!
+! This is a bug. can't happen.
+!
+.top_pid = .epid;		!Not found anywhere; return something useful.
+RETURN SS$_NORMAL
+END;
+
+ROUTINE add_one_sub_entry
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Add an entry to the "sub" list. Both PIDs must be in EXTERNAL format.
+! FORMAL PARAMETERS:
+	(pid
+	,top_pid
+	) =
+! RETURNED VALUES:
+!	$sysres (vsta$_getmem)
+!	SS$_NORMAL
+!--
+BEGIN
+!
+! Add the pid to the list.
+!
+	if not $ertn (appendElement) (.num_sub_pids * 2, sub_list, .pid)
+	then return $sysres (vsta$_getmem
+			,integer_type, 4
+			,string_type, %ASCID 'sub pid entry'
+			);
+!
+! Add the top pid to the list.
+!
+	if not $ertn (appendElement) (
+	    .num_sub_pids * 2 + 1, sub_list, .top_pid)
+	then return $sysres (vsta$_getmem
+			,integer_type, 4
+			,string_type, %ASCID 'sub pid entry'
+			);
+num_sub_pids = .num_sub_pids + 1;		!Bump count.
+!
+! Ordinarily, we would not find out about the deletion of this subprocess. So
+! fix it so that we do find out so that we can do cleanup processing when it
+! goes away
+!
+	vsta$$kernel_call(
+			vs$$acp_save_tmbu,
+			.pid);
+RETURN SS$_NORMAL
+END;
+
+END
+ELUDOM

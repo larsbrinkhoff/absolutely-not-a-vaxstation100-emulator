@@ -1,0 +1,257 @@
+; ************ TIMER TRAP ROUTINES FOR PROGRAM COUNTER SAMPLING ***************
+;
+;
+; Program counter sampling routines which sample the program counter value
+; on every clock interrupt.  Clock interrupts occur as often as the sampling
+; interval (constant MILLISEC below) specifies.  Sampling is initiated by a
+; call on PME_INIT and terminated by a call on PME_EXIT.  The name of the
+; sampling output file can be specified by calling PME_SNAME--if this is not
+; done, a default file name is used.
+;
+;
+
+
+	.TITLE	PMECLOCK Performance Measurement and Evaluation
+	.IDENT	/V01-01/
+
+	.LIBRARY "PMEDEFS.MLB"		; Default macro library
+
+	PMEDEFS				; Define default file name macro
+	$FABDEF				; Define all FAB$ tags
+	$DSCDEF				; Define all DSC$ tags
+
+
+; FAB, RAB, and all other data areas
+;
+	.PSECT	PME_DATA,NOEXE,LONG
+
+MILLISEC=	10			; Timing interval in milliseconds
+INTERVAL:				; Timing interval in 100-nanosecond
+	.LONG	-10*1000*MILLISEC	;      units--negative sign indicates
+	.LONG	-1			;      delta time, not absolute time
+PMEID	=	^A"PME$"		; Timer i.d. for cancelling timer trap
+DEFNAME:	PMEDEFNAME		; Pure copy of the default file name
+DEFSIZE		=	.-DEFNAME	; Size of default file name
+EXTNAME:	.ASCII	".PMS"		; Default sampling file extension
+EXTSIZE		=	.-EXTNAME	; Size of default extension
+
+	.ALIGN	LONG			; Longword align the FAB and RAB
+OUTFAB:	$FAB	FNS=DEFSIZE,DNS=EXTSIZE,FAC=PUT,MRS=512,ORG=SEQ,RFM=FIX,DEQ=10
+OUTRAB:	$RAB	RAC=SEQ,RSZ=512
+OUTFNAME:	PMEDEFNAME		; File name of output sample file
+		.BLKB	MAXNAMSIZ-DEFSIZE ;
+BUFPTR:	.LONG	0			; Buffer pointer (next avail loc)
+BUFFER:	.BLKB	512			; PC value accumulation buffer
+BUFEND	=	.			; End of buffer address
+EVFLAG:	.LONG	0			; Event flag number used for timer AST
+
+
+	.PSECT	PME_CODE,EXE,NOWRT,LONG,PIC
+
+
+; ************** PME_INIT:  SAMPLING INITIATION ROUTINE ********************
+;
+;
+; The program counter sampling initiation routine is called as follows:
+;
+;			CALL PME_INIT
+;
+; This sets up an asynchronous trap routine which regularly samples the
+; current Program Counter value and accumulates all such values in an
+; output file.  PME_INIT creates that file and initializes it with a
+; header record.  The name of the output file can be specified by calling
+; PME_SFILE before calling PME_INIT (see below), but if PME_SFILE is not
+; called, a default file name is supplied.
+;
+;
+; Now create the new output file, connect the RAB to the FAB, and write out
+; the header record to that file.
+;
+	.ENTRY	PME_INIT,^M<>		; Start Sampling entry point
+
+INIT:	MOVAB	OUTFNAME,OUTFAB+FAB$L_FNA ; Move file name address into the FAB
+	MOVAB	EXTNAME,OUTFAB+FAB$L_DNA  ; Move default extension addr to FAB
+	MOVAB	OUTFAB,OUTRAB+RAB$L_FAB	; Move FAB address into the RAB
+	MOVAB	BUFFER,OUTRAB+RAB$L_RBF	; Move buffer address into the RAB
+	$CREATE	FAB=OUTFAB		; Create the sampling output file
+	BLBC	R0,ERROR1		; Make sure it worked
+	$CONNECT  RAB=OUTRAB		; Connect the RAB to the FAB
+	BLBC	R0,ERROR1		;
+	$PUT	RAB=OUTRAB		; Write out the header record
+	BLBC	R0,ERROR1		; Check for errors
+
+
+; Set up the buffer pointer for the program counter accumulation buffer,
+; allocate an event flag for the timer AST, and start up the timer with
+; the proper timer interval.
+;
+	MOVAL	BUFFER,BUFPTR		; Initialize the buffer pointer
+	PUSHAB	EVFLAG			; Call LIB$GET_EF to get an event flag
+	CALLS	#1,G^LIB$GET_EF		;      allocated and returned to EVFLAG
+	BLBC	R0,ERROR1		;
+	PUSHL	#PMEID			; Give I.D. to be passed to ast routine
+	PUSHAL	L^PME_TIMAST		; Specify ast routine
+	PUSHAL	L^INTERVAL		; Specify interval
+	PUSHL	L^EVFLAG		; Specify event flag
+	CALLS	#4,G^PME_SETIMR		; Set the timer
+;	$SETIMR_S  EFN=EVFLAG,DAYTIM=INTERVAL,-    ; Set the timer
+;		   ASTADR=PME_TIMAST,REQIDT=#PMEID ;
+	BLBC	R0,ERROR1		; Make sure status is good
+	RET				; Return to the caller
+
+
+; Handle any errors which may have occurred along the way
+;
+ERROR1:	$EXIT_S	CODE=R0			; Exit with the bad error status code
+
+
+; ************** PME_EXIT:  SAMPLING TERMINATION ROUTINE ********************
+;
+;
+; The sampling termination routine is called as follows:
+;
+;			CALL PME_EXIT
+;
+; This cancels the current timer request, puts a zero in the program counter
+; accumulation buffer as an end marker (zero is an illegal program counter
+; value), writes out the last buffer, and closes the sampling output file.
+;
+	.ENTRY	PME_EXIT,^M<>		; Terminate Sampling entry point
+
+	PUSHL	#PMEID			; Give I.D. to be passed to ast routine
+	CALLS	#1,G^PME_CANTIM		; Cancel timer
+	PUSHAB	EVFLAG			; Also free up the event flag number
+	CALLS	#1,G^LIB$FREE_EF		;
+	BLBC	R0,ERROR2		;
+	MOVL	BUFPTR,R0		; R0 = the current buffer pointer
+	CLRL	(R0)			; Insert zero as end-of-file indicator
+	$PUT	RAB=OUTRAB		; Write out this last buffer
+	BLBC	R0,ERROR2		; Make sure it worked
+	$CLOSE	FAB=OUTFAB		; Close the file
+	BLBC	R0,ERROR2		;
+	RET				; Return normally
+
+
+; Handle any error which may have cropped up
+;
+ERROR2:	$EXIT_S	CODE=R0			; Exit with the bad status code
+
+
+; ************** PME_CONT: SAMPLING CONTINUATION ROUTINE ****************
+;
+;
+; Sampling continuation routine which restarts program counter sampling after
+; it has been turned off.  This routine is called as follows:
+;
+;			CALL PME_CONT
+;
+; This call does the same thing as a call on PME_INIT but is provided here to
+; make time interval sampling compatible with trace sampling of the program
+; counter.  A user program can thus use either data collection method without
+; any change to the program source.  Sampling is turned off by another call
+; on PME_EXIT.
+;
+;
+; Jump right into the PME_INIT code.
+;
+	.ENTRY	PME_CONT,^M<>		; Sampling Continuation entry point
+
+	BRW	INIT			; Branch to PME_INIT code
+
+
+; ******************* TIMER TRAP ROUTINE ********************************
+;
+;
+; Asychronous trap routine which gets control at every timer interrupt.
+; Fill the program counter value of the interrupt location into the
+; buffer, and if the buffer is full, write the buffer out to the sample
+; file.  Then restart the timer and return.
+;
+PME_TIMAST:				; Timer Trap Routine entry point
+	.WORD	^M<>			; Entry mask
+	MOVL	BUFPTR,R0		; R0 = the buffer pointer
+	MOVL	16(AP),(R0)+		; Put the PC value in the buffer
+	MOVL	R0,BUFPTR		; Store back updated buffer pointer
+	MOVAB	BUFEND,R1		; Is the buffer full?
+	CMPL	R0,R1			;
+	BNEQ	10$			; If not, go to 10$
+	$PUT	RAB=OUTRAB		; Yes--write it out to the sample file
+	BLBC	R0,ERROR3		; Make sure it worked
+	MOVAB	BUFFER,BUFPTR		; Reset buffer pointer to start of buffer
+10$:	$SETIMR_S  EFN=EVFLAG,DAYTIM=INTERVAL,-    ; Set the timer once again
+		   ASTADR=PME_TIMAST,REQIDT=#PMEID ;
+	BLBC	R0,ERROR3		;
+	RET				; Return
+
+
+; Handle any error conditions in the timer trap routine
+;
+ERROR3:	$EXIT_S	CODE=R0			; Exit with the bad status code
+
+
+; ******************* PME_SNAME: SET SAMPLING FILE NAME **********************
+;
+;
+; This subroutine allows the user to specify the file name to be used for the
+; output sampling file.  The call is as follows:
+;
+;			CALL PME_SNAME(OUTFILENAME)
+;
+; where OUTFILENAME is a character string, passed by descriptor, containing
+; the desired file name.  This routine simply copies the passed file name to
+; a local buffer and strips off any trailing blanks.  No other checking is
+; done on the file name string.  If the passed string is completely empty (all
+; blanks) or if this routine is not called in the first place, a default file
+; name of "PMEFILE.PMS" is supplied instead.
+;
+;
+; Copy the passed file name string to our local file name buffer
+;
+	.ENTRY	PME_SFILE,^M<>		; Set Sampling File Name entry point
+
+	MOVL	4(AP),R1		; R1 = address of string descriptor
+	MOVW	DSC$W_LENGTH(R1),R0	; R0 = the string length
+	CMPW	R0,#MAXNAMSIZ		; If the length exceeds the size of our
+	BLEQ	10$			;      local buffer, truncate it
+	MOVW	#MAXNAMSIZ,R0		;
+10$:	MOVC3	R0,@DSC$A_POINTER(R1),OUTFNAME ; Copy file name to local buffer
+
+
+; Now scan the name string backwards to strip off any trailing blanks
+;
+	MOVAB	OUTFNAME[R0],R1		; R1 = pointer to the end of the string
+20$:	CMPB	-(R1),#^A" "		; Scan backwards for the first non-blank
+	BNEQ	30$			;      or the start of the string
+	SOBGTR	R0,20$			;
+30$:	MOVB	R0,OUTFAB+FAB$B_FNS	; Set the file name size in the FAB
+
+
+; If the string turned out to be empty (zero length), fill in our default
+; file name (PMEFILE) instead.  Then return to the caller.
+;
+	TSTW	R0			; Is the string empty?
+	BGTR	40$			; If not, go to 40$ and return
+	MOVC3	#DEFSIZE,DEFNAME,OUTFNAME ; But if so, fill in the default file
+	MOVB	#DEFSIZE,OUTFAB+FAB$B_FNS ;      name and its size
+40$:	RET				; Return
+
+
+; ************** PME_IFILE AND PME_OFILE:  DUMMY ROUTINES ******************
+;
+;
+; These two subroutines are provided only for compatibility with the trace
+; method of program counter sampling.  They are dummy routines which only
+; return--they do nothing else.
+;
+;
+; Return to the caller immediately.
+;
+	.ENTRY	PME_IFILE,^M<>		; Dummy entry point
+
+	RET				; Return immediately
+
+	.ENTRY	PME_OFILE,^M<>		; Another dummy entry point
+
+	RET				; Return immediately
+
+	.END

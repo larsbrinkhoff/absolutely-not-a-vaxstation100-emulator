@@ -1,0 +1,3480 @@
+%title 'vsta$lib_native - device interface for native graphics'
+MODULE vsta$lib_native	(IDENT = '1-001',
+			addressing_mode (external = general,
+					nonexternal = general)
+			) =
+BEGIN
+
+!++
+! FACILITY:
+!
+! VAXstation software (VSTA)
+!
+! ABSTRACT:
+!
+! This module is conceptually part of the Virtual Display services. It provides
+! other routines within the VAXstation environment with access to the function-
+! ality of the VS100 display processor, but in the context of the
+! Systems Display Architecture.
+!
+! The interface specified here is governed by the following goals:
+!
+! o A device independent framework is to be provided so that routines needing
+!   direct use of the display processor to manipulate the contents of Virtual
+!   Displays can do so without regard for the characteristics of the specific
+!   device. This is accomplished by tailoring the interface so that the
+!   attributes of future VAXstation display processors can be supported within
+!   the existing interface, while not sacrificing any of the features of the
+!   current processor, the VS100.
+!
+! o The interface to the display processor is simplified, requiring only a
+!   routine call with a set of parameters, rather than setting up command
+!   packets.
+!
+! NOTE - callers of these routines must include the native graphics symbol
+!        definitions (VSTANATIV.R32) when compiling.
+
+!
+! ENVIRONMENT:
+!
+! This module is part of the VAXstation library software, which is a
+! comunication service to the SDA via a QIO interface.
+!
+!
+!--
+!
+!  Notes on commonly used structures for QIO information transfer:
+!
+!      qxb --  The Qio Transfer Block is a buffer which contains structured
+!	       or non structured information.  The NGI qxb is a specific 
+!	       qxb with a structure which describes the Native Graphics routine
+!	       arguments and descriptors.  See the VSTANGI.SDL file for a
+!	       description of the NGI structure.
+!
+!    qxbds --  The Qio Tranfer Block Descriptor is a vector of descriptors which
+!              reference qxb's.  The qxbds is the structure which VDDRIVER
+!              expects when performing graphics direct io.  Each descriptor in
+! 	       the qxbds is of the form <address of qxb , byte count of qxb>
+!              All data passed as buffers to the routines in this module becomes
+!              a qxb and is entered in the qxbds as one item which VDDRIVER must
+!              lock down for the ACP to use.
+!--
+
+!
+! Table of contents:
+!
+FORWARD ROUTINE!S
+	 perform_io
+	,vsta$copy_area
+	,vsta$draw_curve
+	,vsta$print_text
+	,vsta$fill_area
+	,vsta$flood_area
+	,vsta$$ngi_ast_handler
+	;
+
+!
+! External references:
+!
+EXTERNAL ROUTINE
+	 vsta$$channel_found
+	,vsta$$get_template_chan
+	,lib$get_vm
+	,lib$free_vm
+	,vsta$$convert_color_from_user
+	;
+
+!
+! Include files:
+!
+library 'sys$library:starlet';		!system services
+library 'vsta$library:vstamacs';	! symbols like "$extsym"
+library 'vsta$library:vstagbl';
+library 'vsta$library:vstadef';
+library 'vsta$library:vstanativ';
+library 'vsta$library:vserrors';
+library 'vsta$library:vxslib';
+library 'vsta$library:vsacpdef';
+library 'vsta$library:libmacros';
+
+!
+!  Define Psects:
+!
+	$VSTA_PSECT;
+
+
+MACRO!S
+	$CLEANUP =
+		(EXTERNAL ROUTINE LIB$FREE_VM;
+		 LIB$FREE_VM(
+				 %ref(ngi$s_ngi_dsc)
+				,qxb
+				)
+		 )%
+
+	,$ASCIDD = local ASD: vector [2,long]%
+	,$ASCIDR( S) = 
+		(local STR: ref vector [,byte];
+		 ASD [0] = %charcount (S);
+		 ASD [1] = UPLIT BYTE (S);
+		 ASD
+		)%
+	,$WRITELOCK( ADDR, SIZE) =
+		(
+		bind BUFADR = QXB_DESCRIPTOR [ 0];
+
+		 QXB_DESCRIPTOR [ 0] = ADDR;
+		 QXB_DESCRIPTOR [ 1] = SIZE;
+		 QXB_DESCRIPTOR [ 2] = 0;
+		 QXB_DESCRIPTOR  = .QXB_DESCRIPTOR + 12;
+
+		!
+		! Check for odd buffer alignment
+		!
+		if .BUFADR <0,1> then 0
+		else 1
+
+		)%		
+	,$MODIFYLOCK( ADDR, SIZE) =
+		(
+		bind BUFADR = QXB_DESCRIPTOR [ 0];
+
+		 QXB_DESCRIPTOR [ 0] = ADDR;
+		 QXB_DESCRIPTOR [ 1] = SIZE;
+		 QXB_DESCRIPTOR [ 2] = 1;
+		 QXB_DESCRIPTOR  = .QXB_DESCRIPTOR + 12;
+
+		!
+		! Check for odd buffer alignment
+		!
+		if .BUFADR <0,1> then 0
+		else 1
+
+		)%		
+	;
+
+
+EXTERNAL
+	 VSTA$GL_LOCAL_ERROR
+	;
+
+
+routine perform_io
+!++
+! Functional description:
+!
+!	For all native graphics operation, send the operands to the next
+!	lower level.
+!
+!	Also, arrange for cleanup.  We want to do the cleanup in line rather
+!	than setting an ast.  This is because if the application program calls
+!	us many times from one ast routine, then our cleanup ast's will
+!	pile up and eventually cause process to hang due to quota exhaustion.
+!
+!	So, we see if caller is requesting us to wait for i/o to complete.
+!	If so, we do cleanup in line instead of using an ast routine.
+!
+! Formal parameters:
+ (
+	channel,			! channel to send to
+	iosb : ref vector [2],		! status block address
+	qxb : ref ngi_dsc,		! address of info block
+	qxbds : ref vector,		! list of areas to lock
+	qxb_descriptor,			! pointer to end of list of lckd areas
+	wait_flag,			! 1 for wait, 0 for don't
+	error_code			! error to deliver if failure
+ ) =
+!
+!--
+	begin
+
+	local
+
+	    astadr,
+	    efn,
+	    stat;
+!
+! Decide whether we need to use an ast for cleanup.
+!
+	if .wait_flag
+	then astadr = 0
+	else astadr = VSTA$$NGI_AST_HANDLER;
+!
+! Copy the efn because we may need to wait for it after the operation but
+! ast routine may be freeing up the qxb.
+!
+	efn = .qxb [ngi$l_efn];
+!
+! Perform the i/o.
+!
+	stat = $QIO (
+		 CHAN	= .channel
+		,FUNC	= IO$_WRITE_GRAPHICS
+		,IOSB	= iosb[0]
+		,EFN	= .efn
+		,ASTADR	= .astadr
+		,ASTPRM = qxb[$base]
+		,P1	= qxbds[0]
+		,P2	= (.qxb_descriptor - qxbds[0]) / 12 ! number of qxb's
+		,P3	= 1
+		,P4	= vsta$k_native_graphics
+	    );
+!
+! See if we were even able to send the request.
+!
+	IF NOT .stat
+	THEN
+	    BEGIN
+	    $CLEANUP;
+	
+	    lib_add_err( .stat);
+	    lib_ret_err( vsta$_cpyare)
+	    END;
+!
+! Wait for completion if we're supposed to.
+!
+	IF .wait_flag
+	THEN $WAITFR(EFN = .efn);
+!
+! If we did NOT use an ast for cleanup, then clean up now.  Also, if caller
+! had a specified ast routine, call it.  (If we used ast for cleanup, that
+! routine called the caller's specified ast routine.
+!
+	if .astadr eql 0
+	then
+	    begin
+	    if .qxb [ngi$a_astadr] neq 0
+	    then $DCLAST(
+		 ASTADR	= .qxb [ngi$a_astadr]
+		,ASTPRM	= .qxb [ngi$l_astprm]
+		);
+
+	    $cleanup
+
+	    end;
+
+	ss$_normal
+
+	end;
+
+%sbttl 'vsta$COPY_AREA -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$copy_area (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to copy a rectangular region
+! from one bitmap to a region of another bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+
+
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src'.
+
+		!vsta$k_src_bm		The source is a bitmap, supplied
+		!			by the caller. See WGA for internal
+		!			structure of a bitmap.
+
+		!vsta$k_src_vd		Source is a virtual display, given by
+		!			a virtual display ID in 'src'
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+src	,	!<value>		If constant source, the value
+		!
+		!			0 black
+		!			1-15 halftones
+		!			16 white
+		!
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+src_off_x,	!<value>			from 0 to (VD width - 1)
+
+src_off_y,	!<value>			from 0 to (VD height - 1)
+
+msk_type,	!vsta$k_msk_none		if mask not specified
+		
+		!vsta$k_msk_rectangle	if mask is a rectangle
+
+		!vsta$k_msk_bitmap	if mask is user-supplied bitmap
+
+		!vsta$k_msk_vd		if mask is a virtual display
+
+msk	,	!<address>		If mask is a rectangle, this
+		!			is a two-word block containing
+		!			a width and height
+
+		!			If mask is a bitmap, "msk" is the
+		!			address of a sub-bitmap descriptor.
+		!			(see WGA)
+
+dst_type,	!vsta$k_dst_bitmap	The destination is a bitmap, supplied
+		!			by the caller. See WGA for internal
+		!			structure of a bitmap.
+		!
+		!vsta$k_dst_vd		Destination is a virtual display,
+		!			given by a virtual display ID in 'dst'
+
+dst	,	!<address>		of a bitmap descriptor (see WGA)
+
+		!<virtual display id>	destination is a virtual display.
+
+dst_off_x,	!<value>		from 0 to (VD width - 1)
+
+dst_off_y,	!<value>		from 0 to (VD height - 1)
+	
+
+map_type,	!vsta$k_map_identity	if no map ('map' param ignored)
+
+		!vsta$k_map_source	if map indexed by source pixels
+
+		!vsta$k_map_sourcedest	if map indexed by source & dest
+
+map_size,	!<value>		bytes in the map table
+		!
+map_address:	!(ignored)		if no map 
+	REF VECTOR [,LONG],
+		!<address>		If source map, this is
+		!			a table of 2**src_planes units
+		!			in size.  Where a unit is
+		!			dst_planes number of bits in size
+
+		!<address>		If source/destination map, this
+		!			is a table of 
+		!			2**(src_planes * dst_planes) of 
+		!			units in size.  Where a unit is
+		!			dst_planes number of bits in size
+
+number_rectangles,	!<value>		number of clipping rectangles
+			!		(0 if none)
+
+rectangles,	!<address>	 	A rectangle list. The list
+		!			has the form:
+		!			word 0: x1
+		!			word 1: y1
+		!			word 2: width1
+		!			word 3: height1
+		!			word 4: x2
+		!			etc . . .
+
+		!			Note: The specified rectangle
+		!			list must contain non-intersecting
+		!			rectangles.  
+
+		!(ignored)	        if 0 rectangles
+
+wait_flag,	!<value>		true if we are to wait for I/O 
+		!			completion. false if not.
+
+efn     ,	!<value> 	        A unique VMS event flag
+
+		!vsta$k_no_efn		Specifies no event flag.
+
+astadr	,	!<address>		An address of an asynchronus completion
+		!			routine to be called on completion
+		!			of the i/o. Note: the routine is
+		!			not performed as an AST or at
+		!			VMS AST level but at VMS process
+		!			level when using the ACP internal
+		!			interface.  
+
+		!vsta$k_no_ast		Specifies no completion routine.
+
+astprm,		!<value>		A parameter to be passed to the
+		!			specified completion routine.
+
+		!(ignored)		If no completion routine specified
+iosb
+
+	):=
+	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+BUILTIN
+	 ACTUALCOUNT
+	;
+
+$ASCIDD;
+
+LOCAL
+
+	 qxb: REF ngi_dsc			!  See description in modu. head
+	,qxbds: VECTOR [24,LONG]		!  Vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	!  Window into the qxbds
+	,device_adr: REF ct_block
+	,stat
+	,channel
+	,arg: REF cop
+	,src_mbmd: REF modified_bmds
+	,msk_msbmd: REF modified_sbmds
+	,msk_mbmd: REF modified_bmds
+	,dst_mbmd: REF modified_bmds
+	;
+
+BIND
+	 source = .src: standard_bmds
+	,mask	= .msk: standard_sbmds
+	,dest	= .dst: standard_bmds
+	;
+
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  Are all the manditory parameters there
+!
+IF actualcount() LSS (wait_flag - src_type)/4
+THEN BEGIN
+	lib_add_eerr( vsta$_insfarg);
+	lib_ret_err( vsta$_cpyare);
+     END;
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_cpyare);
+     END;
+
+
+!
+!  Map the substructures in the qxb.
+!
+arg 		= qxb [ngi$w_cop_blk];
+src_mbmd 	= qxb [ngi$w_src_mbmd];
+msk_msbmd 	= qxb [ngi$w_msk_msbmd];
+msk_mbmd  	= qxb [ngi$w_msk_mbmd];
+dst_mbmd  	= qxb [ngi$w_dst_mbmd];
+
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+
+
+!
+!  Determine the source type.  If it is a constant or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+	BEGIN
+		!
+		!  Move the bitmap descriptor into the qio descriptor block
+		!
+		src_mbmd [mbmd$a_addr] = 0;
+		src_mbmd [mbmd$w_size_x] = .source [sbmd$w_size_x];
+		src_mbmd [mbmd$w_size_y] = .source [sbmd$w_size_y];
+		src_mbmd [mbmd$w_size_z] = .source [sbmd$w_size_z];
+		src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT $WRITELOCK( 	 .source [sbmd$a_addr]
+					,((.source [sbmd$w_size_x] + 15)/16)*2 *
+					   .source [sbmd$w_size_y] *
+					   .source [sbmd$w_size_z]
+				  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_cpyare);
+		     END;
+			   	
+	END;
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+			
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+		arg [cop$a_src] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[vsta$k_src_const]:
+		!
+		!  Temporary convert color to old method
+		!
+		IF NOT VSTA$$CONVERT_COLOR_FROM_USER( ..src, arg [cop$a_src])
+		THEN BEGIN
+			$CLEANUP;
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+	[INRANGE]: 
+		arg [cop$a_src] = ..src;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SOURCE TYPE')
+					,integer_type
+					,..src_type
+				     );
+			lib_ret_err( vsta$_cpyare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the source information
+!
+arg [cop$l_src_type] = ..src_type;
+arg [cop$l_src_off_x] = ..src_off_x;
+arg [cop$l_src_off_y] = ..src_off_y;
+
+!
+!  Determine the mask type.  If it is a rectangle or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..msk_type FROM 0 TO vsta$k_msk_types
+OF SET
+	[vsta$k_msk_bitmap]:
+	BEGIN
+		!
+		!  Copy the standard sub bitmap descriptor into the modified
+		!  subbitmap descriptor area in the qio x block
+		!
+		msk_msbmd [msbmd$a_mbmd_addr] = 0;
+		msk_msbmd [msbmd$w_off_x] = .mask [ssbmd$w_off_x];
+		msk_msbmd [msbmd$w_off_y] = .mask [ssbmd$w_off_y];
+		msk_msbmd [msbmd$w_ext_x] = .mask [ssbmd$w_ext_x];
+		msk_msbmd [msbmd$w_ext_y] = .mask [ssbmd$w_ext_y];
+
+		msk_mbmd [mbmd$a_addr] = 0;
+		msk_mbmd [mbmd$w_size_x] = .mask [ssbmd$w_size_x];
+		msk_mbmd [mbmd$w_size_y] = .mask [ssbmd$w_size_y];
+		msk_mbmd [mbmd$w_size_z] = .mask [ssbmd$w_size_z];
+		msk_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$WRITELOCK( 	 .mask [ssbmd$a_addr]
+				,((.mask [ssbmd$w_size_x] + 15)/16)*2 *
+				   .mask [ssbmd$w_size_y] *
+				   .mask [ssbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('MASK BITMAP')
+				     );
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+	   	
+	END;
+	[vsta$k_msk_vd]:
+	BEGIN
+		!
+		!  Mask passed by caller looks like:
+		!
+		!       +---------------+
+		!       |   vd channel  |
+		!       +---------------+
+		!       | yoff  | xoff  |
+		!       +---------------+
+		!       | yext  | xext  |
+		!       +---------------+
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found( mask [0,0,32,0], device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+		!
+		!  Put the mask sub-bitmap infor in the qxb.  
+		!
+		qxb [ngi$l_msk_vdid] = .device_adr [vsta$ct_l_vd_id];
+		qxb [ngi$w_msk_vd_xoff] = .mask [4,0,16,0];
+		qxb [ngi$w_msk_vd_yoff] = .mask [6,0,16,0];
+		qxb [ngi$w_msk_vd_xext] = .mask [8,0,16,0];
+		qxb [ngi$w_msk_vd_yext] = .mask [10,0,16,0];
+
+	END;
+	[vsta$k_msk_none]:;
+	[INRANGE]: 
+		arg [cop$a_msk] = ..msk;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('MASK TYPE')
+					,integer_type
+					,..msk_type
+				     );
+			lib_ret_err( vsta$_cpyare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the mask information 
+!
+arg [cop$l_msk_type] = ..msk_type;
+
+!
+!  Determine the dest type.  If it is a vd then we need only
+!  pass the value of its id to the internal interface.  
+!  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		dst_mbmd [mbmd$a_addr] = 0;
+		dst_mbmd [mbmd$w_size_x] = .dest [sbmd$w_size_x];
+		dst_mbmd [mbmd$w_size_y] = .dest [sbmd$w_size_y];
+		dst_mbmd [mbmd$w_size_z] = .dest [sbmd$w_size_z];
+		dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$MODIFYLOCK( 	 .dest [sbmd$a_addr]
+				,((.dest [sbmd$w_size_x] + 15)/16)*2 *
+				   .dest [sbmd$w_size_y] *
+				   .dest [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION BITMAP')
+				     );
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+	   	
+	END;
+	[vsta$k_dst_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.dst,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_cpyare);
+		     END;
+
+		arg [cop$a_dst] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[INRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_cpyare);
+		END;
+
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_cpyare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the dest information
+!
+arg [cop$l_dst_type] = ..dst_type;
+arg [cop$l_dst_off_x] = ..dst_off_x;
+arg [cop$l_dst_off_y] = ..dst_off_y;
+
+IF (..map_type GTR vsta$k_map_white) OR
+   (..map_type LSS vsta$k_map_black)
+THEN BEGIN 
+	$CLEANUP; 
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('MAP TYPE')
+			,integer_type
+			,..map_type
+		     );
+	lib_ret_err( vsta$_cpyare);
+     END;
+
+
+!
+!  Put the map type in the decriptor block
+!
+arg [cop$l_map_type] = ..map_type;
+
+!
+!  The rectangle list is one of those data items which must be locked down
+!
+IF ..number_rectangles GTR 1
+THEN BEGIN
+	IF NOT $WRITELOCK( .rectangles, ..number_rectangles*8)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('RECTANGLE LIST')
+				     );
+			lib_ret_err( vsta$_cpyare);
+	     END;
+
+     END
+ELSE IF ..number_rectangles EQL 1
+THEN CH$MOVE(
+		 8
+		,.rectangles
+		,qxb [ngi$w_rc_1]
+		);
+
+
+!
+!  Now fill in the rest of the descriptor block
+!
+qxb [ngi$l_opcode] = vsta$k_copy_area;
+qxb [ngi$l_efn] = parameter_value(efn);
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+arg [cop$l_rc_count] = ..number_rectangles;
+
+
+!
+!  Now perform the qio.  If the dest is a vd then use the dest channel otherwise
+!  Use vdx0 for channel
+!
+channel = ..dst;
+IF ..dst_type EQL vsta$k_dst_bitmap
+THEN BEGIN
+	stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+	IF NOT .stat
+	THEN BEGIN
+		$CLEANUP;
+
+		lib_add_err( .stat);
+		lib_ret_err( vsta$_cpyare);
+
+	     END;
+     END;
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_cpyare)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+END;	!End of VSTA$copy_area
+
+
+
+
+
+
+%sbttl 'vsta$DRAW_CURVE -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$draw_curve (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to draw a curve connecting
+! a series of points. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+	
+src_type,	!			same as copy_area
+src	,	!			same as copy_area
+src_off_x,	!			same as copy_area
+src_off_y,	!			same as copy_area
+msk_type,	!			same as copy_area
+msk	,	!			same as copy_area
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+dst_off_x,	!			same as copy_area
+dst_off_y,	!			same as copy_area
+map_type,	!			same as copy_area
+map_size,	!			same as copy_area
+map_address: 	!			same as copy_area
+	REF VECTOR [,LONG],
+
+path_count,	!<value>		number of segments in path
+
+path	,	!<address>		A list of segment elements
+		!			each of which consists of
+		!			three words, containing
+		!			an x value, a y value, and
+		!			a flag word
+
+pattern_mode,	!vsta$k_ptn_single_src	if "single-source" mode is to be used
+		!			(see WGA)
+
+		!vsta$k_ptn_altern_src	if "alternate-source" mode to be used
+		!			(see WGA)
+
+pattern_action,	!vsta$k_ptn_update	if the pattern state is to be updated
+		!			upon return from the routine
+
+		!vsta$k_ptn_no_update	if the pattern state is not to be updates
+
+pattern_block,	!<address>		A block containing the pattern length,
+		!			the pattern itself, the multiplier, and
+		!			the pattern state (see WGA)
+
+pattern_state,  !<address>		A block containing the pattern position
+		!			and multiplier count to use for the
+		!			pattern. See WGA.
+
+second_src_type,!			same as copy_area "src_type"
+
+		!(ignored)		if pattern mode is single-source
+
+second_src,	!			same as copy_area "src"
+
+		!(ignored)		if pattern mode is single-source
+
+second_src_off_x,
+second_src_off_y,
+number_rectangles,!			same as copy_area
+rectangles,	!			same as copy_area
+wait_flag,	!			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm,		!			same as copy_area
+iosb
+	):=
+
+
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+BUILTIN
+	 ACTUALCOUNT
+	;
+
+$ASCIDD;
+
+LOCAL
+
+	 qxb: REF ngi_dsc
+	,qxbds: VECTOR [24,LONG]		! vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	! Window into the qxbds
+	,stat
+	,channel
+	,device_adr: REF ct_block
+	,arg	   : REF drw
+	,src_mbmd  : REF modified_bmds
+	,ssr_mbmd  : REF modified_bmds
+	,msk_msbmd : REF modified_sbmds
+	,msk_mbmd  : REF modified_bmds
+	,dst_mbmd  : REF modified_bmds
+	;
+
+BIND
+	 source = .src: standard_bmds
+	,mask	= .msk: standard_sbmds
+	,dest	= .dst: standard_bmds
+	,ssourc = .second_src: standard_bmds
+	;
+
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  Are all the manditory parameters there
+!
+IF actualcount() LSS (wait_flag - src_type)/4
+THEN BEGIN
+	lib_add_eerr( vsta$_insfarg);
+	lib_ret_err( vsta$_drwcrv);
+     END;
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_drwcrv);
+     END;
+
+!
+! Map the substructures in the qxb
+!
+arg = qxb [ngi$w_drw_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+ssr_mbmd = qxb [ngi$w_ssr_mbmd];
+msk_msbmd = qxb [ngi$w_msk_msbmd];
+msk_mbmd  = qxb [ngi$w_msk_mbmd];
+dst_mbmd  = qxb [ngi$w_dst_mbmd];
+
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+		      
+
+!
+!  Determine the source type.  If it is a constant or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+	BEGIN
+		!
+		!  Move the bitmap descriptor into the qio descriptor block
+		!
+		src_mbmd [mbmd$a_addr] = 0;
+		src_mbmd [mbmd$w_size_x] = .source [sbmd$w_size_x];
+		src_mbmd [mbmd$w_size_y] = .source [sbmd$w_size_y];
+		src_mbmd [mbmd$w_size_z] = .source [sbmd$w_size_z];
+		src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT 
+		$WRITELOCK( 	 .source [sbmd$a_addr]
+				,((.source [sbmd$w_size_x] + 15)/16)*2 *
+				   .source [sbmd$w_size_y] *
+				   .source [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+	   	
+	END;
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		arg [drw$a_src] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[vsta$k_src_const]:
+		!
+		!  Temporary convert color to old method
+		!
+		IF NOT VSTA$$CONVERT_COLOR_FROM_USER( ..src, arg [drw$a_src])
+		THEN BEGIN
+			$CLEANUP;
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+!		IF ..src EQL 16
+!		THEN arg [drw$a_src] = 1
+!		ELSE IF ..src EQL 0
+!		THEN arg [drw$a_src] = 0
+!		ELSE arg [drw$a_src] = ..src + 1;
+	[INRANGE]: 
+		arg [drw$a_src] = ..src;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SOURCE TYPE')
+					,integer_type
+					,..src_type
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		END;
+
+TES;
+!
+!  Fill in the rest of the source information
+!
+arg [drw$l_src_type] = ..src_type;
+arg [drw$l_src_off_x] = ..src_off_x;
+arg [drw$l_src_off_y] = ..src_off_y;
+
+IF ..pattern_mode EQL vsta$k_ptn_altern_src
+THEN BEGIN
+
+	CASE ..second_src_type FROM 0 TO vsta$k_src_types
+	OF SET
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+		BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		ssr_mbmd [mbmd$a_addr] = 0;
+		ssr_mbmd [mbmd$w_size_x] = .ssourc [sbmd$w_size_x];
+		ssr_mbmd [mbmd$w_size_y] = .ssourc [sbmd$w_size_y];
+		ssr_mbmd [mbmd$w_size_z] = .ssourc [sbmd$w_size_z];
+		ssr_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT
+		$WRITELOCK( 	 .ssourc [sbmd$a_addr]
+				,((.ssourc [sbmd$w_size_x] + 15)/16)*2 *
+				   .ssourc [sbmd$w_size_y] *
+				   .ssourc [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SECOND SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		END;
+	[vsta$k_src_vd]:
+		BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.second_src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		arg [drw$a_second_src] = .device_adr [vsta$ct_l_vd_id];
+		END;
+	[INRANGE]: 
+		!
+		!  Temporary convert color to old method
+		!
+		IF ..second_src EQL 16
+		THEN arg [drw$a_second_src] = 1
+		ELSE IF ..second_src EQL 0
+		THEN arg [drw$a_second_src] = 0
+		ELSE arg [drw$a_second_src] = ..second_src - 1;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SECOND SOURCE TYPE')
+					,integer_type
+					,..second_src_type
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		END;
+
+	TES;
+
+	!
+	!  Fill in the second source info
+	!
+	arg [drw$l_second_src_type] = ..second_src_type;
+	arg [drw$l_sec_src_off_x] = ..second_src_off_x;
+	arg [drw$l_sec_src_off_y] = ..second_src_off_y;
+
+
+     END;
+
+
+!
+!  Determine the mask type.  If it is a rectangle or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..msk_type FROM 0 TO vsta$k_msk_types
+OF SET
+	[vsta$k_msk_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		msk_msbmd [msbmd$a_mbmd_addr] = 0;
+		msk_msbmd [msbmd$w_off_x] = .mask [ssbmd$w_off_x];
+		msk_msbmd [msbmd$w_off_y] = .mask [ssbmd$w_off_y];
+		msk_msbmd [msbmd$w_ext_x] = .mask [ssbmd$w_ext_x];
+		msk_msbmd [msbmd$w_ext_y] = .mask [ssbmd$w_ext_y];
+
+		msk_mbmd [mbmd$a_addr] = 0;
+		msk_mbmd [mbmd$w_size_x] = .mask [ssbmd$w_size_x];
+		msk_mbmd [mbmd$w_size_y] = .mask [ssbmd$w_size_y];
+		msk_mbmd [mbmd$w_size_z] = .mask [ssbmd$w_size_z];
+		msk_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+		!
+		!  Determine the size and location of mask bitmap
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$WRITELOCK( 	 .mask [ssbmd$a_addr]
+				,((.mask [ssbmd$w_size_x] + 15)/16)*2 *
+				   .mask [ssbmd$w_size_y] *
+				   .mask [ssbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('MASK SUB-BITMAP')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+	   	
+	END;
+	[vsta$k_msk_vd]:
+	BEGIN
+		!
+		!  Mask passed by caller looks like:
+		!
+		!       +---------------+
+		!       |   vd channel  |
+		!       +---------------+
+		!       | yoff  | xoff  |
+		!       +---------------+
+		!       | yext  | xext  |
+		!       +---------------+
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found( mask [0,0,32,0], device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		!
+		!  Put the mask sub-bitmap infor in the qxb.  
+		!
+		qxb [ngi$l_msk_vdid] = .device_adr [vsta$ct_l_vd_id];
+		qxb [ngi$w_msk_vd_xoff] = .mask [4,0,16,0];
+		qxb [ngi$w_msk_vd_yoff] = .mask [6,0,16,0];
+		qxb [ngi$w_msk_vd_xext] = .mask [8,0,16,0];
+		qxb [ngi$w_msk_vd_yext] = .mask [10,0,16,0];
+
+	END;
+	[vsta$k_msk_none]:;
+	[INRANGE]: 
+		arg [drw$a_msk] = ..msk;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('MASK TYPE')
+					,integer_type
+					,..msk_type
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		END;
+
+TES;
+!
+!  Fill in the rest of the mask information 
+!
+arg [drw$l_msk_type] = ..msk_type;
+
+!
+!  Determine the dest type.  If it is a vd then we need only
+!  pass the value of its id to the internal interface.  
+!  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		dst_mbmd [mbmd$a_addr] = 0;
+		dst_mbmd [mbmd$w_size_x] = .dest [sbmd$w_size_x];
+		dst_mbmd [mbmd$w_size_y] = .dest [sbmd$w_size_y];
+		dst_mbmd [mbmd$w_size_z] = .dest [sbmd$w_size_z];
+		dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$MODIFYLOCK( 	.dest [sbmd$a_addr],
+				((.dest [sbmd$w_size_x] + 15)/16)*2 *
+				  .dest [sbmd$w_size_y] *
+				  .dest [sbmd$w_size_z]
+			   )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION BITMAP')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		
+	   	
+	END;
+	[vsta$k_dst_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.dst,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_drwcrv);
+		     END;
+
+		arg [drw$a_dst] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[INRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		END;
+
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_drwcrv);
+		END;
+
+TES;
+!
+!  Fill in the rest of the dest information
+!
+arg [drw$l_dst_type] = ..dst_type;
+arg [drw$l_dst_off_x] = ..dst_off_x;
+arg [drw$l_dst_off_y] = ..dst_off_y;
+
+IF (..map_type GTR vsta$k_map_white) OR
+   (..map_type LSS vsta$k_map_black)
+THEN BEGIN 
+	$CLEANUP; 
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('MAP TYPE')
+			,integer_type
+			,..map_type
+		     );
+	lib_ret_err( vsta$_drwcrv);
+     END;
+!
+!  Put the map type in the decriptor block
+!
+arg [drw$l_map_type] = ..map_type;
+
+!
+!  The rectangle list is one of those data items which must be locked down
+!
+IF ..number_rectangles GTR 1
+THEN BEGIN
+	IF NOT $WRITELOCK( .rectangles, ..number_rectangles*8)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('RECTANGLE LIST')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+	     END;
+
+     END
+ELSE IF ..number_rectangles EQL 1
+THEN CH$MOVE(
+		 8
+		,.rectangles
+		,qxb [ngi$w_rc_1]
+		);
+
+
+IF ..path_count GTR 0
+THEN BEGIN
+	!
+	!  We must include the path as one of the items to lock down
+	!
+	IF NOT $WRITELOCK( .path, ..path_count*6)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('PATH LIST')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+	     END;
+
+
+     END;	! If path exists
+
+!
+!  The pattern state is one of those fields that may be returned modified
+!  so we must have vddriver lock it down
+!
+IF ..pattern_action EQL vsta$k_ptn_no_update
+THEN BEGIN
+
+	IF NOT $WRITELOCK( .pattern_state, 4)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('PATTERN STATE')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+	     END
+     END
+ELSE BEGIN
+
+	IF NOT $MODIFYLOCK( .pattern_state, 4)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('PATTERN STATE')
+				     );
+			lib_ret_err( vsta$_drwcrv);
+	     END;
+     END;
+
+
+!
+!  Now fill in the rest of the descriptor block
+!
+qxb [ngi$l_opcode] = vsta$k_draw_curve;
+qxb [ngi$l_efn] = parameter_value(efn);
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+arg [drw$l_rc_count] = ..number_rectangles;
+arg [drw$l_path_count] = ..path_count;
+arg [drw$l_pattern_mode] = ..pattern_mode;
+arg [drw$l_pattern_action] = ..pattern_action;
+
+CH$MOVE(
+	 6
+	,.pattern_block
+	,qxb [ngi$w_pattern_block]
+	);
+
+
+!
+!  Now perform the qio.  If the dest is a vd then use the dest channel otherwise
+!  Use vdx0 for channel
+!
+channel = ..dst;
+IF ..dst_type EQL vsta$k_dst_bitmap
+THEN BEGIN
+	stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+	IF NOT .stat
+	THEN BEGIN
+		$CLEANUP;
+
+		lib_add_err( .stat);
+		lib_ret_err( vsta$_drwcrv);
+
+	     END;
+     END;
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_drwcrv)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+END;  ! End of VSTA$DRAW_CURVE !
+
+
+
+%sbttl 'vsta$PRINT_TEXT -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$print_text (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to print text from a given
+! font to a region of a bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+
+! PRINT
+	
+src_type,	!vsta$k_src_const	source is a constant, as in copy-area
+
+		!vsta$k_src_ht_bitmap	source is a halftone bitmap,
+		!			as in copy-area
+
+		!vsta$k_src_ht_vd	source is a halftone virtual display,
+		!			as in copy-area
+
+		!vsta$k_src_font_bitmap	source is a font, specified as an
+		!			address of a font data base as
+		!			described by the WGA. (The bitmap
+		!			is user-supplied.)
+
+		!
+		!vsta$k_src_defined_font source is a font defined via
+		!			 text services.
+		!
+
+		!
+		!vsta$k_src_private_font source is a font defined via
+		!			 text services.
+		!
+
+src	,	!<value>		if source is a constant.
+
+		!<address>		of a halftone bitmap descriptor
+
+		!<virtual display id>	if source is a virtual display
+		!			containing a halftone pattern
+
+		!<address>		of font data base (see WGA)
+
+		!<address>		of a block containing a typeface
+		!			name descriptor, typeface size and
+		!			typeface rendition.
+		!
+
+msk_type,	!vsta$k_msk_none		there is no mask
+
+		!vsta$k_msk_font_bitmap	mask is a font, specified as an
+		!			address of a font data base as
+		!			described by the WGA. (The bitmap
+		!			is user-supplied.)
+
+		!
+		!vsta$k_msk_defined_font source is a font defined via
+		!			 text services.
+		!
+
+		!
+		!vsta$k_msk_private_font source is a font defined via
+		!			 text services.
+		!
+
+msk	,	!(ignored)		if no mask
+
+		!<address>		of font data base (see WGA)
+
+		!<address>		of a block containing a typeface
+		!			name descriptor, typeface size and
+		!			typeface rendition.
+		!
+
+dst_type,	!			same as copy_area
+
+dst	,	!			same as copy_area
+
+dst_off_action,	!vsta$k_dst_update	indicates that the destination
+		!			x and y offsets are to be updated
+		!			after the operation. (See WGA spec)
+
+		!vsta$k_dst_no_update	indicates that the destination
+		!			offsets are not to be updated
+
+dst_offset,	!<address>		a two-word block containing the x and y
+		!			offset at which the text is to be
+		!			written
+
+		!			NOTE: If requested, the destination
+		!			position is updated upon return from
+		!			the routine. (See WGA spec)
+
+map_type,	!			same as copy_area
+map_size,	!			same as copy_area
+map_address:	!			same as copy_area 
+	REF VECTOR [,LONG],
+
+text_type,	!vsta$k_txt_8bits	if the font is indexed by
+		!			8 bit text values
+
+		!vsta$k_txt_16bits	if the font is indexed by
+		!			16 bit text values
+
+text_descriptor:!<value>		standard descriptor giving 
+	REF VECTOR [2,LONG],
+		!			the number of characters and
+		!			address of the string
+
+control_count,	!<value>		number of control words
+		!			(0 implies print whole string)
+
+control	,	!			list of control words
+
+char_pad,	 !<value>		padding between characters
+
+space_pad,	 !<value>		padding for space character
+
+number_rectangles,!			same as copy_area
+rectangles,	!			same as copy_area
+wait_flag,	!			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm,		!			same as copy_area
+iosb		: REF VECTOR [,LONG]
+	):=
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+BUILTIN
+	 actualcount
+	;
+
+$ASCIDD;
+
+LOCAL
+
+	 qxb: REF ngi_dsc
+	,qxbds: VECTOR [24,LONG]		! vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	! Window into the qxbds
+	,channel
+	,stat
+	,device_adr: REF ct_block
+	,arg : REF prn
+	,src_mbmd : REF modified_bmds
+	,src_deffb : REF deffb_block
+	,msk_deffb : REF deffb_block
+	,dst_mbmd  : REF modified_bmds
+	,text_desc  : REF VECTOR [,LONG]
+	;
+BIND
+	 source = .src: standard_bmds
+	,srcfnt = .src: standard_fbmds
+	,srcvec = .src: VECTOR [,LONG]
+	,mask	= .msk: standard_sbmds
+	,mskfnt = .msk: standard_fbmds
+	,mskvec = .msk: VECTOR [,LONG]
+	,dest	= .dst: standard_bmds
+	;
+
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  Are all the manditory parameters there
+!
+IF actualcount() LSS (wait_flag - src_type)/4
+THEN BEGIN
+	lib_add_eerr( vsta$_insfarg);
+	lib_ret_err( vsta$_pritxt);
+     END;
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_pritxt);
+     END;
+
+!
+! Map the substructures in the qxb
+!
+arg = qxb [ngi$w_prn_blk];
+src_mbmd  = qxb [ngi$w_src_mbmd] ;
+src_deffb = qxb [ngi$w_src_deffb];
+msk_deffb = qxb [ngi$w_msk_deffb];
+dst_mbmd  = qxb [ngi$w_dst_mbmd];
+text_desc = qxb [ngi$l_text_desc];
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+		      
+
+!
+!  Determine the source type.  If it is a constant or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_ht_bitmap]:
+	BEGIN
+		!
+		!  Move the bitmap descriptor into the qio descriptor block
+		!
+		src_mbmd [mbmd$a_addr] = 0;
+		src_mbmd [mbmd$w_size_x] = .source [sbmd$w_size_x];
+		src_mbmd [mbmd$w_size_y] = .source [sbmd$w_size_y];
+		src_mbmd [mbmd$w_size_z] = .source [sbmd$w_size_z];
+		src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT 
+		$WRITELOCK( .source [sbmd$a_addr],
+				((.source [sbmd$w_size_x] + 15)/16)*2 *
+				  .source [sbmd$w_size_y] *
+				  .source [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+	   	
+	END;
+	[vsta$k_src_font_bitmap]:
+	BEGIN
+		!
+		!  Check to see if mask = fnt if so then return error.
+		!
+		IF (..msk_type EQL vsta$k_src_font_bitmap) OR
+		   (..msk_type EQL vsta$k_msk_defined_font)
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badprnmsk);
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		!   The size of the area to lock down is
+		!
+		!	size of the font descriptor block
+		!			+
+		!	size of the left array table
+		!			+
+		!	size of the font bitmap
+		!
+  		BEGIN
+		  LOCAL leftarray_size;
+		  leftarray_size = 
+			(IF (.srcfnt [sfbmd$w_width] eql 0)
+			  THEN (.srcfnt [sfbmd$w_lastchar] -
+				  .srcfnt [sfbmd$w_firstchar] + 2) * 2
+			  ELSE 0);
+
+		  IF NOT
+		  $WRITELOCK( .src, sfbmd$s_standard_fbmds +
+				.leftarray_size +
+				(((.srcfnt [sfbmd$w_size_x] + 15)/16)*2 *
+				   .srcfnt [sfbmd$w_size_y] *
+				   .srcfnt [sfbmd$w_size_z])
+			  )
+		  THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE FONT')
+				     );
+			lib_ret_err( vsta$_pritxt);
+		       END;
+
+		END;		
+	   	
+	END;
+	[vsta$k_src_defined_font, vsta$k_src_private_font]:
+	BEGIN
+		!
+		!  Check to see if mask = fnt if so then return error.
+		!
+		IF (..msk_type EQL vsta$k_src_font_bitmap) OR
+		   (..msk_type EQL vsta$k_msk_defined_font)
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badprnmsk);
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		!
+		!  We must get the typeface information.  Lock down the typeface
+		!  name and copy the typeface size and rendition.
+		!
+		$WRITELOCK( .srcvec [1], .srcvec [0] AND %X'FFFF');
+
+		src_deffb [deffb$l_tf_name_size] = .srcvec [0] AND %X'FFFF';
+		src_deffb [deffb$a_tf_name_addr] = 0;
+		src_deffb [deffb$l_tf_size] = .srcvec [2];
+		src_deffb [deffb$l_tf_rend] = .srcvec [3];
+
+		IF ..src_type EQL vsta$k_src_private_font
+		THEN BEGIN
+			!
+			! We must determine the acp internal virtual display id number
+			!
+			IF NOT vsta$$channel_found( srcvec [4] ,device_adr)
+			THEN BEGIN 
+				$CLEANUP; 
+				lib_add_eerr( vsta$_undchan); 
+				lib_ret_err( vsta$_pritxt);
+			     END;
+
+			src_deffb [deffb$l_tf_vd] = 
+				.device_adr [vsta$ct_l_vd_id];
+
+		     END
+
+		ELSE src_deffb [deffb$l_tf_vd] = 0;
+
+		
+	END;
+	[vsta$k_src_ht_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		arg [prn$a_src] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[vsta$k_src_const]:
+		!
+		!  Temporary convert color to old method
+		!
+		IF NOT VSTA$$CONVERT_COLOR_FROM_USER( ..src, arg [prn$a_src])
+		THEN BEGIN
+			$CLEANUP;
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+!		IF ..src EQL 16
+!		THEN arg [prn$a_src] = 1
+!		ELSE IF ..src EQL 0
+!		THEN arg [prn$a_src] = 0
+!		ELSE arg [prn$a_src] = ..src + 1;
+	[INRANGE]: 
+		arg [prn$a_src] = ..src;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SOURCE TYPE')
+					,integer_type
+					,..src_type
+				     );
+			lib_ret_err( vsta$_pritxt);
+		END;
+
+TES;
+!
+!  Fill in the rest of the source information
+!
+arg [prn$l_src_type] = ..src_type;
+
+!
+!  Determine the mask type.  If it is a rectangle or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..msk_type FROM 0 TO vsta$k_msk_types
+OF SET
+	[vsta$k_msk_font_bitmap]:
+	BEGIN
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		!   The size of the area to lock down is
+		!
+		!	size of the font descriptor block
+		!			+
+		!	size of the left array table
+		!			+
+		!	size of the font bitmap
+		!
+		IF NOT
+		$WRITELOCK( .msk, sfbmd$s_standard_fbmds +
+					((.mskfnt [sfbmd$w_lastchar] -
+					  .mskfnt [sfbmd$w_firstchar] + 2) * 2) +
+					(((.mskfnt [sfbmd$w_size_x] + 15)/16)*2 *
+					   .mskfnt [sfbmd$w_size_y] *
+					   .mskfnt [sfbmd$w_size_z])
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('MASK FONT')
+				     );
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		
+		
+	END;
+	[vsta$k_msk_defined_font, vsta$k_msk_private_font]:
+	BEGIN
+
+		!
+		!  We must get the typeface information.  Lock down the typeface
+		!  name and copy the typeface size and rendition.
+		!
+		$WRITELOCK( .mskvec [1], .mskvec [0] AND %X'FFFF');
+
+		msk_deffb [deffb$l_tf_name_size] = .mskvec [0] AND %X'FFFF';
+		msk_deffb [deffb$a_tf_name_addr] = 0;
+		msk_deffb [deffb$l_tf_size] = .mskvec [2];
+		msk_deffb [deffb$l_tf_rend] = .mskvec [3];
+
+		IF ..msk_type EQL vsta$k_msk_private_font
+		THEN BEGIN
+			!
+			!  We must determine the acp internal virtual display id number
+			!
+			IF NOT vsta$$channel_found( mskvec [4] ,device_adr)
+			THEN BEGIN 
+				$CLEANUP; 
+				lib_add_eerr( vsta$_undchan); 
+				lib_ret_err( vsta$_pritxt);
+			     END;
+
+			msk_deffb [deffb$l_tf_vd] = 
+				.device_adr [vsta$ct_l_vd_id];
+
+		     END
+		ELSE msk_deffb [deffb$l_tf_vd] = 0;
+
+	END;
+	[vsta$k_msk_none]:;
+	[INRANGE]: 
+		arg [prn$a_msk] = ..msk;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('MASK TYPE')
+					,integer_type
+					,..msk_type
+				     );
+			lib_ret_err( vsta$_pritxt);
+		END;
+
+TES;
+!
+!  Fill in the rest of the mask information 
+!
+arg [prn$l_msk_type] = ..msk_type;
+
+!
+!  Determine the dest type.  If it is a vd then we need only
+!  pass the value of its id to the internal interface.  
+!  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		dst_mbmd [mbmd$a_addr] = 0;
+		dst_mbmd [mbmd$w_size_x] = .dest [sbmd$w_size_x];
+		dst_mbmd [mbmd$w_size_y] = .dest [sbmd$w_size_y];
+		dst_mbmd [mbmd$w_size_z] = .dest [sbmd$w_size_z];
+		dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$MODIFYLOCK( .dest [sbmd$a_addr], 
+				((.dest [sbmd$w_size_x] + 15)/16)*2 *
+				  .dest [sbmd$w_size_y] *
+				  .dest [sbmd$w_size_z]
+			   )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION')
+				     );
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		
+	   	
+	END;
+	[vsta$k_dst_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.dst,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_pritxt);
+		     END;
+
+		arg [prn$a_dst] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[INRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_pritxt);
+		END;
+
+
+	[OUTRANGE]:
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_pritxt);
+		END;
+
+TES;
+!
+!  Fill in the rest of the dest information
+!
+arg [prn$l_dst_type] = ..dst_type;
+
+IF (..map_type GTR vsta$k_map_white) OR
+   (..map_type LSS vsta$k_map_black)
+THEN BEGIN 
+	$CLEANUP; 
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('MAP TYPE')
+			,integer_type
+			,..map_type
+		     );
+	lib_ret_err( vsta$_pritxt);
+     END;
+
+!
+!  Put the map type in the decriptor block
+!
+arg [prn$l_map_type] = ..map_type;
+
+!
+!  The rectangle list is one of those data items which must be locked down
+!
+IF ..number_rectangles GTR 1
+THEN BEGIN
+	IF NOT $WRITELOCK( .rectangles, ..number_rectangles*8)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('RECTANGLE LIST')
+				     );
+			lib_ret_err( vsta$_pritxt);
+	     END;
+
+     END
+ELSE IF ..number_rectangles EQL 1
+THEN CH$MOVE(
+		 8
+		,.rectangles
+		,qxb [ngi$w_rc_1]
+		);
+
+!
+!  We must lock down the dest offset.  We allow it to be read-only if it
+!  won't actually be updated.
+!
+IF ..dst_off_action EQL vsta$k_dst_no_update
+THEN BEGIN
+
+	IF NOT $WRITELOCK( .dst_offset, 4)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION OFFSET')
+				     );
+			lib_ret_err( vsta$_pritxt);
+	     END
+     END
+ELSE BEGIN
+
+	IF NOT $MODIFYLOCK( .dst_offset, 4)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION OFFSET')
+				     );
+			lib_ret_err( vsta$_pritxt);
+	     END
+     END;
+
+
+arg [prn$l_dst_off_action] = ..dst_off_action;
+
+!
+!  We must lock down the text string
+!
+IF (.text_descriptor [0] AND %X'FFFF') GTR 0
+THEN BEGIN
+	SELECTONE ..text_type 
+	OF SET
+		[vsta$k_txt_8bits]: 	! This buffer can be byte aligned
+			$WRITELOCK( 
+					 .text_descriptor [1]
+					,.text_descriptor [0] AND %X'FFFF'
+				  );
+		[vsta$k_txt_16bits]: 
+			IF NOT
+			$WRITELOCK( 
+					 .text_descriptor [1]
+					,(.text_descriptor [0] AND %X'FFFF') * 2
+				  )
+			THEN BEGIN
+				$CLEANUP; 
+				lib_add_eerr(	 vsta$_badaln
+						,string_type
+						,$ASCIDR ('TEXT')
+					     );
+				lib_ret_err( vsta$_pritxt);
+			     END;
+
+		[OTHERWISE]: 
+			BEGIN
+				$CLEANUP;
+				lib_add_eerr(	 vsta$_badpar
+						,string_type
+						,$ASCIDR ('TEXT TYPE')
+						,integer_type
+						,..text_type
+					     );
+			
+				lib_ret_err( vsta$_pritxt);
+			END;
+	
+	   TES;
+
+
+     END	! End if text exists
+ELSE BEGIN
+	!
+	! Clean up the descriptor areas
+	!
+	$CLEANUP;		
+
+	!
+	! Put good status in iosb if one was specified
+	!
+	IF .iosb NEQ 0
+	THEN iosb [0] = ss$_normal;
+
+	RETURN ss$_normal;
+
+     END;	! End of clean up if text does not exist
+
+text_desc [0] = .text_descriptor [0] AND %X'FFFF';
+
+IF ..control_count GTR 0
+THEN BEGIN		! If control string exists
+	!
+	!  We must lock down the control string
+	!
+	IF NOT $WRITELOCK( .control, ..control_count*2)
+	THEN BEGIN
+		$CLEANUP; 
+		lib_add_eerr(	 vsta$_badaln
+				,string_type
+				,$ASCIDR ('CONTROL STRING')
+			     );
+		lib_ret_err( vsta$_pritxt);
+	     END;
+
+
+     END;		! End if control string exists
+
+!
+!  Now fill in the rest of the descriptor block
+!
+qxb [ngi$l_opcode] = vsta$k_print_text;
+qxb [ngi$l_efn] = parameter_value(efn);
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+arg [prn$l_text_type] = ..text_type;
+arg [prn$l_control_count] = ..control_count;
+arg [prn$l_rc_count] = ..number_rectangles;
+arg [prn$l_char_pad] = ..char_pad;
+arg [prn$l_space_pad] = ..space_pad;
+
+!
+!  Now perform the qio.  If the dest is a vd then use the dest channel otherwise
+!  Use vdx0 for channel
+!
+channel = ..dst;
+IF ..dst_type EQL vsta$k_dst_bitmap
+THEN BEGIN
+	stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+	IF NOT .stat
+	THEN BEGIN
+		$CLEANUP;
+
+		lib_add_err( .stat);
+		lib_ret_err( vsta$_pritxt);
+
+	     END;
+     END;
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_pritxt)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+
+END; ! VSTA$PRINT_TEXT !
+
+
+
+
+
+%sbttl 'vsta$FILL_AREA -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$FILL_AREA(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to fill area given
+! a path describing a region of a bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src'.
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+src	,	!<value>		same as copy area
+
+
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+dst_off_x,	!			same as copy_area
+dst_off_y,	!			same as copy_area
+map_type,	!			same as copy_area
+map_size,	!			same as copy_area
+map_address:	!			same as copy_area
+	REF VECTOR [,LONG],
+
+path_count,	!<value>			number of segments in path
+
+path	,	!<address>		A list of segment elements
+		!			each of which consists of
+		!			three words, containing
+		!			an x value, a y value, and
+		!			a flag word
+
+number_rectangles,	!<value>		either zero or one
+
+rectangle,	!<address>	 	A rectangle descriptor of the form:
+
+		!			word 0: x
+		!			word 1: y
+		!			word 2: width
+		!			word 3: height
+
+		!			(only one clipping rectangle is allowed)
+
+wait_flag,	!			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm,		!			same as copy_area
+iosb
+
+	):=
+
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+
+BUILTIN
+	 ACTUALCOUNT
+	;
+
+$ASCIDD;
+
+LOCAL
+
+	 qxb: REF ngi_dsc
+	,qxbds: VECTOR [24,LONG]		! vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	! Window into the qxbds
+	,stat
+	,channel
+	,device_adr: REF ct_block
+	,arg : REF fil
+	,src_mbmd : REF modified_bmds
+	,dst_mbmd  : REF modified_bmds
+	;
+BIND
+	 source = .src: standard_bmds
+	,dest	= .dst: standard_bmds
+	;
+
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  Are all the manditory parameters there
+!
+IF actualcount() LSS (wait_flag - src_type)/4
+THEN BEGIN
+	lib_add_eerr( vsta$_insfarg);
+	lib_ret_err( vsta$_filare);
+     END;
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_filare);
+     END;
+
+!
+!  Map the substructures in the qxb
+!
+arg = qxb [ngi$w_fil_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+dst_mbmd  = qxb [ngi$w_dst_mbmd];
+
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+
+
+!
+!  Determine the source type.  If it is a constant or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+	BEGIN
+		!
+		!  Move the bitmap descriptor into the qio descriptor block
+		!
+		src_mbmd [mbmd$a_addr] = 0;
+		src_mbmd [mbmd$w_size_x] = .source [sbmd$w_size_x];
+		src_mbmd [mbmd$w_size_y] = .source [sbmd$w_size_y];
+		src_mbmd [mbmd$w_size_z] = .source [sbmd$w_size_z];
+		src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT
+		$WRITELOCK( 	.source [sbmd$a_addr],
+				((.source [sbmd$w_size_x] + 15)/16)*2 *
+				  .source [sbmd$w_size_y] *
+				  .source [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		
+	   	
+	END;
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		arg [fil$a_src] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[vsta$k_src_const]:
+		!
+		!  Temporary convert color to old method
+		!
+		IF NOT VSTA$$CONVERT_COLOR_FROM_USER( ..src, arg [fil$a_src])
+		THEN BEGIN
+			$CLEANUP;
+			lib_ret_err( vsta$_filare);
+		     END;
+
+!		IF ..src EQL 16
+!		THEN arg [fil$a_src] = 1
+!		ELSE IF ..src EQL 0
+!		THEN arg [fil$a_src] = 0
+!		ELSE arg [fil$a_src] = ..src + 1;
+	[INRANGE]: 
+		arg [fil$a_src] = ..src;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SOURCE TYPE')
+					,integer_type
+					,..src_type
+				     );
+			lib_ret_err( vsta$_filare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the source information
+!
+arg [fil$l_src_type] = ..src_type;
+
+!
+!  Determine the dest type.  If it is a vd then we need only
+!  pass the value of its id to the internal interface.  
+!  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		dst_mbmd [mbmd$a_addr] = 0;
+		dst_mbmd [mbmd$w_size_x] = .dest [sbmd$w_size_x];
+		dst_mbmd [mbmd$w_size_y] = .dest [sbmd$w_size_y];
+		dst_mbmd [mbmd$w_size_z] = .dest [sbmd$w_size_z];
+		dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$MODIFYLOCK( .dest [sbmd$a_addr],
+				((.dest [sbmd$w_size_x] + 15)/16)*2 *
+				  .dest [sbmd$w_size_y] *
+				  .dest [sbmd$w_size_z]
+			   )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION BITMAP')
+				     );
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		
+	   	
+	END;
+	[vsta$k_dst_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.dst,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_filare);
+		     END;
+
+		arg [fil$a_dst] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[INRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_filare);
+		END;
+
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_filare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the dest information
+!
+arg [fil$l_dst_type] = ..dst_type;
+arg [fil$l_dst_off_x] = ..dst_off_x;
+arg [fil$l_dst_off_y] = ..dst_off_y;
+
+IF (..map_type GTR vsta$k_map_white) OR
+   (..map_type LSS vsta$k_map_black)
+THEN BEGIN 
+	$CLEANUP; 
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('MAP TYPE')
+			,integer_type
+			,..map_type
+		     );
+	lib_ret_err( vsta$_filare);
+     END;
+!
+!  Put the map type in the decriptor block
+!
+arg [fil$l_map_type] = ..map_type;
+
+!
+!  The rectangle list is one of those data items which must be locked down
+!
+IF ..number_rectangles GTR 1
+THEN BEGIN
+
+	$CLEANUP;
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('RECTANGLE COUNT')
+			,integer_type
+			,..number_rectangles
+		     );
+	lib_ret_err( vsta$_filare);
+
+     END
+ELSE IF ..number_rectangles EQL 1
+THEN CH$MOVE(
+		 8
+		,.rectangle
+		,qxb [ngi$w_rc_1]
+		);
+
+
+IF ..path_count GTR 0
+THEN BEGIN		! If path exists
+	!
+	!  We must include the path as one of the items to lock down
+	!
+	IF NOT $WRITELOCK( .path, ..path_count * 6)
+	THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('PATH LIST')
+				     );
+			lib_ret_err( vsta$_filare);
+	     END;
+
+
+     END;		! End If path exists
+
+!
+!  Now fill in the rest of the descriptor block
+!
+qxb [ngi$l_opcode] = vsta$k_fill_area;
+qxb [ngi$l_efn] = parameter_value(efn);
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+arg [fil$l_rc_count] = ..number_rectangles;
+arg [fil$l_path_count] = ..path_count;
+
+
+!
+!  Now perform the qio.  If the dest is a vd then use the dest channel otherwise
+!  Use vdx0 for channel
+!
+channel = ..dst;
+IF ..dst_type EQL vsta$k_dst_bitmap
+THEN BEGIN
+	stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+	IF NOT .stat
+	THEN BEGIN
+		$CLEANUP;
+
+		lib_add_err( .stat);
+		lib_ret_err( vsta$_cpyare);
+
+	     END;
+     END;
+
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_filare)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+END; ! VSTA$Fill_area  !
+
+
+
+
+
+
+
+
+
+
+%sbttl 'vsta$FLOOD_AREA -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$flood_area (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to flood a region of a bitmap.
+! For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+
+! FLOOD
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src', as in
+		!			copy_area.
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+src	,	!<value>		same as copy_area
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+boundary_map_size,
+		!<value>		size of map in bytes
+		!
+boundary_map,	!<value>			see WGA
+
+seed_point_x,	!<value>			see WGA
+
+seed_point_y,	!<value>			see WGA
+
+number_rectangles,	!<value>		either zero or one
+
+rectangle,	!<address>	 	A rectangle descriptor of the form:
+
+		!			word 0: x
+		!			word 1: y
+		!			word 2: width
+		!			word 3: height
+
+		!			(only one clipping rectangle is allowed)
+
+wait_flag,	!			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm,		!			same as copy_area
+iosb
+
+):=	
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+
+BUILTIN
+	 ACTUALCOUNT
+	;
+
+$ASCIDD;
+
+LOCAL
+
+	 qxb: REF ngi_dsc
+	,qxbds: VECTOR [24,LONG]		! vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	! Window into the qxbds
+	,stat
+	,channel
+	,device_adr: REF ct_block
+	,arg : REF flood_blk
+	,src_mbmd : REF modified_bmds
+	,dst_mbmd : REF modified_bmds
+	;
+
+BIND
+	 source = .src: standard_bmds
+	,dest	= .dst: standard_bmds
+	;
+
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  Are all the manditory parameters there
+!
+IF actualcount() LSS (wait_flag - src_type)/4
+THEN BEGIN
+	lib_add_eerr( vsta$_insfarg);
+	lib_ret_err( vsta$_floare);
+     END;
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_floare);
+     END;
+
+!
+!  Map the substructures of the qxb
+!
+arg = qxb [ngi$w_fld_blk];
+src_mbmd = qxb [ngi$w_src_mbmd];
+dst_mbmd = qxb [ngi$w_dst_mbmd];
+
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+
+!
+!  Determine the source type.  If it is a constant or vd then we need only
+!  pass the value to the internal interface.  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+	BEGIN
+		!
+		!  Move the bitmap descriptor into the qio descriptor block
+		!
+		src_mbmd [mbmd$a_addr] = 0;
+		src_mbmd [mbmd$w_size_x] = .source [sbmd$w_size_x];
+		src_mbmd [mbmd$w_size_y] = .source [sbmd$w_size_y];
+		src_mbmd [mbmd$w_size_z] = .source [sbmd$w_size_z];
+		src_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Calculate the size and location of memory containing bm
+		!  and enter this as one of those things to be locked down.
+		!
+		IF NOT 
+		$WRITELOCK( 	.source [sbmd$a_addr],
+				((.source [sbmd$w_size_x] + 15)/16)*2 *
+				  .source [sbmd$w_size_y] *
+				  .source [sbmd$w_size_z]
+			  )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('SOURCE BITMAP')
+				     );
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		
+			   	
+	END;
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.src,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		arg [fld$a_src] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[vsta$k_src_const]:
+		!
+		!  Temporary convert color to old method
+		!
+		IF NOT VSTA$$CONVERT_COLOR_FROM_USER( ..src, arg [fld$a_src])
+		THEN BEGIN
+			$CLEANUP;
+			lib_ret_err( vsta$_floare);
+		     END;
+!		IF ..src EQL 16
+!		THEN arg [fld$a_src] = 1
+!		ELSE IF ..src EQL 0
+!		THEN arg [fld$a_src] = 0
+!		ELSE arg [fld$a_src] = ..src + 1;
+	[INRANGE]: 
+		arg [fld$a_src] = ..src;
+
+	[OUTRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('SOURCE TYPE')
+					,integer_type
+					,..src_type
+				     );
+			lib_ret_err( vsta$_floare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the source information
+!
+arg [fld$l_src_type] = ..src_type;
+
+
+!
+!  Determine the dest type.  If it is a vd then we need only
+!  pass the value of its id to the internal interface.  
+!  If it is a bitmap then VDDRIVER
+!  must lock down the bitmap to be accessible to the ACP
+!
+CASE ..dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_bitmap]:
+	BEGIN
+		!
+		!  Get address of bitmap descriptor 
+		!
+		dst_mbmd [mbmd$a_addr] = 0;
+		dst_mbmd [mbmd$w_size_x] = .dest [sbmd$w_size_x];
+		dst_mbmd [mbmd$w_size_y] = .dest [sbmd$w_size_y];
+		dst_mbmd [mbmd$w_size_z] = .dest [sbmd$w_size_z];
+		dst_mbmd [mbmd$w_locate] = vsta$k_vaxmem;
+
+		!
+		!  Put address and extent of source bitmap into qxbds
+		!  The extent is the number of bits of the bitmap divided by 8 bits
+		!  per byte.
+		!
+		IF NOT
+		$MODIFYLOCK( 	.dest [sbmd$a_addr],
+				((.dest [sbmd$w_size_x] + 15)/16)*2 *
+				  .dest [sbmd$w_size_y] *
+				  .dest [sbmd$w_size_z]
+			   )
+		THEN BEGIN
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badaln
+					,string_type
+					,$ASCIDR ('DESTINATION BITMAP')
+				     );
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		
+			   	
+	END;
+	[vsta$k_dst_vd]:
+	BEGIN
+		!
+		!  We must determine the acp internal virtual display id number
+		!
+		IF NOT vsta$$channel_found(.dst,device_adr)
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_undchan); 
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		IF .device_adr [vsta$ct_b_tty_type] NEQ vsta$k_generic_mode
+		THEN BEGIN 
+			$CLEANUP; 
+			lib_add_eerr( vsta$_notnative); 
+			lib_ret_err( vsta$_floare);
+		     END;
+
+		arg [fld$a_dst] = .device_adr [vsta$ct_l_vd_id];
+	END;
+	[INRANGE]: 
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_floare);
+		END;
+
+
+	[OUTRANGE]:
+		BEGIN 
+			$CLEANUP; 
+			lib_add_eerr(	 vsta$_badpar
+					,string_type
+					,$ASCIDR ('DESTINATION TYPE')
+					,integer_type
+					,..dst_type
+				     );
+			lib_ret_err( vsta$_floare);
+		END;
+
+TES;
+!
+!  Fill in the rest of the dest information
+!
+arg [fld$l_dst_type] = ..dst_type;
+arg [fld$l_dst_off_x] = 0;
+arg [fld$l_dst_off_y] = 0;
+
+
+!
+!  The rectangle list is one of those data items which must be locked down
+!
+IF ..number_rectangles GTR 1
+THEN BEGIN
+
+	$CLEANUP;
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('RECTANGLE COUNT')
+			,integer_type
+			,..number_rectangles
+		     );
+	lib_ret_err( vsta$_floare);
+
+     END
+ELSE IF ..number_rectangles EQL 1
+THEN CH$MOVE(
+		 8
+		,.rectangle
+		,qxb [ngi$w_rc_1]
+		);
+
+IF ..boundary_map_size NEQ 1
+THEN BEGIN
+	$CLEANUP;
+	lib_add_eerr(	 vsta$_badpar
+			,string_type
+			,$ASCIDR ('BOUNDARY MAP SIZE')
+			,integer_type
+			,..boundary_map_size
+		     );
+	lib_ret_err( vsta$_floare);
+     END;
+!
+!  Now fill in the rest of the descriptor block
+!
+qxb [ngi$l_opcode] = vsta$k_flood_area;
+qxb [ngi$l_efn] = parameter_value(efn);
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+arg [fld$l_rc_count] = ..number_rectangles;
+arg [fld$l_boundary_map] = ..boundary_map;
+arg [fld$l_seed_point_x] = ..seed_point_x;
+arg [fld$l_seed_point_y] = ..seed_point_y;
+
+!
+!  Now perform the qio.  If the dest is a vd then use the dest channel otherwise
+!  Use vdx0 for channel
+!
+channel = ..dst;
+IF ..dst_type EQL vsta$k_dst_bitmap
+THEN BEGIN
+	stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+	IF NOT .stat
+	THEN BEGIN
+		$CLEANUP;
+
+		lib_add_err( .stat);
+		lib_ret_err( vsta$_cpyare);
+
+	     END;
+     END;
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_floare)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+END;	!End of VSTA$flood_area
+
+
+
+%sbttl 'vsta$NOOP -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$noop (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine performs a noop to the device.  Used for synchronization.
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+! NOOP
+!
+wait_flag,
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm,		!			same as copy_area
+iosb
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE:
+!
+!  SIDE EFFECTS: 
+!
+!---Calls vsta drive to send a noop to the device.
+!
+!--
+BEGIN
+
+$ASCIDD;
+
+local
+	 channel
+	,qxb: REF ngi_dsc
+	,qxbds: VECTOR [24,LONG]		! vector of qxb descriptors
+	,qxb_descriptor: REF VECTOR [,LONG]	! Window into the qxbds
+	,stat
+	,device_adr: REF ct_block
+	;
+
+!
+!  Clear the library error flag
+!
+VSTACALL_INIT();
+
+!
+!  initialize the window into the qxbds
+!
+qxb_descriptor = qxbds;
+
+!
+!  Allocate the memory necessary for the descriptor block
+!
+stat = LIB$GET_VM(
+		 %ref (ngi$s_ngi_dsc)
+		,qxb
+		);
+
+IF NOT .stat 
+THEN BEGIN
+	lib_add_err( .stat);
+	lib_ret_err( vsta$_cpyare);
+     END;
+
+
+stat = VSTA$$GET_TEMPLATE_CHAN(channel);
+IF NOT .stat THEN RETURN .stat;
+
+!
+!  Put the address and size of the Native Graphics Interface 
+!  Qio Transmission Block into the Qio Transmission Block Descriptors
+!
+$WRITELOCK( .qxb, ngi$s_ngi_dsc);
+
+qxb [ngi$l_opcode] = vsta$k_noop;
+qxb [ngi$a_astadr] = parameter_address(astadr);
+qxb [ngi$l_astprm] = parameter_value(astprm);
+qxb [ngi$l_efn] = parameter_value(efn);
+!
+! Decide whether we are forced to clean up at ast level, and send the
+! i/o request to the device.
+!
+	if not (stat = perform_io (
+	    .channel,			! channel to send to
+	    parameter_address (iosb),	! address to receive final status
+	    .qxb,			! address of i/o info block
+	    qxbds,			! start of qxb list
+	    .qxb_descriptor,		! end of qxb list
+	    parameter_value (wait_flag),! 1 if caller wants to wait for i/o
+	    $extsym (vsta$_cpyare)	! error to deliver if failure
+	    ))
+	then return .stat;
+
+RETURN SS$_NORMAL;
+
+END;
+
+
+%sbttl 'VSTA$$NGI_AST_HANDLER -- Native Graphics Global Routine'
+GLOBAL ROUTINE VSTA$$NGI_AST_HANDLER (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine performs clean up operation for the call to the vaxstation
+! acp.  It will deliver the user ast's.
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+	qxb: REF ngi_dsc
+
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE:
+!
+!  SIDE EFFECTS: 
+!
+!---
+!
+!--
+BEGIN
+
+IF .qxb [ngi$a_astadr] NEQ 0
+THEN 
+	$DCLAST(
+		 ASTADR	= .qxb [ngi$a_astadr]
+		,ASTPRM	= .qxb [ngi$l_astprm]
+		);
+
+$CLEANUP
+
+END;
+
+
+
+END
+ELUDOM

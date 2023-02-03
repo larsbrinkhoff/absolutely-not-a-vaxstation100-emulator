@@ -1,0 +1,176 @@
+	.title	VBSUB - VAX/VMS VS100 Random Macro Subroutines
+	.ident	'V01-000'
+
+;++
+;
+; Facility:
+;
+;	VAX/VMS VS100 display driver
+;
+; Abstract:
+;
+;	This module contains macro routines called by the driver FDT routines
+;	that for some reason could not be written in BLISS.
+;
+;--
+
+	.sbttl	External and local symbol definitions
+;
+; External symbols
+;
+	$CRBDEF				; Channel request block
+	$DCDEF				; Device classes and types
+	$DDBDEF				; Device data block
+	$DEVDEF				; Device characteristics
+	$IDBDEF				; Interrupt data block
+	$IODEF				; I/O function codes
+	$IPLDEF				; Hardware IPL definitions
+	$IRPDEF				; I/O request packet
+	$IRPEDEF			; I/O request packet extension
+	$SSDEF				; System status codes
+	$UCBDEF				; Unit control block
+  	$VADEF				; Virtual Address offsets
+	$VECDEF				; Interrupt vector block
+;
+; Local symbols
+;
+	$VBDEF				; VS100 specific definitions
+;
+; Psect definition
+;
+	.psect	$$$115_DRIVER,long
+
+	.sbttl	VB$$SUB_LOCK - Check accessability and lock buffer
+;++
+; VB$$SUB_LOCK - Check acessability and lock a buffer for access
+;
+; Functional description:
+;
+;	This routine calls the passed routine to verify access and lock
+;	the buffer, if the check or lock fails then this routine is called
+;	back as a co-routine inorder to perform any clean up, the I/O is
+;	then aborted. If the check succeeds the a success status is ruturned.
+;
+;	A check is made on the size of the buffer, if it is too large an error
+;	status is returned. This check is necessary because when mapping
+;	registers are allocated for this buffer the request may succeed but the
+;	number of registers needed may exceed the the number that will fit in
+;	a byte (i.e. ^x100 registers will not fit in 8 bits). The problem is
+;	that the location for returning the number of allocated registers is
+;	only a byte.
+;
+; 	The following explains how we reached ^x1f602 as the largest buffer 
+;	size:
+;
+;	The way that UMR requirement for a buffer is calculated by the 
+;	following formula:
+;
+;		REQ = (BCNT + BOFF + 1023) / 512		[1]
+;		Where 1023 accounts for the guard page and the last page of
+;		the buffer.
+;
+;		UMR allocated = N = clear Least significant bif of (REQ + 1) [2]
+;
+;	From [2], we see that the UMRs are always allocated in multiple of 2.
+;
+;	Since VMS return the number of UMR allocated in CRB$L_INTD+VEC$B_NUMREG
+;	which is a byte long. We conclude that the max number of UMRs that VMS
+;	will allocated to satisfy any request is 254. That is, max REQ can be
+;	254.
+;
+;	Now we plug max REQ into formula [1]:
+;
+;		254 = (BCNT + BOFF + 1023) / 512
+;
+;		BCNT = 254 * 512 - 1023 - BOFF
+;		     = 254 * 512 - 1024 - BOFF + 1
+;		     = 254 * 512 - 2 * 512 - BOFF + 1
+;		     = 252 * 512 - BOFF +  1
+;		     = 129025 - BOFF
+;
+;	Since BOFF ranges from 1 to 511. BCNT will be between 129024 and
+;	128054. We choose 129024 (^x1f602) to be the ceiling of BCNT such 
+;	that REQ will not exceed 254 even in the case that BOFF = 511.
+;
+;	In other words, we take the risk of exceeding max REQ if BCNT is 
+;	greater than ^x1f602. The risk stems from that BOFF may be as large
+;	as 511.
+;
+; Inputs:
+;
+;	R0	- address of buffer to check and lock
+;	R1	- size of buffer in bytes
+;	R2	- address of routine to execute
+;	R3	- address of the IRP (I/O request packet)
+;	R4	- address of the PCB (process control block)
+;	R5	- address of the UCB (unit control block)
+;	R6	- address of the CCB (channel control block)
+;	R7	- bit number of the I/O function code
+;	R8	- address of the FDT table entry for this routine
+;
+; Outputs:
+;
+;	R0	- status
+;
+;--
+
+VB$$SUB_LOCK::				; Check and lock buffer
+
+	cmpl	r1,#^x1f602		; Buffer too large
+	bleq	10$			; No -- go on
+	movzwl	#SS$_IVBUFLEN,r0	; Yes -- return error
+	rsb				; Return
+10$:	jsb	(r2)			; Check and lock buffer
+	blbs	r0,20$			; Successful?
+	pushr	#^m<r0,r1>		; No -- save registers
+	jsb	VB$$SET_RETURN_IRPE	; Clean up the IRPE's
+	popr	#^m<r0,r1>		; Restore registers
+20$:	rsb				; Return
+
+	.sbttl	VB$$SUB_UNLOCK - Unlock I/O buffers
+;++
+; VB$$SUB_UNLOCK - Unlock I/O buffers
+;
+; Functional description:
+;
+;	This routine chains down the IRP/IRPE list unlocking previously
+;	locked buffers.
+;
+; Inputs:
+;
+;	R3	- address of the IRP (I/O request packet)
+;
+; Outputs:
+;
+;	R0	- status
+;--
+
+VB$$SUB_UNLOCK::				; Unlock buffers
+
+	pushr	#^m<r1,r2,r3,r4>	; Save some registers
+	bbc	#IRP$V_EXTEND,-		; Any IRPE's?
+		IRP$W_STS(r3),20$
+	movl	IRP$L_EXTEND(r3),r4	; Yes -- get first IRPE
+10$:	movl	IRPE$L_SVAPTE1(r4),r3	; Get SVAPTE of buffer
+	beql	20$			; Any buffer?
+	movzwl	IRPE$W_BOFF1(r4),r2	; Yes -- get byte offset
+	movl	IRPE$L_BCNT1(r4),r1	; Get byte count
+	movab	511(r1)[r2],r1		; Combine offset and size and round
+	ashl	#-VA$S_BYTE,r1,r1	; Convert to pages
+	jsb	g^MMG$UNLOCK		; Unlock the pages
+	movl	IRPE$L_SVAPTE2(r4),r3	; Get SVAPTE of buffer
+	beql	20$			; Any buffer?
+	movzwl	IRPE$W_BOFF2(r4),r2	; Yes -- get byte offset
+	movl	IRPE$L_BCNT2(r4),r1	; Get byte count
+	movab	511(r1)[r2],r1		; Combine offset and size and round
+	ashl	#-VA$S_BYTE,r1,r1	; Convert to pages
+	jsb	g^MMG$UNLOCK		; Unlock the pages
+	bbc	#IRPE$V_EXTEND,-	; Any more IRPE's?
+		IRPE$W_STS(r4),20$
+	movl	IRPE$L_EXTEND(r4),r4	; Yes -- get next IRPE
+	brb	10$			;
+20$:	popr	#^m<r1,r2,r3,r4>	; Restore some registers
+	movzwl	#SS$_NORMAL,r0		; Success return value
+	rsb				; Return
+
+	.end

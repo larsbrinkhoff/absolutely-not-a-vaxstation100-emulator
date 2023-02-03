@@ -1,0 +1,63 @@
+ 
+!*** MODULE VS$ERRORS ***
+! ++
+!  FACILITY:
+!    VAX WORKSTATIONS
+! 
+!  ABSTRACT:
+! 
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one VAXstation
+!    graphics subsystem.
+! 
+! ---
+! 
+! 
+! 
+!  Constants
+! 
+literal integer_type = 0;               ! Integer type parameter
+literal string_type = 1;                ! String type parameter
+literal system_code = 0;                ! System msg facility code
+literal rms_code = 1;                   ! RMS msg facility code
+!  
+! 
+!  Error block for individual error status code to be preserved in a
+!  format compatable with $PUTMSG
+! 
+literal vs$eb_m_complete = 1;
+literal vs$eb_k_block_size = 28;        ! Length of EB block
+macro error_block = 0,0,0,0 %;
+literal vs$eb_s_error_block = 28;
+macro vs$eb_a_flink = 0,0,32,0 %;       ! Ptr to next error block
+macro vs$eb_a_blink = 4,0,32,0 %;       ! Ptr to previous error block
+macro vs$eb_w_size = 8,0,16,0 %;        ! Data block size
+macro vs$eb_w_type = 10,0,16,0 %;       ! Data block type
+macro vs$eb_r_state_field = 12,0,32,0 %;
+literal vs$eb_s_state_field = 4;
+macro vs$eb_l_state = 12,0,32,0 %;      ! State of error block
+macro vs$eb_r_state_bits = 12,0,8,0 %;
+literal vs$eb_s_state_bits = 1;         ! Individual error block bits
+macro vs$eb_v_complete = 12,0,1,0 %;    ! Error block complete bit
+macro vs$eb_v_extra = 12,1,7,0 %;
+literal vs$eb_s_extra = 7;              ! For future DEC use
+macro vs$eb_a_irp = 16,0,32,0 %;        ! Unique error block ID (IRP)
+macro vs$eb_a_msgvec = 20,0,32,0 %;     ! Message argument vector addr.
+macro vs$eb_l_msgvec_size = 24,0,32,0 %; ! Msg argument vector size
+! 
+!  Per-process Error Block List
+! 
+literal vs$pe_k_block_size = 24;        ! Length of data block
+macro pp_errors = 0,0,0,0 %;
+literal vs$pe_s_pp_errors = 24;
+macro vs$pe_a_flink = 0,0,32,0 %;       ! Ptr to next PE block
+macro vs$pe_a_blink = 4,0,32,0 %;       ! Ptr to previous PE block
+macro vs$pe_w_size = 8,0,16,0 %;        ! Data block size
+macro vs$pe_w_type = 10,0,16,0 %;       ! Data block type
+macro vs$pe_l_pid = 12,0,32,0 %;        ! PID of owner of error block
+macro vs$pe_a_eb_flink = 16,0,32,0 %;   ! Error block list forward link
+macro vs$pe_a_eb_blink = 20,0,32,0 %;   ! Error block list backward link
+! 
+!  End of module VS$VSERRORS
+! 

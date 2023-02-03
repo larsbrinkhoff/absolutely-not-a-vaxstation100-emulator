@@ -1,0 +1,2436 @@
+%TITLE 'vs$vds_window -- Routines for manipulating windows'
+MODULE vs$vds_window (
+		IDENT = '1.2-1',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!	This module contains routines for manipulating windows.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+	vs$$vds_create_window,		!Create a window in a pasteboard
+	vs$$vds_create_native_window,	!Create a window in a pasteboard
+	vs$$vds_fetch_wname,		!Return string descriptor address
+	vs$$vds_create_term_window,	!Ditto.  Don't notify H.I. though.
+	initialize_wb,			!Create and initialize a window block
+	establish_window_rectangles,	!Add visible rectangles to PB data base
+					! for a newly-created window.
+	vs$$vds_get_window_char,	!Get the characteristics of a window
+	vs$$vds_set_window_char,	!Set the characteristics of a window
+	vs$$vds_move_window_in_pb,	!Move a window within a pasteboard
+	vs$$vds_delete_window,		!Delete a window
+	delete_window_stuff,		!Get rid of VDS window stuff
+	vs$$vds_vp_gone,		!Delete a window's viewport reference
+	vs$$vds_add_rec_to_window,	!Add a rectangle to a window
+	vs$$vds_consolidate_wvr: NOVALUE, !Consolidate WVR rectangles
+	vs$$vds_remove_rec_from_window,	!Remove a rectangle from a window
+	vs$$vds_map_win_to_vp,		!Map a window to a viewport in VSS
+	vs$$vds_map_win_rec,		!Map a window segment to a vp in VSS
+	vs$$vds_window_found;		!Find a window by ID in linked list
+!
+! INCLUDE FILES:
+!
+library 'VSTA$LIBRARY:LIBMACROS';	! Things like "$return_error"
+library 'VSTA$LIBRARY:VSVDSPB';		! Symbols like "rectangle_block"
+library 'VSTA$LIBRARY:VSSRVDATA';	! max window size.
+library 'VSTA$LIBRARY:VSACPDEF';	! ACP symbols and defs.
+library 'VSTA$LIBRARY:VSERRORS';	! Define error symbols
+library 'VSTA$LIBRARY:VSTAGBL';		! Global symbols
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! BUILT-IN MACHINE INSTRUCTIONS INTO BLISS-32
+!
+BUILTIN
+	INSQUE,				! Insert element into queue
+	REMQUE;				! Remove element from queue
+!
+! MACROS:
+!
+MACRO
+    MAKE_LONG(a,b,c,d) =		!Make bytes into longword
+	((a)^24 or (b)^16 or (c)^8 or (d))%;
+!
+! When a non-privileged user program performs some operation that involves
+! manipulating an object that the user doesn't have access to
+! (such as pasting vt100 on it's pasteboard or pasting header with tablet
+! icon on a human interface pasteboard), we need to allow the operation.
+! The "requestor_pid" OPTIONAL parameter allows the human interface to declare
+! that this operation is being done by US rather than the USER.
+!
+! The following macro sees if a specific requestor was specified, and uses
+! it.  Otherwise, the global calling process's pid is used.
+!
+macro $requestor =
+	begin
+	external vs$gl_pid;
+	if $parameter_or_0 (requestor_pid) neq 0
+	then .requestor_pid
+	else .vs$gl_pid
+	end % ;
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+$VSTA_PSECT;
+
+!
+! EXTERNAL STORAGE:
+!
+
+EXTERNAL
+	default_color_table: BLOCKVECTOR[vs$vds_k_color_table_size,4,BYTE],
+!	    INITIAL(REP vs$vds_k_color_table_size OF (MAKE_LONG(5,5,5,5))),
+					!Default pasteboard color lookup table
+	vs$vds_a_pb_lh_ptr: VECTOR[2],
+!			INITIAL(REP 2 OF (vs$vds_a_pb_lh_ptr[0])),
+					!Pasteboard queue head pointer
+	vs$vds_l_curr_w_id,
+!		:INITIAL(0);		!Most recent assigned window ID
+	vs$gl_pid,			! Global contains PID from current QIO
+	vs$gl_acp_pid,			! Our process id
+	vs$gw_vbchan: WORD;		! VB channel (used for VKB call)
+
+EXTERNAL ROUTINE
+	vsta$$acp_check_read_access,	!Check read access to object
+	vsta$$acp_check_write_access,	!Check write access to object
+	vsta$$acp_check_delete_access,	!Check delete access to object
+	vsta$$srv_window_created,	!Tell HI about a new window
+	vsta$$srv_window_deleted,	!Tell HI about a removed window
+	vs$$vds_add_rec_to_pb,		!Add a rectangle to a pasteboard
+	vs$$vds_get_sub_rect,		!Get subrectangles outside intersection
+	vs$$vds_move_vd_in_pb,		!Move virtual display in pasteboard
+	vs$$vds_move_vd_to_top_of_pb,	!Move VD to the top of a pasteboard
+	vs$$vds_pb_found,		!Find a pasteboard by ID in linked list
+	vs$$vds_remove_rec_from_pb,	!Remove a rectangle from a pasteboard
+	vs$$vds_vd_found,		!Find a VD by ID in linked list
+	vs$$vds_vrec_intersect,		!Get dimensions of intersecting rect.
+	vs$$vss_set_vp_color,		!Update the color of viewport
+	vs$$vss_delete_vp,		!Delete a viewport by ID
+	vs$$vss_add_rec_to_vp,		!Add rectangle to viewport
+	vs$$vss_rem_rec_from_vp,	!Remove rectangle from viewport
+	vs$$vss_display_vd_in_vp,	!Display virtual display in viewport
+	vs$$vds_vd_onto_pb,		!Tell VD about adding new PB
+	vs$$vds_vd_from_pb,		!Tell VD about removing a PB
+	vs$$vds_set_vd_char,		!Set VD characteristics by ID
+	vs$$vds_get_vd_char,		!Get VD characteristics by ID
+	vs$$vds_create_vd,		!Create a virtual display
+	vs$$vds_delete_vd,		!Delete a virtual display
+	vs$$vds_redisplay_vd,		!Update user's real display
+	vsta$$vds_redisp_vd,		!Update user's real display (rectangle)
+	vsta$$vds_purge_vd_rc_lists,	!Purges real VD rectangle lists
+	vs$$create_vkb,			!Create a virtual keyboard for a PB
+	vs$$delete_vkb,			!Delete a virtual keyboard for a PB
+	vs$$create_vtb,			!Create a virtual tablet for a PB
+	vs$$delete_vtb,			!Delete a virtual tablet for a PB
+	vsta$$error,			!ACP error return status handler
+	vs$$acp_get_vm,			! memory allocation routine
+	vs$$acp_free_vm;		! memory deallocation routine
+!
+!
+
+
+%SBTTL 'vs$$vds_create_window -- Create Window'
+GLOBAL ROUTINE vs$$vds_create_window(
+			pb_id,		!Pasteboard ID
+			w_id,		!Window ID returned
+			name_desc: REF VECTOR,	!Window name
+			x_coor,		!X coordinate,
+			y_coor,		!Y coordinate,
+			length,		!Length of window
+			height,		!Height of window
+			requestor_pid	!Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine adds this window to the linked list of windows for this
+! pasteboard, allocates the virtual space needed, and initializes all the data
+! tables associated with this window. This includes adding rectangles to this
+! window's visible rectangle list for each virtual display visible rectangle
+! in this pasteboard which falls within the extent of this window. A unique
+! window ID is returned to the calling program to be used in future references
+! to this window. 
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	W_ID      : Longword unique Window ID
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(input parameter)
+!	X_COOR    : X coordinate of window in PB
+!			(input parameter)
+!	Y_COOR    : Y coordinate of window in PB
+!			(input parameter)
+!	LENGTH    : Length of window in PB
+!			(input parameter)
+!	HEIGHT    : Height of window in PB
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_WWONTFIT		!Window won't fit on pasteboard
+!	VSTA$_WBADSIZE		!Bad window size specified
+!
+! SIDE EFFECTS:
+!	Virtual memory will be consumed if possible.
+!--
+BEGIN
+LOCAL
+    status,			 !To contain return status value
+    pb_ptr : REF pb_block, 	 !Ptr to current PB block element
+    wb : REF w_block;	 	 !Address of allocated window block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+IF NOT vs$$vds_pb_found (.pb_id, pb_ptr)
+  THEN RETURN $error (vsta$_nosuchpb);
+
+!
+! If the requestor does not have READ access to this pasteboard, its
+! appearance can not be viewed through a window
+!
+IF NOT vsta$$acp_check_read_access
+		($requestor
+		,.pb_ptr[vs$vds_l_pb_uic]
+		,.pb_ptr[vs$vds_w_pb_prot]
+		)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'READ'
+			,string_type, %ASCID 'Pasteboard'
+			,integer_type, .pb_id
+			);
+!
+! Make sure this window will fit on the pasteboard
+!
+IF ((.length LEQ 0) OR (.height LEQ 0) OR
+   (.length GTR vsta$k_max_window_width) OR
+   (.height GTR vsta$k_max_window_height))
+  THEN RETURN $error	(vsta$_wbadsize
+			,integer_type, .length
+			,integer_type, vsta$k_max_window_width
+			,integer_type, .height
+			,integer_type, vsta$k_max_window_height
+			);
+!
+x_coor = MAX(.x_coor,0);
+y_coor = MAX(.y_coor,0);
+!
+IF (.x_coor + .length) GTR (.pb_ptr[vs$vds_l_pb_length])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+
+IF (.y_coor + .height) GTR (.pb_ptr[vs$vds_l_pb_height])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+!
+! Initialize the window block data structure
+!
+IF NOT (status = initialize_wb
+		(wb			!Return address of window_block
+		,.pb_id
+		,.name_desc
+		,.x_coor
+		,.y_coor
+		,.length
+		,.height
+		)
+	)
+  THEN RETURN .status;
+
+INSQUE (.wb, pb_ptr[vs$vds_a_pb_wl_ptr]);
+
+vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id + 1;
+.w_id = wb[vs$vds_l_w_id] = .vs$vds_l_curr_w_id;
+
+IF NOT (status = establish_window_rectangles (.pb_ptr, .wb))
+  THEN
+    BEGIN
+    delete_window_stuff (.wb);	!Release VM, REMQUE, etc.
+    vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id - 1;
+    RETURN .status;
+    END;
+!
+! Tell the human interface that the window was created.
+!
+	if not (status = vsta$$srv_window_created
+		(..w_id			!Window ID
+		,.length
+		,.height
+		,.pb_id			!Pasteboard id
+		,.vs$gl_pid		!Owner for "LOGOUT" menu item function
+		,.pb_ptr[vs$vds_v_pb_vkb]
+		,.pb_ptr[vs$vds_v_pb_vtb]
+		))
+	  THEN
+    BEGIN
+    delete_window_stuff (.wb);
+    vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id - 1
+    END;
+
+RETURN .status;	! Status return value
+END;			! End of routine vs$$vds_create_window
+
+
+
+
+%SBTTL 'vs$$vds_create_native_window -- Create System Window'
+GLOBAL ROUTINE vs$$vds_create_native_window(
+			pb_id,		!Pasteboard ID
+			w_id,		!Window ID returned
+			name_desc: REF VECTOR,	!Window name
+			x_coor,		!X coordinate,
+			y_coor,		!Y coordinate,
+			length,		!Length of window
+			height,		!Height of window
+			requestor_pid	!Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine adds this window to the linked list of windows for this
+! pasteboard, allocates the virtual space needed, and initializes all the data
+! tables associated with this window. This includes adding rectangles to this
+! window's visible rectangle list for each virtual display visible rectangle
+! in this pasteboard which falls within the extent of this window. A unique
+! window ID is returned to the calling program to be used in future references
+! to this window. 
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	W_ID      : Longword unique Window ID
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(input parameter)
+!	X_COOR    : X coordinate of window in PB
+!			(input parameter)
+!	Y_COOR    : Y coordinate of window in PB
+!			(input parameter)
+!	LENGTH    : Length of window in PB
+!			(input parameter)
+!	HEIGHT    : Height of window in PB
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_WWONTFIT		!Window won't fit on pasteboard
+!	VSTA$_WBADSIZE		!Bad window size specified
+!
+! SIDE EFFECTS:
+!	Virtual memory will be consumed if possible.
+!--
+BEGIN
+LOCAL
+    status,			 !To contain return status value
+    pb_ptr : REF pb_block, 	 !Ptr to current PB block element
+    wb : REF w_block;	 	 !Address of allocated window block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+IF NOT vs$$vds_pb_found (.pb_id, pb_ptr)
+  THEN RETURN $error (vsta$_nosuchpb);
+
+!
+! If the requestor does not have READ access to this pasteboard, its
+! appearance can not be viewed through a window
+!
+IF NOT vsta$$acp_check_read_access
+		($requestor
+		,.pb_ptr[vs$vds_l_pb_uic]
+		,.pb_ptr[vs$vds_w_pb_prot]
+		)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'READ'
+			,string_type, %ASCID 'Pasteboard'
+			,integer_type, .pb_id
+			);
+!
+! Make sure this window will fit on the pasteboard
+!
+IF ((.length LEQ 0) OR (.height LEQ 0) OR
+   (.length GTR vsta$k_max_sys_window_width) OR
+   (.height GTR vsta$k_max_sys_window_height))
+  THEN RETURN $error	(vsta$_wbadsize
+			,integer_type, .length
+			,integer_type, vsta$k_max_sys_window_width
+			,integer_type, .height
+			,integer_type, vsta$k_max_sys_window_height
+			);
+!
+x_coor = MAX(.x_coor,0);
+y_coor = MAX(.y_coor,0);
+!
+IF (.x_coor + .length) GTR (.pb_ptr[vs$vds_l_pb_length])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+
+IF (.y_coor + .height) GTR (.pb_ptr[vs$vds_l_pb_height])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+!
+! Initialize the window block data structure
+!
+IF NOT (status = initialize_wb
+		(wb			!Return address of window_block
+		,.pb_id
+		,.name_desc
+		,.x_coor
+		,.y_coor
+		,.length
+		,.height
+		)
+	)
+  THEN RETURN .status;
+
+INSQUE (.wb, pb_ptr[vs$vds_a_pb_wl_ptr]);
+
+vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id + 1;
+.w_id = wb[vs$vds_l_w_id] = .vs$vds_l_curr_w_id;
+
+IF NOT (status = establish_window_rectangles (.pb_ptr, .wb))
+  THEN
+    BEGIN
+    delete_window_stuff (.wb);	!Release VM, REMQUE, etc.
+    vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id - 1;
+    RETURN .status;
+    END;
+
+RETURN .status;		! Status return value
+
+END;			! End of routine vs$$vds_create_sys_window
+
+
+
+
+
+
+%SBTTL 'vs$$vds_fetch_wname -- Return address of window name descriptor'
+GLOBAL ROUTINE vs$$vds_fetch_wname(
+			w_id,
+			name_desc_addr	!Returned address of the descriptor
+			) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Just return the address of the window descriptor.
+!--
+BEGIN
+LOCAL
+    wb: REF w_block,	!Ptr to window block
+    pb_ptr;		!Ptr to pasteboard block (not used)
+
+.name_desc_addr = 0;		!Incase there is an error.
+
+IF NOT vs$$vds_window_found (.w_id, pb_ptr, wb)
+  THEN RETURN $error (vsta$_nosuchw);
+
+
+.name_desc_addr = wb [vs$vds_l_w_name_len];	!Return address of the s.d.
+RETURN SS$_NORMAL
+END;
+
+%SBTTL 'vs$$vds_create_term_window -- Create Window'
+GLOBAL ROUTINE vs$$vds_create_term_window(
+			pb_id,		!Pasteboard ID
+			w_id,		!Window ID returned
+			name_desc: REF VECTOR,	!Window name
+			x_coor,		!X coordinate,
+			y_coor,		!Y coordinate,
+			length,		!Length of window
+			height		!Height of window
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for creating windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine adds this window to the linked list of windows for this
+! pasteboard, allocates the virtual space needed, and initializes all the data
+! tables associated with this window. This includes adding rectangles to this
+! window's visible rectangle list for each virtual display visible rectangle
+! in this pasteboard which falls within the extent of this window. A unique
+! window ID is returned to the calling program to be used in future references
+! to this window. 
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID     : Longword unique pasteboard ID
+!			(input parameter)
+!	W_ID      : Longword unique Window ID
+!			(output parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(input parameter)
+!	X_COOR    : X coordinate of window in PB
+!			(input parameter)
+!	Y_COOR    : Y coordinate of window in PB
+!			(input parameter)
+!	LENGTH    : Length of window in PB
+!			(input parameter)
+!	HEIGHT    : Height of window in PB
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_WWONTFIT		!Window won't fit on pasteboard
+!	VSTA$_WBADSIZE		!Bad window size specified
+!
+! SIDE EFFECTS:
+!	Virtual memory will be consumed if possible.
+!--
+BEGIN
+LOCAL
+    status,			!To contain return status value
+    pb_ptr : REF pb_block,	!Ptr to current PB block element
+    wb : REF w_block;		!Address of allocated window block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+IF NOT vs$$vds_pb_found (.pb_id,pb_ptr)
+  THEN RETURN $error (vsta$_nosuchpb);
+!
+! Make sure this window will fit on the pasteboard.
+! NOTE: The human interface is allowed the create humungous windows. Since
+!	only the human interface uses this path to create windows, the max.
+!	window size restrictions are not checked.
+!
+IF (.length LEQ 0) OR (.height LEQ 0)
+  THEN RETURN $error	(vsta$_wbadsize
+			,integer_type, .length
+			,integer_type, vsta$k_max_window_width
+			,integer_type, .height
+			,integer_type, vsta$k_max_window_height
+			);
+!
+x_coor = MAX(.x_coor,0);
+y_coor = MAX(.y_coor,0);
+!
+IF (.x_coor + .length) GTR (.pb_ptr[vs$vds_l_pb_length])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+IF (.y_coor + .height) GTR (.pb_ptr[vs$vds_l_pb_height])
+  THEN RETURN $error	(vsta$_wwontfit,
+			integer_type, .pb_id);
+
+IF NOT (status = initialize_wb
+		(wb			!Return address of window_block
+		,.pb_id
+		,.name_desc
+		,.x_coor
+		,.y_coor
+		,.length
+		,.height
+		)
+	)
+  THEN RETURN .status;
+
+INSQUE (.wb, pb_ptr[vs$vds_a_pb_wl_ptr]);
+
+vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id + 1;
+.w_id = wb[vs$vds_l_w_id] = .vs$vds_l_curr_w_id;
+
+IF NOT (status = establish_window_rectangles (.pb_ptr ,.wb))
+  THEN
+    BEGIN
+    delete_window_stuff (.wb);		!Release VM, REMQUE, etc.
+    vs$vds_l_curr_w_id = .vs$vds_l_curr_w_id - 1;
+    RETURN .status;
+    END;
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE initialize_wb
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Gets memory for the window_block, inserts it into the queue,
+!	and initializes values.
+! FORMAL PARAMETERS:
+	(wb_addr			!Returned address of window block
+	,pb_id
+	,name_desc: REF VECTOR	!Window name
+	,x_coor
+	,y_coor
+	,length
+	,height
+	) =
+!--
+    BEGIN
+    LOCAL
+	wb : REF w_block,		 !Address of allocated window block
+	wn : REF VECTOR[0,BYTE],	 !Address of allocated window name
+	name_len: WORD,
+	name_len_l,
+	status;
+
+IF (.name_desc GTR 0)
+  THEN
+    BEGIN
+    name_len = .name_desc [0];
+    IF (.name_len GTR vsta$K_max_chars_wname)
+      THEN RETURN $error (vsta$_wnambig
+			,integer_type, vsta$K_max_chars_wname
+			);
+    name_len_l = .name_len;
+    END
+  ELSE
+    name_len_l = 0;			!No name, so length is zero.
+
+!
+! Allocate virtual memory for this window block and window name
+!
+IF NOT vs$$acp_get_vm
+	(UPLIT (vs$vds_k_w_length + vsta$K_max_chars_wname)
+	,wb
+	,0
+	)
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, vs$vds_k_w_length
+			,string_type, %ASCID 'Window block'
+			);
+
+wn = .wb + vs$vds_k_w_length;	!Start of window name area
+
+.wb_addr = .wb;			!Return address of window block
+
+!
+! Virtual memory successfully added for this window --
+! Initialize the appropriate window fields
+!
+wb [vs$vds_l_w_name_len] = .name_len_l;
+IF (.name_len_l GTR 0)
+  THEN CH$MOVE	(.name_len_l
+		,.name_desc [1]
+		,.wn
+		);
+wb[vs$vds_a_w_name_adr] = .wn;
+!
+wb[vs$vds_w_w_size] = vs$vds_k_w_length;
+wb[vs$vds_w_w_type] = 0;
+wb[vs$vds_l_w_pb_id] = .pb_id;
+wb[vs$vds_l_w_vp_id] = 0;
+wb[vs$vds_l_w_pid] = .vs$gl_pid;
+wb[vs$vds_l_w_x_coor] = .x_coor;
+wb[vs$vds_l_w_y_coor] = .y_coor;
+wb[vs$vds_l_w_length] = .length;
+wb[vs$vds_l_w_height] = .height;
+wb[vs$vds_a_w_wvr_ptr] = wb[vs$vds_a_w_wvr_ptr];
+wb[vs$vds_a_w_wvr_tail] = wb[vs$vds_a_w_wvr_ptr];
+!
+RETURN SS$_NORMAL
+END;
+
+ROUTINE establish_window_rectangles
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Establishes the visible rectangle list for this window based on
+!	the virtual display visible rectangle lists for this pasteboard.
+!	Adds every visible rectangle in every virtual display for this
+!	pasteboard. Only those that actually intersect are added.
+!
+! FORMAL PARAMETERS:
+	(pb_ptr : REF pb_block !Ptr to current PB block element
+	,wb
+	) =
+!--
+    BEGIN
+    LOCAL
+	vd_ptr : REF vd_block,		 !Ptr to current VD block element
+	rec_ptr : REF vvr_block,	 !Ptr to current Rect. block element
+	status;
+!
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+!
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO  !For each VD
+	  BEGIN
+	    rec_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+!
+	    WHILE .rec_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+	        IF (NOT (status = vs$$vds_add_rec_to_window(
+					.wb,
+					.vd_ptr,
+					rec_ptr[vs$vds_l_vvr_r_x_coor],
+					$true))) THEN
+		  $return_error( vsta$_wrecfail);
+		rec_ptr = .rec_ptr[vs$vds_a_vvr_next_ptr];
+	      END;	!While still visible rectangles left in list
+!
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;	!While still virtual displays left in list
+!
+!
+	RETURN SS$_NORMAL;	! Status return value
+    END;			! End of routine
+
+%SBTTL 'vs$$vds_get_window_char -- Get Window Characteristics'
+GLOBAL ROUTINE vs$$vds_get_window_char(
+		w_id,				!Window ID
+		name_desc: REF VECTOR,		!Window name descriptor
+		pb_id: REF VECTOR[0,WORD],	!Pasteboard ID (attached to)
+		vp_id: REF VECTOR[0,WORD],	!Viewport ID (mapped to)
+		x_coor: REF VECTOR[0,WORD],	!X-coordinate of window
+		y_coor: REF VECTOR[0,WORD],	!Y-coordinate of window
+		length: REF VECTOR[0,WORD],	!Length of window
+		height: REF VECTOR[0,WORD],	!Height of window
+		requestor_pid			!Who is asking
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning window characteristics,
+! the entity which provides the mechanism for viewing virtual displays on a
+! pasteboard. They are an abstract entity with coordinates and size with
+! respect to the pasteboard, and must exist to provide the mapping to viewports
+! on the virtual screen which are potentially visible to the user through a
+! physical screen.
+!	This routine searches for this window ID in every pasteboard's
+! window list, and either returns an error or the characteristics of the
+! window located.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID      : Longword unique Window ID
+!			(input parameter)
+!	NAME_DESC : Window name ascii descriptor
+!			(output parameter)
+!	PB_ID     : Word unique pasteboard ID which window is attached to
+!			(output parameter)
+!	VP_ID     : Word unique viewport ID which window is mapped to
+!			(output parameter)
+!	X_COOR    : Word window X-coordinate in pasteboard
+!			(output parameter)
+!	Y_COOR    : Word window Y-coordinate in pasteboard
+!			(output parameter)
+!	LENGTH    : Word window length in pasteboard
+!			(output parameter)
+!	HEIGHT    : Word window height in pasteboard
+!			(output parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_NOSUCHW		!No such window
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	temp_cludge: REF VECTOR[0,WORD],	!Can only handle 16 bit chars.
+	pb_ptr: REF pb_block,		!Ptr to this pasteboard block
+	w_ptr: REF w_block;		!Ptr to this window block
+!
+! See if this window ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If the requestor does not have READ access to the window's pasteboard,
+! then don't reveal the window's characteristics.
+!
+IF NOT vsta$$acp_check_read_access
+		($requestor
+		,.pb_ptr[vs$vds_l_pb_uic]
+		,.pb_ptr[vs$vds_w_pb_prot]
+		)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'READ'
+			,string_type, %ASCID 'Window'
+			,integer_type, .w_id
+			);
+!
+! Window was found -- Return characteristics to calling routine
+!
+	IF .name_desc GTR 0 THEN
+	  BEGIN
+	    name_desc[0] = MIN(	.name_desc[0],
+				.w_ptr[vs$vds_l_w_name_len]);
+	    IF .name_desc[0] GTR 0 THEN
+	      CH$MOVE(.name_desc[0],		   !Number of bytes to move
+	          .w_ptr[vs$vds_a_w_name_adr],	   !Source address
+		  .name_desc[1]);		   !Destination address
+	  END;
+!
+	IF .pb_id NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = pb_ptr[vs$vds_l_pb_id];
+	    pb_id[0] = .temp_cludge[0];
+	  END;
+
+	IF .vp_id NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = w_ptr[vs$vds_l_w_vp_id];
+	    vp_id[0] = .temp_cludge[0];
+	  END;
+
+	IF .x_coor NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = w_ptr[vs$vds_l_w_x_coor];
+	    x_coor[0] = .temp_cludge[0];
+	  END;
+
+	IF .y_coor NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = w_ptr[vs$vds_l_w_y_coor];
+	    y_coor[0] = .temp_cludge[0];
+	  END;
+
+	IF .length NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = w_ptr[vs$vds_l_w_length];
+	    length[0] = .temp_cludge[0];
+	  END;
+
+	IF .height NEQ 0 THEN 
+	  BEGIN
+	    temp_cludge = w_ptr[vs$vds_l_w_height];
+	    height[0] = .temp_cludge[0];
+	  END;
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_get_window_char
+
+
+%SBTTL 'vs$$vds_set_window_char -- Set Window Characteristics'
+GLOBAL ROUTINE vs$$vds_set_window_char(
+			w_id,		!Window ID
+			name_desc: REF VECTOR, !Window name descriptor (New)
+			length,		!Length of window (New)
+			height,		!Height of window (New)
+			requestor_pid	!Who is doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting window characteristics,
+! the entity which provides the mechanism for viewing virtual displays on a
+! pasteboard. They are an abstract entity with coordinates and size with
+! respect to the pasteboard, and must exist to provide the mapping to viewports
+! on the virtual screen which are potentially visible to the user through a
+! physical screen.
+!	This routine searches for this window ID in every pasteboard's
+! window list, and either returns an error or sets the new characteristics of
+! the window located.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID      : Longword unique Window ID
+!			(input parameter)
+!	NAME_DESC : Window name ascii descriptor (Length = 0 => No change)
+!			(input parameter)
+!	LENGTH    : Longword window length ( 0 => No change )
+!			(input parameter)
+!	HEIGHT    : Longword window height ( 0 => No change )
+!			(input parameter)
+!		  
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_NOSUCHW		!No such window
+!	VSTA$_WWONTFIT		!Window won't fit on pasteboard
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the contents of a user's viewport if mapped to
+! this window being altered and if contained within the physical screen mapped
+! to the user's display device.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	wvr_ptr: REF wvr_block,	!Ptr to arbitrary WVR block
+	next_rect,				!Save ptr to next WVR block
+	vvr_ptr: REF vvr_block,	!Ptr to arbitrary VVR block
+	w_ptr: REF w_block,		!Ptr to arbitrary window block
+	vd_ptr: REF vd_block,		!Ptr to arbitrary VD block
+	pb_ptr: REF pb_block;		!Ptr to arbitrary PB block
+!
+! See if this window ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If the requestor does not have WRITE access to the window's pasteboard,
+! then don't allow window's settings to be changed.
+!
+IF NOT vsta$$acp_check_write_access
+		($requestor
+		,.pb_ptr[vs$vds_l_pb_uic]
+		,.pb_ptr[vs$vds_w_pb_prot]
+		)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'WRITE'
+			,string_type, %ASCID 'Window'
+			,integer_type, .w_id
+			);
+!
+! If window was found -- First change its name if so desired by calling routine
+!
+!	IF .name_desc GTR 0 THEN
+!	  IF .name_desc[0] GTR 0 THEN
+!	    BEGIN
+!	      w_ptr[vs$vds_l_w_name_len] = name_desc[0] = 
+!				MIN(.name_desc[0],
+!				    vs$vds_k_w_name_size);
+!!
+!	      CH$MOVE(.name_desc[0],			!No. of bytes to move
+!		    .name_desc[1],			!Source address
+!		    .w_ptr[vs$vds_a_w_name_adr]);	!Destination address
+!	    END;
+!
+! Make sure this window size is legal on this pasteboard
+!
+	IF (.length LEQ 0) AND (.height LEQ 0) THEN
+	  RETURN SS$_NORMAL;
+!
+	IF (.length GTR vsta$k_max_window_width) OR
+	   (.height GTR vsta$k_max_window_height) THEN
+	  $return_error( vsta$_wbadsize,
+			integer_type, .length,
+			integer_type, vsta$k_max_window_width,
+			integer_type, .height,
+			integer_type, vsta$k_max_window_height);
+!
+	IF (.w_ptr[vs$vds_l_w_x_coor] + MAX(.length,0)) GTR
+	   (.pb_ptr[vs$vds_l_pb_length]) THEN
+	  $return_error( vsta$_wwontfit,
+			integer_type, .pb_ptr[vs$vds_l_pb_id]);
+	IF (.w_ptr[vs$vds_l_w_y_coor] + MAX(.height,0)) GTR
+	   (.pb_ptr[vs$vds_l_pb_height]) THEN
+	  $return_error( vsta$_wwontfit,
+			integer_type, .pb_ptr[vs$vds_l_pb_id]);
+!
+! Now alter its size if that's what the calling routine wants -- First remove
+! all the rectangles already in this window so we can start fresh
+!
+	wvr_ptr = .w_ptr[vs$vds_a_w_wvr_ptr];
+	WHILE .wvr_ptr NEQ w_ptr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    next_rect = .wvr_ptr[vs$vds_a_wvr_next_ptr];
+	    IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.w_ptr,
+						.wvr_ptr[vs$vds_l_wvr_vd_id],
+						wvr_ptr[vs$vds_l_wvr_r_x_coor],
+						.pb_ptr[vs$vds_l_pb_color]
+								))) THEN
+	      $return_error( vsta$_wsetfail,
+			    integer_type, .w_id);
+	    wvr_ptr = .next_rect;
+	  END;
+!
+! Now that we have an empty window, loop through the visible rectangle lists
+! of every virtual display in this pasteboard and create a new window visible
+! rectangle list
+!
+	IF .length GTR 0 THEN
+	  w_ptr[vs$vds_l_w_length] = .length;
+	IF .height GTR 0 THEN
+	  w_ptr[vs$vds_l_w_height] = .height;
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+!
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    vvr_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+!
+	    WHILE .vvr_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+		IF (NOT (status = vs$$vds_add_rec_to_window(
+					.w_ptr,
+					.vd_ptr,
+					vvr_ptr[vs$vds_l_vvr_r_x_coor],
+					$true))) THEN
+		  $return_error( vsta$_wsetfail,
+				integer_type, .w_id);
+		vvr_ptr = .vvr_ptr[vs$vds_a_vvr_next_ptr];
+	      END;	!While still visible rectangles left in list
+!
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;	!While still virtual displays left in list
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_set_window_char
+
+
+
+%SBTTL 'vs$$vds_delete_window -- Delete Window'
+GLOBAL ROUTINE vs$$vds_delete_window(
+			w_id,		!Window ID to be deleted
+			requestor_pid	!Who is doing the deletion
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine removes this window from the linked list of windows for
+! this pasteboard, deallocates the virtual space being occupied by it and all
+! its visible rectangles, and disassociates from any mapped viewports.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique Window ID
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHW		!No such window
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be released if possible.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,			!To contain return status value
+	requestor,		!Temp. storage for requestor PID
+	vp_id,			!Temp. storage for viewport ID
+	w_ptr : REF w_block,	!Ptr to Window block element (of ID)
+	pb_ptr : REF pb_block;	!Ptr to PB block element (of ID)
+!
+! See if this window ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If the requesting process does not own this window or have delete access
+! to the pasteboard its on, do not allow deletion
+!
+	requestor = $requestor;
+	IF ((.requestor NEQ 0)		!The ACP itself is allowed..
+		AND
+	    (.requestor NEQ .w_ptr[vs$vds_l_w_pid])) THEN
+	  IF NOT vsta$$acp_check_delete_access(
+					.requestor,
+					.pb_ptr[vs$vds_l_pb_uic],
+					.pb_ptr[vs$vds_w_pb_prot]) THEN
+	    $return_error( vsta$_noaccess,
+			string_type, %ASCID 'DELETE',
+			string_type, %ASCID 'Window',
+			integer_type, .w_id);
+!
+! Tell the human interface that this window is being deleted
+!
+	status = vsta$$srv_window_deleted(
+				.w_id,		!Window ID
+				.vs$gl_pid	! Global contains PID from QIO
+				);
+
+	if not .status THEN
+	    BEGIN
+!***	    delete_window_stuff (.w_ptr);	!Attempt to delete w database
+	    $return_error( vsta$_wnotdel,
+			      integer_type, .w_id)
+	    END;
+!
+! Delete any associated viewports (AFTER we're done deleting the window)
+!
+	IF (vp_id = .w_ptr[vs$vds_l_w_vp_id]) NEQ 0 THEN
+	  BEGIN
+	    w_ptr[vs$vds_l_w_vp_id] = 0;
+	    vs$$vss_delete_vp( .vp_id );
+!
+! Deleting the viewport MAY have made this window data base disappear right
+! out from under us. So if its gone, we're already done.
+!
+	    IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	      RETURN SS$_NORMAL;
+	  END;
+!
+! Call routine to delete all the window database stuff
+!
+	delete_window_stuff (.w_ptr );
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_delete_window
+
+ROUTINE delete_window_stuff
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Deletes window data base and releases memory
+! FORMAL PARAMETERS:
+	(w_ptr : REF w_block	 !Ptr to Window block element (of ID)
+	) =
+!--
+BEGIN
+LOCAL
+    wvr_ptr : REF wvr_block,	!Ptr to arbitrary WVR block element
+    next_rect;			!Save ptr to next WVR block
+!
+! Deallocate the virtual space occupied by every window visible rectangle block
+!
+wvr_ptr = .w_ptr[vs$vds_a_w_wvr_ptr];
+WHILE .wvr_ptr NEQ w_ptr[vs$vds_a_w_wvr_ptr] DO
+    BEGIN
+    next_rect = .wvr_ptr[vs$vds_a_wvr_next_ptr];
+    vs$$acp_free_vm (UPLIT (vs$vds_k_wvr_length),wvr_ptr, 0);
+    wvr_ptr = .next_rect;
+    END;
+!
+! Remove this window from the linked list of this pasteboard.
+!
+REMQUE(.w_ptr,w_ptr);
+!
+! Deallocate the virtual space occupied by the window data structure
+!
+vs$$acp_free_vm (UPLIT (vs$vds_k_w_length + vsta$K_max_chars_wname),w_ptr, 0);
+!
+RETURN SS$_NORMAL;
+END;			! End of routine delete_window_stuff
+
+%SBTTL 'vs$$vds_vp_gone -- Delete Window Viewport Reference'
+GLOBAL ROUTINE vs$$vds_vp_gone(
+			w_id		!Window ID to be informed
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting window's viewport references,
+! the entity which provides the mechanism for viewing virtual displays on a
+! pasteboard. They are an abstract entity with coordinates and size with
+! respect to the pasteboard, and must exist to provide the mapping to viewports
+! on the virtual screen which are potentially visible to the user through a
+! physical screen.
+!	This routine clears the window's viewport field after the viewport
+! presumably has been deleted.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique Window ID
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHW		!No such window
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	w_ptr : REF w_block,	 !Ptr to Window block element (of ID)
+	pb_ptr : REF pb_block; !Ptr to PB block element (of ID)
+!
+! See if this window ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If window found -- Zero the viewport field
+!
+	w_ptr[vs$vds_l_w_vp_id] = 0;
+!
+      RETURN SS$_NORMAL;
+    END;			! End of routine vs$$vds_vp_gone
+
+
+%SBTTL 'vs$$vds_add_rec_to_window -- Add Rectangle to Window'
+global ROUTINE vs$$vds_add_rec_to_window (
+			window_adr:REF w_block, !Address of window
+			vd_ptr: REF vd_block,   !Virtual display block
+			rect_adr:REF rectangle_block,  !Ptr to rect. block
+			display_flag		     !Display rect. in VP?
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding a rectangle to a window, where
+! a window is the entity which provides the mechanism for viewing virtual
+! displays on a pasteboard and the rectangles are the visible parts of the
+! windows. They are an abstract entity with coordinates and size with respect
+! to the pasteboard.
+!	This routine allocates virtual memory required for this rectangle
+! block, initializes its data structure, and adds it to the linked list of
+! visible rectangles for this window. This routine assumes that the window
+! DOES exist within the pasteboard as it is passed the address of the window
+! block and not an ID.
+!
+! FORMAL PARAMETERS:
+!
+!	WINDOW_ADR   : Address of window block
+!			(input parameter)
+!	VD_PTR	     : Address of virtual display block owner of this rectangle
+!			(input parameter)
+!	RECT_ADR     : Ptr to X,Y coordinates, length, and height of rectangle
+!			(input parameter)
+!	DISPLAY_FLAG : Longword display in viewport indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+!	This routine will consume virtual memory if possible for this
+! rectangle data structure.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				!RTL return status value
+	pb_ptr: REF pb_block,		!Ptr to window pasteboard block
+	vrb : REF wvr_block,		!Visible rectangle block
+	wvr_ptr: REF wvr_block,		!Ptr to arbitrary WVR block
+	next_wvr,			!Save ptr to next WVR block
+	device_rect: VECTOR[4,WORD],	!Rectangle in device format
+	del_rect : rectangle_BLOCK,	!Temporary rect. storage area
+	rec_block : rectangle_BLOCK;	!Temporary rect. storage area
+
+!
+! Determine what part (if any) of the rectangle passed as a parameter that
+! falls within the boundaries of this window.
+!
+	IF NOT vs$$vds_vrec_intersect(.window_adr[vs$vds_l_w_x_coor],
+				   .window_adr[vs$vds_l_w_y_coor],
+				   .window_adr[vs$vds_l_w_length],
+				   .window_adr[vs$vds_l_w_height],
+				   .rect_adr,rec_block) THEN
+	  RETURN SS$_NORMAL;
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+	vsta$$vds_purge_vd_rc_lists( .vd_ptr[vs$vds_l_vd_id]);
+
+!
+! This rectangle now takes precedence over anything previously occupying this
+! space in this window -- So remove them before adding this new one..
+!
+	status = vs$$vds_pb_found(.window_adr[vs$vds_l_w_pb_id],pb_ptr);
+	wvr_ptr = .window_adr[vs$vds_a_w_wvr_ptr];
+	WHILE .wvr_ptr NEQ window_adr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    next_wvr = .wvr_ptr[vs$vds_a_wvr_next_ptr];
+	    IF vs$$vds_vrec_intersect(.wvr_ptr[vs$vds_l_wvr_r_x_coor],
+					.wvr_ptr[vs$vds_l_wvr_r_y_coor],
+					.wvr_ptr[vs$vds_l_wvr_r_length],
+					.wvr_ptr[vs$vds_l_wvr_r_height],
+					rec_block,del_rect) THEN
+	      BEGIN
+	        IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.window_adr,
+						.wvr_ptr[vs$vds_l_wvr_vd_id],
+						del_rect,
+						.pb_ptr[vs$vds_l_pb_color]
+							))) THEN
+	          $return_error( vsta$_wrecnotadd,
+			         integer_type, .window_adr[vs$vds_l_w_id]);
+!
+! Reset pointer to head of linked list if any potential change so as not
+! to end up with a dangerous pointer. 
+!
+	        wvr_ptr = .window_adr[vs$vds_a_w_wvr_ptr];
+	      END
+	    ELSE
+	      wvr_ptr = .next_wvr;
+	  END;
+!
+! Convert rectangle coordinates to window offsets and then
+! Add it to the visible rectangle list for any mapped viewports
+!
+	IF (.window_adr[vs$vds_l_w_vp_id] NEQ 0) AND
+	   (.display_flag) THEN
+	  BEGIN
+	    IF (NOT (status = vs$$vss_add_rec_to_vp(
+		.window_adr[vs$vds_l_w_vp_id],
+		.vd_ptr[vs$vds_l_vd_id],
+		.rec_block[vs$vds_l_r_x_coor] - .window_adr[vs$vds_l_w_x_coor],
+		.rec_block[vs$vds_l_r_y_coor] - .window_adr[vs$vds_l_w_y_coor],
+		.rec_block[vs$vds_l_r_length],
+		.rec_block[vs$vds_l_r_height],
+		1	! force consolidation
+								))) THEN
+	      $return_error( vsta$_wrecnotadd,
+			  integer_type, .window_adr[vs$vds_l_w_id]);
+!
+!
+! Now cause only the portion that intersected to get redisplayed
+!
+	    device_rect[0] = .rec_block[vs$vds_l_r_x_coor] -
+					.vd_ptr[vs$vds_l_vd_x_coor];
+	    device_rect[1] = .rec_block[vs$vds_l_r_y_coor] -
+					.vd_ptr[vs$vds_l_vd_y_coor];
+	    device_rect[2] = .rec_block[vs$vds_l_r_length];
+	    device_rect[3] = .rec_block[vs$vds_l_r_height];
+!
+	    vsta$$vds_redisp_vd(
+				.vd_ptr[vs$vds_l_vd_id],
+				device_rect[0],
+				1,
+				vs$$vss_display_vd_in_vp,
+				.window_adr[vs$vds_l_w_vp_id],
+				.vd_ptr[vs$vds_l_vd_id],
+				.vd_ptr[vs$vds_l_vd_x_coor] -
+					.window_adr[vs$vds_l_w_x_coor],
+				.vd_ptr[vs$vds_l_vd_y_coor] -
+					.window_adr[vs$vds_l_w_y_coor]);
+	  END;
+!
+! First check to see if we can make an existing rectangle bigger instead of
+! adding a new one.
+!
+	vrb = .window_adr[vs$vds_a_w_wvr_ptr];
+	WHILE .vrb NEQ window_adr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    IF .vrb[vs$vds_l_wvr_vd_id] EQL .vd_ptr[vs$vds_l_vd_id] THEN
+	      BEGIN
+!
+! Check to the left of the visible rectangle
+!
+		IF (.rec_block[vs$vds_l_r_x_coor]+.rec_block[vs$vds_l_r_length])
+		  EQL .vrb[vs$vds_l_wvr_r_x_coor] THEN
+		IF (.vrb[vs$vds_l_wvr_r_y_coor] EQL
+					.rec_block[vs$vds_l_r_y_coor])
+		  AND (.vrb[vs$vds_l_wvr_r_height] EQL
+					.rec_block[vs$vds_l_r_height])
+		  THEN
+		    BEGIN
+		      vrb[vs$vds_l_wvr_r_x_coor] =
+					.rec_block[vs$vds_l_r_x_coor];
+		      vrb[vs$vds_l_wvr_r_length] = 
+					.rec_block[vs$vds_l_r_length] +
+						.vrb[vs$vds_l_wvr_r_length];
+		      vs$$vds_consolidate_wvr(
+					.window_adr,
+					.vrb);
+		      RETURN SS$_NORMAL;
+		    END;
+!
+! Check to the right of the visible rectangle
+!
+		IF (.vrb[vs$vds_l_wvr_r_x_coor] + .vrb[vs$vds_l_wvr_r_length])
+		  EQL .rec_block[vs$vds_l_r_x_coor] THEN
+		IF (.vrb[vs$vds_l_wvr_r_y_coor] EQL
+					.rec_block[vs$vds_l_r_y_coor])
+		AND (.vrb[vs$vds_l_wvr_r_height] EQL
+					.rec_block[vs$vds_l_r_height])
+		  THEN
+		    BEGIN
+		      vrb[vs$vds_l_wvr_r_length] =
+					.rec_block[vs$vds_l_r_length] +
+						.vrb[vs$vds_l_wvr_r_length];
+		      vs$$vds_consolidate_wvr(
+					.window_adr,
+					.vrb);
+		      RETURN SS$_NORMAL;
+		    END;
+!
+! Check underneath the visible rectangle
+!
+		IF (.rec_block[vs$vds_l_r_y_coor] +
+					 .rec_block[vs$vds_l_r_height]) EQL
+		  .vrb[vs$vds_l_wvr_r_y_coor] THEN
+		  IF (.vrb[vs$vds_l_wvr_r_x_coor] EQL
+					.rec_block[vs$vds_l_r_x_coor])
+		  AND (.vrb[vs$vds_l_wvr_r_length] EQL
+					.rec_block[vs$vds_l_r_length])
+		    THEN
+		      BEGIN
+			vrb[vs$vds_l_wvr_r_y_coor] =
+					.rec_block[vs$vds_l_r_y_coor];
+			vrb[vs$vds_l_wvr_r_height] =
+					.rec_block[vs$vds_l_r_height] +
+					.vrb[vs$vds_l_wvr_r_height];
+			vs$$vds_consolidate_wvr(
+					.window_adr,
+					.vrb);
+			RETURN SS$_NORMAL;
+		      END;
+!
+! Check on top of the visible rectangle
+!
+		IF (.vrb[vs$vds_l_wvr_r_y_coor] + .vrb[vs$vds_l_wvr_r_height])
+		  EQL .rec_block[vs$vds_l_r_y_coor] THEN
+		  IF (.vrb[vs$vds_l_wvr_r_x_coor] EQL
+					.rec_block[vs$vds_l_r_x_coor])
+		  AND (.vrb[vs$vds_l_wvr_r_length] EQL
+					.rec_block[vs$vds_l_r_length])
+		    THEN
+		      BEGIN
+			vrb[vs$vds_l_wvr_r_height] =
+						.rec_block[vs$vds_l_r_height] +
+						.vrb[vs$vds_l_wvr_r_height];
+			vs$$vds_consolidate_wvr(
+					.window_adr,
+					.vrb);
+			RETURN SS$_NORMAL;
+		      END;
+	      END;	!Of if this rectangle has same VD ID as one to add
+!
+	    vrb = .vrb[vs$vds_a_wvr_next_ptr];
+	  END;		!Of while visible rectangle blocks remain
+!
+! Could not compress existing rectangles. Must allocate memory for this
+! new window visible rectangle.
+!
+	IF (NOT (status=vs$$acp_get_vm(UPLIT (vs$vds_k_wvr_length),vrb, 0))) 
+	  THEN
+	    $return_error( vsta$_wrecnotadd,
+			  integer_type, .window_adr[vs$vds_l_w_id]);
+!
+! Initialize the coordinates and extent of this rectangle.
+!
+	vrb[vs$vds_w_wvr_size] = vs$vds_k_wvr_length;
+	vrb[vs$vds_w_wvr_type] = 0;
+	vrb[vs$vds_l_wvr_vd_id] = .vd_ptr[vs$vds_l_vd_id];
+	vrb[vs$vds_l_wvr_r_x_coor] = .rec_block[vs$vds_l_r_x_coor];
+	vrb[vs$vds_l_wvr_r_y_coor] = .rec_block[vs$vds_l_r_y_coor];
+	vrb[vs$vds_l_wvr_r_length] = .rec_block[vs$vds_l_r_length];
+	vrb[vs$vds_l_wvr_r_height] = .rec_block[vs$vds_l_r_height];
+!
+! Add it to the visible rectangle list for this window
+!
+	INSQUE(.vrb,window_adr[vs$vds_a_w_wvr_ptr]);
+!
+        RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_add_rec_to_window
+
+
+%SBTTL 'vs$$vds_consolidate_wvr -- Consolidate WVR Rectangles'
+ROUTINE vs$$vds_consolidate_wvr(
+			w_adr:REF w_block,	  !Address of window
+			wvr_adr:REF wvr_block      !Ptr to X,Y coordinates,
+			): NOVALUE =		       !height, and length of wvr
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for consolidating visible rectangles
+! (a block with X,Y coordinates, height, and length) in a window's VD
+! visible rectangle list. The rectangle is the lowest form of an abstract and
+! defines all the potentially visible regions within a pasteboard. This routine
+! should be called as a result of a rectangle consolidation at a higher level
+! which resulted in a new rectangle which could potentially be consolidated to
+! some other existing rectangles.
+!	This routine will not return until it has the fewest posible visible
+! rectangles in a window for each virtual display.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ADR    : Address of window block
+!			(input parameter)
+!	WVR_ADR  : Address of visible rectangle block (X,Y coordinates, height,
+!		   and length of rectangle amoungst other things)
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+! Virtual memory is deleted when a consolidation occurs which allows the
+! deletion of an obsolete rectangle. THIS ROUTINE IS RECURSIVE and might
+! disappear down a black hole for a while, depending on the number of
+! rectangles.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				  !RTL return status value
+	wvr: REF wvr_block;	  !Arbitrary wvr block
+!
+! Loop through all the visible rectangles of this virtual display.
+!
+	wvr = .w_adr[vs$vds_a_w_wvr_ptr];
+	WHILE .wvr NEQ w_adr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+!
+! To avoid some bounds checking, make sure these aren't the same visible
+! rectangle and the rectangles belong to the same virtual display.
+!
+	    IF (.wvr NEQ .wvr_adr) AND
+	       (.wvr[vs$vds_l_wvr_vd_id] EQL .wvr_adr[vs$vds_l_wvr_vd_id]) THEN
+	      BEGIN
+!
+! Check to the left of the arbitrary visible rectangle
+!
+		IF (.wvr_adr[vs$vds_l_wvr_r_x_coor] +
+			.wvr_adr[vs$vds_l_wvr_r_length]) EQL
+		    .wvr[vs$vds_l_wvr_r_x_coor] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.wvr[vs$vds_l_wvr_r_y_coor] EQL
+				.wvr_adr[vs$vds_l_wvr_r_y_coor]) AND
+		     (.wvr[vs$vds_l_wvr_r_height] EQL
+				.wvr_adr[vs$vds_l_wvr_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+		      vsta$$vds_purge_vd_rc_lists( 
+				.wvr_adr[vs$vds_l_wvr_vd_id]);
+
+		      wvr[vs$vds_l_wvr_r_x_coor] =
+				.wvr_adr[vs$vds_l_wvr_r_x_coor];
+		      wvr[vs$vds_l_wvr_r_length] =
+				.wvr_adr[vs$vds_l_wvr_r_length] +
+						.wvr[vs$vds_l_wvr_r_length];
+		      REMQUE(.wvr_adr,wvr_adr);
+		      vs$$acp_free_vm(
+				UPLIT(vs$vds_k_wvr_length),
+				wvr_adr,0);
+		      vs$$vds_consolidate_wvr(
+					.w_adr,
+					.wvr);
+		      RETURN;
+		    END;
+!
+! Check to the right of the arbitrary visible rectangle
+!
+		IF (.wvr[vs$vds_l_wvr_r_x_coor] +
+			.wvr[vs$vds_l_wvr_r_length]) EQL
+		    .wvr_adr[vs$vds_l_wvr_r_x_coor] THEN
+!
+! We're touching - Are we at the same Y-coordinate with
+! the same height?
+!
+		  IF (.wvr[vs$vds_l_wvr_r_y_coor] EQL
+				.wvr_adr[vs$vds_l_wvr_r_y_coor]) AND
+		     (.wvr[vs$vds_l_wvr_r_height] EQL
+				.wvr_adr[vs$vds_l_wvr_r_height]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+		      vsta$$vds_purge_vd_rc_lists( 
+				.wvr_adr[vs$vds_l_wvr_vd_id]);
+
+		      wvr[vs$vds_l_wvr_r_length] =
+				 .wvr_adr[vs$vds_l_wvr_r_length] +
+						.wvr[vs$vds_l_wvr_r_length];
+		      REMQUE(.wvr_adr,wvr_adr);
+		      vs$$acp_free_vm(
+				UPLIT(vs$vds_k_wvr_length),
+				wvr_adr,0);
+		      vs$$vds_consolidate_wvr(
+					.w_adr,
+					.wvr);
+		      RETURN;
+		    END;
+!
+! Check underneath the arbitrary visible rectangle
+!
+		IF (.wvr_adr[vs$vds_l_wvr_r_y_coor] +
+				.wvr_adr[vs$vds_l_wvr_r_height]) EQL
+		    .wvr[vs$vds_l_wvr_r_y_coor] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.wvr[vs$vds_l_wvr_r_x_coor] EQL
+				.wvr_adr[vs$vds_l_wvr_r_x_coor]) AND
+		     (.wvr[vs$vds_l_wvr_r_length] EQL
+				.wvr_adr[vs$vds_l_wvr_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+		      vsta$$vds_purge_vd_rc_lists( 
+				.wvr_adr[vs$vds_l_wvr_vd_id]);
+
+		      wvr[vs$vds_l_wvr_r_y_coor] =
+				.wvr_adr[vs$vds_l_wvr_r_y_coor];
+		      wvr[vs$vds_l_wvr_r_height] =
+				.wvr_adr[vs$vds_l_wvr_r_height] +
+						.wvr[vs$vds_l_wvr_r_height];
+		      REMQUE(.wvr_adr,wvr_adr);
+		      vs$$acp_free_vm(
+				UPLIT(vs$vds_k_wvr_length),
+				wvr_adr,0);
+		      vs$$vds_consolidate_wvr(
+					.w_adr,
+					.wvr);
+		      RETURN;
+		    END;
+!
+! Check on top of the arbitrary visible rectangle
+!
+		IF (.wvr[vs$vds_l_wvr_r_y_coor] +
+			.wvr[vs$vds_l_wvr_r_height]) EQL
+		    .wvr_adr[vs$vds_l_wvr_r_y_coor] THEN
+!
+! We're touching - Are we at the same X-coordinate with
+! the same width?
+!
+		  IF (.wvr[vs$vds_l_wvr_r_x_coor] EQL
+				.wvr_adr[vs$vds_l_wvr_r_x_coor]) AND
+		     (.wvr[vs$vds_l_wvr_r_length] EQL
+				.wvr_adr[vs$vds_l_wvr_r_length]) THEN
+!
+! Yup. Merge into 1 rectangle, remove the obsolete one, and see if the newly
+! created visible rectangle can be further merged into other existing
+! rectangles.
+!
+		    BEGIN
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+		      vsta$$vds_purge_vd_rc_lists( 
+				.wvr_adr[vs$vds_l_wvr_vd_id]);
+
+		      wvr[vs$vds_l_wvr_r_height] =
+				.wvr_adr[vs$vds_l_wvr_r_height] +
+						.wvr[vs$vds_l_wvr_r_height];
+		      REMQUE(.wvr_adr,wvr_adr);
+		      vs$$acp_free_vm(
+				UPLIT(vs$vds_k_wvr_length),
+				wvr_adr,0);
+		      vs$$vds_consolidate_wvr(
+					.w_adr,
+					.wvr);
+		      RETURN;
+		    END;
+	      END;	!If not the same visible rectangle
+!
+	    wvr = .wvr[vs$vds_a_wvr_next_ptr];
+	  END;		!Of while visible rectangle blocks remain
+!
+	RETURN;
+    END;		! end of routine vs$$vds_consolidate_wvr
+
+
+%SBTTL 'vs$$vds_remove_rec_from_window -- Remove Rectangle from Window'
+global ROUTINE vs$$vds_remove_rec_from_window(
+			window_adr:REF w_block, !Address of window
+			vd_id,			!Its virtual display ID
+			rect_adr:REF rectangle_block, !Ptr to X,Y coordinates,
+						!height, and length of rect.
+			pb_color		!Pasteboard's background color
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing a rectangle from a window,
+! where a window is the entity which provides the mechanism for viewing virtual
+! displays on a pasteboard and the rectangles are the visible parts of the
+! windows. They are an abstract entity with coordinates and size with respect
+! to the pasteboard.
+!	This routine deallocates the virtual memory required for this rectangle
+! block, deletes its data structure, and removes it from the linked list of
+! visible rectangles for this window. This routine assumes that the window
+! DOES exist within the pasteboard as it is passed the address of the window
+! block and not an ID. It is also assumed that a rectangle will be found with
+! the X and Y coordinates passed as parameters.
+!
+! FORMAL PARAMETERS:
+!
+!	WINDOW_ADR : Address of window block
+!			(input parameter)
+!	VD_ID	   : Longword unique virtual display ID for this window
+!			(input parameter)
+!	RECT_ADR   : Ptr to X,Y coordinates, length, and height of rectangle
+!			(input parameter)
+!	PB_COLOR   : Longword pasteboard background color number
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ACCVIO		!Some access violation
+!
+! SIDE EFFECTS:
+!
+!	This routine will add/release virtual memory if successful.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	nsubrect,				!Number of subrectangles left
+	status,					!RTL return status
+	subrect: BLOCKVECTOR[4,vs$vds_k_rec_length,BYTE],
+						!To hold 4 possible subrects.
+	last_rect: REF wvr_block,		!Ptr to last rectangle in list
+	curr_rect: REF wvr_block,		!Ptr to current rectangle
+	next_rect,				!Save ptr to next rectangle
+	pb_ptr: REF pb_block,			!Pasteboard block address
+	vd_ptr: REF vd_block,			!VD block address
+	rb: REF rectangle_block,		!Ptr to arbitrary rectangle
+	del_rect: rectangle_block;		!Ptr to a subrectangle
+!
+! Loop through for every visible rectangle for this window
+!
+	IF .window_adr[vs$vds_a_w_wvr_ptr] EQL window_adr[vs$vds_a_w_wvr_ptr] 
+	  THEN
+	    RETURN SS$_NORMAL;
+!
+! Make sure the specified VD exists (we really need its data base address)
+!
+	IF NOT vs$$vds_vd_found(
+			.window_adr[vs$vds_l_w_pb_id],
+			.vd_id,
+			pb_ptr,
+			vd_ptr) THEN
+	  RETURN SS$_NORMAL;
+!
+! Set up pointers to window visible rectangles of interest: the curr_rect so we
+! know when to stop, and the next_rect so we don't lose our place if we delete
+! curr_rect (and deallocate its space).
+!
+	curr_rect = .window_adr[vs$vds_a_w_wvr_ptr];
+!
+	WHILE .curr_rect NEQ window_adr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    next_rect = .curr_rect[vs$vds_a_wvr_next_ptr];
+	    IF .curr_rect[vs$vds_l_wvr_vd_id] EQL .vd_id THEN
+	      BEGIN
+!
+! If this window visible rectangle intersects with the rectangle to be
+! removed (which is passed as a parameter) and it pertains to the virtual
+! display (ID) then remove the rectangle at the intersection from this window
+! visible rectangle, else go on to next rectangle.
+!
+		IF vs$$vds_vrec_intersect(.curr_rect[vs$vds_l_wvr_r_x_coor],
+					.curr_rect[vs$vds_l_wvr_r_y_coor],
+					.curr_rect[vs$vds_l_wvr_r_length],
+					.curr_rect[vs$vds_l_wvr_r_height],
+					.rect_adr,del_rect) THEN
+		  BEGIN
+
+!
+! Call routine to purge real screen rectangles for this vd because they are
+! no longer valid.
+!
+		    vsta$$vds_purge_vd_rc_lists( .vd_id);
+
+!
+! Rectangles intersect + rectangle formed at intersection must be removed from
+! the larger rectangle and any mapped viewports.
+!
+! Remove it from its viewport
+!
+		    IF .window_adr[vs$vds_l_w_vp_id] NEQ 0 THEN
+		      IF (NOT (status = vs$$vss_rem_rec_from_vp (
+	.window_adr[vs$vds_l_w_vp_id],
+	.curr_rect[vs$vds_l_wvr_vd_id],
+	.del_rect[vs$vds_l_r_x_coor] - .window_adr[vs$vds_l_w_x_coor],
+	.del_rect[vs$vds_l_r_y_coor] - .window_adr[vs$vds_l_w_y_coor],
+	.del_rect[vs$vds_l_r_length],
+	.del_rect[vs$vds_l_r_height],
+	.pb_color,
+	1	! allow consolidation
+	))) THEN
+			$return_error( vsta$_wrecnotdel,
+				      integer_type, .window_adr[vs$vds_l_w_id]);
+!
+! Compute the rectangles outside the rectangle at the intersection.
+!
+		    IF (NOT (status = vs$$vds_get_sub_rect(
+					.curr_rect[vs$vds_l_wvr_r_x_coor],
+					.curr_rect[vs$vds_l_wvr_r_y_coor],
+					.curr_rect[vs$vds_l_wvr_r_length],
+					.curr_rect[vs$vds_l_wvr_r_height],
+					del_rect,nsubrect,subrect))) THEN
+		      $return_error( vsta$_wrecnotdel,
+				    integer_type, .window_adr[vs$vds_l_w_id]);
+!
+! The still visible rectangles have now been calculated which were formally
+! a part of the larger "curr_rect". Now remove it from the linked list of
+! visible rectangles.
+!
+		    REMQUE(.curr_rect,curr_rect);
+!
+! Deallocate the virtual space occupied by this window visible rectangle block
+! that has just been removed from the linked list.
+!
+		    vs$$acp_free_vm (UPLIT (vs$vds_k_wvr_length),curr_rect, 0);
+!
+! These new subrectangles were outside the intersection and therefore are still
+! visible to the window. Add each of these new subrectangles to the window's
+! visible rectangle list as the old rectangle is about to be deleted.
+!
+		    INCR count FROM 0 TO (.nsubrect - 1) DO
+		      BEGIN
+			rb = subrect + (.count * vs$vds_k_rec_length);
+			IF (NOT (status = vs$$vds_add_rec_to_window(
+							.window_adr,
+							.vd_ptr,
+							.rb,
+							$false))) THEN
+			  $return_error( vsta$_wrecnotdel,
+				     integer_type, .window_adr[vs$vds_l_w_id]);
+		      END;		!Of adding each new subrectangle
+!
+! Reset next pointer if any potential change in list
+!
+	   	    next_rect = .window_adr[vs$vds_a_w_wvr_ptr];
+	          END;			!Of if rectangles intersect
+	      END;			!Of if rectangle pertains to this VD
+!
+! Set up the pointers for the next pass through the loop.
+!
+	    curr_rect = .next_rect;
+	  END;			!Of while still visible rectangles in list
+!
+       RETURN SS$_NORMAL;	!Return status value
+    END;			!end of routine vs$$vds_remove_rec_from_window
+
+
+%SBTTL 'vs$$vds_map_win_to_vp -- Map Window to Viewport'
+GLOBAL ROUTINE vs$$vds_map_win_to_vp(
+			w_id,			!Unique window ID
+			vp_id,			!Unique viewport ID
+			display_flag,		!Display or not to display
+			consolidate_flag	! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for mapping a window's visible rectangle
+! list for a given pasteboard to a viewport in the virtual screen services,
+! where a window is the entity which provides the mechanism for viewing virtual
+! displays on a pasteboard and the rectangles are the visible parts of the
+! windows. They are abstract entities with coordinates and size with respect
+! to the pasteboard.
+!	This routine updates the appropriate window data structure to reflect
+! its viewport mapping and updates this viewports visible rectangle list to
+! correspond to the current window visible rectangles.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID          : Longword unique ID of the window being mapped to a VP
+!			(input parameter)
+!	VP_ID         : Longword unique ID of the VP being mapped to the window
+!			(input parameter)
+!	DISPLAY_FLAG  : Longword display flag (0 => No display, 1 => Display)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHW		!No such window exists
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	temp_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+						!Temporary rectangle holder
+	pb_ptr : REF pb_block,	!PTR to this pasteboard block
+	vd_ptr : REF vd_block,	!PTR to this VD block
+	w_ptr : REF w_block,		!PTR to this window block
+	wvr_ptr : REF wvr_block;	!PTR to this window block
+!
+! First find this window ID in the linked lists of all pasteboards
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! Initialize its viewport ID field to establish link between this window
+! and viewport whose ID was passed as parameter.
+!
+	w_ptr[vs$vds_l_w_vp_id] = .vp_id;
+!
+! Add rectangles to viewport's visible rectangle list (using window
+! coordinates)
+!
+	wvr_ptr = .w_ptr[vs$vds_a_w_wvr_ptr];
+	WHILE .wvr_ptr NEQ w_ptr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    IF (NOT (status = vs$$vss_add_rec_to_vp(
+		.vp_id,
+		.wvr_ptr[vs$vds_l_wvr_vd_id],
+		.wvr_ptr[vs$vds_l_wvr_r_x_coor] - .w_ptr[vs$vds_l_w_x_coor],
+		.wvr_ptr[vs$vds_l_wvr_r_y_coor] - .w_ptr[vs$vds_l_w_y_coor],
+		.wvr_ptr[vs$vds_l_wvr_r_length],
+		.wvr_ptr[vs$vds_l_wvr_r_height],
+		.consolidate_flag
+							))) THEN
+	      $return_error( vsta$_wmapfail,
+			    integer_type, .w_id,
+			    integer_type, .vp_id);
+!
+	    wvr_ptr = .wvr_ptr[vs$vds_a_wvr_next_ptr];
+	  END;
+!
+! Now all changes to the visible/occluded rectangle lists must be reflected
+! on the appropriate physical screens, one of which could be mapped to the
+! user's display device if the display flag is $true.
+!
+	IF .display_flag EQL $false THEN
+	  RETURN SS$_NORMAL;
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_tail];
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    IF vs$$vds_vrec_intersect(
+				.w_ptr[vs$vds_l_w_x_coor],
+				.w_ptr[vs$vds_l_w_y_coor],
+				.w_ptr[vs$vds_l_w_length],
+				.w_ptr[vs$vds_l_w_height],
+				vd_ptr[vs$vds_l_vd_x_coor],
+				temp_rect) THEN
+	      IF (NOT (status = vs$$vds_redisplay_vd(
+					.vd_ptr[vs$vds_l_vd_id])))
+		THEN
+		  $return_error( vsta$_wmapfail,
+				integer_type, .w_id,
+				integer_type, .vp_id);
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_back_ptr];
+	  END;
+!
+        RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_map_win_to_vp
+
+
+%SBTTL 'vs$$vds_map_win_rec -- Map + Display Window Segment in Viewport'
+GLOBAL ROUTINE vs$$vds_map_win_rec(
+			w_id,			!Unique window ID
+			x_coor,			!X-coordinate in window
+			y_coor,			!X-coordinate in window
+			width,			!Width of rectangle
+			height,			!Height of rectangle
+			consolidate_flag	! 1 if consolidation . . .
+			! . . . should be done.  When doing general adding or
+			! removing rectangles, 1 should be passed.  When
+			! rebuilding things from scratch (like rebuild_vp),
+			! 0 should be passed since there should be no
+			! consolidation possible as rectangles are accumulated.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for remapping a rectangle within a window
+! to its viewport. This assumes, of course, that this window has already been
+! "mapped" to a viewport and knows its ID. This routine will find all the
+! visible virtual display rectangles which reside "under" this rectangle, add
+! them to the viewport, then cause that VD rectangle to be redisplayed in the
+! viewport.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID   : Longword unique ID of the window being mapped to a VP
+!			(input parameter)
+!	X_COOR : Longword X-coordinate of rectangle within the window
+!			(input parameter)
+!	Y_COOR : Longword Y-coordinate of rectangle within the window
+!			(input parameter)
+!	WIDTH  : Longword width of rectangle within the window
+!			(input parameter)
+!	HEIGHT : Longword height of rectangle within the window
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHW		!No such window exists
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	device_rect: VECTOR[4,WORD],		!Rect. in device format
+	temp_rect: rectangle_BLOCK,		!Temporary rectangle holder
+	pb_ptr : REF pb_block,	!PTR to this pasteboard block
+	vd_ptr : REF vd_block,	!PTR to this VD block
+	w_ptr : REF w_block,		!PTR to this window block
+	vvr_ptr : REF vvr_block;	!PTR to VD visible rectangle blocks
+!
+! First find this window ID in the linked lists of all pasteboards
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If this window is not mapped to a viewport, somethin's amiss
+!
+	IF .w_ptr[vs$vds_l_w_vp_id] EQL 0 THEN
+	  $return_error( vsta$_wmapfail,
+			integer_type, .w_id,
+			integer_type, 0);
+!
+! Adjust the specifed rectangle coordinates to be pasteboard coordinates
+!
+	x_coor = .x_coor + .w_ptr[vs$vds_l_w_x_coor];
+	y_coor = .y_coor + .w_ptr[vs$vds_l_w_y_coor];
+!
+! Look through the visible rectangle lists of every virtual display on this
+! pasteboard for anything that intersects with the specified rectangle
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    vvr_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+	    WHILE .vvr_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+		IF vs$$vds_vrec_intersect(
+				.vvr_ptr[vs$vds_l_vvr_r_x_coor],
+				.vvr_ptr[vs$vds_l_vvr_r_y_coor],
+				.vvr_ptr[vs$vds_l_vvr_r_length],
+				.vvr_ptr[vs$vds_l_vvr_r_height],
+				x_coor,
+				temp_rect) THEN
+!
+! Found one - First add it to the viewport (converting pasteboard back to
+! window coordinates)
+!
+		  BEGIN
+		    vs$$vss_add_rec_to_vp (
+				.w_ptr[vs$vds_l_w_vp_id],
+				.vd_ptr[vs$vds_l_vd_id],
+				.temp_rect[vs$vds_l_r_x_coor] -
+						.w_ptr[vs$vds_l_w_x_coor],
+				.temp_rect[vs$vds_l_r_y_coor] -
+						.w_ptr[vs$vds_l_w_y_coor],
+				.temp_rect[vs$vds_l_r_length],
+				.temp_rect[vs$vds_l_r_height],
+				.consolidate_flag);
+!
+! Now cause only the portion that intersected to get redisplayed
+!
+		    device_rect[0] = .temp_rect[vs$vds_l_r_x_coor] -
+						.vd_ptr[vs$vds_l_vd_x_coor];
+		    device_rect[1] = .temp_rect[vs$vds_l_r_y_coor] -
+						.vd_ptr[vs$vds_l_vd_y_coor];
+		    device_rect[2] = .temp_rect[vs$vds_l_r_length];
+		    device_rect[3] = .temp_rect[vs$vds_l_r_height];
+!
+		    vsta$$vds_redisp_vd(
+				.vd_ptr[vs$vds_l_vd_id],
+				device_rect[0],
+				1,
+				vs$$vss_display_vd_in_vp,
+				.w_ptr[vs$vds_l_w_vp_id],
+				.vd_ptr[vs$vds_l_vd_id],
+				.vd_ptr[vs$vds_l_vd_x_coor] -
+						.w_ptr[vs$vds_l_w_x_coor],
+				.vd_ptr[vs$vds_l_vd_y_coor] -
+						.w_ptr[vs$vds_l_w_y_coor]);
+		  END;			!If rect intersects with VD visible rec
+!
+		vvr_ptr = .vvr_ptr[vs$vds_a_vvr_next_ptr];
+	      END;			!While VD visible rectangles remain
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;				!While VDs remain on pasteboard
+!
+        RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_map_win_rec
+
+
+%SBTTL 'vs$$vds_move_window_in_pb -- Move Window in Pasteboard'
+GLOBAL ROUTINE vs$$vds_move_window_in_pb(
+			w_id,			!Unique window ID
+			x_coor,			!X coordinate
+			y_coor,			!Y coordinate
+			requestor_pid		!Who is moving window
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for moving windows, the entity
+! which provides the mechanism for viewing virtual displays on a pasteboard.
+! They are an abstract entity with coordinates and size with respect to the
+! pasteboard, and must exist to provide the mapping to viewports on the virtual
+! screen which are potentially visible to the user through a physical screen.
+!	This routine redefines the visible rectangles for this window according
+! to its new coordinates within the pasteboard after locating this window by
+! ID within the window list of a pasteboard.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique Window ID
+!			(input parameter)
+!	X_COOR  : Longword new X-coordinate for window
+!			(input parameter)
+!	Y_COOR  : Longword new Y-coordinate for window
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal status return (i.e. window found)
+!	VSTA$_NOSUCHW		!No such window exists
+!	VSTA$_WWONTFIT		!Window won't fit on pasteboard
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the contents of a user's viewport if mapped to
+! this window being moved and if contained within the physical screen mapped
+! to the user's display device.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					!Return status value
+	wvr_ptr: REF wvr_block,	!Ptr to arbitrary WVR block
+	next_rect,				!Save ptr to next WVR block
+	vvr_ptr: REF vvr_block,	!Ptr to arbitrary VVR block
+	w_ptr: REF w_block,		!Ptr to current window block
+	vd_ptr: REF vd_block,		!Ptr to arbitrary VD block
+	pb_ptr: REF pb_block;		!Ptr to current PB block
+!
+! See if this window ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_window_found(.w_id,pb_ptr,w_ptr) THEN
+	  $return_error(vsta$_nosuchw);
+!
+! If the requesting process does not own this window, deny access
+!
+	 IF $requestor NEQ .w_ptr[vs$vds_l_w_pid] THEN
+	  $return_error( vsta$_wnotowned,
+			integer_type, .w_id);
+!
+! Make sure this window will still fit on the pasteboard after the move
+!
+	x_coor = MAX(.x_coor,0);
+	y_coor = MAX(.y_coor,0);
+!
+	IF (.x_coor + .w_ptr[vs$vds_l_w_length]) GTR
+	   (.pb_ptr[vs$vds_l_pb_length]) THEN
+	  $return_error( vsta$_wwontfit,
+			integer_type, .pb_ptr[vs$vds_l_pb_id]);
+	IF (.y_coor + .w_ptr[vs$vds_l_w_height]) GTR
+	   (.pb_ptr[vs$vds_l_pb_height]) THEN
+	  $return_error( vsta$_wwontfit,
+			integer_type, .pb_ptr[vs$vds_l_pb_id]);
+!
+! First remove all the rectangles already in this window so we can start fresh
+!
+	wvr_ptr = .w_ptr[vs$vds_a_w_wvr_ptr];
+	WHILE .wvr_ptr NEQ w_ptr[vs$vds_a_w_wvr_ptr] DO
+	  BEGIN
+	    next_rect = .wvr_ptr[vs$vds_a_wvr_next_ptr];
+	    IF (NOT (status = vs$$vds_remove_rec_from_window(
+						.w_ptr,
+						.wvr_ptr[vs$vds_l_wvr_vd_id],
+						wvr_ptr[vs$vds_l_wvr_r_x_coor],
+						.pb_ptr[vs$vds_l_pb_color]
+							))) THEN
+	      $return_error( vsta$_wnotmoved,
+			    integer_type, .w_id,
+			    integer_type, .pb_ptr[vs$vds_l_pb_id]);
+	    wvr_ptr = .next_rect;
+	  END;
+!
+! Now establish the new coordinates for this window as passed by parameters
+!
+	w_ptr[vs$vds_l_w_x_coor] = .x_coor;
+	w_ptr[vs$vds_l_w_y_coor] = .y_coor;
+!
+! Now that we have an empty window, loop through the visible rectangle lists
+! of every virtual display in this pasteboard and create a new window visible
+! rectangle list
+!
+	vd_ptr = .pb_ptr[vs$vds_a_pb_vdl_ptr];
+!
+	WHILE .vd_ptr NEQ pb_ptr[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    vvr_ptr = .vd_ptr[vs$vds_a_vd_vvr_ptr];
+!
+	    WHILE .vvr_ptr NEQ vd_ptr[vs$vds_a_vd_vvr_ptr] DO
+	      BEGIN
+		IF (NOT (status = vs$$vds_add_rec_to_window(
+					.w_ptr,
+					.vd_ptr,
+					vvr_ptr[vs$vds_l_vvr_r_x_coor],
+					$true))) THEN
+		  $return_error( vsta$_wnotmoved,
+				integer_type, .w_id,
+				integer_type, .pb_ptr[vs$vds_l_pb_id]);
+		vvr_ptr = .vvr_ptr[vs$vds_a_vvr_next_ptr];
+	      END;	!While still visible rectangles left in list
+!
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;	!While still virtual displays left in list
+!
+      RETURN SS$_NORMAL;	! Return success status
+    END;			! end of routine vs$$vds_move_window_in_pb
+
+
+%SBTTL 'vs$$vds_window_found -- Find window by ID'
+GLOBAL ROUTINE vs$$vds_window_found(
+			w_id,			!Unique window ID
+			pb_adr,			!Address of PB with window
+			w_adr			!Address of window found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating a window block in the
+! linked list of pasteboards given a window ID and returning its address
+! if found.
+!
+! FORMAL PARAMETERS:
+!
+!	W_ID    : Longword unique window ID
+!			(input parameter)
+!	PB_ADR  : Address of pasteboard block found for this window ID
+!			(output parameter)
+!	W_ADR   : Address of window block found for ID
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	vs$vds_a_pb_lh_ptr : Global address pointer to first PB in linked list
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Window found, address in W_ADR
+!	$false (=0)		!Window NOT found
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	w_ptr: REF w_block,	 !Ptr to current window block
+	pb_ptr: REF pb_block;	 !Ptr to current pasteboard block
+!
+! Loop through every window of every pasteboard looking for this window
+! ID
+!
+	pb_ptr = .vs$vds_a_pb_lh_ptr[0];
+	WHILE (.pb_ptr NEQ vs$vds_a_pb_lh_ptr[0]) DO
+	  BEGIN
+	    w_ptr = .pb_ptr[vs$vds_a_pb_wl_ptr];
+	    WHILE (.w_ptr NEQ pb_ptr[vs$vds_a_pb_wl_ptr]) DO
+	      IF .w_ptr[vs$vds_l_w_id] EQL .w_id THEN
+		BEGIN
+		  .pb_adr = .pb_ptr;
+		  .w_adr = .w_ptr;
+		  RETURN $true;
+		END
+	      ELSE
+		w_ptr = .w_ptr[vs$vds_a_w_next_ptr];
+!
+	    pb_ptr = .pb_ptr[vs$vds_a_pb_next_ptr];
+	  END;	!Of while pasteboards remain in list
+!
+        RETURN $false;
+    END;			! end of routine vs$$vds_window_found
+
+
+end
+eludom

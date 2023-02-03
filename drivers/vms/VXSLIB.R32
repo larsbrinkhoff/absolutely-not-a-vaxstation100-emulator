@@ -1,0 +1,121 @@
+ 
+!*** MODULE VSTA$LIB ***
+! +++
+!  Facility:
+! 
+! 	VAX/VMS VAXstation Programmer Interface Library
+! 
+!  Abstract:
+! 
+!    This module contains all the sharable library routines and data relevent to
+!    dealing with the VAXstation entities in the context of a VAX workstation
+!    running the associated workstation display software; an implementation of
+!    the System Display Architecture.
+! 
+!    Operations have been provided to allow the manipulation of paste_boards,
+!    which in turn provide the basic application mechanism for specifying
+!    spatial relationships between native displays and virtual terminals
+!    and provide a mechanism for the application to specify what parts of those
+!    native displays and terminals can be made visible through the use of
+!    windows. The number of allowable objects is limited only by the machine's
+!    memory capacity.
+! 
+!  ENVIRONMENT:
+!    VAX workstation: 780, 750, 730 running VMS with at least one
+!    ONYX/AGATE/OPAL graphics subsystem.
+! 
+! ---
+! 
+!  Internal constants
+! 
+! 
+literal vsta$k_generic_mode = 0;
+literal vsta$k_vt100_mode = 1;
+literal vsta$k_tek4014_mode = 2;
+literal vsta$k_generic_chars = 3;       ! Text and graphics device
+literal vsta$k_generic_background = 1;  ! Standard background color
+literal vsta$k_generic_foreground = 0;  ! Standard foreground color
+literal vsta$k_generic_cols_norm = 80;  ! Standard number of columns
+literal vsta$k_generic_cols_wide = 132; ! Wide number of columns
+literal vsta$k_generic_rows = 24;       ! Standard number of rows
+literal vsta$k_generic_char_height = 13; ! Standard character height
+literal vsta$k_vt100_length = 640;
+literal vsta$k_vt100_height = 312;
+literal vsta$k_vt100_bitplanes = 1;     ! Number of bitplanes
+literal vsta$k_vt100_line_height = 13;  ! Text line height
+literal vsta$k_vt100_chars = 2;         ! Text only device
+literal vsta$k_vt100_background = 1;    ! Standard background color
+literal vsta$k_vt100_foreground = 2;    ! Standard foreground color
+literal vsta$k_vt100_cols_norm = 80;    ! Standard number of columns
+literal vsta$k_vt100_cols_wide = 132;   ! Wide number of columns
+literal vsta$k_vt100_cols_max = 132;    ! Maximum number of columns
+literal vsta$k_vt100_cols_min = 1;      ! Minimum number of columns
+literal vsta$k_vt100_rows = 24;         ! Standard number of rows
+literal vsta$k_vt100_rows_max = 54;     ! Maximum number of rows
+literal vsta$k_vt100_rows_min = 1;      ! Minimum number of rows
+literal vsta$k_tek4014_length = 790;    !  Keep in this proportion
+literal vsta$k_tek4014_height = 605;    !  . .
+literal vsta$k_tek4014_bitplanes = 1;   ! Number of bitplanes
+literal vsta$k_tek4014_line_height = 13; ! Text line height
+literal vsta$k_tek4014_chars = 3;       ! Text and Graphics device
+literal vsta$k_tek4014_background = 1;  ! Standard background color
+literal vsta$k_tek4014_foreground = 2;  ! Standard foreground color
+literal vsta$k_tek4014_char_bits = 512; ! Standard characteristics
+literal vsta$k_tek4014_char_mask = 65535; ! Standard characteristics on
+literal vsta$k_font_name_length = 128;  ! Max. file specification size
+literal vsta$k_type_name_length = 128;  ! Max. typeface name size
+literal vsta$k_number_of_renditions = 4; ! Number of allowable renditions
+literal vsta$k_default_pb_color = 1;    ! Standard background color
+literal vsta$k_window_name_size = 31;   ! Max. allowed window name size
+literal vsta$k_max_bitplanes = 16;      ! Max. no. of color bitplanes
+! 
+!  VMS Ascii String Descriptor block
+! 
+literal vsta$ad_k_length = 8;           ! Length of PP block
+macro ascii_desc = 0,0,0,0 %;
+literal vsta$ad_s_ascii_desc = 8;
+macro vsta$ad_w_size = 0,0,16,0 %;      ! Length of ascii string
+macro vsta$ad_w_type = 2,0,16,0 %;      ! Type of ascii string descriptor
+macro vsta$ad_a_string = 4,0,32,0 %;    ! Ascii string address
+! 
+!  VAXstation Per-Process Information
+! 
+literal vsta$k_pp_length = 20;          ! Length of PP block
+macro pp_block = 0,0,0,0 %;
+literal vsta$s_pp_block = 20;
+macro vsta$a_tty_info = 0,0,32,0 %;     ! Ptr to TTY char. linked list
+macro vsta$a_tty_info_back = 4,0,32,0 %; ! Ptr to TTY char. list end
+macro vsta$a_curr_tty_ptr = 8,0,32,0 %; ! Ptr to "current" TTY list
+macro vsta$a_curr_tty_ptr_back = 12,0,32,0 %; ! Ptr to "current" TTY list end
+macro vsta$l_color_spec = 16,0,32,0 %;  ! Color specification for all
+! 
+!  Terminal characteristics data block
+! 
+literal vsta$ct_k_ct_length = 29;       ! Length of CT block
+macro ct_block = 0,0,0,0 %;
+literal vsta$ct_s_ct_block = 29;
+macro vsta$ct_a_next_ptr = 0,0,32,0 %;  ! Ptr to next CT block in list
+macro vsta$ct_a_back_ptr = 4,0,32,0 %;  ! Ptr to last CT block in list
+macro vsta$ct_w_size = 8,0,16,0 %;      ! CT block size
+macro vsta$ct_b_type = 10,0,8,0 %;      ! CT block type (for VMS)
+macro vsta$ct_b_tty_type = 11,0,8,0 %;  ! CT virtual terminal type
+macro vsta$ct_l_tty_chan = 12,0,32,0 %; ! "Current" terminal channel no
+macro vsta$ct_l_vd_id = 16,0,32,0 %;    ! Virtual Display ID
+macro vsta$ct_l_lognam_size = 20,0,32,0 %; ! Logical name size
+macro vsta$ct_a_lognam = 24,0,32,0 %;   ! Logical name string address
+macro vsta$ct_b_logical_name = 28,0,8,0 %; ! Logical name string start
+! 
+!  Selected terminal block
+! 
+literal vsta$st_k_st_length = 16;       ! Length of ST block
+macro st_block = 0,0,0,0 %;
+literal vsta$st_s_st_block = 16;
+macro vsta$st_a_next_ptr = 0,0,32,0 %;  ! Ptr to next ST block in list
+macro vsta$st_a_back_ptr = 4,0,32,0 %;  ! Ptr to last ST block in list
+macro vsta$st_w_size = 8,0,16,0 %;      ! ST block size
+macro vsta$st_w_type = 10,0,16,0 %;     ! ST block type (for VMS)
+macro vsta$st_a_curr_tty = 12,0,32,0 %; ! Ptr to "current" TTY
+! 
+! 
+!  End of module VSTA$LIB
+! 

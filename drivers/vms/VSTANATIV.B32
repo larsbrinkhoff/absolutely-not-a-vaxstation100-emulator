@@ -1,0 +1,2761 @@
+%title 'vsta$native - device interface for native graphics'
+MODULE vsta$native	(IDENT = '1-001',
+			addressing_mode (external = general,
+					nonexternal = general)
+			) =
+BEGIN
+
+!++
+! FACILITY:
+!
+! VAXstation software (VSTA)
+!
+! ABSTRACT:
+!
+! This module is conceptually part of the Virtual Display services. It provides
+! other routines within the VAXstation environment with access to the function-
+! ality of the VS100 display processor, but in the context of the
+! Systems Display Architecture.
+!
+! The interface specified here is governed by the following goals:
+!
+! o A device independent framework is to be provided so that routines needing
+!   direct use of the display processor to manipulate the contents of Virtual
+!   Displays can do so without regard for the characteristics of the specific
+!   device. This is accomplished by tailoring the interface so that the
+!   attributes of future VAXstation display processors can be supported within
+!   the existing interface, while not sacrificing any of the features of the
+!   current processor, the VS100.
+!
+! o Knowledge of the internal organization of "bitmaps" is isolated from the
+!   calling routines, since this is dependent on the display processor and
+!   other factors which may change. Instead, the conceptual object with which
+!   users of this module interact is the Virtual Display. In other words,
+!   Virtual Display :== Bitmap, in VMS parlance. The mechanisms in place for
+!   handling Virtual Displays must be used to create and destroy bitmaps.
+!   The only exception to this is in the routines vsta$$nat_load_vd and
+!   vsta$$nat_dump_vd, which provide a means by which virtual displays
+!   can be filled with or emptied of bits.
+!
+! o The interface to the display processor is simplified, requiring only a
+!   routine call with a set of parameters, rather than setting up command
+!   packets.
+!
+!   Three groups of routines are provided. One group of four routines maps
+!   exactly to the four basic VS100 display commands and provides all the
+!   functionality of those commands. Since these commands require a large
+!   number of arguments, another set of routines is supplied which provides
+!   simpler operations with fewer arguments. These represent
+!   commonly performed functions with a limited set of parameters.
+!   The third set consists of two routines which allow transfer of data
+!   between a virtual display and a user buffer.
+!
+! NOTE - callers of these routines must include the native graphics symbol
+!        definitions (VSTANATIV.R32) when compiling.
+
+!
+! ENVIRONMENT:
+!
+! This module is part of the VAXstation systems software, which is an
+! implementation of the Systems Display Architecture. It is intended for use
+! by virtual terminal emulators, and other modules which require access to the
+! VS100 or other display processor.
+!
+!--
+
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE!S		! Global routines
+
+	 vsta$$nat_copy_area
+	,vsta$$nat_draw_curve
+	,vsta$$nat_print_text
+	,vsta$$nat_fill_area
+	,vsta$$nat_flood_area
+
+	,vsta$$nat_clean_up
+	,vsta$$nat_completion_routine
+!
+!  These routines provide some basic line drawing primitives for the 
+!  Human Interface.
+!
+	,vsta$$nat_write_vertical_lines	
+	,vsta$$nat_write_horizontl_lines
+	;
+
+FORWARD ROUTINE!S		! Internal routines
+	 nat$$lines_complete
+	;
+
+EXTERNAL ROUTINE!S
+
+	 vdc$$hide_indicators
+	,vdc$$show_indicators
+	,vsta$$vds_hide_indicators
+	,vsta$$vds_show_indicators
+	,vsta$$error_logger
+	,vs$$acp_free_vm
+	,vs$$vds_disp_vd
+	,vs$$txt_displayalltext
+	,vs$$vds_redisplay_vd
+	,vsta$$vds_xor_region_box
+	,vsta$$vds_get_vd_rc_lists
+	,vsta$$vds_redisplay_vd_text		! Redisplay vd text
+	,vsta$$vds_access_vd_bitmap		! Get access to vd bitmap
+	,vsta$$vds_access_vd_image		! Get access to image of vd
+	,vsta$$drive_translate_color
+	,vsta$$rcs_inter_list_with_lists
+	;
+
+!
+! INCLUDE FILES:
+!
+library 'sys$library:starlet';		!system services
+library 'vsta$library:vstasyms';
+library 'vsta$library:vserrors';	!Error symbols
+library 'vsta$library:libmacros';	!Common VSTA symbols
+!
+! PSECT Definitions
+!
+$vsta_psect;
+
+EXTERNAL
+	 vsta$a_frame_buffer: VECTOR [,LONG]
+	,vs$gw_vbchan: VECTOR [,WORD]
+	;
+
+
+
+
+
+
+%sbttl 'VSTA$$NAT_COPY_AREA -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$$nat_copy_area (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to copy a rectangular region
+! from one bitmap to a region of another bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+	
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src'.
+
+		!vsta$k_src_bm	The source is a bitmap, supplied
+		!			by the caller. See WGA for internal
+		!			structure of a bitmap.
+
+		!vsta$k_src_vd		Source is a virtual display, given by
+		!			a virtual display ID in 'src'
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+src	,	!<value>		If constant source, the value
+		!			is one of the following symbols,
+		!			depending on the color desired:
+
+		!			vsta$k_color_black
+		!			vsta$k_color_ht1
+		!			.
+		!			.
+		!			.
+		!			vsta$k_color_ht15
+		!			vsta$k_color_white
+
+		!			For the VS100, htX represents
+		!			one of 15 halftones supplied
+		!			by the VAXstation software.
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+src_off_x,	!<value>			from 0 to (VD width - 1)
+
+src_off_y,	!<value>			from 0 to (VD height - 1)
+
+msk_type,	!vsta$k_msk_none		if mask not specified
+		
+		!vsta$k_msk_rectangle	if mask is a rectangle
+
+		!vsta$k_msk_bitmap	if mask is user-supplied bitmap
+
+		!vsta$k_msk_vd		if mask is a virtual display
+
+msk	,	!<address>		If mask is a rectangle, this
+		!			is a two-word block containing
+		!			a width and height
+
+		!			If mask is a bitmap, "msk" is the
+		!			address of a sub-bitmap descriptor.
+		!			(see WGA)
+
+		!			If mask is a virtual display,
+		!			"msk" is the address of a block
+		!			like this:
+		!			first longword: vd id
+		!			next word: x offset into mask
+		!			next word: y offset into mask
+		!			next word: subrectangle width
+		!			next word: subrectangle height
+
+dst_type,	!vsta$k_dst_bitmap	The destination is a bitmap, supplied
+		!			by the caller. See WGA for internal
+		!			structure of a bitmap.
+		!
+		!vsta$k_dst_vd		Destination is a virtual display,
+		!			given by a virtual display ID in 'dst'
+
+dst	,	!<address>		of a bitmap descriptor (see WGA)
+
+		!<virtual display id>	destination is a virtual display.
+
+dst_off_x,	!<value>		from 0 to (VD width - 1)
+
+dst_off_y,	!<value>		from 0 to (VD height - 1)
+
+map_type,	!vsta$k_map_identity	if no map ('map' param ignored)
+		!
+		!vsta$k_map_s_literal
+		!
+		!vsta$k_map_sd_literal
+		!
+		!vsta$k_map_source	if map indexed by source 
+		!
+		!vsta$k_map_sourcedest	if map indexed by source & dest
+		!
+map_planes,	!			number of planes the map refers to
+
+map_address:	!(ignored)		if no map 
+		REF VECTOR [,LONG],
+		!<value>		Literal value of map see (WGA)
+		!
+		!<address>		If source map, then the address
+		!			of a one dimensional unitvector
+		!			of size 2**map_planes. Where a unit
+		!			is map_planes bits.
+
+		!<address>		If source/destination map, this
+		!			is an address of a two dimensional
+		!			unitvector of size 2**(2*map_planes)
+		!			Where a unit is map_planes bits.
+
+rectangle_count,!			number of rectangles in list
+		!
+rectangle_addr,	!<address>		A rectangle list. The list
+		!			has the form:
+		!			word 0: x1
+		!			word 1: y1
+		!			word 2: width1
+		!			word 3: height1
+		!			word 4: x2
+		!			etc...
+
+		!			Note: The specified rectangle
+		!			list must contain non-intersecting
+		!			rectangles.  See VSTARECTS.MEM for
+		!			a description of Vaxstation rectangle
+		!			service routines to generate such
+		!			rectangle lists.
+
+		!(ignored)	        if 0 rectangles
+
+efn     ,	!<value> 	        A unique VMS event flag
+
+		!vsta$k_no_efn		Specifies no event flag.
+
+astadr	,	!<address>		An address of an asynchronus comletion
+		!			routine to be called on completion
+		!			of the i/o. Note: the routine is
+		!			not performed as an AST or at
+		!			VMS AST level but at VMS process
+		!			level when using the ACP internal
+		!			interface.  See VSACPSYNC.MEM for
+		!			a description of ACP synchrnonization
+		!			services.
+
+		!vsta$k_no_ast		Specifies no completion routine.
+
+astprm		!<value>			A parameter to be passed to the
+		!			specified completion routine.
+
+		!(ignored)		If no completion routine specified
+
+	):=
+	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	 status			
+	,source			
+	,src_backing_disabled	! 0 if source is on screen
+	,src_screen_x		! coordinates of source on screen
+	,src_screen_y
+	,src_mbmd		: BLOCK [mbmd$s_modified_bmds,byte]
+	,msk_mbmd
+	,msk_msbmd		: BLOCK [msbmd$s_modified_sbmds,byte]
+	,msk_rec		: VECTOR [2,WORD]
+	,map_value		
+	,mask			
+	,dest			: REF BLOCK [,BYTE]
+	,dsc			: REF VECTOR [,LONG] INITIAL (0)
+	,backing_disabled	: INITIAL (0)
+	,backing_only		: INITIAL (0)
+	,text_exist		: INITIAL (0)
+	,rcsq_base		: REF VECTOR [,LONG]
+	,clip_base		: REF VECTOR [,LONG]
+	,s			
+	;
+
+
+!
+!  Get the operation descriptor 
+!
+IF NOT (S = $GET32B( dsc))
+THEN RETURN .S;
+
+clip_base = dsc [4];
+
+clip_base [0] = clip_base [0];
+clip_base [1] = clip_base [0];
+
+!
+!  Get the source.  if it is a constant value or bitmap then we have it 
+!  if its a vd then we need to get the bitmap descriptor
+!
+CASE .src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_const]:
+		vsta$$drive_translate_color(.src,src_type,source,src_mbmd);
+
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+		source = .src;
+
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+
+		begin
+!
+! Get pointer to image of source.  If src_backing_disabled comes out 0,
+! then the image is on screen.
+!
+		IF NOT vsta$$vds_access_vd_image (
+						 .src
+						,source
+						,src_screen_x
+						,src_screen_y
+						,src_backing_disabled
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+!
+! If image is on screen, modify our offsets to point at wherever it is
+! on the screen.
+!
+		if .src_backing_disabled
+		then
+		    begin
+		    src_off_x = .src_off_x + .src_screen_x;
+		    src_off_y = .src_off_y + .src_screen_y
+		    end
+
+		end;	! source is vd
+
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+
+
+!
+!  What type is the destination. If it is a vd then must get its bitmap
+!  descriptor.
+!
+CASE .dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_vd]: 
+		BEGIN
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+		!
+		!  Get the vd clipping rectangles
+		!
+		IF NOT (s=VSTA$$VDS_GET_VD_RC_LISTS( .dst, rcsq_base)) 
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,.s);
+
+		!
+		!  If success returned by not 1 then display does not appear on screen
+		!
+		IF .s NEQ 1 THEN backing_only = 1
+		ELSE BEGIN
+			!
+			!  Now intersect the passed list with the clipping 
+			!  lists.
+			!
+			VSTA$$RCS_INTER_LIST_WITH_LISTS( 
+					 .rectangle_count
+					,.rectangle_addr
+					,rcsq_base [0]
+					,clip_base [0]
+							);
+
+			IF .clip_base [0] EQL clip_base [0]
+			THEN backing_only = 1;
+		     END;
+
+!		IF .text_exist THEN backing_only = 0;
+
+		END;
+
+	[vsta$k_dst_bitmap]:
+		BEGIN
+		!
+		!  Do operation to bitmap only
+		!
+		backing_only = 1;
+		dest = .dst;
+		END;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  Check the type of mask received.  If it is a vd then must get its bitmap
+!  descriptor
+!
+CASE .msk_type FROM 0 TO vsta$k_msk_types 
+OF SET
+	[vsta$k_msk_none]:
+		BEGIN
+			!
+			!  Let the mask be a rectangle of size of dst bitmap
+			!
+			msk_type = vsta$k_msk_rectangle;
+			msk_rec [0] = .dest [mbmd$w_size_x];
+			msk_rec [1] = .dest [mbmd$w_size_y];
+			mask = msk_rec;
+		END;
+	[vsta$k_msk_vd]:
+		BEGIN
+			IF NOT vsta$$vds_access_vd_bitmap(
+							 ..msk
+							,vsta$k_read
+							,msk_mbmd
+							,0
+						 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+			
+			!
+			!  Build the modified sub-bitmap descriptor.  
+			!  Use local data to build msbmd because this
+			!  data is copied by VSTADRIVE in the construction
+			!  Device data packets.
+			!
+			msk_msbmd [msbmd$a_mbmd_addr] = .msk_mbmd;
+			msk_msbmd [msbmd$w_off_x] = .(.msk + 4);
+			msk_msbmd [msbmd$w_off_y] = .(.msk + 6);
+			msk_msbmd [msbmd$w_ext_x] = .(.msk + 8);
+			msk_msbmd [msbmd$w_ext_y] = .(.msk + 10);
+			mask = msk_msbmd;
+		END;
+			
+
+	[vsta$k_msk_rectangle,vsta$k_msk_bitmap]:
+		
+		mask = .msk;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  Set up map value according to users table
+!
+CASE .map_type FROM 0 TO vsta$k_map_types
+OF SET
+	[vsta$k_map_identity]:   map_value = 0;
+	[vsta$k_map_s_literal]: map_value = .map_address [0];
+	[vsta$k_map_sd_literal]: map_value =.map_address [0];
+
+	[vsta$k_map_source]:	map_value = .map_address [0];
+	[vsta$k_map_sourcedest]:map_value = .map_address [0];
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+   TES;
+
+
+dsc [1] = .efn;
+dsc [2] = .astadr;
+dsc [3] = .astprm;
+
+!
+!  If the dst is a vd then perform the operation to the screen
+!
+IF NOT .backing_only 
+THEN BEGIN
+	
+	LOCAL
+		 rca: ref vector [,long]
+		,next_rca
+		;
+
+!
+! Hide indicators such as cursors and region boxes.  Note that
+! this may have already been done, in which case the routine knows
+! to do nothing.
+!
+	if not (s = vsta$$vds_hide_indicators ( .dst))
+	then RETURN VSTA$$NAT_CLEAN_UP (.dsc, .efn, .astadr, .astprm, .s);
+!
+!
+!  Loop thru all the rectangle lists for the vd and call vstadrive
+!
+	rca = .clip_base [0];
+	
+	UNTIL .rca eql clip_base [0]
+	do begin
+		next_rca = .rca [0];
+
+		IF NOT (S=$DRIVECOPY(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,SRCOFX = .src_off_x
+		,SRCOFY = .src_off_y
+		,MSKTYP = .msk_type
+		,MASK	= .mask
+		,DST	= .vsta$a_frame_buffer [0]
+		,DSTOFX = .dst_off_x + .rca [3]
+		,DSTOFY = .dst_off_y + .rca [4]
+		,MAPTYP = .map_type
+		,MAPVAL	= .map_value
+		,RECNUM = .rca [5]
+		,RECADR = rca [6]
+		,EFN	= .efn
+		,ASTADR	= (IF (.next_rca eql clip_base [0])
+					and
+			      (.backing_disabled)
+
+				then VSTA$$NAT_COMPLETION_ROUTINE
+				else 0
+			   )
+		,ASTPRM = .dsc
+		))
+		THEN RETURN .S;
+
+		rca = .next_rca;
+
+	   END;
+!
+!  Put indicators back on destination.
+!
+	vsta$$vds_show_indicators (.dst);
+
+     END; ! End if dst is vd !
+
+!
+!  If backing store is disabled then do not perform operation to
+!  to backing store since a complete copy of the bitmap exists on
+!  the screen.
+!
+!
+!  Call the vstadrive routine using the keyword.
+!  macro.  See VSTADRIVE.REQ for a description of this macro.
+!
+IF NOT .backing_disabled
+THEN BEGIN
+	IF NOT (S=$DRIVECOPY(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,SRCOFX = .src_off_x
+		,SRCOFY = .src_off_y
+		,MSKTYP = .msk_type
+		,MASK	= .mask
+		,DST	= .dest
+		,DSTOFX = .dst_off_x
+		,DSTOFY = .dst_off_y
+		,MAPTYP = .map_type
+		,MAPVAL	= .map_value
+		,RECNUM = .rectangle_count
+		,RECADR = .rectangle_addr
+		,EFN	= .efn
+		,ASTADR	= VSTA$$NAT_COMPLETION_ROUTINE
+		,ASTPRM = .dsc
+		))
+	THEN RETURN .S;
+
+     END;
+
+!
+! If text exist then just redisplay vd
+!
+     IF .text_exist
+     THEN VS$$VDS_REDISPLAY_VD( .dst);
+!
+! If source is a display, make sure it's indicators are back on.
+!
+	if .src_type eql vsta$k_src_vd or .src_type eql vsta$k_src_ht_vd
+	then vsta$$vds_show_indicators (.src)
+	else ss$_normal
+
+	END;	!End of vsta$$nat_copy_area
+
+%sbttl 'VSTA$$NAT_DRAW_CURVE -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$$nat_draw_curve (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to draw a curve connecting
+! a series of points. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+	
+src_type,	!			same as copy_area
+src	,	!			same as copy_area
+src_off_x,	!			same as copy_area
+src_off_y,	!			same as copy_area
+msk_type,	!			same as copy_area
+msk	,	!			same as copy_area
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+dst_off_x,	!			same as copy_area
+dst_off_y,	!			same as copy_area
+map_type,	!			same as copy_area
+map_planes,	!			same as copy_area
+map_address: 	!			same as copy_area
+	REF VECTOR [,LONG],
+
+path_count,	!<value>		number of points in path
+		!
+path_addr,	!<address>		
+		!			A list of segment elements
+		!			each of which consists of
+		!			three words, containing
+		!			an x value, a y value, and
+		!			a flag word
+
+pattern_mode,	!vsta$k_ptn_single_src	if "single-source" mode is to be used
+		!			(see WGA)
+
+		!vsta$k_ptn_altern_src	if "alternate-source" mode to be used
+		!			(see WGA)
+
+pattern_action,	!vsta$k_ptn_update	if the pattern state is to be updated
+		!			upon return from the routine
+
+		!vsta$k_ptn_no_update	if the pattern state is not to be updates
+
+pattern_block,	!<address>		A block containing the pattern length,
+		!			the pattern itself, the multiplier, and
+		!			the pattern state (see WGA)
+
+pattern_state,  !<address>		A block containing the pattern position
+		!			and multiplier count to use for the
+		!			pattern. See WGA.
+
+second_src_type,!			same as copy_area "src_type"
+
+		!(ignored)		if pattern mode is single-source
+
+second_src,	!			same as copy_area "src"
+
+		!(ignored)		if pattern mode is single-source
+
+second_src_off_x,
+second_src_off_y,
+rectangle_count,!			same as copy_area
+rectangle_addr, !			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm		!			same as copy_area
+
+	):=
+
+
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	 status				!place to hold status returns
+	,source
+	,src_mbmd: BLOCK [mbmd$s_modified_bmds,byte]
+	,sec_mbmd: BLOCK [mbmd$s_modified_bmds,byte]
+	,msk_mbmd
+	,msk_msbmd: BLOCK [msbmd$s_modified_sbmds,byte]
+	,msk_rec: VECTOR [2,WORD]
+	,map_value			!value for map
+	,mask				!mask which gets passed to driver
+	,dest: REF BLOCK [,BYTE]
+	,dsc: REF VECTOR [,LONG] INITIAL (0)
+	,backing_disabled: INITIAL (0)
+	,backing_only: INITIAL (0)
+	,text_exist: INITIAL (0)
+	,rcsq_base: REF VECTOR [,LONG]
+	,clip_base: REF VECTOR [,LONG]
+	,s				!Place to hold status returns
+	,second_source			!second pattern source passed to driver
+	;
+
+
+!
+!  Get the operation descriptor 
+!
+IF NOT (S = $GET32B( dsc))
+THEN RETURN .S;
+clip_base = dsc [4];
+
+clip_base [0] = clip_base [0];
+clip_base [1] = clip_base [0];
+
+!
+!  Get the source.  if it is a constant value or bitmap then we have it 
+!  if its a vd then we need to get the bitmap descriptor
+!
+CASE .src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_const]:
+		vsta$$drive_translate_color(.src,src_type,source,src_mbmd);
+
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+		source = .src;
+
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .src
+						,vsta$k_read
+						,source
+						,0
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+!
+!  Check the type of mask received.  If it is a vd then must get its bitmap
+!  descriptor
+!
+CASE .msk_type FROM 0 TO vsta$k_msk_types 
+OF SET
+	[vsta$k_msk_none]:
+		BEGIN
+			msk_type = vsta$k_msk_rectangle;
+			msk_rec [0] = 1;
+			msk_rec [1] = 1;
+			mask = msk_rec;
+		END;
+	[vsta$k_msk_vd]:
+		BEGIN
+			IF NOT vsta$$vds_access_vd_bitmap(
+							 ..msk
+							,vsta$k_read
+							,msk_mbmd
+							,0
+						 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+			
+			!
+			!  Build the modified sub-bitmap descriptor
+			!
+			msk_msbmd [msbmd$a_mbmd_addr] = .msk_mbmd;
+			msk_msbmd [msbmd$w_off_x] = .(.msk + 4);
+			msk_msbmd [msbmd$w_off_y] = .(.msk + 6);
+			msk_msbmd [msbmd$w_ext_x] = .(.msk + 8);
+			msk_msbmd [msbmd$w_ext_y] = .(.msk + 10);
+			mask = msk_msbmd;
+		END;
+
+	[vsta$k_msk_bitmap, vsta$k_msk_rectangle]:
+		mask = .msk;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+
+
+!
+!  What type is the destination. If it is a vd then must get its bitmap
+!  descriptor.
+!
+CASE .dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_vd]: 
+		BEGIN
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+		!
+		!  Get the vd clipping rectangles
+		!
+		IF NOT (s=VSTA$$VDS_GET_VD_RC_LISTS( .dst, rcsq_base)) 
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,.s);
+
+		!
+		!  If success returned by not 1 then display does not appear 
+		!  on screen
+		!
+		IF .s NEQ 1 THEN backing_only = 1
+		ELSE BEGIN
+			!
+			!  Now intersect the passed list with the clipping 
+			!  lists.
+			!
+			VSTA$$RCS_INTER_LIST_WITH_LISTS( 
+					 .rectangle_count
+					,.rectangle_addr
+					,rcsq_base [0]
+					,clip_base [0]
+							);
+
+			IF .clip_base [0] EQL clip_base [0]
+			THEN backing_only = 1;
+		     END;
+
+!		     IF .text_exist THEN backing_only = 0;
+
+		END;
+
+	[vsta$k_dst_bitmap]:
+		BEGIN
+		!
+		!  Do operation to bitmap only
+		!
+		backing_only = 1;
+		dest = .dst;
+		END;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+
+!
+!  Do we have a second source for this draw
+!  if so then we must treat it like the usual source
+!
+IF .pattern_mode EQL vsta$k_ptn_altern_src
+THEN
+	CASE .second_src_type FROM 0 TO vsta$k_src_types
+	OF SET
+		[vsta$k_src_const]:
+			vsta$$drive_translate_color(
+						 .second_src
+						,second_src_type
+						,second_source
+						,sec_mbmd
+						   );
+
+		[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+			second_source = .second_src;
+	
+		[vsta$k_src_vd,vsta$k_src_ht_vd]:
+	
+			IF NOT vsta$$vds_access_vd_bitmap(
+							 .second_src
+							,vsta$k_read
+							,second_source
+							,0
+						 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	
+		[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+		[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	
+	   TES;
+
+!
+!  Set up map value according to users table
+!
+CASE .map_type FROM 0 TO vsta$k_map_types
+OF SET
+	[vsta$k_map_identity]:   map_value = 0;
+	[vsta$k_map_s_literal]: map_value = .map_address [0];
+	[vsta$k_map_sd_literal]: map_value = .map_address [0];
+
+	[vsta$k_map_source]:	map_value = .map_address [0];
+	[vsta$k_map_sourcedest]:map_value = .map_address [0];
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+   TES;
+
+dsc [1] = .efn;
+dsc [2] = .astadr;
+dsc [3] = .astprm;
+
+!
+!  If backing store is disabled then do not perform operation to
+!  to backing store since a complete copy of the bitmap exists on
+!  the screen.
+!
+!
+!  Call the vstadrive routine using the keyword.
+!  macro.  See VSTADRIVE.REQ for a description of this macro.
+!
+IF NOT .backing_disabled
+THEN BEGIN 
+	IF NOT (s=$DRIVEDRAW(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = .src_type
+			,SOURCE = .source
+			,SRCOFX = .src_off_x
+			,SRCOFY = .src_off_y
+			,MSKTYP = .msk_type
+			,MASK	= .mask
+			,DST	= .dest
+			,DSTOFX = .dst_off_x
+			,DSTOFY = .dst_off_y
+			,MAPTYP = .map_type
+			,MAPVAL	= .map_value
+			,PTHNUM = .path_count
+			,PTHADR = .path_addr
+			,SECTYP = .second_src_type
+			,SECSRC = .second_source
+			,SECOFX = .second_src_off_x
+			,SECOFY = .second_src_off_y
+			,PATMOD = .pattern_mode
+			,PATACT = (IF .backing_only
+					THEN .pattern_action
+					ELSE vsta$k_ptn_no_update)
+			,PATBLK = .pattern_block
+			,PATSTA	= .pattern_state
+			,RECNUM = .rectangle_count
+			,RECADR = .rectangle_addr
+			,EFN	= .efn
+			,ASTADR	= (IF .backing_only
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+		))
+	THEN RETURN .s;
+
+     END;
+
+!
+!  If the dst is a vd then perform the operation to the screen
+!
+IF NOT .backing_only 
+THEN BEGIN
+
+	LOCAL
+		 rca: ref vector [,long]
+		,next_rca
+		;
+
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	!
+	!  Loop thru all the rectangle lists for the vd and call vstadrive
+	!
+	rca = .clip_base [0];
+	
+	UNTIL .rca eql clip_base [0]
+	do begin
+		next_rca = .rca [0];
+		IF NOT (s=$DRIVEDRAW(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = .src_type
+			,SOURCE = .source
+			,SRCOFX = .src_off_x
+			,SRCOFY = .src_off_y
+			,MSKTYP = .msk_type
+			,MASK	= .mask
+			,DST	= .vsta$a_frame_buffer [0]
+			,DSTOFX = .dst_off_x + .rca [3]
+			,DSTOFY = .dst_off_y + .rca [4]
+			,MAPTYP = .map_type
+			,MAPVAL	= .map_value
+			,PTHNUM = .path_count
+			,PTHADR = .path_addr
+			,SECTYP = .second_src_type
+			,SECSRC = .second_source
+			,SECOFX = .second_src_off_x
+			,SECOFY = .second_src_off_y
+			,PATMOD = .pattern_mode
+			,PATACT = (IF .next_rca eql clip_base [0]
+					THEN .pattern_action
+					ELSE vsta$k_ptn_no_update)
+			,PATBLK = .pattern_block
+			,PATSTA	= .pattern_state
+			,RECNUM = .rca [5]
+			,RECADR = rca [6]
+			,EFN	= .efn
+			,ASTADR	= (IF .next_rca eql clip_base [0]
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+		))
+		THEN RETURN .S;
+
+		rca = .next_rca;
+
+	   END;
+
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+     END; ! End if dst is vd !
+
+!
+! If text exist then just redisplay vd
+!
+     IF .text_exist
+	THEN VS$$VDS_REDISPLAY_VD( .dst);
+
+RETURN ss$_normal;
+
+END;	!End of vsta$$nat_draw_curve
+
+
+
+
+
+
+
+
+
+
+
+
+
+%sbttl 'VSTA$$NAT_PRINT_TEXT -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$$nat_print_text (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to print text from a given
+! font to a region of a bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+
+! PRINT
+	
+src_type,	!vsta$k_src_const	source is a constant, as in copy-area
+
+		!vsta$k_src_ht_bitmap	source is a halftone bitmap,
+		!			as in copy-area
+
+		!vsta$k_src_ht_vd	source is a halftone virtual display,
+		!			as in copy-area
+
+		!vsta$k_src_font_bitmap	source is a font, specified as an
+		!			address of a font data base as
+		!			described by the WGA. (The bitmap
+		!			is user-supplied.)
+
+
+src	,	!<value>		if source is a constant.
+
+		!<address>		of a halftone bitmap descriptor
+
+		!<virtual display id>	if source is a virtual display
+		!			containing a halftone pattern
+
+		!<address>		of font data base (see WGA)
+
+msk_type,	!vsta$k_msk_none		there is no mask
+
+		!vsta$k_msk_font_bitmap	mask is a font, specified as an
+		!			address of a font data base as
+		!			described by the WGA. (The bitmap
+		!			is user-supplied.)
+
+		!
+		!same as copy area if source is font
+		!
+
+
+msk	,	!(ignored)		if no mask
+
+		!<address>		of font data base (see WGA)
+
+dst_type,	!			same as copy_area
+
+dst	,	!			same as copy_area
+
+dst_off_action,	!vsta$k_dst_update	indicates that the destination
+		!			x and y offsets are to be updated
+		!			after the operation. (See WGA spec)
+
+		!vsta$k_dst_no_update	indicates that the destination
+		!			offsets are not to be updated
+
+dst_offset:	!<address>		a two-word block containing the x and y
+		REF VECTOR [,WORD],
+		!			offset at which the text is to be
+		!			written
+
+		!			NOTE: If requested, the destination
+		!			position is updated upon return from
+		!			the routine. (See WGA spec)
+
+map_type,	!			same as copy_area
+map_planes,	!			same as copy_area
+map_address:	!			same as copy_area 
+		REF VECTOR [,LONG],
+
+text_type,	! vsta$k_txt_16bits
+		! vsta$k_txt_8bits
+		!
+text_descriptor	! <address>		of a descriptor of text
+		: REF VECTOR [,LONG],
+		!			string of text.
+
+control_count,	! <value>		number of control words
+control_addr,	! <address>		address of control string
+
+char_pad,	 !<value>		padding between characters
+
+space_pad,	 !<value>		padding for space character
+
+rectangle_count,!			same as copy_area
+rectangle_addr,	!			same as copy_area
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm		!			same as copy_area
+
+	):=
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	 status				!place to hold status returns
+	,source				!source which gets passed to driver
+	,mask
+	,src_mbmd: BLOCK [mbmd$s_modified_bmds,BYTE]
+	,msk_mbmd
+	,msk_msbmd: BLOCK [msbmd$s_modified_sbmds,BYTE]
+	,msk_rec: VECTOR [2,LONG]
+	,dest: REF BLOCK [,BYTE]
+	,map_value			!value for map
+	,dsc: REF VECTOR [,LONG] 
+	,backing_disabled: INITIAL (0)
+	,backing_only: INITIAL (0)
+	,text_exist: INITIAL (0)
+	,rcsq_base: REF VECTOR [,LONG]
+	,clip_base: REF VECTOR [,LONG]
+	,s
+	;
+
+
+
+!
+!  Get the operation descriptor 
+!
+IF NOT (S = $GET32B( dsc))
+THEN RETURN .S;
+clip_base = dsc [4];
+
+clip_base [0] = clip_base [0];
+clip_base [1] = clip_base [0];
+
+!
+!  Get the source.  if it is a constant value or bitmap then we have it 
+!  if its a vd then we need to get the bitmap descriptor
+!
+CASE .src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_const]:
+		vsta$$drive_translate_color(.src, src_type, source, src_mbmd);
+
+	[vsta$k_src_ht_bitmap,vsta$k_src_font_bitmap]:
+		source = .src;
+
+	[vsta$k_src_ht_vd]:
+
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .src
+						,vsta$k_read
+						,source
+						,0
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+
+
+!
+!  What type is the destination. If it is a vd then must get its bitmap
+!  descriptor.
+!
+CASE .dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_vd]: 
+		BEGIN
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+		!
+		!  Get the vd clipping rectangles
+		!
+		IF NOT (s=VSTA$$VDS_GET_VD_RC_LISTS( .dst, rcsq_base)) 
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,.s);
+
+		!
+		!  If success returned by not 1 then display does not appear on screen
+		!
+		IF .s NEQ 1 THEN backing_only = 1
+		ELSE BEGIN
+			!
+			!  Now intersect the passed list with the clipping 
+			!  lists.
+			!
+			VSTA$$RCS_INTER_LIST_WITH_LISTS( 
+					 .rectangle_count
+					,.rectangle_addr
+					,rcsq_base [0]
+					,clip_base [0]
+							);
+
+			IF .clip_base [0] EQL clip_base [0]
+			THEN backing_only = 1;
+		     END;
+
+!		IF .text_exist THEN backing_only = 0;
+
+		END;
+
+	[vsta$k_dst_bitmap]:
+		BEGIN
+		!
+		!  Do operation to bitmap only
+		!
+		backing_only = 1;
+		dest = .dst;
+		END;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+
+!
+!  Check the type of mask received.  If it is a vd then must get its bitmap
+!  descriptor
+!
+CASE .msk_type FROM 0 TO vsta$k_msk_types 
+OF SET
+	[vsta$k_msk_none]:;
+	[vsta$k_msk_vd]:
+		BEGIN
+			IF NOT vsta$$vds_access_vd_bitmap(
+							 ..msk
+							,vsta$k_read
+							,msk_mbmd
+							,0
+						 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+			
+			!
+			!  Build the modified sub-bitmap descriptor.  
+			!  Use local data to build msbmd because this
+			!  data is copied by VSTADRIVE in the construction
+			!  Device data packets.
+			!
+			msk_msbmd [msbmd$a_mbmd_addr] = .msk_mbmd;
+			msk_msbmd [msbmd$w_off_x] = .(.msk + 4);
+			msk_msbmd [msbmd$w_off_y] = .(.msk + 6);
+			msk_msbmd [msbmd$w_ext_x] = .(.msk + 8);
+			msk_msbmd [msbmd$w_ext_y] = .(.msk + 10);
+			mask = msk_msbmd;
+		END;
+			
+
+	[vsta$k_msk_rectangle,vsta$k_msk_bitmap,vsta$k_msk_font_bitmap]:
+		
+		mask = .msk;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  Set up map value according to users table
+!
+CASE .map_type FROM 0 TO vsta$k_map_types
+OF SET
+	[vsta$k_map_identity]:   map_value = 0;
+	[vsta$k_map_s_literal]: map_value = .map_address [0];
+	[vsta$k_map_sd_literal]: map_value = .map_address [0];
+
+	[vsta$k_map_source]:	map_value = .map_address [0];
+	[vsta$k_map_sourcedest]:map_value = .map_address [0];
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+   TES;
+
+dsc [1] = .efn;
+dsc [2] = .astadr;
+dsc [3] = .astprm;
+
+!
+!  If backing store is disabled then do not perform operation to
+!  to backing store since a complete copy of the bitmap exists on
+!  the screen.
+!
+!
+!  Call the vstadrive routine using the keyword.
+!  macro.  See VSTADRIVE.REQ for a description of this macro.
+!
+
+IF NOT .backing_disabled
+THEN BEGIN
+	IF NOT (s=$DRIVEPRINT(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = .src_type
+			,SOURCE = .source
+			,MSKTYP = .msk_type
+			,MASK	= .mask
+			,DST	= .dest
+			,DSTOFA = IF .backing_only 
+				  THEN .dst_off_action
+				  ELSE vsta$k_dst_no_update
+			,DSTOFF = .dst_offset
+			,MAPTYP = .map_type
+			,MAPVAL	= .map_value
+			,TXTTYP = .text_type
+			,TXTNUM = .text_descriptor [0]
+			,TXTADR = .text_descriptor [1]
+			,CTRNUM = .control_count
+			,CTRADR	= .control_addr
+			,CHRPAD = .char_pad
+			,SPCPAD = .space_pad
+			,RECNUM = .rectangle_count
+			,RECADR = .rectangle_addr
+			,EFN	= .efn
+			,ASTADR	= (IF .backing_only
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+		))
+	THEN RETURN .s;
+
+     END;
+
+!
+! If text exist then just redisplay vd
+!
+     IF .text_exist
+	THEN VS$$VDS_REDISPLAY_VD( .dst);
+
+!
+!  If the dst is a vd then perform the operation to the screen
+!
+IF NOT .backing_only 
+THEN BEGIN
+
+	LOCAL
+		 rca: ref vector [,long]
+		,next_rca
+		,dstoff: VECTOR [2,WORD]
+		;
+
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	!
+	!  Loop thru all the rectangle lists for the vd and call vstadrive
+	!
+	rca = .clip_base [0];
+
+	!
+	!  If dst offset needs is being updated then do noop function
+	!  so to be sure that all graphics is done before the offset 
+	!  is read.
+	!
+	IF .dst_off_action EQL vsta$k_dst_update
+	THEN BEGIN
+
+		$DRIVENOOP( CHAN = .vs$gw_vbchan, EFN = 1);
+
+		!
+		!  Make this synchronous
+		!  I/O in order to return the updated offset
+		!
+		efn = 1;
+
+	     END;
+
+
+	UNTIL .rca eql clip_base [0]
+	do begin
+		local
+			 rca_sav_x
+			,rca_sav_y
+			;
+
+		!
+		!  Calculate the screen dst offset from saved offset and
+		!  display offset on phisical screen
+		!
+		dstoff [0] = .dst_offset [0] + (rca_sav_x = .rca [3]);
+		dstoff [1] = .dst_offset [1] + (rca_sav_y = .rca [4]);
+
+		!
+		!  Save the pointer to next list
+		!
+		next_rca = .rca [0];
+!
+! Perform the operation.  Note that we DO NOT check for errors, which are more
+! possible here than other places due to synchronocity of the update action
+! mechanism.  We assume that $DRIVEPRINT calls VSTA$$DRIVE_PRINT_TEXT calls
+! $DRVQIO calls $QIOW or $QIO calls VSTA$$DRIVE_CLEAN_UP in order to report
+! error in iosb.  If we checked error and returned it, the important error in
+! iosb would get overwritten by VS$$ACP_WRITE when it saw bad status come back.
+!
+		$DRIVEPRINT(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = .src_type
+			,SOURCE = .source
+			,MSKTYP = .msk_type
+			,MASK	= .mask
+			,DST	= .vsta$a_frame_buffer [0]
+			,DSTOFA = .dst_off_action
+			,DSTOFF = dstoff
+			,MAPTYP = .map_type
+			,MAPVAL	= .map_value
+			,TXTTYP = .text_type
+			,TXTNUM = .text_descriptor [0]
+			,TXTADR = .text_descriptor [1]
+			,CTRNUM = .control_count
+			,CTRADR	= .control_addr
+			,CHRPAD = .char_pad
+			,SPCPAD = .space_pad
+			,RECNUM = .rca [5]
+			,RECADR = rca [6]
+			,EFN	= .efn
+			,ASTADR	= (IF .next_rca eql clip_base [0]
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+			);
+		!
+		!  Get pointer to next list from saved pointer
+		!
+		rca = .next_rca;
+
+		!
+		!  Update the destination offset manually on last time
+		!  thru 
+		!
+		IF (.next_rca EQL clip_base [0]) AND 
+		   (.dst_off_action EQL vsta$k_dst_update)
+		THEN BEGIN
+			dst_offset [0] = .dstoff [0] - .rca_sav_x;
+			dst_offset [1] = .dstoff [1] - .rca_sav_y;
+		     END;
+
+
+	   END;
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+     END; ! End if dst is vd !
+
+RETURN ss$_normal;
+
+END; ! VSTA$$NAT_PRINT_TEXT !
+
+
+
+
+
+%sbttl 'VSTA$$NAT_FILL_AREA -- Native Graphics Global Routine'
+GLOBAL ROUTINE VSTA$$NAT_FILL_AREA(
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to fill area given
+! a path describing a region of a bitmap. For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!	
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src'.
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+src	,	!<value>		If constant source, the value
+		!			is one of the following symbols,
+		!			depending on the color desired:
+
+		!			vsta$k_color_black
+		!			vsta$k_color_ht1
+		!			.
+		!			.
+		!			.
+		!			vsta$k_color_ht15
+		!			vsta$k_color_white
+
+		!			For the VS100, htX represents
+		!			one of 15 halftones supplied
+		!			by the VAXstation software.
+
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+dst_off_x,	!			same as copy_area
+dst_off_y,	!			same as copy_area
+map_type,	!			same as copy_area
+map_planes,	!			same as copy_area
+map_address:	!			same as copy_area
+	REF VECTOR [,LONG],
+
+
+path_count,	!<value>		number of points in control string
+path_addr,	!<address>	
+		!			A list of segment elements
+		!			each of which consists of
+		!			three words, containing
+		!			an x value, a y value, and
+		!			a flag word
+
+rectangle_count,!<value>
+rectangle_addr,	!<address>
+		!			A rectangle descriptor of the form:
+
+		!			word 0: x
+		!			word 1: y
+		!			word 2: width
+		!			word 3: height
+
+		!			(only one clipping rectangle is allowed)
+
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm		!			same as copy_area
+
+
+	):=
+
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	 status				!place to hold status returns
+	,source
+	,src_mbmd: BLOCK [mbmd$s_modified_bmds,byte]
+	,map_value			!value for map
+	,dest: REF BLOCK [,BYTE]
+	,dsc: REF VECTOR [,LONG] INITIAL (0)
+	,backing_disabled: INITIAL (0)
+	,backing_only: INITIAL (0)
+	,text_exist		: INITIAL (0)
+	,rcsq_base: REF VECTOR [,LONG]
+	,clip_base: REF VECTOR [,LONG]
+	,s				!Place to hold status returns
+	;
+
+
+!
+!  Get the operation descriptor and associate the source and mask bitmap
+!  descriptors to DSC [5] AND DSC [10] respecively
+!
+IF NOT (S = $GET32B( dsc))
+THEN RETURN .S;
+clip_base = dsc [4];
+
+clip_base [0] = clip_base [0];
+clip_base [1] = clip_base [0];
+
+!
+!  Get the source.  if it is a constant value or bitmap then we have it 
+!  if its a vd then we need to get the bitmap descriptor
+!
+CASE .src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_const]:
+		vsta$$drive_translate_color(.src, src_type, source, src_mbmd);
+
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+		source = .src;
+
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .src
+						,vsta$k_read
+						,source
+						,0
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  What type is the destination. If it is a vd then must get its bitmap
+!  descriptor.
+!
+CASE .dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_vd]: 
+		BEGIN			! Dest is a virtual display
+
+		!
+		!  Get the vd clipping rectangles
+		!
+		IF NOT (s=VSTA$$VDS_GET_VD_RC_LISTS( .dst, rcsq_base)) 
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,.s);
+
+		!
+		!  If success returned by not 1 then display does not appear 
+		!  on screen
+		!
+		IF .s NEQ 1 
+		THEN BEGIN		! VD not on screen
+			backing_only = 1;
+			IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+		     END		! End of VD not on screen
+
+		ELSE BEGIN		! VD on screen so intersect with clipping rc's
+			!
+			!  Now intersect the passed list with the clipping 
+			!  lists.
+			!
+			VSTA$$RCS_INTER_LIST_WITH_LISTS( 
+					 .rectangle_count
+					,.rectangle_addr
+					,rcsq_base [0]
+					,clip_base [0]
+							);
+
+			IF .clip_base [0] EQL clip_base [0]
+			THEN BEGIN		! No intersection found
+
+				backing_only = 1;
+				IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+				THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+			     END		! End of no intersection found
+
+			ELSE BEGIN		! Intersection found 
+
+				!
+				!  If there is more than one list then turn on
+				!  backing storage.
+				!
+				IF .clip_base [0] NEQ .clip_base [1]
+				THEN BEGIN	!  More than one list
+
+					IF NOT vsta$$vds_access_vd_bitmap(
+							 .dst
+							,vsta$k_read	
+							,dest
+							,backing_disabled
+							,text_exist
+						 )
+					THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+				     END	!  End of More than one list
+
+				ELSE BEGIN	!  Only one rectangle list
+					!
+					!  If there is only one rectangle list
+					!  ,only one rectangle in that list and
+					!  the VD is totally visible on the
+					!  screen then disable backing store.
+					!
+					IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+					THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+				     END;	! Only one rec list found
+
+			     END;		! End of intersection found
+
+		     END;			! End of VD visible on screen
+
+		END;				! End of dest is VD
+
+	[vsta$k_dst_bitmap]:
+		BEGIN
+		!
+		!  Do operation to bitmap only
+		!
+		backing_only = 1;
+		dest = .dst;
+		END;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  Set up map value according to users table
+!
+CASE .map_type FROM 0 TO vsta$k_map_types
+OF SET
+	[vsta$k_map_identity]:   map_value = 0;
+
+	[vsta$k_map_s_literal]: map_value = .map_address [0];
+	[vsta$k_map_sd_literal]: map_value = .map_address [0];
+	[vsta$k_map_source]:	map_value = .map_address [0];
+	[vsta$k_map_sourcedest]:map_value = .map_address [0];
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+   TES;
+
+dsc [1] = .efn;
+dsc [2] = .astadr;
+dsc [3] = .astprm;
+!
+!  If backing store is disabled then do not perform operation to
+!  to backing store since a complete copy of the bitmap exists on
+!  the screen.
+!
+!
+!  Call the vstadrive routine using the keyword.
+!  macro.  See VSTADRIVE.REQ for a description of this macro.
+!
+IF .backing_disabled
+THEN BEGIN	! Backing disabled for dest vd
+
+	LOCAL
+		 rca: ref vector [,long]
+		;
+
+	!
+	!  Loop thru all the rectangle lists for the vd and call vstadrive
+	!
+	rca = .clip_base [0];
+
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	IF NOT (s=$DRIVEFILL(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,DST	= .vsta$a_frame_buffer [0]
+		,DSTOFX = .dst_off_x + .rca [3]
+		,DSTOFY = .dst_off_y + .rca [4]
+		,MAPTYP = .map_type
+		,MAPVAL	= .map_value
+		,PTHNUM = .path_count
+		,PTHADR = .path_addr
+		,RECNUM = .rca [5]
+		,RECADR = rca [6]
+		,EFN	= .efn
+		,ASTADR	= VSTA$$NAT_COMPLETION_ROUTINE
+		,ASTPRM = .dsc
+		))
+	THEN RETURN .s;
+
+	!
+	!  Reverse the region box to make it visable 
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	RETURN ss$_normal;
+     END;	! End of backing disabled for dest vd
+
+!
+! If text exist then just redisplay vd
+!
+     IF .text_exist
+     THEN VS$$VDS_REDISPLAY_VD( .dst);
+
+IF NOT (s=$DRIVEFILL(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,DST	= .dest
+		,DSTOFX = .dst_off_x
+		,DSTOFY = .dst_off_y
+		,MAPTYP = .map_type
+		,MAPVAL	= .map_value
+		,PTHNUM = .path_count
+		,PTHADR = .path_addr
+		,RECNUM = .rectangle_count
+		,RECADR = .rectangle_addr
+		,EFN	= .efn
+		,ASTADR	= (IF .backing_only
+				THEN VSTA$$NAT_COMPLETION_ROUTINE
+				ELSE 0)
+		,ASTPRM = .dsc
+	))
+THEN RETURN .s;
+
+!
+!  If the dst is a vd then perform the operation to the screen
+!
+IF NOT .backing_only 
+THEN BEGIN
+
+	LOCAL
+		 rca: ref vector [,long]
+		,next_rca
+		,msk_rec: vector [2,word]
+		;
+
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	msk_rec [0] = .dest [mbmd$w_size_x];
+	msk_rec [1] = .dest [mbmd$w_size_y];
+
+	!
+	!  Loop thru all the rectangle lists for the vd and call vstadrive
+	!
+	rca = .clip_base [0];
+	
+	UNTIL .rca eql clip_base [0]
+	do begin
+
+		next_rca = .rca [0];
+
+		IF NOT (s=$DRIVECOPY(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = vsta$k_src_bm
+			,SOURCE = .dest
+			,MSKTYP = vsta$k_msk_rectangle
+			,MASK	= msk_rec
+			,DST	= .vsta$a_frame_buffer [0]
+			,DSTOFX = .rca [3]
+			,DSTOFY = .rca [4]
+			,RECNUM	= .rca [5]
+			,RECADR	= rca [6]
+			,EFN	= .efn
+			,ASTADR	= (IF .next_rca eql clip_base [0]
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+			))
+		THEN RETURN .s;
+
+		rca = .next_rca;
+
+	   END;
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	!
+	! Call a vds routine to redisplay the text on this vd if any exists
+	!
+	IF NOT vsta$$vds_redisplay_vd_text(.dst)
+	THEN VSTA$$ERROR_LOGGER(ss$_badparam);
+
+     END; ! End if dst is vd !
+
+RETURN ss$_normal
+
+
+END; ! Fill area  !
+
+
+
+
+
+
+
+
+
+ %sbttl 'VSTA$$NAT_FLOOD_AREA -- Native Graphics Global Routine' GLOBAL ROUTINE vsta$$nat_flood_area (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine requests the display processor to flood a region of a bitmap.
+! For a full description
+! of the operation, refer to the document "Workstation Graphics Architecture".
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+
+! FLOOD
+src_type,	!vsta$k_src_const	The source is a constant value,
+		!			specified in parameter 'src', as in
+		!			copy_area.
+
+		!vsta$k_src_ht_vd	Source is a halftone pattern
+		!			contained in a virtual display
+
+		!vsta$k_src_ht_bitmap	Source is a halftone pattern
+		!			contained in a user-supplied bitmap
+
+src	,	!<value>		If constant source, the value
+		!			is one of the following symbols,
+		!			depending on the color desired:
+
+		!			vsta$k_color_black
+		!			vsta$k_color_ht1
+		!			.
+		!			.
+		!			.
+		!			vsta$k_color_ht15
+		!			vsta$k_color_white
+
+		!			For the VS100, htX represents
+		!			one of 15 halftones supplied
+		!			by the VAXstation software.
+
+
+		!<address>		of bitmap descriptor. See WGA.
+
+		!<virtual display id> 	if source is a virtual display
+
+dst_type,	!			same as copy_area
+dst	,	!			same as copy_area
+dst_off_x,	!			same as copy_area
+dst_off_y,	!			same as copy_area
+
+boundary_map,	!<value>			see WGA
+
+seed_point_x,	!<value>			see WGA
+
+seed_point_y,	!<value>			see WGA
+
+rectangle_count,!<value>
+rectangle_addr, !<address>
+		!			A rectangle descriptor of the form:
+
+		!			word 0: x
+		!			word 1: y
+		!			word 2: width
+		!			word 3: height
+
+		!			(only one clipping rectangle is allowed)
+
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm		!			same as copy_area
+
+
+):=	
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE:
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+BEGIN
+
+LOCAL
+	 status				!place to hold status returns
+	,source
+	,src_mbmd: BLOCK [mbmd$s_modified_bmds,byte]
+	,dest: REF BLOCK [,BYTE]
+	,dsc: REF VECTOR [,LONG] INITIAL (0)
+	,backing_disabled: INITIAL (0)
+	,backing_only: INITIAL (0)
+	,text_exist		: INITIAL (0)
+	,rcsq_base: REF VECTOR [,LONG]
+	,clip_base: REF VECTOR [,LONG]
+	,s				!Place to hold status returns
+	;
+
+
+
+!
+!  Get the operation descriptor 
+!
+IF NOT (S = $GET32B( dsc))
+THEN RETURN .S;
+clip_base = dsc [4];
+
+clip_base [0] = clip_base [0];
+clip_base [1] = clip_base [0];
+
+!
+!  Get the source.  if it is a constant value or bitmap then we have it 
+!  if its a vd then we need to get the bitmap descriptor
+!
+CASE .src_type FROM 0 TO vsta$k_src_types
+OF SET
+	[vsta$k_src_const]:
+		vsta$$drive_translate_color(.src,src_type,source,src_mbmd);
+
+	[vsta$k_src_bm,vsta$k_src_ht_bitmap]:
+		source = .src;
+
+	[vsta$k_src_vd,vsta$k_src_ht_vd]:
+
+		IF NOT vsta$$vds_access_vd_bitmap(
+						 .src
+						,vsta$k_read
+						,source
+						,0
+					 )
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+	[INRANGE]:	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: 	RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+
+!
+!  What type is the destination. If it is a vd then must get its bitmap
+!  descriptor.
+!
+CASE .dst_type FROM 0 TO vsta$k_dst_types
+OF SET
+	[vsta$k_dst_vd]: 
+		BEGIN
+		!
+		!  Get the vd clipping rectangles
+		!
+		IF NOT (s=VSTA$$VDS_GET_VD_RC_LISTS( .dst, rcsq_base)) 
+		THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,.s);
+
+		!
+		!  If success returned by not 1 then display does not appear 
+		!  on screen
+		!
+		IF .s NEQ 1 
+		THEN BEGIN		! VD not on screen
+			backing_only = 1;
+			IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+			THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+		     END		! End of VD not on screen
+
+		ELSE BEGIN		! VD on screen so intersect with clipping rc's
+			!
+			!  Now intersect the passed list with the clipping 
+			!  lists.
+			!
+			VSTA$$RCS_INTER_LIST_WITH_LISTS( 
+					 .rectangle_count
+					,.rectangle_addr
+					,rcsq_base [0]
+					,clip_base [0]
+							);
+
+			IF .clip_base [0] EQL clip_base [0]
+			THEN BEGIN		! No intersection found
+
+				backing_only = 1;
+				IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+				THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+			     END		! End of no intersection found
+
+			ELSE BEGIN		! Intersection found 
+
+				!
+				!  If there is more than one list then turn on
+				!  backing storage.
+				!
+				IF .clip_base [0] NEQ .clip_base [1]
+				THEN BEGIN	!  More than one list
+
+					IF NOT vsta$$vds_access_vd_bitmap(
+							 .dst
+							,vsta$k_read	
+							,dest
+							,backing_disabled
+							,text_exist
+						 )
+					THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+				     END	!  End of More than one list
+
+				ELSE BEGIN	!  Only one rectangle list
+					!
+					!  If there is only one rectangle list
+					!  ,only one rectangle in that list and
+					!  the VD is totally visible on the
+					!  screen then disable backing store.
+					!
+					IF NOT vsta$$vds_access_vd_bitmap(
+						 .dst
+						,vsta$k_write
+						,dest
+						,backing_disabled
+						,text_exist
+					 )
+					THEN RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+				     END;	! Only one rec list found
+
+			     END;		! End of intersection found
+
+		     END;			! End of VD visible on screen
+
+		END;				! End of dest is VD
+
+	[vsta$k_dst_bitmap]:
+		BEGIN
+		!
+		!  Do operation to bitmap only
+		!
+		backing_only = 1;
+		dest = .dst;
+		END;
+
+	[INRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+	[OUTRANGE]: RETURN VSTA$$NAT_CLEAN_UP( .dsc, .efn,.astadr,.astprm,ss$_badparam);
+
+   TES;
+	
+dsc [1] = .efn;
+dsc [2] = .astadr;
+dsc [3] = .astprm;
+
+!
+!  If the backing is disabled then do the flood to the screen only
+!
+IF .backing_disabled
+THEN BEGIN				! If backing disabled
+
+	LOCAL
+		 rca: ref vector [,long]
+		;
+
+	!
+	!  Get a pointer to the one rectangle
+	!
+	rca = .clip_base [0];
+
+	!
+	!  Reverse the region box to make it or invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+
+	IF NOT (s=$DRIVEFLOOD(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,DST	= .vsta$a_frame_buffer [0]
+		,DSTOFX = .dst_off_x + .rca [3]
+		,DSTOFY = .dst_off_y + .rca [4]
+		,BNDMAP = .boundary_map
+		,SEEDX  = .seed_point_x + .rca [3]
+		,SEEDY	= .seed_point_y + .rca [4]
+		,RECNUM = .rca [5]
+		,RECADR = rca [6]
+		,EFN	= .efn
+		,ASTADR	= VSTA$$NAT_COMPLETION_ROUTINE
+		,ASTPRM = .dsc
+	))
+	THEN RETURN .s;
+
+	!
+	!  Reverse the region box to make it visable 
+	!
+	vsta$$vds_xor_region_box( .dst);
+	
+	RETURN ss$_normal;
+
+     END;				! End if backing disabled
+
+!
+! If text exist then just redisplay vd
+!
+     IF .text_exist
+     THEN VS$$VDS_REDISPLAY_VD( .dst);
+
+!
+!  Call the vstadrive routine using the keyword.  To do operation to backing
+!  macro.  See VSTADRIVE.REQ for a description of this macro.
+!
+IF NOT (s=$DRIVEFLOOD(
+		 CHAN	= .vs$gw_vbchan
+		,SRCTYP = .src_type
+		,SOURCE = .source
+		,DST	= .dest
+		,DSTOFX = .dst_off_x
+		,DSTOFY = .dst_off_y
+		,BNDMAP = .boundary_map
+		,SEEDX  = .seed_point_x
+		,SEEDY	= .seed_point_y
+		,RECNUM = .rectangle_count
+		,RECADR = .rectangle_addr
+		,EFN	= .efn
+		,ASTADR	= (IF .backing_only
+				THEN VSTA$$NAT_COMPLETION_ROUTINE
+				ELSE 0)
+		,ASTPRM = .dsc
+	))
+THEN RETURN .s;
+
+!
+!  If the dst is a vd then perform the operation to the screen
+!
+IF NOT .backing_only 
+THEN BEGIN
+
+	LOCAL
+		 rca: ref vector [,long]
+		,next_rca
+		,msk_rec: vector [2,word]
+		;
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	msk_rec [0] = .dest [mbmd$w_size_x];
+	msk_rec [1] = .dest [mbmd$w_size_y];
+
+	!
+	!  Loop thru all the rectangle lists for the vd and call vstadrive
+	!
+	rca = .clip_base [0];
+	
+	UNTIL .rca eql clip_base [0]
+	do begin
+
+		next_rca = .rca [0];
+
+		IF NOT (s=$DRIVECOPY(
+			 CHAN	= .vs$gw_vbchan
+			,SRCTYP = vsta$k_src_bm
+			,SOURCE = .dest
+			,MSKTYP = vsta$k_msk_rectangle
+			,MASK	= msk_rec
+			,DST	= .vsta$a_frame_buffer [0]
+			,DSTOFX = .rca [3]
+			,DSTOFY = .rca [4]
+			,RECNUM	= .rca [5]
+			,RECADR	= rca [6]
+			,EFN	= .efn
+			,ASTADR	= (IF .next_rca eql clip_base [0]
+					THEN VSTA$$NAT_COMPLETION_ROUTINE
+					ELSE 0)
+			,ASTPRM = .dsc
+			))
+		THEN RETURN .s;
+
+		rca = .next_rca;
+
+	   END;
+	!
+	!  Reverse the region box to make it invisible
+	!
+	vsta$$vds_xor_region_box( .dst);
+
+	!
+	! Call a vds routine to redisplay the text on this vd if any exists
+	!
+	IF NOT vsta$$vds_redisplay_vd_text(.dst)
+	THEN VSTA$$ERROR_LOGGER(ss$_badparam);
+
+     END; ! End if dst is vd !
+
+RETURN ss$_normal;
+
+END;	!End of vsta$$nat_flood_area
+
+
+
+%sbttl 'VSTA$$NAT_NOOP -- Native Graphics Global Routine'
+GLOBAL ROUTINE vsta$$nat_noop (
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! This routine performs a noop to the device.  Used for synchronization.
+!
+! FORMAL PARAMETERS:	!PERMITTED VALUES:	MEANING:
+!
+! NOOP
+!
+efn	,	!			same as copy_area
+astadr	,	!			same as copy_area
+astprm		!			same as copy_area
+
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODE: 
+!
+!  SIDE EFFECTS: 
+!
+!---Calls vsta drive to send a noop to the device.
+!
+!--
+BEGIN
+
+RETURN 
+
+$DRIVENOOP(
+	 CHAN	= .vs$gw_vbchan
+	,EFN	= .efn
+	,ASTADR	= .astadr
+	,ASTPRM	= .astprm
+	  );
+
+END;
+
+
+GLOBAL ROUTINE VSTA$$NAT_COMPLETION_ROUTINE(
+				 dsc: REF VECTOR [,LONG]
+				,status
+				    ) =
+!++
+!  Functional description
+!
+!  This routine is called on completion of a device operation or as a
+!  result of a completed operation to the virtual display services.  It will
+!  decriment the reference count and if it becomes 0 it will call the
+!  users completion routine and then deallocate the iip.
+!
+!  Formal Parameters
+!
+!	dsc:  Native command descriptor.
+!
+!	status: The status of completion from the vstadrive for vsvdsvd
+!		services.
+!
+!--
+BEGIN
+
+LOCAL
+	 rca: REF VECTOR [,LONG]
+	,next_rca
+	;
+
+!
+!  loop thru the rca list queue and deallocate the clipping rectangle lists
+!  
+RCA = .DSC [4];
+
+UNTIL .rca EQL DSC [4]
+DO BEGIN
+	next_rca = .rca [0];
+	VS$$ACP_FREE_VM( RCA [2], RCA, 0);
+	rca = .next_rca;
+   END;
+
+
+!
+!  If the reference count has become 0 then call the clean up routine
+!
+VSTA$$NAT_CLEAN_UP( .dsc,  .dsc [1],.dsc [2],.dsc [3],.status);
+	
+RETURN ss$_normal;
+
+END;
+
+
+
+GLOBAL ROUTINE VSTA$$NAT_CLEAN_UP(
+				 dsc  
+				,efn
+				,astadr
+				,astprm
+				,status
+				) =
+!++
+!  Functional Description
+!
+!  This routine will clear the efn if is non zero.  It will call the astadr
+!  routine if it is non zero with an added parameter status.  It will
+!  deallocate the vdc if its address is non zero.
+!
+!  
+!
+!
+!  Completion Codes
+!
+!  This routine returns the same status as it receives.
+!
+!--
+BEGIN
+
+
+IF .astadr GTR 0
+THEN (.astadr)(.astprm,.status);
+
+!
+!  Get rid of the descriptor now
+!
+$FREE32B( .dsc);
+
+
+RETURN .status;
+
+END;
+
+
+
+
+GLOBAL ROUTINE vsta$$nat_write_vertical_lines
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes up to 10 vertical lines in a virtual display.
+! FORMAL PARAMETERS:
+	(num_lines		!Number of lines to write
+	,line_width		!Width of each line
+	,line_color		!Color of the lines
+	,lines_spec: REF VECTOR [10,WORD]
+				!Specification for the lines (gives x-offset
+				! of the vertical line)
+	,vd_id			!Id of the virtual display
+	,vd_height		!Height of VD
+	) =
+!--
+BEGIN
+LOCAL
+    path_count,					!Path count
+    path_block: REF VECTOR [,WORD],		!Path block
+    msk_block: REF VECTOR [,WORD],		!(dx, dy)
+    pidx,					!Index into "path-block" array
+    endpoint_y,					!Y-endpoint of line (the bottom of the VD)
+    status;
+
+
+
+!
+!  Get a block of mem for the path to reside
+!
+IF NOT (status = $GET128B( path_block))
+THEN RETURN .status;
+
+IF (.num_lines GTR 10)
+  THEN
+    BEGIN
+    RETURN $bug	(vsta$_vert_2mny
+		,integer_type, .num_lines
+		);
+    END;
+
+endpoint_y = .vd_height;	!Draw TO here
+path_count = .num_lines * 2;	!Set length of path
+!
+! Write the Path array
+!
+INCR i FROM 0 TO (.num_lines - 1) DO
+    BEGIN
+    pidx = .i * 6;		!Index into path-block array
+    ! Move to one endpoint, then draw to next endpoint.
+    path_block [.pidx] = .lines_spec [.i];
+    path_block [.pidx + 1] = 0;
+    path_block [.pidx + 2] = %B'10';	!Bit1 = 1 = "MOVE"
+    path_block [.pidx + 3] = .lines_spec [.i];
+    path_block [.pidx + 4] = .endpoint_y;
+    path_block [.pidx + 5] = %B'00';	!Bit1 = 0 = "DRAW"
+    END;
+
+
+msk_block = path_block [60];
+
+msk_block [0] = .line_width;		!DX
+msk_block [1] = 1;			!DY
+
+IF NOT (status =
+    $VSTADRAW (
+		 SOURCE	= .line_color
+		,MSKTYP = vsta$k_msk_rectangle
+		,MASK	= .msk_block
+		,DST	= .vd_id
+		,PTHNUM = .path_count
+		,PTHADR = .path_block
+		,PATMOD	= vsta$k_ptn_ident
+		,ASTADR	= NAT$$LINES_COMPLETE
+		,ASTPRM	= .path_block
+	      ))
+THEN $RETERR(STATUS=ss$_badparam);
+
+RETURN SS$_NORMAL
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE vsta$$nat_write_horizontl_lines
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes up to 10 horizontal lines in a virtual display.
+! FORMAL PARAMETERS:
+	(num_lines		!Number of lines to write
+	,line_width		!Width of each line
+	,line_color		!Color of the lines
+	,lines_spec: REF VECTOR [10,WORD]
+				!Specification for the lines (gives y-offset
+				! of the line)
+	,vd_id			!Id of the virtual display
+	,vd_width		!Width of VD
+	) =
+!--
+BEGIN
+LOCAL
+    path_count,			!Path count
+    path_block: REF VECTOR [,WORD],	!Path block
+    msk_block: REF VECTOR [,WORD],	!(dx, dy)
+    pidx,			!Index into "path-block" array
+    endpoint_x,			!X-endpoint of line (the right of the VD)
+    status;
+
+
+!
+!  Get a block of memory to put the path in
+!
+IF NOT (status = $GET128B( path_block))
+THEN RETURN .status;
+
+IF (.num_lines GTR 10)
+  THEN
+    BEGIN
+    RETURN $bug	(vsta$_horiz_2mny
+		,integer_type, .num_lines
+		);
+    END;
+
+endpoint_x = .vd_width;		!Draw TO here
+path_count = .num_lines * 2;	!Set length of path
+!
+! Write the Path array
+!
+INCR i FROM 0 TO (.num_lines - 1) DO
+    BEGIN
+    pidx = .i * 6;		!Index into path-block array
+    ! Move to one endpoint, then draw to next endpoint.
+    path_block [.pidx] = 0;
+    path_block [.pidx + 1] = .lines_spec [.i];
+    path_block [.pidx + 2] = %B'10';	!Bit1 = 1 = "MOVE"
+    path_block [.pidx + 3] = .endpoint_x;
+    path_block [.pidx + 4] = .lines_spec [.i];
+    path_block [.pidx + 5] = %B'00';	!Bit1 = 0 = "DRAW"
+    END;
+
+!
+!  Put the mask in the descriptor
+!
+msk_block = path_block [60];
+
+msk_block [0] = 1;			!DX
+msk_block [1] = .line_width;		!DY
+
+IF NOT (status =
+    $VSTADRAW (
+		 SOURCE	= .line_color
+		,MSKTYP = vsta$k_msk_rectangle
+		,MASK	= .msk_block
+		,DST	= .vd_id
+		,PTHNUM = .path_count
+		,PTHADR = .path_block
+		,PATMOD	= vsta$k_ptn_ident
+		,ASTADR	= NAT$$LINES_COMPLETE
+		,ASTPRM	= .path_block
+	      ))
+THEN $RETERR(STATUS=ss$_badparam);
+
+RETURN SS$_NORMAL
+END;
+
+ROUTINE NAT$$LINES_COMPLETE( PATH_DSC: ref block [,byte]):=
+!++
+!  Functional Description
+!
+!  This routine cleans up the path descriptor used by the draw virtical
+!  and horizontal line routines
+!
+!--
+BEGIN
+
+$FREE128B( .PATH_DSC)
+
+END;
+
+END
+ELUDOM

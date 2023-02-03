@@ -1,0 +1,3971 @@
+%TITLE 'vstatext -- Text procedures for VAXstation library'
+MODULE vstatext (
+		IDENT = '1.2-1',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the sharable library routines and data relevent to
+!   dealing with the VAXstation entities in the context of a VAX workstation
+!   running the associated workstation display software; an implementation of
+!   the System Display Architecture.
+!
+!   Operations have been provided to allow the manipulation of paste_boards,
+!   which in turn provide the basic application mechanism for specifying
+!   spatial relationships between virtual displays and virtual terminals
+!   and provide a mechanism for the application to specify what parts of those
+!   virtual displays and terminals can be made visible through the use of
+!   windows. The number of allowable objects is limited only by the machine's
+!   memory capacity.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one
+!   ONYX/AGATE/OPAL graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Procedures for writing message text to a terminal
+!
+	vsta$set_text_colornumber,	!Set color number for screen text
+	vsta$change_text_colornumber,	!Change color of existing text
+	vsta$get_text_colornumber,	!Get color number for screen text
+	vsta$set_text_bg_colornumber,	!Set background color for screen text
+	vsta$change_text_bg_colornumber,!Change background color for text
+	vsta$get_text_bg_colornumber,	!Get background color for screen text
+	vsta$set_typeface,		!Set the typeface (helvetica,etc.)
+	vsta$change_typeface,		!Change the typeface of existing text
+	vsta$get_typeface,		!Get the typeface (helvetica,etc.)
+	vsta$set_rendition,		!Set the current rendition
+	vsta$change_rendition,		!Change existing text renditions
+	vsta$get_rendition,		!Get the rendition (bold,blink,etc.)
+	vsta$set_typesize,		!Set the current type size
+	vsta$change_typesize,		!Change existing text type sizes
+	vsta$get_typesize,		!Get the current type size
+	vsta$set_baseline,		!Set the text character offsets
+	vsta$change_baseline,		!Change the text character offsets
+	vsta$get_baseline,		!Get the text character offsets
+	vsta$define_field,		!Define a text field on a line
+	vsta$set_field_format,		!Set the specified field adjustment
+	vsta$get_field_definition,	!Get definition of a text field
+	vsta$write_text,		!Write text to specified position
+	vsta$insert_text,		!Insert text to specified position
+	vsta$append_text,		!Append text to specified field
+	vsta$get_text_in_field,		!Read text from a field
+	vsta$scroll_up,			!Scroll text up
+	vsta$scroll_down,		!Scroll text down
+	vsta$insert_line,		!Insert a blank line at specified line
+	vsta$clear_line,		!Erases line at specified line position
+	vsta$clear_field,		!Erases field at specified position
+	vsta$clear_from_beg_of_field,	!Erase from beginning of fld to cursor
+	vsta$clear_to_end_of_field,	!Erase from cursor to end of field
+	vsta$delete_line,		!Deletes the specified line
+	vsta$delete_field,		!Deletes the specified field
+	vsta$delete_characters,		!Delete the specified no. of characters
+	vsta$add_lines,			!Add lines to end of text block
+	vsta$remove_lines,		!Remove lines from end of text block
+!
+! Procedures for interacting with message text
+!
+	vsta$get_text_selection;	!Get corresponding menu item
+!
+! EXTERNAL ROUTINES
+!
+EXTERNAL ROUTINE
+	lib$get_vm,			!RTL memory allocation routine
+	lib$free_vm,			!RTL memory deallocation routine
+	vsta$obsolete,			!Indicates obsolete VSTA library routines
+	vsta$$channel_found,		! Establish correct channel.
+	vsta$$convert_color_from_user,	!convert user color input
+	vsta$$convert_color_to_user;	!convert color for output
+
+! INCLUDE FILES:
+!
+REQUIRE 'VSTA$LIBRARY:VXSLIB.R32';	! VXSLIB constant data declarations
+LIBRARY 'VSTA$LIBRARY:LIBMACROS';	! VSTALIB common macro definitions
+LIBRARY 'VSTA$LIBRARY:VSVDSPB'; 	! Color lookup table data declarations
+LIBRARY 'VSTA$LIBRARY:VSVDSVD';		! Virtual terminal definitions
+REQUIRE 'VSTA$LIBRARY:VSACPDEF.R32';	! VS specific $QIO codes + modifiers
+LIBRARY 'VSTA$LIBRARY:TXTCODES';	! TEXT specific $QIO codes
+LIBRARY 'VSTA$LIBRARY:VSERRORS';	! Error code symbols
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! BLISS-32 built-in machine instructions
+!
+BUILTIN
+	INSQUE,				! Insert into queue
+	REMQUE;				! Remove from queue
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+	$VSTA_PSECT;
+
+external
+
+	vsta$gl_local_error;		! Local (library) error indicator
+
+
+%SBTTL 'vsta$set_text_colornumber -- Set Text Color Number'
+GLOBAL ROUTINE vsta$set_text_colornumber(
+			tty_chan,		!Device channel number
+			color_num		!New color number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the color number of text for
+! all terminals. This color number stays in effect until the next call to this
+! routine, but only applies to terminal text and has no effect on the
+! colornumber of graphics or graphic text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	COLOR_NUM : Longword new color number for terminal text
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTXC		!Set text writing color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	color_in,			 !convert user color input
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_settxc);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_settxc);
+	  END;
+!
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(color_num), color_in);	
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = color_in,				
+		P2   = 4,
+		P3   = TXT$_SET_WRITINGCOLOR
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);	!Not a native display device
+	    lib_ret_err(vsta$_settxc);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$set_text_colornumber
+
+
+%SBTTL 'vsta$change_text_colornumber -- Change Color of Existing Text'
+GLOBAL ROUTINE vsta$change_text_colornumber(
+			tty_chan,			!Device channel number
+			new_color,			!New text color
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the color of existing
+! text in the specified range. The "current" color remains unchanged and
+! can only be changed with a call to vsta$SET_TEXT_COLORNUMBER.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	NEW_COLOR	: Longword new text color number
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change rendition
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change rendition
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change rendition
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGTXC		!Change text writing color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	color_in,			 !convert user color input
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(new_color), color_in);	
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = color_in,
+		P2   = 4,
+		P3   = TXT$_CHANGE_WRITINGCOLOR,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgtxc);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_text_colornumber
+
+
+%SBTTL 'vsta$get_text_colornumber -- Inquire Text Color Number'
+ROUTINE vsta$get_text_colornumber(
+			tty_chan,		!Device channel number
+			color_num		!Current color number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the color number of text for
+! all terminals. This color number stays in effect until the next call to
+! vsta$set_text_colornumber, but only applies to terminal text and has no effect
+! on the colornumber of graphics or graphic text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	COLOR_NUM : Longword current color number for terminal text
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_text_colornumber);
+!
+    END;		! End of routine vsta$get_text_colornumber
+
+
+%SBTTL 'vsta$set_text_bg_colornumber -- Set Text Background Color'
+GLOBAL ROUTINE vsta$set_text_bg_colornumber(
+			tty_chan,		!Device channel number
+			color_num		!New color number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the color number of text 
+! background for the specified terminal. This color number stays in effect
+! until the next call to this routine, but only applies to native display
+! text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	COLOR_NUM : Longword new color number for terminal text
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTXB		!Set text background color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	color_in,			 !convert user color input *RR*
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_settxb);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic  THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_settxb);
+	  END;
+!
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(color_num), color_in);	
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = color_in,			
+		P2   = 4,
+		P3   = TXT$_SET_BACKGROUNDCOLOR
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settxb);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$set_text_bg_colornumber
+
+
+%SBTTL 'vsta$change_text_bg_colornumber -- Change Background Color of Text'
+GLOBAL ROUTINE vsta$change_text_bg_colornumber(
+			tty_chan,			!Device channel number
+			new_color,			!New text background color
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the color of existing
+! text background color in the specified range. The "current" background color
+! remains unchanged and can only be changed with a call to
+! vsta$SET_TEXT_BG_COLORNUMBER.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	NEW_COLOR	: Longword new color number for existing text
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change rendition
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change rendition
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change rendition
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGTXB		!Change text background color failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	color_in,			 !convert user color input
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	VSTA$$CONVERT_COLOR_FROM_USER(
+		parameter_value(new_color), color_in);		
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = color_in,				
+		P2   = 4,
+		P3   = TXT$_CHANGE_BACKGROUNDCOLOR,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgtxb);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_text_bg_colornumber
+
+
+%SBTTL 'vsta$get_text_bg_colornumber -- Inquire Text Background Color'
+ROUTINE vsta$get_text_bg_colornumber(
+			tty_chan,		!Device channel number
+			color_num		!Current color number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the color number of text
+! background for the specified terminal. This color number stays in effect
+! until the next call to vsta$set_textcolornumber, but only applies to 
+! native display text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	COLOR_NUM : Longword current color number for terminal text
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_text_bg_colornumber);
+!
+    END;		! End of routine vsta$get_text_bg_colornumber
+
+
+%SBTTL 'vsta$set_typeface -- Set the Current Typeface'
+GLOBAL ROUTINE vsta$set_typeface(
+			tty_chan,		!Device channel number
+			type_desc: REF BLOCK[0,BYTE]
+						!New typeface name desc.
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the typeface to be used for
+! the specified terminal. This typeface stays in effect until the next call to
+! this routine, but only applies to terminal text of native displays. This may
+! be a Digital-supplied or user-supplied typeface.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!			(input parameter)
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTYF		!Set typeface failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_settyf);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_settyf);
+	  END;
+!
+! Make sure the typeface name length is within acceptable limits
+!
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(type_desc));
+	    lib_ret_err(vsta$_settyf);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = .type_desc[vsta$ad_a_string],
+			P2   = .type_desc[vsta$ad_w_size],
+			P3   = TXT$_SET_TYPEFACE
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settyf);
+	  END;
+!
+	RETURN .iosb[0];
+    END;		! End of routine vsta$set_typeface
+
+
+%SBTTL 'vsta$change_typeface -- Change Typeface of Existing Text'
+GLOBAL ROUTINE vsta$change_typeface(
+			tty_chan,			!Device channel number
+			type_desc: REF BLOCK[0,BYTE],	!Typeface name descriptor
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the typeface of existing
+! text in the specified range. The "current" typeface remains unchanged and
+! can only be changed with a call to vsta$SET_TYPEFACE.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	TYPE_DESC	: 2 longword typeface name ascii descriptor
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change rendition
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change rendition
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change rendition
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGTYF		!Change typeface failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+!
+! Make sure the typeface name length is within acceptable limits
+!
+	IF parameter_address(type_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(type_desc));
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = .type_desc[vsta$ad_a_string],
+		P2   = .type_desc[vsta$ad_w_size],
+		P3   = TXT$_CHANGE_TYPEFACE,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgtyf);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_typeface
+
+
+%SBTTL 'vsta$get_typeface -- Inquire Current Typeface'
+ROUTINE vsta$get_typeface(
+			tty_chan,			!Device channel number
+			type_desc: REF VECTOR		!Current typeface name
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the typeface name being used
+! for the specified terminal. This typeface stays in effect until the next call
+! to vsta$set_typeface, but only applies to the terminal text of native displays.
+! This may be a Digital-supplied or user-supplied typeface.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!			(input parameter)
+!	TYPE_DESC : Address of typeface name ascii descriptor
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_typeface);
+!
+    END;		! End of routine vsta$get_typeface
+
+
+%SBTTL 'vsta$set_rendition -- Set Current Renditions'
+GLOBAL ROUTINE vsta$set_rendition(
+			tty_chan,		!Device channel number
+			rendition_off,		!Rendition mask to turn off
+			rendition_on		!Rendition mask to turn on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the typeface rendition to be
+! used for the specified terminal. This rendition stays in effect until the
+! next call to this routine, but only applies to the text of native displays.
+! This rendition applies to all subsequent text output to this terminal.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN       : Longword channel number to device
+!				(input parameter)
+!	RENDITION_OFF  : Longword rendition indicator of renditions to turn off
+!				(input parameter)
+!	RENDITION_ON   : Longword rendition indicator of renditions to turn on.
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETREN		!Set rendition failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	parameter_block: VECTOR[2],	 !$QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_setren);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_setren);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block[0] = parameter_value(rendition_on);
+	parameter_block[1] = parameter_value(rendition_off);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_block,
+			P2   = 8,
+			P3   = TXT$_SET_RENDITION
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setren);
+	  END;
+!
+	RETURN .iosb[0];
+    END;		! End of routine vsta$set_rendition
+
+
+%SBTTL 'vsta$change_rendition -- Change Renditions of Existing Text'
+GLOBAL ROUTINE vsta$change_rendition(
+			tty_chan,			!Device channel number
+			rendition_off,			!Renditions to turn off
+			rendition_on,			!Renditions to turn on
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the rendition of existing
+! text in the specified range. The "current" rendition remains unchanged and
+! can only be changed with a call to vsta$SET_RENDITION. This routine turns the
+! specified renditions on as well as the specified renditions off.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	RENDITION_OFF   : Longword mask of renditions to turn off
+!				(input parameter)
+!	RENDITION_ON    : Longword mask of renditions to turn on
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change rendition
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change rendition
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change rendition
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGREN		!Change rendition failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	parameter_block: VECTOR[2],	 !$QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgren);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgren);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgren);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgren);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgren);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgren);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block[0] = parameter_value(rendition_on);
+	parameter_block[1] = parameter_value(rendition_off);
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_block,
+		P2   = 8,
+		P3   = TXT$_CHANGE_RENDITION,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgren);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_rendition
+
+
+%SBTTL 'vsta$get_rendition -- Inquire Rendition'
+ROUTINE vsta$get_rendition(
+			tty_chan,			!Device channel number
+			rendition_mask			!Rendition indicator
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the rendition mask for the
+! specified terminal. This rendition variation stays in effect until the next
+! call to vsta$set_rendition, but only applies to terminal text of native
+! displays.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN       : Longword channel number to device
+!				(input parameter)
+!	RENDITION_MASK : Longword rendition indicator
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_rendition);
+!
+    END;		! End of routine vsta$get_rendition
+
+
+%SBTTL 'vsta$set_typesize -- Set Text Type Size'
+GLOBAL ROUTINE vsta$set_typesize(
+			tty_chan,		!Device channel number
+			size			!New text type size
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the size of text 
+! for the specified terminal. This color number stays in effect
+! until the next call to this routine, but only applies to native display
+! text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	SIZE	  : Longword new type size for terminal text
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETTYS		!Set typesize failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Selected terminal characteristics
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_settys);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic  THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_settys);
+	  END;
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_address(size),
+			P2   = 4,
+			P3   = TXT$_SET_TYPESIZE
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_settys);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$set_typesize
+
+
+%SBTTL 'vsta$change_typesize -- Change Type Size of Text'
+GLOBAL ROUTINE vsta$change_typesize(
+			tty_chan,			!Device channel number
+			new_size,			!New text type size
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the type size of existing
+! text in the specified range. The "current" type size remains unchanged
+! and can only be changed with a call to vsta$SET_TYPESIZE.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	NEW_SIZE	: Longword new type size for existing text
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change rendition
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change rendition
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change rendition
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGTYS		!Change typesize failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_address(new_size),
+		P2   = 4,
+		P3   = TXT$_CHANGE_TYPESIZE,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgtys);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_typesize
+
+
+%SBTTL 'vsta$get_typesize -- Inquire Text Type Size'
+ROUTINE vsta$get_typesize(
+			tty_chan,		!Device channel number
+			size			!Current text type size
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the type size of text
+! for the specified terminal. This type size stays in effect until
+! the next call to vsta$set_typesize, but only applies to native display text.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN  : Longword channel number to device
+!				(input parameter)
+!	SIZE	  : Longword current type size for terminal text
+!				(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_typesize);
+!
+    END;		! End of routine vsta$get_typesize
+
+
+%SBTTL 'vsta$set_baseline -- Set Character Baseline Offsets'
+GLOBAL ROUTINE vsta$set_baseline(
+			tty_chan,			!Device channel number
+			char_baseline			!Character baseline
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for setting the character offsets to be
+! used for the "selected" terminal. These character offsets stay in effect
+! until the next call to this routine, but only applies to the graphic text
+! of native displays. The baseline is an offset from the current
+! baseline to be used for super- or subscripting characters.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Longword channel number to device
+!			(input parameter)
+!	CHAR_BASELINE : Longword character baseline offset
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETBAS		!Set baseline offset failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	parameter_block,		 !To store $QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_setbas);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_setbas);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block = parameter_value(char_baseline);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_block,
+			P2   = 4,
+			P3   = TXT$_SET_CHARACTEROFFSET
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setbas);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$set_baseline
+
+
+%SBTTL 'vsta$change_baseline -- Change Baseline of Existing Text'
+GLOBAL ROUTINE vsta$change_baseline(
+			tty_chan,			!Device channel number
+			char_baseline,			!Baseline offset
+			line_no,			!Line number
+			field_no,			!Field position
+			char_no,			!Character position
+			number_of_chars			!No. of chars to change
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the baseline of existing
+! text in the specified range. The "current" baseline remains unchanged and
+! can only be changed with a call to vsta$SET_BASELINE.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN        : Longword channel number to device
+!				(input parameter)
+!	CHAR_BASELINE	: Longword baseline offset to use
+!				(input parameter)
+!	LINE_NO	        : Word line number on which to change baseline
+!				(input parameter)
+!	FIELD_NO        : Word field position on which to change baseline
+!				(input parameter)
+!	CHAR_NO	        : Word character position which to change baseline
+!				(input parameter)
+!	NUMBER_OF_CHARS : Word number number of characters to affect
+!				(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CHGBAS		!Change baseline offset failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	wno_chars: WORD,		 !16-bit signed number of characters
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Ptr to selected terminal info block
+	parameter_block,		 !$QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+	IF NOT fits_in_word(parameter_value(number_of_chars),wno_chars) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(number_of_chars));
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block = parameter_value(char_baseline);
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_block,
+		P2   = 4,
+		P3   = TXT$_CHANGE_BASELINE,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = (.wno_chars ^ 16) + .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_chgbas);
+	  END;
+!
+      RETURN .iosb[0];
+    END;		! End of routine vsta$change_baseline
+
+
+%SBTTL 'vsta$get_baseline -- Inquire Character Baseline Offsets'
+ROUTINE vsta$get_baseline(
+			tty_chan,			!Device channel number
+			char_offset,			!Character offset
+			char_baseline			!Character baseline
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for getting the character offsets being
+! used for the "selected" terminal. This character offsets stay in effect
+! until the next call to vsta$set_characteroffset, but only applies to the
+! graphic text of native displays. The baseline is an offset from the
+! current baseline being used for super- or subscripting characters.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Longword channel number to device
+!			(input parameter)
+!	CHAR_OFFSET   : Longword character offset (space between characters)
+!			(output parameter)
+!	CHAR_BASELINE : Longword character baseline offset
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_typesize);
+!
+    END;			! End of routine vsta$get_baseline
+
+
+%SBTTL 'vsta$define_field -- Define a Field'
+GLOBAL ROUTINE vsta$define_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line number
+			start_pos,			!Field start position
+			size				!Field size
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for defining text fields within the
+! selected terminal. The character position becomes the beginning of this
+! field to allow immediate writing to this field. The adjustment defaults
+! to a left justified field which can be altered with calls to
+! vsta$SET_FIELD_FORMAT.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	LINE_NO    : Longword line number within selected terminal
+!			(input parameter)
+!	START_POS  : Longword field starting position within the line
+!			(input parameter)
+!	SIZE       : Longword field size
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DEFFLD		!Define field failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	parameter_block: VECTOR[3],	 !To store $QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_deffld);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_deffld);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no)) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_deffld);
+	  END;
+	IF NOT fits_in_word(parameter_value(start_pos)) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(start_pos));
+	    lib_ret_err(vsta$_deffld);
+	  END;
+	IF NOT fits_in_word(parameter_value(size)) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(size));
+	    lib_ret_err(vsta$_deffld);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block[0] = parameter_value(line_no);
+	parameter_block[1] = parameter_value(start_pos);
+	parameter_block[2] = parameter_value(size);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_block,
+			P2   = 12,
+			P3   = TXT$_DEFINE_FIELD
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_deffld);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$define_field
+
+
+%SBTTL 'vsta$set_field_format -- Set Field Format'
+GLOBAL ROUTINE vsta$set_field_format(
+			tty_chan,			!Device channel number
+			line_no,			!Line number
+			start_pos,			!Field start position
+			justification			!Field justification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for changing the field justification
+! of the specified field. Fields are normally left-justified but can be
+! altered with calls to this routine. The text within the specified field
+! will be adjusted immediately.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN      : Longword channel number to device
+!			(input parameter)
+!	LINE_NO       : Longword line number within selected terminal
+!			(input parameter)
+!	START_POS     : Longword field starting position within the line
+!			(input parameter)
+!	JUSTIFICATION : Longword field justification
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SETFMT		!Set field format failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_setfmt);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_setfmt);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_setfmt);
+	  END;
+	IF NOT fits_in_word(parameter_value(start_pos),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(start_pos));
+	    lib_ret_err(vsta$_setfmt);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = %ref (parameter_value (justification)),
+				! This prevents access violation if caller
+				! omits the parameter
+		P2   = 4,
+		P3   = TXT$_SET_FIELD_FORMAT,
+		P5   = (.wfield_no ^ 16) + .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_setfmt);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$set_field_format
+
+
+%SBTTL 'vsta$get_field_definition -- Inquire Field Definition'
+ROUTINE vsta$get_field_definition(
+			tty_chan,			!Device channel number
+			line_no,			!Line number
+			start_pos,			!Field start position
+			size,				!Field size
+			adjustment			!Field justification
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for returning the text field definition
+! within the specified field. The adjustment dictates whether the contents of
+! this field are to be flushleft, flushright, or center (0, 1, 2) respectively
+! with flushleft as the default.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	LINE_NO    : Word line number within selected terminal
+!			(output parameter)
+!	START_POS  : Word field starting position within the line
+!			(output parameter)
+!	SIZE       : Word field size
+!			(output parameter)
+!	ADJUSTMENT : Longword field justification
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_field_definition);
+!
+    END;			! End of routine vsta$get_field_definition
+
+
+%SBTTL 'vsta$write_text -- Write Text to The Specified Position'
+GLOBAL ROUTINE vsta$write_text(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			char_no,			!Character position
+			msg_desc: REF BLOCK[0,BYTE]	!Msg text descriptor
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for writing text described by msg_desc
+! to the specified position, overwriting anything that was
+! previously there, and flushing characters according to the field's
+! adjustment. This routine will write either the number of characters
+! specified in msg_desc or until the end of the field.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	CHAR_NO  : Word terminal character number
+!			(input parameter)
+!	MSG_DESC : Address of message text ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_WRTTXT		!Text write error
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+!
+	IF parameter_address(msg_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(msg_desc));
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+!
+! We have a channel number -- Do the write immediately since the ACP will
+! return an error code if unable to comply with a text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = .msg_desc[vsta$ad_a_string],
+		P2   = .msg_desc[vsta$ad_w_size],
+		P3   = TXT$_WRITE,
+		P4   = 0,		!Carriage control specifier
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_wrttxt);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$write_text
+
+
+%SBTTL 'vsta$insert_text -- Insert Text in This Field'
+GLOBAL ROUTINE vsta$insert_text(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			char_no,			!Character position
+			msg_desc: REF BLOCK[0,BYTE]	!Msg text descriptor
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for inserting the text described by
+! msg_desc to the position specified, moving anything that was previously
+! there, and flushing characters according to the field's adjustment.
+! 	This routine will write either the number of characters specified in
+! msg_desc or until the end of the field.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	CHAR_NO  : Word terminal character number
+!			(input parameter)
+!	MSG_DESC : Address of message text ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_INSTXT		!Insert text failure
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_instxt);
+	  END;
+!
+	IF parameter_address(msg_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(msg_desc));
+	    lib_ret_err(vsta$_instxt);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_instxt);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_instxt);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_instxt);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_instxt);
+	  END;
+!
+! We have a channel number -- Do the write immediately since the ACP will
+! return an error code if unable to comply with a text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = .msg_desc[vsta$ad_a_string],
+		P2   = .msg_desc[vsta$ad_w_size],
+		P3   = TXT$_INSERT,
+		P4   = 0,		!Carriage control specifier
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_instxt);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$insert_text
+
+
+%SBTTL 'vsta$append_text -- Append Text to This Field'
+GLOBAL ROUTINE vsta$append_text(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			msg_desc: REF BLOCK[0,BYTE]	!Msg text descriptor
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for appending the text described by
+! msg_desc to the field specified after the rightmost character in that field.
+! 	This routine will write either the number of characters specified in
+! msg_desc or until the end of the field.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	MSG_DESC : Address of message text ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_APPTXT		!Append text failure
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+!
+	IF parameter_address(msg_desc) EQL 0 THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(msg_desc));
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+!
+! We have a channel number -- Do the write immediately since the ACP will
+! return an error code if unable to comply with a text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = .msg_desc[vsta$ad_a_string],
+		P2   = .msg_desc[vsta$ad_w_size],
+		P3   = TXT$_APPEND,
+		P4   = 0,		!Carriage control specifier
+		P5   = (.wfield_no ^ 16) + .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_apptxt);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$append_text
+
+
+%SBTTL 'vsta$get_text_in_field -- Inquire Text in This Field'
+ROUTINE vsta$get_text_in_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			msg_desc: REF VECTOR		!Msg text descriptor
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for reading text from the specified field
+! and returning the number of characters in the field as well as the data
+! itself. The data will be placed in the caller-supplied storage area.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	MSG_DESC : Address of message text ascii descriptor
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_text_in_field);
+!
+    END;			! End of routine vsta$get_text_in_field
+
+
+%SBTTL 'vsta$scroll_up -- Scroll Text Block Up'
+GLOBAL ROUTINE vsta$scroll_up(
+			tty_chan,			!Device channel number
+			start_line,			!Starting line
+			end_line,			!Ending line
+			height				!New line's height
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for scrolling the region specified on
+! the "selected" terminal.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	START_LINE : Longword starting line number
+!			(input parameter)
+!	END_LINE   : Longword ending line number
+!			(input parameter)
+!	HEIGHT     : Longword new line height
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SCLUP		!Scroll up failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	parameter_block: VECTOR[3],	 !To store $QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_sclup);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_sclup);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block[0] = parameter_value(start_line);
+	parameter_block[1] = parameter_value(end_line);
+	parameter_block[2] = parameter_value(height);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_block,
+			P2   = 12,
+			P3   = TXT$_SCROLL_UP
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_sclup);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$scroll_up
+
+
+%SBTTL 'vsta$scroll_down -- Scroll Text Block Down'
+GLOBAL ROUTINE vsta$scroll_down(
+			tty_chan,			!Device channel number
+			start_line,			!Starting line
+			end_line,			!Ending line
+			height				!New line's height
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for scrolling the region specified
+! for the specified terminal.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	START_LINE : Longword starting line number
+!			(output parameter)
+!	END_LINE   : Longword ending line number
+!			(output parameter)
+!	HEIGHT     : Longword height of new line
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_SCLDWN		!Scroll down failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	parameter_block: VECTOR[3],	 !To store $QIO parameter block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_scldwn);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_scldwn);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	parameter_block[0] = parameter_value(start_line);
+	parameter_block[1] = parameter_value(end_line);
+	parameter_block[2] = parameter_value(height);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = parameter_block,
+			P2   = 12,
+			P3   = TXT$_SCROLL_DOWN
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_scldwn);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$scroll_down
+
+
+%SBTTL 'vsta$insert_line -- Insert a Line'
+GLOBAL ROUTINE vsta$insert_line(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			height,				!New line height
+			scroll_dir			!Scrolling direction
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for inserting a blank line at the specified
+! line number of the terminal and either moving the existing text
+! up or down depending on the scrolling direction specified. The cursor is
+! placed at the beginning of the new line to allow immediate access to it.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	LINE_NO    : Word line position indicator
+!			(input parameter)
+!	HEIGHT     : Longword new line height
+!			(input parameter)
+!	SCROLL_DIR : Longword scrolling direction indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_INSLIN		!Insert line failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	arg_block: VECTOR[2],		 !$QIO parameter block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_inslin);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_inslin);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_inslin);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	arg_block[0] = parameter_value(scroll_dir);
+	arg_block[1] = parameter_value(height);
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P1   = arg_block,
+			P2   = 8,
+			P3   = TXT$_INSERT_BLANK,
+			P5   = .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_inslin);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$insert_line
+
+
+%SBTTL 'vsta$clear_line -- Clear a Line'
+GLOBAL ROUTINE vsta$clear_line(
+			tty_chan,			!Device channel number
+			line_no				!Line position
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for clearing the line at the specified
+! line number of the terminal by removing the text in all fields of that line.
+! The field definitions for the line are deleted, and the cursor is
+! placed at the beginning of this line to allow immediate access to it.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word line number to be cleared (of text)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CLRLIN		!Clear line failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_clrlin);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_clrlin);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_clrlin);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+			CHAN = .device_adr[vsta$ct_l_tty_chan],
+			FUNC = IO$_WRITE_VD+IO$M_TEXT,
+			IOSB = iosb,
+			P3   = TXT$_CLEAR_LINE,
+			P5   = .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_clrlin);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$clear_line
+
+
+%SBTTL 'vsta$clear_field -- Clear a Field'
+GLOBAL ROUTINE vsta$clear_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no			!Field position
+				) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for clearing the field at the specified
+! field of the terminal by removing the text in this field.
+! The field definition for the field remains, and the cursor is placed
+! at the beginning of this field to allow immediate access to it.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CLRFLD		!Clear field failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_clrfld);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_clrfld);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_clrfld);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_clrfld);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P3   = TXT$_CLEAR_FIELD,
+		P5   = (.wfield_no ^ 16) + .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_clrfld);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$clear_field
+
+
+%SBTTL 'vsta$clear_from_beg_of_field -- Clear from Beginning of Field'
+GLOBAL ROUTINE vsta$clear_from_beg_of_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			char_no				!Character position
+					) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for clearing from the beginning of the
+! field specified to the character position specified by removing all the text
+! in this field. The field definition remains.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	CHAR_NO  : Word terminal character number
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CLRBEG		!Clear to beginning of field failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P3   = TXT$_CLEAR_FROM_BEGOFFIELD,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_clrbeg);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$clear_from_beg_of_field
+
+
+%SBTTL 'vsta$clear_to_end_of_field -- Clear to End of Field'
+GLOBAL ROUTINE vsta$clear_to_end_of_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			char_no				!Character position
+					) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for clearing to the end of the field
+! specified from the character position specified by removing all the text in
+! this field. The field definition remains.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	CHAR_NO  : Word terminal character number
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_CLREND		!Clear to end of field failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_clrend);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_clrend);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_clrend);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_clrend);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_clrend);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P3   = TXT$_CLEAR_TO_ENDOFFIELD,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_clrend);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$clear_to_end_of_field
+
+
+%SBTTL 'vsta$delete_line -- Delete a Line'
+GLOBAL ROUTINE vsta$delete_line(
+			tty_chan,			!Device channel number
+			line_no,			!Line to delete
+			scroll_dir			!Scrolling direction
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting the line at the specified
+! line number of the terminal and either moving the existing text
+! up or down depending on the scrolling direction specified. The field
+! definitions for the line are destroyed.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN   : Longword channel number to device
+!			(input parameter)
+!	LINE_NO    : Word line number to be deleted
+!			(input parameter)
+!	SCROLL_DIR : Longword scrolling direction indicator
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELLIN		!Delete line failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_dellin);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_dellin);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_dellin);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_address(scroll_dir),
+		P2   = 4,
+		P3   = TXT$_DELETE_LINE,
+		P5   = .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_dellin);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$delete_line
+
+
+%SBTTL 'vsta$delete_field -- Delete a Field'
+GLOBAL ROUTINE vsta$delete_field(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no			!Field position
+				) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting the field at the specified
+! field of the terminal. The field definition is destroyed.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELFLD		!Delete field failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_delfld);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_delfld);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_delfld);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_delfld);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P3   = TXT$_DELETE_FIELD,
+		P5   = (.wfield_no ^ 16) + .wline_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delfld);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$delete_field
+
+
+%SBTTL 'vsta$delete_characters -- Delete Characters'
+GLOBAL ROUTINE vsta$delete_characters(
+			tty_chan,			!Device channel number
+			line_no,			!Line position
+			field_no,			!Field position
+			char_no,			!Character position
+			number_chars			!Number to delete
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for deleting number_chars characters
+! starting at the position specified of the selected terminal. If CHAR_NO
+! is zero, then this routine will delete the last NUMBER_CHARS characters
+! in the field.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN : Longword channel number to device
+!			(input parameter)
+!	LINE_NO  : Word terminal line number
+!			(input parameter)
+!	FIELD_NO : Word terminal field number
+!			(input parameter)
+!	CHAR_NO  : Word terminal character number
+!			(input parameter)
+!	NUMBER_CHARS : Word number of characters to delete
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_DELCHR		!Delete characters failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	wline_no: WORD,			 !16-bit signed line number
+	wfield_no: WORD,		 !16-bit signed field number
+	wchar_no: WORD,			 !16-bit signed character number
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_delchr);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_delchr);
+	  END;
+!
+! Validate that the position arguments will all fit into words
+!
+	IF NOT fits_in_word(parameter_value(line_no),wline_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(line_no));
+	    lib_ret_err(vsta$_delchr);
+	  END;
+	IF NOT fits_in_word(parameter_value(field_no),wfield_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(field_no));
+	    lib_ret_err(vsta$_delchr);
+	  END;
+	IF NOT fits_in_word(parameter_value(char_no),wchar_no) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_badparam,
+		integer_type,parameter_rank(char_no));
+	    lib_ret_err(vsta$_delchr);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_address(number_chars),
+		P2   = 4,
+		P3   = TXT$_DELETE_CHARACTERS,
+		P5   = (.wfield_no ^ 16) + .wline_no,
+		P6   = .wchar_no
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_delchr);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$delete_characters
+
+
+%SBTTL 'vsta$add_lines -- Add Lines to End of Text Block'
+GLOBAL ROUTINE vsta$add_lines(
+			tty_chan,			!Device channel number
+			number_lines,			!Number to add
+			line_height			!New line height
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for adding number_lines lines of the
+! specified height to the end of the selected terminal's text block.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword channel number to device
+!			(input parameter)
+!	NUMBER_LINES : Longword number of lines to add
+!			(input parameter)
+!	LINE_HEIGHT  : Longword new line heights
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_ADDLIN		!Add lines failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	arg_block: VECTOR[2],		 !Temp. storage for arguments
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_addlin);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_addlin);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	arg_block[0] = parameter_value(number_lines);
+	arg_block[1] = parameter_value(line_height);
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = arg_block[0],
+		P2   = 8,
+		P3   = TXT$_ADD_LINES
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_addlin);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$add_lines
+
+
+%SBTTL 'vsta$remove_lines -- Remove Lines from End of Text Block'
+GLOBAL ROUTINE vsta$remove_lines(
+			tty_chan,			!Device channel number
+			number_lines			!Number to remove
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for removing number_lines lines
+! from the end of the selected terminal's text block.
+!
+! FORMAL PARAMETERS:
+!
+!	TTY_CHAN     : Longword channel number to device
+!			(input parameter)
+!	NUMBER_LINES : Longword number of lines to remove
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_REMLIN		!Remove lines failed
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	iosb: VECTOR[2,LONG],		 !$QIO return status block
+	device_adr: REF BLOCK[0,BYTE],	 !Terminal information block
+	status;				 !To contain return status value
+!
+! Clear the local error indicator
+!
+	VSTACALL_INIT();
+!
+! If the caller did not specify a channel number or one equal to zero,
+! then use the "selected" terminal as the default device.
+!
+	IF NOT vsta$$channel_found(
+		parameter_address(tty_chan),
+		device_adr) THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_undchan);
+	    lib_ret_err(vsta$_remlin);
+	  END;
+!
+! Get the terminal characteristics and make sure that its
+! a native display device
+!
+	IF .device_adr[vsta$ct_b_tty_type] NEQ vs$k_vtem_generic THEN
+	  BEGIN
+	    lib_add_eerr(vsta$_notnative);	!Not a native display device
+	    lib_ret_err(vsta$_remlin);
+	  END;
+!
+! We have a channel number -- Do the $QIO immediately since the ACP will
+! return an error code if unable to comply with this text write operation.
+!
+	IF (NOT (status = VSTA$QIOW(
+		CHAN = .device_adr[vsta$ct_l_tty_chan],
+		FUNC = IO$_WRITE_VD+IO$M_TEXT,
+		IOSB = iosb,
+		P1   = parameter_address(number_lines),
+		P2   = 4,
+		P3   = TXT$_REMOVE_LINES
+				))) THEN
+	  BEGIN
+	    lib_add_err(.status);
+	    lib_ret_err(vsta$_remlin);
+	  END;
+!
+      RETURN .iosb[0];
+    END;			! End of routine vsta$add_lines
+
+
+%SBTTL 'vsta$get_text_selection -- Get Text Selection'
+GLOBAL ROUTINE vsta$get_text_selection(
+			timeout,			!Timeout period
+			function_key,			!Function key value
+			user_response,			!"Boolean" indicator
+			line_number,			!Line number
+			field_number,			!Field number
+			character			!Character number
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will suspend execution of the calling process until
+! the following 3 things happen:
+!		1. The keyboard is attached to a viewport,
+!		2. The pointer is moved to inside the terminal's area,
+!		3. The interactive user types the specified function key
+! or until timeout seconds have elapsed. User_response returns true with
+! the specified line number, field, and character if termination occurs the
+! first way and false otherwise.
+!
+! FORMAL PARAMETERS:
+!
+!	TIMEOUT       : Longword number of seconds until timeout to occur
+!			(input parameter)
+!	FUNCTION_KEY  : Longword function key value
+!			(input parameter)
+!	USER_RESPONSE : "Boolean" indicator of user's response
+!			(output parameter)
+!	LINE_NUMBER   : Longword line number of selected terminal
+!			(output parameter)
+!	FIELD_NUMBER  : Longword field number of selected terminal
+!			(output parameter)
+!	CHARACTER     : Longword character of selected terminal
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_xxx			!System service return status values
+!	VSTA$_xxx		!VAXstation error return status codes
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+!
+! This routine is currently obsolete
+!
+	RETURN vsta$obsolete(vsta$get_text_selection);
+!
+    END;			! End of routine vsta$get_text_selection
+
+end
+eludom

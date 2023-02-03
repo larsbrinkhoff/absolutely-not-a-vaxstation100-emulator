@@ -1,0 +1,376 @@
+MODULE VSTA$NATIVE_DEF IDENT "NATIVE GRAPHICS";
+/*
+/*++
+/* FACILITY: VAXstation software (VSTA)
+/*
+/* ABSTRACT:
+/*
+/* This module defines the data structures and constants for the native
+/* graphics operations in the context of a VAX workstation running
+/* the associated workstation display software; specifically, an implementation of
+/* the System Display Architecture.
+/*
+/* ENVIRONMENT:
+/*
+/* VAX workstation: 11/750 or 11/730 running VMS with at least one
+/* ONYX graphics subsystem.
+/*
+/*--
+/* EQUATED SYMBOLS:
+/*
+/* These are the constants used by calling routines to indicate the form
+/* of arguments such as source, mask, destination, etc.
+/*
+
+/*
+/* Define the color constants next
+/*
+	CONSTANT color_black 	EQUALS 0 PREFIX vsta$;
+	CONSTANT color_ht1   	EQUALS 2 PREFIX vsta$;
+	CONSTANT color_ht2	EQUALS 3 PREFIX vsta$;
+	CONSTANT color_ht3	EQUALS 4 PREFIX vsta$;
+	CONSTANT color_ht4	EQUALS 5 PREFIX vsta$;
+	CONSTANT color_ht5	EQUALS 6 PREFIX vsta$;
+	CONSTANT color_ht6	EQUALS 7 PREFIX vsta$;
+	CONSTANT color_ht7	EQUALS 8 PREFIX vsta$;
+	CONSTANT color_ht8	EQUALS 9 PREFIX vsta$;
+	CONSTANT color_ht9	EQUALS 10 PREFIX vsta$;
+	CONSTANT color_ht10	EQUALS 11 PREFIX vsta$;
+	CONSTANT color_ht11	EQUALS 12 PREFIX vsta$;
+	CONSTANT color_ht12	EQUALS 13 PREFIX vsta$;
+	CONSTANT color_ht13	EQUALS 14 PREFIX vsta$;
+	CONSTANT color_ht14	EQUALS 15 PREFIX vsta$;
+	CONSTANT color_ht15	EQUALS 16 PREFIX vsta$;
+	CONSTANT color_white	EQUALS 1 PREFIX vsta$;
+
+/*
+/*
+/* Define the standard (WGA) bitmap structure
+/*
+AGGREGATE standard_bmds STRUCTURE PREFIX sbmd$;
+
+	#sbmd_base = .;
+	addr		ADDRESS;	/*address of bitmap data
+	size_x		WORD UNSIGNED;	/*width of bitmap
+	size_y		WORD UNSIGNED;	/*height of bitmap
+	size_z		WORD UNSIGNED;	/*fatness of bitmap
+	#sbmd_length = .-#sbmd_base;
+
+END standard_bmds;
+/*
+/* Define the standard (WGA) subbitmap structure
+/*
+AGGREGATE standard_sbmds STRUCTURE PREFIX ssbmd$;
+
+	#ssbmd_base = .;
+	addr		ADDRESS;	/*address of modified bitmap descriptor
+	size_x		WORD UNSIGNED;	/*width of bitmap
+	size_y		WORD UNSIGNED;	/*height of bitmap
+	size_z		WORD UNSIGNED;	/*fatness of bitmap
+	off_x		WORD UNSIGNED;	/*x offset into bitmap (subrectangle)
+	off_y		WORD UNSIGNED;	/*y offset into bitmap (subrectangle)
+	ext_x		WORD UNSIGNED;	/*width of subrectangle
+	ext_y		WORD UNSIGNED;	/*height of subrectangle
+	#ssbmd_length = .-#ssbmd_base;
+
+END standard_sbmds;
+
+/*
+/*  Define the standard font bitmap strucure (WGA)
+/*
+AGGREGATE standard_fbmds STRUCTURE PREFIX sfbmd$;
+
+	#sfbmd_base = .;
+	bitmap		LONGWORD;	
+	size_x		WORD UNSIGNED;
+	size_y		WORD UNSIGNED;
+	size_z		WORD UNSIGNED;
+	firstchar	WORD UNSIGNED;
+	lastchar	WORD UNSIGNED;
+	leftarray	LONGWORD;
+	baseline	WORD UNSIGNED;
+	space		WORD UNSIGNED;
+	width		WORD UNSIGNED;
+	#sfbmd_length = .-#sfbmd_base;
+
+END standard_fbmds;
+
+/*
+/*
+/*  Define the modified bitmap structure (ACP)
+/*
+AGGREGATE modified_bmds STRUCTURE PREFIX mbmd$;
+
+	#mbmd_base = .;
+	addr		ADDRESS;	/*address of bitmap data
+	size_x		WORD UNSIGNED;	/*width of bitmap
+	size_y		WORD UNSIGNED;	/*height of bitmap
+	size_z		WORD UNSIGNED;	/*fatness of bitmap
+	locate		WORD UNSIGNED;  /*Vax or Onyx memory
+	refcnt		LONGWORD;	/*reference count
+	extra1		LONGWORD;
+	extra2		LONGWORD;
+	#mbmd_length = .-#mbmd_base;
+
+END modified_bmds;
+/*
+/*  Define the modified subbitmap structure (ACP)
+/*
+AGGREGATE modified_sbmds STRUCTURE PREFIX msbmd$;
+
+	#msbmd_base = .;
+	mbmd_addr	ADDRESS;	/*address of modified bitmap descriptor
+	off_x		WORD UNSIGNED;	/*x offset into bitmap (subrectangle)
+	off_y		WORD UNSIGNED;	/*y offset into bitmap (subrectangle)
+	ext_x		WORD UNSIGNED;	/*width of subrectangle
+	ext_y		WORD UNSIGNED;	/*height of subrectangle
+	refcnt		LONGWORD;
+	extra1		LONGWORD;
+	extra2		LONGWORD;
+	#msbmd_length = .-#msbmd_base;
+
+END modified_sbmds;
+
+/*
+/* Define the modified font structure (ACP)
+/*
+AGGREGATE modified_fbmds STRUCTURE PREFIX mfbmd$;
+
+	#mfbmd_base = .;
+	sfbmd_addr	ADDRESS;	/*Address of font data base
+	locate		WORD UNSIGNED;
+	refcnt		LONGWORD;
+	extra1		LONGWORD;
+	extra2		LONGWORD;
+	#mfbmd_length = .-#mfbmd_base;
+
+END modified_fbmds;
+
+/*
+/* 
+/*  Define the Defined Font Bitmap block
+/*
+AGGREGATE deffb_block STRUCTURE PREFIX deffb$;
+
+	#deffb_base = .;
+	tf_name_size		LONGWORD;
+	tf_name_addr		ADDRESS;
+	tf_size			LONGWORD;
+	tf_rend			LONGWORD;
+	tf_vd			LONGWORD;
+	#deffb_length = .-#deffb_base;
+
+END deffb_block;
+
+
+
+/*
+/*
+/*  The order of the following structures should not be changed
+/*  because the entries correspond to the parameters of each
+/*  routine in native graphics.  Thus a person should be able
+/*  to perform a CALLG to a copy area using the next area
+/*  as a parameter block
+/*
+AGGREGATE cop STRUCTURE PREFIX cop$;
+	#COP_BASE = .;
+	arg_num		LONGWORD;
+	src_type	LONGWORD;
+	src		ADDRESS;
+	src_off_x	LONGWORD;
+	src_off_y	LONGWORD;
+	msk_type	LONGWORD;
+	msk		ADDRESS;
+	dst_type	LONGWORD;
+	dst		ADDRESS;
+	dst_off_x	LONGWORD;
+	dst_off_y	LONGWORD;
+	map_type	LONGWORD;
+	map_size	LONGWORD;
+	map_address	ADDRESS;
+	rc_count	LONGWORD;
+	rc_addr		ADDRESS;
+	efn		LONGWORD;
+	astadr		LONGWORD;
+	astprm		LONGWORD;
+	#COP_LENGTH = .-#COP_BASE;
+END cop;			
+
+	CONSTANT cop_arg_num EQUALS #COP_LENGTH/4 - 1 PREFIX vsta$;
+
+AGGREGATE drw STRUCTURE PREFIX drw$;
+	#DRW_BASE = .;
+	arg_num		LONGWORD;
+	src_type	LONGWORD;
+	src		ADDRESS;
+	src_off_x	LONGWORD;
+	src_off_y	LONGWORD;
+	msk_type	LONGWORD;
+	msk		ADDRESS;
+	dst_type	LONGWORD;
+	dst		ADDRESS;
+	dst_off_x	LONGWORD;
+	dst_off_y	LONGWORD;
+	map_type	LONGWORD;
+	map_size	LONGWORD;
+	map_address	ADDRESS;
+	path_count	LONGWORD;
+	path_addr	ADDRESS;
+	pattern_mode	LONGWORD;
+	pattern_action	LONGWORD;
+	pattern_block	ADDRESS;
+	pattern_state	ADDRESS;
+	second_src_type LONGWORD;
+	second_src	ADDRESS;	
+	sec_src_off_x	LONGWORD;
+	sec_src_off_y	LONGWORD;
+	rc_count	LONGWORD;
+	rc_addr		ADDRESS;
+	efn		LONGWORD;
+	astadr		LONGWORD;
+	astprm		LONGWORD;
+	#DRW_LENGTH = .-#DRW_BASE;
+END drw;			
+
+	CONSTANT drw_arg_num EQUALS #DRW_LENGTH/4 - 1 PREFIX vsta$;
+
+AGGREGATE prn STRUCTURE PREFIX prn$;
+	#PRN_BASE = .;
+	arg_num		LONGWORD;
+	src_type	LONGWORD;
+	src		ADDRESS;
+	msk_type	LONGWORD;
+	msk		ADDRESS;
+	dst_type	LONGWORD;
+	dst		ADDRESS;
+	dst_off_action	LONGWORD;
+	dst_offset	ADDRESS;
+	map_type	LONGWORD;
+	map_size	LONGWORD;
+	map_address	ADDRESS;
+	text_type	LONGWORD;
+	text_desc	ADDRESS;
+	control_count	LONGWORD;
+	control_addr	ADDRESS;
+	char_pad	LONGWORD;
+	space_pad	LONGWORD;
+	rc_count	LONGWORD;
+	rc_addr		ADDRESS;
+	efn		LONGWORD;
+	astadr		LONGWORD;
+	astprm		LONGWORD;
+	#PRN_LENGTH = .-#PRN_BASE;
+END prn;			
+
+	CONSTANT prn_arg_num EQUALS #PRN_LENGTH/4 - 1 PREFIX vsta$;
+
+AGGREGATE fil STRUCTURE PREFIX fil$;
+	#FIL_BASE = .;
+	arg_num		LONGWORD;
+	src_type	LONGWORD;
+	src		ADDRESS;
+	dst_type	LONGWORD;
+	dst		ADDRESS;
+	dst_off_x	LONGWORD;
+	dst_off_y	LONGWORD;
+	map_type	LONGWORD;
+	map_size	LONGWORD;
+	map_address	ADDRESS;
+	path_count	LONGWORD;
+	path_addr	ADDRESS;
+	rc_count	LONGWORD;
+	rc_addr		ADDRESS;
+	efn		LONGWORD;
+	astadr		LONGWORD;
+	astprm		LONGWORD;
+	#FIL_LENGTH = .-#FIL_BASE;
+END fil;	
+
+	CONSTANT fil_arg_num EQUALS #FIL_LENGTH/4 - 1 PREFIX vsta$;
+
+AGGREGATE flood_blk STRUCTURE PREFIX fld$;
+	#FLD_BASE = .;
+	arg_num		LONGWORD;
+	src_type	LONGWORD;
+	src		ADDRESS;
+	dst_type	LONGWORD;
+	dst		ADDRESS;
+	dst_off_x	LONGWORD;
+	dst_off_y	LONGWORD;
+	boundary_map	LONGWORD;
+	seed_point_x	LONGWORD;
+	seed_point_y	LONGWORD;
+	rc_count	LONGWORD;
+	rc_addr		ADDRESS;
+	efn		LONGWORD;
+	astadr		LONGWORD;
+	astprm		LONGWORD;
+	#FLD_LENGTH = .-#FLD_BASE;
+END flood_blk;			
+
+	CONSTANT fld_arg_num EQUALS #FLD_LENGTH/4 - 1 PREFIX vsta$;
+
+/*
+/*
+/*  Define the native graphics qio packet interface.
+/*
+AGGREGATE ngi_dsc STRUCTURE PREFIX ngi$;
+	opcode		LONGWORD;		
+	efn		LONGWORD;
+	astadr		ADDRESS;
+	astprm		LONGWORD;
+	/*
+	/*  Make a place to store the necessary parameters for the calls to
+	/*  each native graphics routines
+	/*
+	arg_blks UNION;
+		cop_blk			WORD DIMENSION #cop_length/2;
+		drw_blk			WORD DIMENSION #drw_length/2;
+		prn_blk			WORD DIMENSION #prn_length/2;
+		fil_blk			WORD DIMENSION #fil_length/2;
+		fld_blk			WORD DIMENSION #fld_length/2;
+	END arg_blks;
+	/*
+	/* 
+	/*  Now make room for the necessary descriptors of bitmaps and fonts
+	/*  The source and mask may be font descriptors of the modified form
+	/*
+	src_dsc UNION;
+		src_mbmd		WORD DIMENSION #mbmd_length/2;
+		src_deffb		WORD DIMENSION #deffb_length/2;
+		src_fbm STRUCTURE;
+			src_mfbmd	WORD DIMENSION #mfbmd_length/2;
+			src_sfbmd	WORD DIMENSION #sfbmd_length/2;
+		END src_fbm;
+	END src_dsc;
+	msk_dsc UNION;
+		msk_deffb		WORD DIMENSION #deffb_length/2;
+		msk_vd	STRUCTURE;
+			msk_vdid	LONGWORD;
+			msk_vd_xoff	WORD;
+			msk_vd_yoff	WORD;
+			msk_vd_xext	WORD;
+			msk_vd_yext	WORD;
+		END msk_vd;
+		msk_sbm STRUCTURE;
+			msk_msbmd	WORD DIMENSION #msbmd_length/2;
+			msk_mbmd	WORD DIMENSION #mbmd_length/2;
+		END msk_sbm;
+		msk_fbm STRUCTURE;
+			msk_mfbmd	WORD DIMENSION #mfbmd_length/2;
+			msk_sfbmd	WORD DIMENSION #sfbmd_length/2;
+		END msk_fbm;
+	END msk_dsc;
+	dst_mbmd			WORD DIMENSION #mbmd_length/2;	
+	ssr_mbmd 			WORD DIMENSION #mbmd_length/2;
+	/*
+	/*  Leave room for one rectangle here
+	/*
+	rc_1				WORD DIMENSION 4;
+	pattern_block			WORD DIMENSION 4;
+	text_desc			LONGWORD DIMENSION 2;
+
+END ngi_dsc;
+
+/*
+END_MODULE VSTA$NATIVE_DEF;

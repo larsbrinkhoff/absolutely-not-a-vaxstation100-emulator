@@ -1,0 +1,1307 @@
+%title 'vsta$vtem_4014_cursors VaxStation Tektronix Emulator Module'
+MODULE vsta$vtem_4014_cursors (ADDRESSING_MODE (EXTERNAL=GENERAL,
+						NONEXTERNAL=GENERAL))=
+BEGIN
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---This module contains all the cursor control routines for the tek4014 
+!   emulator.  This includes the start and stop procedures for the cursors,
+!   the blink procedure for the alpha cursor, the routines which call the
+!---virtual display services to display and erace the cursors.
+
+%sbttl 'Declarations'
+!
+! TABLE OF CONTENTS:
+!
+FORWARD ROUTINE!S
+
+ 	 tk$$cur_start_alpha		
+	,tk$$cur_stop_alpha		
+	,tk$$cur_blink_ast_handler	:NOVALUE
+	,tk$$cur_alpha_blink_routine	:NOVALUE
+	,tk$$cur_start_crosshairs	
+	,tk$$cur_stop_crosshairs	
+	,tk$$cur_button_ast_handler  	
+	,tk$$cur_button_procedure
+	,tk$$cur_noop_ast
+	,tk$$cur_submit_move_request
+	,tk$$cur_display_xhairs		
+	,tk$$cur_erase_xhairs		
+	,tk$$cur_xhairs_log_adr		:NOVALUE
+	,tk$$cur_keyboard_translator	
+	,tk$$cur_generate_gin		:NOVALUE
+	,tk$$gin_mode
+	;
+
+EXTERNAL ROUTINE!S
+
+	 tk$$emu_find_tek4014		
+	,tk$$emu_flush_paths		
+	,tk$$ftr_indicate_gin_mode
+	,tk$$ftr_indicate_not_gin_mode
+	,vs$$vds_disp_vd		
+	,vs$$vds_vd_pointer		
+	,vs$$vds_flood_region		
+	,vs$$vds_restore_region		
+	,vs$$vds_synchronize_vd		
+	,vsta$$vds_turn_cursor_on
+	,vsta$$vds_turn_cursor_off
+	,vsta$$mouse_set_move_ast	
+	,vsta$$mouse_get_info
+	,vsta$$error
+	,vsta$$drive_noop
+	,vs$$vds_pb_found
+	,vsta$$kernel_call
+	,vs$$acp_answerback
+	;
+
+!-----------------------------------------------------------------
+!  external file inclusion area
+!-----------------------------------------------------------------
+LIBRARY 'vsta$library:vstekem';
+LIBRARY 'vsta$library:vsvdspb';
+LIBRARY 'sys$library:starlet';
+
+!-----------------------------------------------------------------
+!  PSECT Definition area
+!-----------------------------------------------------------------
+PSECT
+	CODE = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	PLIT = _vsta$code (READ,NOWRITE,EXECUTE,SHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	OWN  = _vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL)),
+	GLOBAL=_vsta$data (READ,WRITE,NOEXECUTE,NOSHARE,PIC,CONCATENATE,
+			ADDRESSING_MODE (GENERAL));
+
+EXTERNAL
+	 vs$gw_vbchan
+	;
+
+BIND
+	 tek_x_cus = PLIT(tk$k_cdsx1,tk$k_cdsx2,tk$k_cdsx3,tk$k_cdsx4):
+		     VECTOR [4,LONG]
+	,tek_y_cus = PLIT(tk$k_cdsy1,tk$k_cdsy2,tk$k_cdsy3,tk$k_cdsy4):
+		     VECTOR [4,LONG]
+	;
+
+MACRO
+	 $RETURN_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 RETURN (vsta$$error(status)))%
+
+	,$REPORT_ERROR(status) =
+		(EXTERNAL LITERAL status;
+		 (vsta$$error(status)))%
+	,$CURRENT_CUSX = .tek_x_cus[.id[tk$w_text_size]]%
+	,$CURRENT_CUSY = .tek_y_cus[.id[tk$w_text_size]]%
+	,$SET(bitfld) = bitfld = 1%
+	,$CLEAR(bitfld) = bitfld = 0%
+	;
+
+
+
+
+
+%sbttl 'tk$$cur_blink_ast_handler -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_blink_ast_handler
+		(
+		 vd_id : REF tek_blk
+		): NOVALUE =
+
+BEGIN
+
+
+vs$$vds_synchronize_vd(
+			 .vd_id
+			,0
+			,tk$$cur_alpha_blink_routine
+			,.vd_id
+		       );
+
+END;
+			
+					 
+
+
+
+%sbttl 'tk$$cur_alpha_blink_routine --  Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_alpha_blink_routine
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This is the ast routine call when the alpha cursor timer goes off.  Its 
+!   action is to check to see if the alpha cursor is still to be displayed
+!   if so then if cursor on then restore cursor area from backing store 
+!   otherwize writes foreground to the cursor area and resets the cursor timer.
+!   At end a check is made to see if cursor is to be shut off in which case
+!   the cursor area is restored
+!
+!   Exclusion problem:  This routine assumes that a cancel cursor command can
+!   occur at any given time.  Thus an exclusion flag is used to gain access to
+!   cursor control.  If a cancel request arrives while the blink process is in
+!   control then the blink process will check for this and try to perform the
+!   cancel process itself.  If access to control is denied then it is assumed 
+!   that the cancel process has control and the request will be satisfied.  
+!   Cancelation has top priority.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	vd_id: REF tek_blk		! pointer to the Tektronix database
+	):
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+	NOVALUE=
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---vs$$vds_flood_region may be called
+!---vs$$vds_restore_region may be called
+!
+!--
+BEGIN
+
+
+OWN
+
+	 blink_period: VECTOR [2,LONG] INITIAL (-5*1000*1000,-1)
+	;
+
+LOCAL
+	 id: REF tek_blk
+	;
+
+BUILTIN
+
+	 TESTBITSS
+	;
+
+IF NOT tk$$emu_find_tek4014(
+				 .vd_id
+				,id
+			    )
+THEN RETURN;
+
+!
+!  Is cursor still on if not then just return
+!
+IF .id [tk$v_alpha_cursor_off]
+THEN RETURN;
+
+!
+!  If the cursor is visible then to blink just restore from backing store
+!  otherwise flood cursor region with foreground
+!
+IF .id [tk$v_alpha_cursor_on] 
+THEN BEGIN
+	$CLEAR(id [tk$v_alpha_cursor_on]);
+	vs$$vds_restore_region(
+				 .id [tk$l_fullview_vd_id]
+				,(.id [tk$w_beam_x_address] *
+				  .id [tk$w_screen_vd_x]) / 
+				  tk$k_tek_x_screen
+				,(.id [tk$w_beam_y_address] *
+				  .id [tk$w_screen_vd_y]) /
+				  tk$k_tek_y_screen
+				,($CURRENT_CUSX * 
+				  .id[tk$w_screen_vd_x]) /
+				  tk$k_tek_x_screen
+				,($CURRENT_CUSY *
+				  .id[tk$w_screen_vd_y]) /
+				  tk$k_tek_y_screen
+			      )
+     END
+ELSE BEGIN
+	$SET(id [tk$v_alpha_cursor_on]);
+	vs$$vds_flood_region(
+				 .id [tk$l_fullview_vd_id]
+				,(.id [tk$w_beam_x_address] *
+				  .id [tk$w_screen_vd_x]) / 
+				  tk$k_tek_x_screen
+				,(.id [tk$w_beam_y_address] *
+				  .id [tk$w_screen_vd_y]) /
+				  tk$k_tek_y_screen
+				,($CURRENT_CUSX * 
+				  .id[tk$w_screen_vd_x]) /
+				  tk$k_tek_x_screen
+				,($CURRENT_CUSY *
+				  .id[tk$w_screen_vd_y]) /
+				  tk$k_tek_y_screen
+			      );
+     END;
+
+$SETIMR(
+	 DAYTIM=blink_period
+	,ASTADR=tk$$cur_blink_ast_handler
+	,REQIDT=.id [tk$l_fullview_vd_id] 
+       );
+
+RETURN
+END;
+
+
+
+
+
+
+%sbttl 'tk$$cur_stop_alpha -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_stop_alpha
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine performs the action of canceling the blinking tektronix
+!   alpha cursor
+!
+!   exclusion problem - This routine may be called at any time.  If at the
+!   time this routine tries to gain access to cursor control, the request
+!   fails it is assumed that the blink process is in control and will perform
+!   the cancelation process on its own.  Top priority is that a request to
+!---cancel cursor is not lost.
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(id: REF tek_blk):=	! pointer to Tektronix Emulator database
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---Error is returned if cancel attempt fails from lower level.  If cancel request
+!---occurs when no cursor is present (should never happen) then no problem since
+!---there is no harm in restoring from backing store.
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: 
+!
+!---A cancel of any pending timer requests for this display is performed
+!
+!--
+BEGIN
+
+LOCAL
+	 cur_x_off		: signed
+	,cur_y_off		: signed
+	,cur_x_ext		: signed
+	,cur_y_ext		: signed
+	;
+
+!------------------------------------------------------------------
+!  make known the need to cancel the cursor
+!------------------------------------------------------------------
+!$SET(id [tk$v_alpha_cursor_off]);
+
+!------------------------------------------------------------------
+!  cancel any timer request for this vd
+!------------------------------------------------------------------
+!$CANTIM(
+!	REQIDT=.id [tk$l_fullview_vd_id] 
+!       );
+
+!------------------------------------------------------------------
+!  IF cursor is on then restore the cursor area
+!------------------------------------------------------------------
+!IF .id [tk$v_alpha_cursor_on] 
+!THEN 
+
+
+vsta$$vds_turn_cursor_off(
+				 .id [tk$l_fullview_vd_id]
+			      )
+
+END;
+
+
+
+
+
+%sbttl 'tk$$cur_start_alpha -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_start_alpha
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine first displays the cursor on the screen and then sets the
+!   cursor timer to initiate the alpha cursor blink process.  Note that the
+!---ast routine for the timer is tk$$cur_blink_ast_handler.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 id: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: 
+!
+!---Failure may occure from lower level so pass on error path
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---The vs$$vds_flood_region routine is called
+!---The timer service routine is called
+!
+!--
+BEGIN
+
+LOCAL
+	 cur_x_off		: signed
+	,cur_y_off		: signed
+	,cur_x_ext		: signed
+	,cur_y_ext		: signed
+	;
+
+OWN
+
+	 blink_period: VECTOR [2,LONG] INITIAL (-5*1000*1000,-1)
+	;
+
+!-----------------------------------------------------------------
+!  turn on alpha cursor
+!-----------------------------------------------------------------
+cur_x_off = ((.id [tk$w_beam_x_address] + tk$k_x_boarder) * 
+		.id [tk$w_screen_vd_x]) / tk$k_tek_x_screen;
+
+cur_y_off = ((.id [tk$w_beam_y_address] + tk$k_y_boarder) * 
+		.id [tk$w_screen_vd_y]) / tk$k_tek_y_screen;
+
+cur_x_ext = ((.id [tk$w_beam_x_address] + $CURRENT_CUSX + 2*tk$k_x_boarder) * 
+		.id [tk$w_screen_vd_x]) / tk$k_tek_x_screen - .cur_x_off;
+
+cur_y_ext = ((.id [tk$w_beam_y_address] + $CURRENT_CUSY + 2*tk$k_y_boarder) * 
+		.id [tk$w_screen_vd_y]) / tk$k_tek_y_screen - .cur_y_off;
+
+vsta$$vds_turn_cursor_on(
+				 .id [tk$l_fullview_vd_id]
+				,.cur_x_off
+				,.cur_y_off
+				,.cur_x_ext
+				,.cur_y_ext
+			      )
+
+!$SETIMR(
+!	 DAYTIM=blink_period
+!	,ASTADR=tk$$cur_blink_ast_handler
+!	,REQIDT=.id [tk$l_fullview_vd_id]
+!       )
+!THEN BEGIN
+!	$RETURN_ERROR(vsta$_cntstrtkcurtmr);
+!     END;
+!
+END;
+
+
+
+
+
+
+
+
+
+%sbttl 'tk$$cur_start_crosshairs -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_start_crosshairs
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is called upon entry to tektronix GIN mode.  It is responsible
+!   for starting up the cursors.  Note that the emulator then will remain in
+!---gin mode until a key is pressed or until the host terminates gin mode.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---Any error generated will be a result of a call to a display architecture
+!---routines.  The error path is maintained
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!--
+BEGIN
+
+!
+!  Save the Gidis state and change writing mode to complement
+!  and pattern to solid line
+!
+!TK$$EMU_QUEUE_GIDIS(
+!	 .tkb
+!	,gidi_save_position_op
+!	,0
+!	,gidi_save_state_op
+!	,15
+!	,gidi_line_texture_op
+!	,16
+!	,-1
+!	,1
+!	,gidi_set_writing_mode_op
+!	,2
+!	,gidi_set_pixel_size_op
+!	,1
+!	,1
+!		   );
+!!
+!  Display the crosshairs 
+!
+!TK$$CUR_DISPLAY_XHAIRS(.tkb);
+
+!
+!  Check to see if mouse movement ast is outstanding if so then just return
+!
+!IF .tkb [tk$v_mouse_select_down]
+!THEN RETURN ss$_normal
+!ELSE tkb [tk$v_mouse_select_down] = 1;
+!
+!vsta$$mouse_set_move_ast(
+!!
+!        (pbid, buflen, bufadr, 
+!        iosb, astadr, astprm,
+!        timeout)
+!
+!	 .tkb [tk$l_fullview_pb_id]
+!	,3
+!	,tkb [tk$l_mouse_ast_buffer]
+!	,tkb [tk$l_mouse_ast_iosb]
+!	,tk$$cur_button_procedure
+!	,.tkb [tk$l_fullview_vd_id]
+!	,0
+!			 )
+
+!
+!  Tell footer module to indicate gin mode.
+!
+TK$$FTR_INDICATE_GIN_MODE( .tkb);
+
+RETURN ss$_normal;
+
+
+END;
+
+
+%sbttl 'tk$$cur_stop_crosshairs -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_stop_crosshairs
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is called upon exit of tektronix GIN mode.  It is responsible
+!---for restoring the state of gidis as it was before Gin mode was entered.
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS:
+!
+!--
+BEGIN
+
+!
+!  If we are not in gin mode then just return
+!
+IF .tkb [tk$l_mode] NEQ tk$k_gin
+THEN RETURN ss$_normal;
+
+!
+!  Tell footer module to shut off gin mode indicator
+!
+TK$$FTR_INDICATE_NOT_GIN_MODE( .tkb);
+
+!
+!  Set the state of the tek4014 to alpha mode
+!
+tkb [tk$l_mode] = tk$k_alpha;
+
+
+!
+!  Erase the xhairs cursors 
+!
+!TK$$CUR_ERASE_XHAIRS(.tkb);
+
+
+!
+!  Restore the Gidis state to the way it was before entry to Gin mode
+!
+!TK$$EMU_QUEUE_GIDIS(
+!	 .tkb
+!	,gidi_restore_position_op
+!	,0
+!	,gidi_restore_state_op
+!	,15
+!	,gidi_set_writing_mode_op
+!	,4
+!		   );
+!
+!TK$$EMU_flush_paths(
+!	 .tkb
+!		)
+!
+RETURN SS$_NORMAL;
+
+END;
+
+
+
+
+
+
+
+
+
+%sbttl 'tk$$cur_button_ast_handler -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_button_ast_handler
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine traps a button press on the mouse when the mouse is in the
+!   region specified by the pasteboard boundaries.  If the select button is
+!   hit then the new position of the crosshairs becomes the position of the
+!---mouse.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 vd_id		! tektronix display id
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS:
+!
+!---The button mask is queried and if the select button was hit then
+!---an internal routine call request is queued to the ACP.
+!
+!---
+BEGIN
+
+!
+!  Call the ACP queuing service to queue the request to service the
+!  Button action
+!
+vs$$vds_synchronize_vd(
+	 .vd_id
+	,0
+	,tk$$cur_button_procedure
+	,.vd_id
+		       );
+
+RETURN SS$_NORMAL;
+
+END;
+
+
+
+%sbttl 'tk$$cur_button_procedure -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_button_procedure
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine checks to see if the tektronix exists and if it is still
+!   in Gin mode.  If not then it just returns otherwise it stores the new
+!   mouse position in the crosshairs path description and then redisplays
+!---the crosshairs.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 vd_id
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS: 
+!
+!---An action may be performed to the screen of thion and then
+!
+!--
+BEGIN
+
+LOCAL
+	 tkb: REF tek_blk
+	,mouse_info_map: REF VECTOR [,LONG]
+	,mouse_info: VECTOR [3,LONG]
+	;
+
+!
+!  Find the tek terminal with this vd_id. If none found then no error
+!  we can assume that the terminal has been deleted.  So just return.
+!
+IF NOT TK$$EMU_FIND_TEK4014(
+			 .vd_id
+			,tkb
+			    )
+THEN RETURN SS$_NORMAL;
+
+
+!
+!  If we are not in gin mode then just return
+!
+IF NOT (.tkb [tk$l_mode] eql tk$k_gin)
+THEN BEGIN
+	tkb [tk$v_mouse_select_down] = 0;
+	RETURN SS$_NORMAL;
+     END;
+
+
+!
+!  get mouse info from the mouse report buffer in the tek db
+!
+mouse_info_map = tkb [tk$l_mouse_ast_buffer];
+mouse_info[0] = .mouse_info_map [0];
+mouse_info[1] = .mouse_info_map [1];
+mouse_info[2] = .mouse_info_map [2];
+
+
+
+!
+!  If it was down then we must adjust the xhairs position
+!  first erase the cursors.
+!
+TK$$CUR_ERASE_XHAIRS(.tkb);
+
+!
+!  Get the new position from the mouse information we must
+!  translate the physical loc to logical tek location.
+!
+TK$$CUR_XHAIRS_LOG_ADR(
+	 .tkb
+	,.mouse_info [0]	! physical x,y
+	,.mouse_info [1]
+	,tkb [tk$l_xhairs_x]	! Resulting logical x,y
+	,tkb [tk$l_xhairs_y]
+			);
+
+!
+!  Draw the xhairs in the new position
+!
+TK$$CUR_DISPLAY_XHAIRS(.tkb);
+
+!
+!  flush any built up gidis data
+!
+TK$$EMU_FLUSH_PATHS(.tkb);
+
+
+
+VSTA$$DRIVE_NOOP( .vs$gw_vbchan, 0, tk$$cur_noop_ast, 
+					.tkb [tk$l_fullview_vd_id]);
+
+RETURN SS$_NORMAL;
+
+END; ! End of mouse button ast processing !
+
+
+
+
+ROUTINE tk$$cur_noop_ast( vd_id):=
+BEGIN
+!
+!  Call the ACP queuing service to queue the request to service the
+!  Button action
+!
+vs$$vds_synchronize_vd(
+	 .vd_id
+	,0
+	,tk$$cur_submit_move_request
+	,.vd_id
+		       )
+
+END;
+
+ROUTINE tk$$cur_submit_move_request( vd_id):=
+BEGIN
+
+
+LOCAL
+	 tkb: REF tek_blk
+	;
+
+!
+!  Find the tek terminal with this vd_id. If none found then no error
+!  we can assume that the terminal has been deleted.  So just return.
+!
+IF NOT TK$$EMU_FIND_TEK4014(
+			 .vd_id
+			,tkb
+			    )
+THEN RETURN SS$_NORMAL;
+
+!
+!  Set mouse button ast Remember this is a library routine so all 
+!  parameters sent by reference
+!
+vsta$$mouse_set_move_ast(
+!
+!        (pbid, buflen, bufadr, 
+!        iosb, astadr, astprm,
+!        timeout)
+!
+	 .tkb [tk$l_fullview_pb_id]
+	,3
+	,tkb [tk$l_mouse_ast_buffer]
+	,tkb [tk$l_mouse_ast_iosb]
+	,tk$$cur_button_procedure
+	,.tkb [tk$l_fullview_vd_id]
+	,0
+			 )
+
+END;
+
+
+
+%sbttl 'tk$$cur_display_xhairs -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_display_xhairs 
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine draws the xhairs cursors in a new location.  Indicated by
+!---the xhairs location registers located in the tkb (tek data base)
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECT: NONE
+!
+!--
+BEGIN
+
+!
+!  Generate the Gidis code necessary to draw crosshairs
+!
+!TK$$EMU_QUEUE_GIDIS(
+!	 .tkb
+!	,gidi_position_op
+!	,tk$k_screen_log_left
+!	,.tkb [tk$l_xhairs_y]
+!	,gidi_vector_op
+!	,tk$k_screen_log_right
+!	,.tkb [tk$l_xhairs_y]
+!	,gidi_position_op
+!	,.tkb [tk$l_xhairs_x]
+!	,tk$k_screen_log_top
+!	,gidi_vector_op
+!	,.tkb [tk$l_xhairs_x]
+!	,tk$k_screen_log_bottom
+!		   );
+
+RETURN ss$_normal;
+END;
+
+
+
+%sbttl 'tk$$cur_erase_xhairs -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_erase_xhairs 
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine erases the xhairs cursors in the current location.  
+!   Indicated by the xhairs location registers located in the 
+!   tkb (tek data base).   Note that this is the same routine as the 
+!---display routine since we are using gidis in complement mode of drawing
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECT: NONE
+!
+!--
+BEGIN
+
+!
+!  Generate the Gidis code necessary to erase crosshairs
+!
+!TK$$EMU_QUEUE_GIDIS(
+!	 .tkb
+!	,gidi_position_op
+!	,tk$k_screen_log_left
+!	,.tkb [tk$l_xhairs_y]
+!	,gidi_vector_op
+!	,tk$k_screen_log_right
+!	,.tkb [tk$l_xhairs_y]
+!	,gidi_position_op
+!	,.tkb [tk$l_xhairs_x]
+!	,tk$k_screen_log_top
+!	,gidi_vector_op
+!	,.tkb [tk$l_xhairs_x]
+!	,tk$k_screen_log_bottom
+!		   );
+!
+RETURN ss$_normal;
+END;
+
+
+
+
+
+
+
+
+
+%sbttl 'tk$$cur_xhairs_log_adr -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_xhairs_log_adr
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine converts the physical virtual display crosshairs cursors
+!---address into the logical coordinates known to gidis.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk		! get pointer to data base
+	,phy_x: SIGNED			! physical x position
+	,phy_y: SIGNED			! physical y position
+	,log_x: SIGNED			! adr to return logical x coordinate
+	,log_y: SIGNED			! adr to return logical y coordinate
+	):
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+	NOVALUE=
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS: NONE
+!
+!--
+BEGIN
+
+.log_x = MAX(
+		((tk$k_tek_x_screen * .phy_x) +
+		.tkb [tk$w_screen_vd_x] - 1)/ .tkb [tk$w_screen_vd_x] -
+		tk$k_x_boarder, 0
+	    );
+
+.log_y = MAX(
+		((tk$k_tek_y_screen * .phy_y) +
+		.tkb [tk$w_screen_vd_y] - 1)/ .tkb [tk$w_screen_vd_y] -
+		tk$k_y_boarder, 0
+	    );
+
+END;
+
+
+
+
+
+
+
+
+%sbttl 'tk$$cur_keyboard_translator -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_keyboard_translator
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine is called by the virtual keyboard module. It has two inputs
+!   pointer to the tektronix emulator data base and an ascii code. If the ascii
+!   code is actually a negative number then the result is to check the
+!   translation buffer and return the next item in the buffer otherwise it
+!   returns nothing with an error status. If the ascii code is not a negative
+!   number then if Gin mode exists then gin data is generated by the
+!   process_graphic_input routine in the main module and put into the
+!   translation buffer, regardless of mode the ascii code is returned with good
+!---status.
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 id: REF tek_blk			! pointer to device data area
+	,input_word: WORD 			! input word
+	,output_byte: REF VECTOR [,BYTE]	! address to put byte of output
+	):=
+!
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---success if output_byte is defined upon return
+!---failure if output_byte is undefined upon return
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---When in gin mode, calls the process_graphics_input routine to generate a 
+!---translation buffer to be fed to the virtual keyboard input process
+!
+!--
+BEGIN
+
+LOCAL
+	 m_info: VECTOR [3,LONG]
+	,pb: ref pb_block;
+	;
+
+BIND 
+	 vkbtran_array = id [tk$b_vkbtran_buffer]: VECTOR [10,BYTE]
+	,vkbtran_array_index = id [tk$l_vkbtran_buffer_index]
+	,vkbtran_array_ptr = id [tk$l_vkbtran_buffer_ptr]
+	,input_bytes = input_word: VECTOR [2,BYTE]
+	,phy_x = m_info [0]
+	,phy_y = m_info [1]
+	;
+
+
+!
+!  The vkb routines expect the upper byte of the output to be cleared
+!  To them this byte is a bunch of flags so make sure that they are
+!  clear
+!
+output_byte [1] = 0;
+
+IF .input_bytes[1] EQL %X'FF' 
+THEN BEGIN
+
+	IF .vkbtran_array_ptr GTR .vkbtran_array_index 
+	THEN RETURN 0;
+	
+	output_byte[0] = .vkbtran_array[.vkbtran_array_ptr];
+	vkbtran_array_ptr = .vkbtran_array_ptr + 1;
+	RETURN ss$_normal;
+
+     END;
+
+output_byte[0] = .input_bytes[0];
+
+IF .id [tk$l_mode] NEQ tk$k_gin 
+THEN RETURN 0;
+
+!
+!  Get pb pointer
+!
+VS$$VDS_PB_FOUND( .id [tk$l_fullview_pb_id], pb);
+
+phy_x = .pb [vs$vds_l_pb_mouse_x_coor];
+phy_y = .pb [vs$vds_l_pb_mouse_y_coor];
+
+
+!
+!  Get the new position from the mouse information we must
+!  translate the physical loc to logical tek location.
+!
+TK$$CUR_XHAIRS_LOG_ADR(
+	 .id
+	,.phy_x			! physical x,y
+	,.phy_y
+	,id [tk$l_xhairs_x]	! Resulting logical x,y
+	,id [tk$l_xhairs_y]
+			);
+
+!
+!  call routine to generate gin data and put it into translation buffer
+!  must do this while still in gin mode
+!
+tk$$cur_generate_gin(
+			 .id			! pass pointer to database
+			,0			! 0 do not send status to host
+		    );
+
+!
+!  stop crosshair cursors This gets us out  of gin mode
+!
+tk$$cur_stop_crosshairs(.id);
+
+
+
+RETURN 0;
+
+END;
+
+
+
+%sbttl 'tk$$cur_generate_gin -- Tektronix Emulator internal routine'
+GLOBAL ROUTINE tk$$cur_generate_gin
+!++
+!  FUNCTIONAL DESCRIPTION
+!
+!---This routine inputs a pointer to the data base a selector and then
+!   injects the desired graphic input data into the keyboard translation buffer 
+!   The selector decides if the terminal status byte is
+!   to be sent or not.  If the graphic input terminator strap options are
+!---in affect the appropriate terminator character is sent as well. 
+!
+!  FORMAL PARAMETERS
+!
+       (id: REF tek_blk,          !data base pointer
+        selector):                      !1/0 status/nostatus returned
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  ROUTINE VALUE:
+!
+       NOVALUE =
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!
+!--
+BEGIN
+
+LOCAL
+	 y_reverse	: SIGNED
+	,x		: SIGNED
+	,y		: SIGNED
+	;
+
+BIND
+      gin_array = id [tk$b_vkbtran_buffer]: VECTOR [10,BYTE],
+      gin_index = id [tk$l_vkbtran_buffer_index],
+      gin_ptr = id [tk$l_vkbtran_buffer_ptr];
+	
+
+x = .id [tk$w_beam_x_address];
+y = .id [tk$w_beam_y_address];
+
+!----------------------------------------------
+!  if we are in gin mode then attach x and y to crosshairs trackers
+!----------------------------------------------
+IF .id [tk$l_mode] EQL tk$k_gin 
+THEN BEGIN
+	x = .id [tk$l_xhairs_x];
+	y = .id [tk$l_xhairs_y];
+	!
+	! Make the crosshairs the current position
+	!
+	id [tk$w_beam_x_address] = .x;
+	id [tk$w_beam_y_address] = .y;
+     END;
+
+
+!----------------------------------------------
+!  empty translation buffer
+!----------------------------------------------
+gin_index = -1;
+gin_ptr = 0;
+
+!----------------------------------------------
+!  if selector = 1 then the status byte should be sent with the graphic 
+!  input data else selector = 0
+!----------------------------------------------
+IF .selector NEQ 0 THEN BEGIN 
+
+gin_index = 0;
+gin_array[.gin_index] = .id [tk$b_status_byte];
+
+END;
+
+!----------------------------------------------
+!  construct the address byte codes from the actual display beam address
+!  must remember to reverse the vertical addressing.
+!----------------------------------------------
+
+y_reverse = tk$k_tek_y_screen - .y;
+
+gin_array[.gin_index+1] = %B'00100000' OR .x<9,5>;
+gin_array[.gin_index+2] = %B'00100000' OR .x<4,5>;
+gin_array[.gin_index+3] = %B'00100000' OR .y_reverse<9,5>;
+gin_array[.gin_index+4] = %B'00100000' OR .y_reverse<4,5>;
+gin_index = .gin_index + 4;
+
+IF .id [tk$v_creot_enabled] THEN BEGIN
+
+gin_index = .gin_index + 1;
+gin_array[.gin_index] = cc$k_cr; 
+
+IF .id [tk$v_auto_creot] THEN BEGIN
+
+gin_index = .gin_index + 1;
+gin_array[.gin_index] = cc$k_eot;
+
+END
+END;
+
+!----------------------------------------------
+!  Put translation buffer into device input stream and clear the pointer
+!----------------------------------------------
+vsta$$kernel_call(
+	vs$$acp_answerback,
+	.id [tk$l_fullview_vd_id],
+	.gin_index + 1,			! Buffer size
+	gin_array[0]);			! Buffer address
+gin_index = -1;
+
+END;
+
+
+
+
+%sbttl 'tk$$gin_mode -- take a char from acp when in gin mode and act appropriately'
+GLOBAL ROUTINE tk$$gin_mode
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine checks to see if the tektronix exists and does something about
+!   gin mode.
+!
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 vd_id
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES:
+!
+!  SIDE EFFECTS: 
+!
+!
+!--
+BEGIN
+
+LOCAL
+	 tkb: REF tek_blk
+	,m_info: VECTOR [3,LONG]
+	,pb: ref pb_block;
+	;
+
+BIND 
+	 phy_x = m_info [0]
+	,phy_y = m_info [1]
+	;
+
+!
+!  Find the tek terminal with this vd_id. If none found then no error
+!  we can assume that the terminal has been deleted.  So just return.
+!
+IF NOT TK$$EMU_FIND_TEK4014(
+			 .vd_id
+			,tkb
+			    )
+THEN RETURN SS$_NORMAL;
+
+!
+!  If we are not in gin mode then just return
+!
+IF NOT (.tkb [tk$l_mode] eql tk$k_gin)
+THEN RETURN SS$_NORMAL;
+
+!
+!  Get pb pointer
+!
+VS$$VDS_PB_FOUND( .tkb [tk$l_fullview_pb_id], pb);
+
+phy_x = .pb [vs$vds_l_pb_mouse_x_coor];
+phy_y = .pb [vs$vds_l_pb_mouse_y_coor];
+
+!
+!  Get the new position from the mouse information we must
+!  translate the physical loc to logical tek location.
+!
+TK$$CUR_XHAIRS_LOG_ADR(
+	 .tkb
+	,.phy_x			! Physical x,y
+	,.phy_y
+	,tkb [tk$l_xhairs_x]	! Resulting logical x,y
+	,tkb [tk$l_xhairs_y]
+			);
+
+!
+!  call routine to generate gin data and put it into translation buffer
+!  must do this while still in gin mode
+!
+tk$$cur_generate_gin(
+			 .tkb			! pass pointer to database
+			,0			! 0 do not send status to host
+		    );
+
+!
+!  stop crosshair cursors This gets us out  of gin mode (resets mode, etc.)
+!
+tk$$cur_stop_crosshairs(.tkb);
+
+RETURN SS$_NORMAL;
+
+END; 
+
+
+END
+ELUDOM

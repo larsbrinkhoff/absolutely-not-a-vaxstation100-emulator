@@ -1,0 +1,268 @@
+ 
+!*** MODULE docdata ***
+! 
+!  Internal data structures, constants, for VSTADOC
+! 
+!  Size of keywords
+!  Max size of a typeface string
+!  Max size of a filename string
+!  Size of index items
+! 
+!  Minimum space from the bottom of the last line of text to the page
+!  number line.
+! 
+literal doc_param$K_space_pn = 30;
+! 
+!  Lineheight of the page number line.
+! 
+literal doc_param$K_lineheight_pn = 15;
+! 
+!  Types of tokens parsed from input TXT file
+! 
+literal doc_tok$_text_line = 0;
+literal doc_tok$_cmd_end = 1;
+literal doc_tok$_eol = 2;
+literal doc_tok$_ff = 3;
+literal doc_tok$_cmd_text = 4;
+literal doc_tok$_eof = 5;
+literal doc_tok$_maxtoken = 5;
+! 
+!  File page header
+! 
+FIELD pgb$page_block_FIELDSET =
+  SET
+  pgb$a_flink = [0,0,32,0],
+  pgb$a_blink = [4,0,32,0],
+  pgb$a_line_q_hdr_fl = [8,0,32,0],     !  line block q hdr flink
+  pgb$a_line_q_hdr_bl = [12,0,32,0],    !  line block q hdr blink
+  pgb$w_num_ovls = [16,0,16,1],         !  How many OVL's there are.
+  pgb$w_num_chks = [18,0,16,1],         !  Number of checkoff entries there are
+  pgb$w_num_edits = [20,0,16,1],        !  Number of editable entries there are
+  pgb$a_ovl_q_hdr_fl = [22,0,32,0],     !  Q hdr of overlayed pictures
+  pgb$a_ovl_q_hdr_bl = [26,0,32,0],     !  . .
+  pgb$a_chk_q_hdr_fl = [30,0,32,0],     !  Q hdr for CHECKOFF stuff
+  pgb$a_chk_q_hdr_bl = [34,0,32,0],
+  pgb$a_edit_q_hdr_fl = [38,0,32,0],    !  Q hdr for editable stuff
+  pgb$a_edit_q_hdr_bl = [42,0,32,0],
+  pgb$w_page_num = [46,0,16,1],         !  Nominal page number
+  pgb$w_y_so_far = [48,0,16,1]          !  Height used so far
+  TES;
+literal pgb$s_page_block = 50;
+MACRO page_block = BLOCK [pgb$s_page_block,byte] FIELD (pgb$page_block_FIELDSET) %;
+! 
+!  line block
+! 
+FIELD lin$txt_line_block_FIELDSET =
+  SET
+  lin$a_flink = [0,0,32,0],
+  lin$a_blink = [4,0,32,0],
+  lin$w_leftmargin = [8,0,16,1],        !  in pixels
+  lin$w_rightmargin = [10,0,16,1],      !  in pixels
+  lin$w_lineheight = [12,0,16,0],       !  in pixels
+  lin$w_num_words = [14,0,16,0],        !  number of "words" on this line
+  lin$w_wrd_actual_num = [16,0,16,0],   !  Actual number of words that can
+!  be stored in word block list.
+  lin$w_num_rcals = [18,0,16,0],        !  Number of RCALs stored in list.
+  lin$a_word_block = [20,0,32,0],       !  Addr of word block list
+  lin$a_rcal_list = [24,0,32,0],        !  List of routine calls at
+!  character positions
+  lin$a_rcal_listend = [28,0,32,0],     !  End of list ptr.
+  lin$l_fld0_attrib = [32,0,32,1],      !  Attributes for the first field
+  lin$w_cidx = [36,0,16,0],             !  # chars so far in total-line
+  lin$w_space_used = [38,0,16,0],       !  # pixels used so far
+  lin$w_num_extra_flds = [40,0,16,0],   !  Number of extra fields
+  lin$a_fld_block = [42,0,32,0],        !  Address of extra fld block	
+  lin$v_ovflow = [44,16,1,0]            !  set to 1 if line overflowed
+!  (means justification can be done).
+  TES;
+literal lin$s_txt_line_block = 47;
+MACRO txt_line_block = BLOCK [lin$s_txt_line_block,byte] FIELD (lin$txt_line_block_FIELDSET) %;
+! 
+!  Word block - used to help do FILL
+! 
+literal wrd$k_delim_none = 0;           !  No delimiter (word may continue)
+literal wrd$k_delim_none_punc = 1;      !  None, but punc char was last.
+literal wrd$k_delim_space = 2;          !  Single space
+literal wrd$k_delim_punc = 3;           !  Other puctuation (comma, period,..)
+!  followed by space or EOL.
+FIELD wrd$word_block_FIELDSET =
+  SET
+  wrd$w_len = [0,0,16,0],               !  How long word is (bytes)
+  wrd$w_pixels = [2,0,16,0],            !  How many pixels word takes up.
+  wrd$b_delim_type = [4,0,8,0],         !  Type of delimiter after word
+  wrd$w_start_pos = [5,0,16,0]          !  Starting position in the line
+  TES;
+literal wrd$s_word_block = 7;
+MACRO word_block = BLOCK [wrd$s_word_block,byte] FIELD (wrd$word_block_FIELDSET) %;
+! 
+!  Extra field block
+! 
+FIELD fld$fld_block_FIELDSET =
+  SET
+  fld$w_start = [0,0,16,0],             !  Starting position on line
+  fld$l_attrib = [2,0,32,1]             !  Attributes
+  TES;
+literal fld$s_fld_block = 6;
+MACRO fld_block = BLOCK [fld$s_fld_block,byte] FIELD (fld$fld_block_FIELDSET) %;
+! 
+!  Field formats
+! 
+literal doc$K_ff_center = 1;            !  Centered.
+literal doc$K_ff_rj = 2;                !  Right justified.
+! 
+!  Parameters for getting memory for a blockvector of word blocks.
+! 
+literal param$K_start_num_wrdb = 15;    !  Starting number of word blocks
+literal param$K_incr_wrdb = 10;         !  Incremental number of word blocks
+! 
+!  Types of measurement-units
+! 
+literal m_units$k_centimeters = 0;
+literal m_units$k_inches = 1;
+literal m_units$k_pixels = 2;
+! 
+!  Font definition block
+! 
+literal fdb$s_filename_str = 128;
+literal fdb$s_typeface_str = 128;
+FIELD fdb$font_def_block_FIELDSET =
+  SET
+  fdb$a_flink = [0,0,32,0],             !  forward link
+  fdb$a_blink = [4,0,32,0],             !  backward link
+  fdb$w_typesize = [8,0,16,0],          !  typesize
+  fdb$l_renditions = [10,0,32,1],       !  renditions for this font
+  fdb$w_filename_len = [14,0,16,0],     !  # bytes in filename string
+  fdb$w_typeface_len = [16,0,16,0],     !  # bytes in typeface string
+  fdb$b_filename_str = [18,0,0,1],      !  Filename string
+  fdb$b_typeface_str = [146,0,0,1]      !  typeface string
+  TES;
+literal fdb$s_font_def_block = 274;
+MACRO font_def_block = BLOCK [fdb$s_font_def_block,byte] FIELD (fdb$font_def_block_FIELDSET) %;
+! 
+!  Format of sort record for INDEX
+! 
+literal srb$k_key_length = 40;
+literal srb$k_key_size = 82;
+literal srb$k_rec_length = 84;
+literal srb$s_key_to_sort = 40;
+literal srb$s_idx_str = 40;
+FIELD srb$sort_rec_block_FIELDSET =
+  SET
+  srb$b_key_to_sort = [0,0,0,1],
+  srb$b_idx_str = [40,0,0,1],
+  srb$w_page_num = [80,0,16,0],
+  srb$w_idx_str_len = [82,0,16,0]
+  TES;
+literal srb$s_sort_rec_block = 84;
+MACRO sort_rec_block = BLOCK [srb$s_sort_rec_block,byte] FIELD (srb$sort_rec_block_FIELDSET) %;
+! 
+!  Format of keyword record
+! 
+literal kwd$k_key_length = 32;
+literal kwd$k_key_size = 32;
+literal kwd$k_rec_length = 34;
+literal kwd$s_key_to_sort = 32;
+FIELD kwd$kwd_rec_block_FIELDSET =
+  SET
+  kwd$b_key_to_sort = [0,0,0,1],
+  kwd$w_pagedef = [32,0,16,0]           !  Page where defined
+  TES;
+literal kwd$s_kwd_rec_block = 34;
+MACRO kwd_rec_block = BLOCK [kwd$s_kwd_rec_block,byte] FIELD (kwd$kwd_rec_block_FIELDSET) %;
+! 
+!  Format of table of contents block
+! 
+literal toc$k_hdr_size = 12;
+!  The string follows the header...
+FIELD toc$toc_block_FIELDSET =
+  SET
+  toc$a_flink = [0,0,32,0],
+  toc$a_blink = [4,0,32,0],
+  toc$w_pagenum = [8,0,16,0],
+  toc$w_size = [10,0,16,0]
+  TES;
+literal toc$s_toc_block = 12;
+MACRO toc_block = BLOCK [toc$s_toc_block,byte] FIELD (toc$toc_block_FIELDSET) %;
+! 
+!  Format of internal RCAL blocks (IR)
+! 
+FIELD irb$ir_hdr_FIELDSET =
+  SET
+  irb$a_flink = [0,0,32,0],             !  Link to next block (or 0)
+  irb$w_type = [4,0,16,0],              !  What type of field
+  irb$w_size = [6,0,16,0]               !  Size (bytes) including this hdr.
+  TES;
+literal irb$s_ir_hdr = 8;
+MACRO ir_hdr = BLOCK [irb$s_ir_hdr,byte] FIELD (irb$ir_hdr_FIELDSET) %;
+literal irb$s_sel_kwd = 32;
+FIELD irb$ir_sel_FIELDSET =
+  SET
+  irb$w_sel_cidx = [0,0,16,0],          !  Which cidx is start of sel region
+  irb$w_sel_len = [2,0,16,0],           !  How many chars total
+  irb$w_sel_xstart = [4,0,16,0],        !  Starting x-origin of selectable fld
+  irb$w_sel_len_pixels = [6,0,16,0],    !  How many pixels total
+  irb$w_sel_page = [8,0,16,0],          !  Page number (filled in
+!  after GENERATE)
+  irb$w_sel_link = [10,0,16,0],         !  Program LINK
+  irb$b_sel_kwd = [12,0,0,1]
+  TES;
+literal irb$s_ir_sel = 44;
+MACRO ir_sel = BLOCK [irb$s_ir_sel,byte] FIELD (irb$ir_sel_FIELDSET) %;
+literal irb$s_deffont_fn_str = 128;
+literal irb$s_deffont_tf_str = 128;
+FIELD irb$ir_deff_FIELDSET =
+  SET
+  irb$w_deffont_fn_len = [0,0,16,0],    !  Length (bytes) of filename
+  irb$w_deffont_tf_len = [2,0,16,0],    !  Length (bytes) of typeface
+  irb$w_deffont_ts = [4,0,16,0],        !  Typesize
+  irb$l_deffont_rend = [6,0,32,1],      !  Rendition bits
+  irb$w_deffont_cidx = [10,0,16,0],     !  Char position of this call
+  irb$b_deffont_fn_str = [12,0,0,1],
+  irb$b_deffont_tf_str = [140,0,0,1]
+  TES;
+literal irb$s_ir_deff = 268;
+MACRO ir_deff = BLOCK [irb$s_ir_deff,byte] FIELD (irb$ir_deff_FIELDSET) %;
+literal irb$s_typeface_str = 128;
+FIELD irb$ir_settf_FIELDSET =
+  SET
+  irb$w_typeface_len = [0,0,16,0],      !  Length of typeface
+  irb$w_typeface_cidx = [2,0,16,0],     !  Char position of this call
+  irb$b_typeface_str = [4,0,0,1]
+  TES;
+literal irb$s_ir_settf = 132;
+MACRO ir_settf = BLOCK [irb$s_ir_settf,byte] FIELD (irb$ir_settf_FIELDSET) %;
+FIELD irb$ir_setts_FIELDSET =
+  SET
+  irb$w_typesize = [0,0,16,0],
+  irb$w_typesize_cidx = [2,0,16,0]      !  Char position of this call
+  TES;
+literal irb$s_ir_setts = 4;
+MACRO ir_setts = BLOCK [irb$s_ir_setts,byte] FIELD (irb$ir_setts_FIELDSET) %;
+FIELD irb$ir_setrend_FIELDSET =
+  SET
+  irb$l_rend_on = [0,0,32,1],
+  irb$l_rend_off = [4,0,32,1],
+  irb$w_rend_cidx = [8,0,16,0]          !  Char position of this call
+  TES;
+literal irb$s_ir_setrend = 10;
+MACRO ir_setrend = BLOCK [irb$s_ir_setrend,byte] FIELD (irb$ir_setrend_FIELDSET) %;
+FIELD irb$ir_markf_FIELDSET =
+  SET
+  irb$w_markf_cidx = [0,0,16,0]         !  Char position of this call
+  TES;
+literal irb$s_ir_markf = 2;
+MACRO ir_markf = BLOCK [irb$s_ir_markf,byte] FIELD (irb$ir_markf_FIELDSET) %;
+literal irb$s_ed_typeface_str = 128;
+FIELD irb$ir_editable_FIELDSET =
+  SET
+  irb$w_ed_field = [0,0,16,0],
+  irb$w_ed_space = [2,0,16,0],
+  irb$w_ed_id = [4,0,16,0],
+  irb$l_ed_typesize = [6,0,32,1],
+  irb$l_ed_rend_on = [10,0,32,1],
+  irb$l_ed_rend_off = [14,0,32,1],
+  irb$l_ed_typeface_len = [18,0,32,1],
+  irb$b_ed_typeface_str = [22,0,0,1]
+  TES;
+literal irb$s_ir_editable = 150;
+MACRO ir_editable = BLOCK [irb$s_ir_editable,byte] FIELD (irb$ir_editable_FIELDSET) %;

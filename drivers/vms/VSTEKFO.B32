@@ -1,0 +1,881 @@
+MODULE VS$VTEM_4014_FOOTER (
+                      IDENT = 'TEK4014_EMULATOR_FOOTER',
+                      ADDRESSING_MODE (EXTERNAL = GENERAL,
+                                       NONEXTERNAL = GENERAL)) =
+BEGIN
+!++
+! FACILITY: VAXstation software (VS)
+!
+! Virtual Terminal Emulator (VTEM) for the tektronix 4014 terminal
+!
+! ABSTRACT:
+!
+!---This Module contains the routines that create and manage the functions of
+!   the tek4014 footer.  Since the footer is Vaxstation dependent I have 
+!   elected to create this separate footer processor.  In this module the
+!   routines to draw the footer and identify the fields there in are defined.
+!   Since the footer may be in different states from one emulated terminal to
+!   another, the data base for each terminal will be shared by the routines
+!---in this module and the emulator module.
+!
+! FUNCTIONAL DESCRIPTION:
+!
+!---This module defines the routines to 1) Draw the footer and identify fields,
+!   2) light up indicators in the footer, and 3) Perform an action when a field
+!   in the footer is selected.  Note that the footer virtual display is created
+!---and pasted in the VS$VTEM_Create_Tek4014 routine.
+!
+! ENVIRONMENT:
+!
+!---Vaxstation: 780, 750 or 730 running VMS with at least one ONYX or OPAL
+!---graphics subsystem
+!
+!--
+
+!---------------------------------------
+!  TABLE OF CONTENTS
+!---------------------------------------
+FORWARD ROUTINE
+
+	 tk$$ftr_get_field
+	,tk$$ftr_create_footer
+	,tk$$ftr_reset_allfields
+	,tk$$ftr_set_field
+	,tk$$ftr_page_selected
+	,tk$$ftr_reset_selected
+	,tk$$ftr_margin_setting
+	,tk$$ftr_set_margin
+	,tk$$ftr_rel_margin
+	,tk$$ftr_set_xon
+	,tk$$ftr_indicate_page_full
+	,tk$$ftr_indicate_gin_mode
+	,tk$$ftr_indicate_not_gin_mode
+	;
+
+!---------------------------------------
+!  EXTERNAL NATIVE GRAPHICS AND TEXT ROUTINES CALLED
+!---------------------------------------
+EXTERNAL ROUTINE 
+	 vs$$txt_addLines
+	,vs$$txt_set_field_format
+	,vs$$txt_setTypeface
+	,vs$$txt_deleteField
+	,vs$$txt_defineField
+	,vs$$txt_writeText
+	,vs$$txt_SetWritingColor
+	,vs$$txt_SetBackgroundColor
+	,VSTA$$KERNEL_CALL
+	,VS$$ACP_GIN_MODE
+	,vsta$$rgn_define_region
+	,vsta$$rgn_set_region_selectable
+	,vs$$vds_vd_set_xon_xoff
+	,tk$$emu_flush_paths
+	,tk$$emu_find_tek4014
+	,tk$$emu_write_tek4014
+	,tk$$emu_init_tek4014
+	,tk$$cur_stop_alpha
+	,tk$$cur_start_alpha
+	,tk$$cur_stop_crosshairs
+	,vs$$acp_free_vm
+	,vsta$$ts_update_settings
+	;
+
+!---------------------------------------
+!  BRING IN THE DATA BASE DEFINITION FILE AND THE SYSTEM RUNTIME ROUTINES
+!---------------------------------------
+LIBRARY 'vsta$library:vstekem';
+LIBRARY 'vsta$library:txtsym';
+LIBRARY 'vsta$library:vstagbl';		!Application pgm symbols
+LIBRARY 'vsta$library:libmacros';
+LIBRARY 'SYS$LIBRARY:STARLET';
+
+!---------------------------------------
+!  PSECT DEFINITIONS
+!---------------------------------------
+$vsta_psect;
+
+EXTERNAL LITERAL
+	 prof$K_tek_marginoff
+	,prof$K_tek_margin1
+	,prof$K_tek_margin2
+	;
+
+
+!-------------------------------------
+!  define footer field boundaries
+!-------------------------------------
+LITERAL
+
+	 tk$k_footer_char_height = 26
+	,tk$k_num_footer_fields = 6
+
+!-------------------------------------
+!  define symbols to index the field coordinate array
+!-------------------------------------
+	,tk$k_reset_field = 5
+	,tk$k_page_field = 0
+	,tk$k_margin_rel_field = 1
+	,tk$k_margin_field = 4
+	,tk$k_page_full_field = 2
+	,tk$k_gin_mode_field = 3
+
+	,tk$k_reset_sym = 31
+	,tk$k_page_sym = 32
+	,tk$k_margin_rel_sym = 25
+	,tk$k_margin1_sym = 26
+	,tk$k_margino_sym = 27
+	,tk$k_margin2_sym = 28
+	,tk$k_page_not_full_sym = 40
+	,tk$k_page_full_sym = 41
+	,tk$k_gin_mode_sym = 42
+	,tk$k_not_gin_mode_sym = 40
+
+	,tk$k_reset_xext = 54
+	,tk$k_page_xext	= 54
+	,tk$k_margin_xext = 70
+	,tk$k_margin_rel_xext = 70
+	,tk$k_page_full_xext = 54
+	,tk$k_gin_mode_xext = 54
+
+	,tk$k_reset_xoff = 800 - 10 - tk$k_reset_xext
+	,tk$k_page_xoff = 10
+	,tk$k_margin_xoff = tk$k_reset_xoff - 50 - tk$k_margin_xext
+	,tk$k_margin_rel_xoff = tk$k_page_xoff + tk$k_page_xext + 50
+	,tk$k_page_full_xoff =  400 - tk$k_page_full_xext/2 - 100
+	,tk$k_gin_mode_xoff = 400 - tk$k_gin_mode_xext/2 + 100
+	;
+
+BIND
+	 tk$wv_ftr_field_xext = UPLIT WORD(
+						 tk$k_page_xext
+						,tk$k_margin_rel_xext
+						,tk$k_page_full_xext
+						,tk$k_gin_mode_xext
+						,tk$k_margin_xext
+						,tk$k_reset_xext
+					 ):
+
+				VECTOR [,WORD]
+	,tk$wv_ftr_field_xoff = UPLIT WORD(
+						 tk$k_page_xoff
+						,tk$k_margin_rel_xoff
+						,tk$k_page_full_xoff
+						,tk$k_gin_mode_xoff
+						,tk$k_margin_xoff
+						,tk$k_reset_xoff
+					 ):
+
+				VECTOR [,WORD]
+
+	,tk$av_ftr_field_ast = UPLIT LONG(
+						 tk$$ftr_page_selected
+						,tk$$ftr_rel_margin
+						,0
+						,0
+						,tk$$ftr_set_margin
+						,tk$$ftr_reset_selected
+					):
+				VECTOR [,LONG]
+	,foot_help_keywords = UPLIT LONG (	! help for various fields
+				%ascid '4014 page',
+				%ascid '4014 margin release',
+				%ascid '4014 page full',
+				%ascid 'Graphics input',
+				%ascid '4014 margin',
+				%ascid '4014 reset'
+				):
+			VECTOR [,LONG]
+	;
+		
+MACRO
+
+	$CLEAR(a1) = a1 = 0%,
+	$SET(a1)   = a1 = 1%;
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_get_field(
+				 tkb		: REF tek_blk
+				,fld
+				,xoff_a		! Place to return xoffset of f
+				,xext_a		! Place to return xextent of f
+			): =
+!++
+!  Functional Description
+!
+!  This routine will return the field x offset and extent given the field
+!  id number.
+!
+!
+!  Return Value
+!
+!  The longword return value is the x offset in the low word and x extent in
+!  the upper word
+!
+!--
+BEGIN
+
+.xoff_a = .tk$wv_ftr_field_xoff [ .fld];
+.xext_a = .tk$wv_ftr_field_xext [ .fld];
+
+RETURN ss$_normal;
+
+END;
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_create_footer
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine performs the action of drawing the Tek4014 footer, inserting
+!   text into the footer buttons, and informing the region process of the fields
+!---of the footer that can be selected by the mouse.
+!
+!  FORMAL PARAMETERS:
+!
+	(tkb: REF tek_blk):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:
+!
+!---Returns bad status if native curve routine fails or text routines fail
+!
+!  COMPLETION CODES: NONE
+!
+!  SIDE EFFECTS:
+!
+!---This routine calls the native graphics services to draw the indicators of
+!   the footer,  the text services to insert the text into these indicators and
+!---the region services to set selectible fields for buttons.
+!
+!--
+BEGIN
+
+LOCAL
+	 f_off
+	,f_ext
+	,status
+	;
+
+
+
+!
+!  Create text lines for the footer virtual display
+!
+IF NOT (status = vs$$txt_addLines(
+		 .tkb [tk$l_footer_vd_id]
+		,1				!one row in this vd
+		,tk$k_footer_char_height + 4	!Line height
+		)) THEN RETURN .status;
+
+!
+!  define type face
+!
+IF NOT (status = 
+		vs$$txt_setTypeface(
+			 .tkb [tk$l_footer_vd_id]
+			,%ascid 'SYMBOL_FONT'
+					))
+THEN RETURN .status;
+
+!-------------------------------------
+!  delete default field on this line
+!-------------------------------------
+IF NOT (status = 
+		vs$$txt_deleteField
+				(
+				 .tkb [tk$l_footer_vd_id]
+				,1
+		 		,1
+				))
+THEN RETURN .status;
+
+!-------------------------------------
+!  set writing color to background
+!-------------------------------------
+IF NOT (status =
+	vs$$txt_setWritingColor
+				(
+				 .tkb [tk$l_footer_vd_id]
+				,0
+				))
+THEN RETURN .status;
+
+IF NOT (status = 
+	vs$$txt_setBackgroundColor
+				(
+				 .tkb [tk$l_footer_vd_id]
+				,1
+				))
+THEN RETURN .status;
+
+INCR i FROM 0 to tk$k_num_footer_fields - 1
+DO BEGIN
+
+	LOCAL
+		 f_off 
+		,f_ext 
+		;
+
+	TK$$FTR_GET_FIELD( 
+			 .tkb
+			,.i
+			,f_off
+			,f_ext
+			);
+	
+	IF NOT (status = 
+	vs$$txt_defineField(
+		 .tkb [tk$l_footer_vd_id]
+		,1
+		,.f_off
+		,.f_ext
+		)) 
+	THEN RETURN .status;
+	!
+	!  Create region for vd
+	!
+	VSTA$$RGN_DEFINE_REGION(
+		 .tkb [tk$l_footer_vd_id]
+		,.f_off
+		,0
+		,.f_ext
+		,tk$k_footer_char_height + 8
+		,.foot_help_keywords[.i]	! specify help keywords
+				);
+
+	IF .tk$av_ftr_field_ast [.i] NEQ 0
+	THEN BEGIN
+		!
+		!  Set that region selectable
+		!
+		VSTA$$RGN_SET_REGION_SELECTABLE(
+			 .tkb [tk$l_footer_vd_id] 	! VD id
+			,.f_off				! Region X
+			,0				! Y
+			,.tk$av_ftr_field_ast [.i] 	! ASTADR
+			,.tkb				! ASTPRM
+			,0, 0, 0			! No popup PB
+			,vsta$K_sel_area		! Selectable attribute
+						);
+	     END;	! End of setting region selectable !
+
+	IF NOT (status = 
+	vs$$txt_set_field_format(
+		 .tkb [tk$l_footer_vd_id]
+		,1
+		,.f_off
+		,ff_center
+		))
+	THEN RETURN .status;
+
+
+   END;
+
+!
+!  Reset footer fields
+!
+tk$$ftr_reset_allfields ( .tkb );
+
+
+
+RETURN ss$_normal
+
+END;
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_reset_allfields
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!---This routine resets the footer buttons
+!
+!  FORMAL PARAMETERS:
+!
+	(tkb: REF tek_blk):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE:  ss$normal
+!
+!  COMPLETION CODES: NONE
+!
+!
+!
+!--
+BEGIN
+
+!
+!  Initialize all fields in footer
+!
+TK$$FTR_SET_FIELD( .tkb, tk$k_reset_field, tk$k_reset_sym);
+TK$$FTR_SET_FIELD( .tkb, tk$k_page_field, tk$k_page_sym);
+TK$$FTR_SET_FIELD( .tkb, tk$k_margin_rel_field, tk$k_margin_rel_sym);
+TK$$FTR_SET_FIELD( .tkb, tk$k_page_full_field, tk$k_page_not_full_sym);
+TK$$FTR_SET_FIELD( .tkb, tk$k_gin_mode_field, tk$k_not_gin_mode_sym);
+
+!
+!  now set footer indicators according to database
+!
+IF NOT .tkb[ tk$v_margin_on] 
+THEN TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margino_sym)
+ELSE IF .tkb[tk$v_margin_2] 
+	THEN TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin2_sym)
+	ELSE TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin1_sym);
+
+RETURN ss$_normal
+
+END;
+
+
+
+
+
+
+
+
+GLOBAL ROUTINE TK$$FTR_SET_FIELD( 
+				 tkb	: REF tek_blk
+				,fld
+				,symbol
+			):=
+!++
+!  Functional Description
+!
+!  This procedure writes the specified symbol into the specified field
+!
+!--
+BEGIN
+
+LOCAL
+	 sym_dsc: VECTOR [2,LONG]
+	,f_off
+	,f_ext
+	;
+
+sym_dsc [0] = 1;
+sym_dsc [1] = symbol;
+
+!
+!  Get the field information for this indicator
+!
+TK$$FTR_GET_FIELD( 
+		 .tkb
+		,.fld
+		,f_off
+		,f_ext
+		);
+
+!
+!  Now write symbol into field
+!
+vs$$txt_writeText(
+		 .tkb [tk$l_footer_vd_id]	! VD_ID
+		,sym_dsc			! Text descriptor
+		,1				! Line number
+		,.f_off				! Field id
+		,1				! Character position
+		)
+
+END;
+
+
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_page_selected
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: 
+!
+!  SIDE EFFECTS: 
+!
+!---
+BEGIN
+
+LOCAL
+	 escff: WORD INITIAL (%X'0C1B')
+	,page_full_save
+	;
+
+
+IF .tkb [tk$v_page_full]
+THEN BEGIN
+
+	$CLEAR(tkb [tk$v_page_full]);
+
+	tk$$emu_write_tek4014( .tkb, escff, 2);
+
+	$SET(tkb [tk$v_page_full]);
+
+	tk$$ftr_set_xon( .tkb);
+
+     END
+ELSE
+	tk$$emu_write_tek4014( .tkb, escff, 2);
+
+tk$$emu_flush_paths( .tkb);
+
+RETURN SS$_NORMAL;
+
+END;
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_reset_selected
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: 
+!
+!  SIDE EFFECTS: 
+!
+!---
+BEGIN
+
+!
+!  if in alpha mode the stop cursor
+!
+IF .tkb [tk$l_mode] eql tk$k_alpha
+THEN TK$$CUR_STOP_ALPHA( .tkb);
+
+!
+!  If we are in gin mode then stop crosshairs and tell the acp
+!
+IF .tkb [tk$l_mode] EQL tk$k_gin
+THEN BEGIN
+    TK$$CUR_STOP_CROSSHAIRS( .tkb);
+    !
+    ! Tell the acp
+    !
+    vsta$$kernel_call(
+			 vs$$acp_gin_mode
+			,.tkb [tk$l_fullview_vd_id]
+			,0
+			);
+    END;
+
+!
+!  call tek4014 initialize to get intial terminal status set characteristics to
+!  same as they were.
+!
+tk$$emu_init_tek4014(
+                   .tkb [tk$l_fullview_vd_id],
+                   .tkb,
+                   .tkb [tk$w_screen_vd_x],
+                   .tkb [tk$w_screen_vd_y],
+                   .tkb [tk$w_char_status_word],
+                    %X'FFFF'
+                  );
+!
+!  Reset footer fields
+!
+tk$$ftr_reset_allfields ( .tkb );
+
+!
+!  Flush the gidis operations
+!
+tk$$emu_flush_paths(.tkb);
+
+TK$$CUR_START_ALPHA( .tkb);
+!
+! If settings form is showing, update it.
+!
+	if .tkb[tk$v_settings_exist]
+	then vsta$$ts_update_settings (.tkb[tk$l_fullview_vd_id], -1);
+
+RETURN ss$_normal;
+
+END;
+
+
+GLOBAL ROUTINE TK$$FTR_MARGIN_SETTING(
+				tkb: REF tek_blk
+				,setting
+				):=
+!++
+!  Functinal Description
+!
+!  This routine is called when to set the margin icon when the margin button
+!  has *not* been selected--for instance, in response to changes made in the
+!  terminal settings doc.  Settings form is not updated, because we assume
+!  that this is where the request originated.
+!
+!--
+BEGIN
+
+SELECTONE .setting OF SET
+	[prof$k_tek_marginoff]: BEGIN
+		tkb [tk$v_margin_on] = 0;
+		tkb [tk$v_margin_2] = 0;
+		TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margino_sym);
+		END;
+	[prof$k_tek_margin2]:  BEGIN
+		tkb [tk$v_margin_on] = 1;
+		tkb [tk$v_margin_2] = 1;
+		TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin2_sym);
+		END;
+	[prof$k_tek_margin1]:  BEGIN
+		tkb [tk$v_margin_2] = 0;
+		tkb [tk$v_margin_on] = 1;
+		TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin1_sym);
+		END;
+  TES;
+
+RETURN SS$_NORMAL
+
+END;
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_set_margin(
+				tkb: REF tek_blk
+				):=
+!++
+!  Functinal Description
+!
+!  This routine is called when the margin button is selected it advances the
+!  margin setting.  (margin 1 to margin off, margin off to margin 2, and 
+!  margin 2 to margin 1)
+!
+!--
+BEGIN
+
+!
+!  If margin is off then go to margin 2
+!
+IF NOT .tkb [tk$v_margin_on]
+THEN BEGIN
+     tkb [tk$v_margin_on] = 1;
+     tkb [tk$v_margin_2] = 1;
+     TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin2_sym);
+     END
+
+!  If margin 2 is set then go to margin 1
+
+ELSE IF .tkb [tk$v_margin_2]
+     THEN BEGIN
+	  tkb [tk$v_margin_2] = 0;
+	  TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margin1_sym);
+          END
+
+!  If margin 1 is set then go to margin off
+
+     ELSE BEGIN
+	  tkb [tk$v_margin_on] = 0;
+	  TK$$FTR_SET_FIELD( .tkb, tk$k_margin_field, tk$k_margino_sym);
+	  END;
+
+!
+! If settings form is showing, update it.
+!
+	if .tkb[tk$v_settings_exist]
+	then vsta$$ts_update_settings (.tkb[tk$l_fullview_vd_id], -1);
+
+RETURN SS$_NORMAL
+
+END;
+
+
+
+
+
+GLOBAL ROUTINE tk$$ftr_rel_margin
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: 
+!
+!  SIDE EFFECTS: 
+!
+!---
+BEGIN
+
+tk$$ftr_set_xon( .tkb)
+
+END;
+
+
+GLOBAL ROUTINE tk$$ftr_set_xon
+!++
+!  FUNCTIONAL DESCRIPTION:
+!
+!  FORMAL PARAMETERS:
+!
+	(
+	 tkb: REF tek_blk
+	):=
+!
+!  IMPLICIT INPUTS: NONE
+!
+!  IMPLICIT OUTPUTS: NONE
+!
+!  RETURN VALUE: NONE
+!
+!  COMPLETION CODES: 
+!
+!  SIDE EFFECTS: 
+!
+!---
+BEGIN
+
+LOCAL
+	 pf_backlog
+	,pf_backlog_bcnt
+	;
+
+!
+!  If page full not in effect then just return
+!
+IF NOT .tkb [tk$v_page_full]
+THEN RETURN ss$_normal;
+
+$CLEAR( tkb [tk$v_page_full]);
+TK$$FTR_SET_FIELD( .tkb, tk$k_page_full_field, tk$k_page_not_full_sym);
+
+!
+!  Put the buffer address and bcnt in local memory because the write routine
+!  may cause another page full signal.  This is the same reason we should
+!  set xon for this vd. now not later
+!
+pf_backlog = .tkb [tk$a_page_full_backlog];
+pf_backlog_bcnt = .tkb [tk$l_page_full_backlog_bcnt];
+
+VS$$VDS_VD_SET_XON_XOFF( 
+			 .tkb [tk$l_fullview_vd_id]
+			,0
+		);
+
+!
+!  If page full in effect then call the tek output routine to process the
+!  page full backlog
+!
+TK$$EMU_WRITE_TEK4014( 
+			 .tkb
+			,.pf_backlog
+			,.pf_backlog_bcnt
+			);
+
+TK$$EMU_flush_paths( .tkb);
+
+!
+!  Deallocate the memory for this page full backlog
+!
+IF ( .pf_backlog_bcnt GTR 0 ) THEN
+	VS$$ACP_FREE_VM(
+		 pf_backlog_bcnt
+		,pf_backlog
+		,0
+		);
+
+RETURN ss$_normal;
+
+END;
+
+
+GLOBAL ROUTINE TK$$FTR_INDICATE_PAGE_FULL( tkb) :=
+!++
+!
+!  This routine just makes the page full symbol light in the footer
+!
+!--
+BEGIN
+
+TK$$FTR_SET_FIELD( .tkb, tk$k_page_full_field, tk$k_page_full_sym)
+
+END;
+
+
+
+
+
+
+GLOBAL ROUTINE TK$$FTR_INDICATE_GIN_MODE( tkb) :=
+!++
+!
+!  This routine just makes the gin mode symbol light in the footer
+!
+!--
+BEGIN
+
+TK$$FTR_SET_FIELD( .tkb, tk$k_gin_mode_field, tk$k_gin_mode_sym)
+
+END;
+
+
+
+GLOBAL ROUTINE TK$$FTR_INDICATE_NOT_GIN_MODE( tkb) :=
+!++
+!
+!  This routine just makes the not gin mode symbol light in the footer
+!
+!--
+BEGIN
+
+TK$$FTR_SET_FIELD( .tkb, tk$k_gin_mode_field, tk$k_not_gin_mode_sym)
+
+END;
+
+
+END
+ELUDOM

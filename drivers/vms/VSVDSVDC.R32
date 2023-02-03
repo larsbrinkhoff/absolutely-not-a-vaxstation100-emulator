@@ -1,0 +1,133 @@
+ 
+!*** MODULE $VSVDSVDC ***
+! --
+! 
+!  Data structure constants
+! 
+literal vs$k_int_type = 80;
+! --
+! 
+!  Define the structure for the Internal IO Request Packet (INT)
+! 
+literal int$m_done_io_request = 1;
+literal int$m_done_io_mexclf = 2;
+literal int$k_header_len = 32;
+macro int_db = 0,0,0,0 %;
+literal int$s_int_db = 84;
+macro int$a_flink = 0,0,32,0 %;
+macro int$a_blink = 4,0,32,0 %;
+macro int$w_size = 8,0,16,1 %;
+macro int$b_type = 10,0,8,1 %;
+macro int$b_int_spare_1 = 11,0,8,1 %;
+!  Flags longword
+macro int$r_vdc_int = 12,0,32,0 %;
+literal int$s_vdc_int = 4;
+macro int$r_vdc_int_flags = 12,0,32,0 %;
+literal int$s_vdc_int_flags = 4;
+macro int$v_done_io_request = 12,0,1,0 %;
+macro int$v_done_io_mexclf = 12,1,1,0 %;
+macro int$v_flag_spares = 12,2,30,0 %;
+literal int$s_flag_spares = 30;
+!  End of Flags	longword	
+macro int$l_iip_count = 16,0,32,1 %;
+macro int$l_iost1 = 20,0,32,1 %;
+macro int$l_iost2 = 24,0,32,1 %;
+macro int$a_routine = 28,0,32,0 %;
+macro int$l_arglist = 32,0,32,1 %;
+macro int$l_p1 = 36,0,32,1 %;
+macro int$l_p2 = 40,0,32,1 %;
+macro int$l_p3 = 44,0,32,1 %;
+macro int$l_p4 = 48,0,32,1 %;
+macro int$l_p5 = 52,0,32,1 %;
+macro int$l_p6 = 56,0,32,1 %;
+macro int$l_p7 = 60,0,32,1 %;
+macro int$l_p8 = 64,0,32,1 %;
+macro int$l_p9 = 68,0,32,1 %;
+macro int$l_p10 = 72,0,32,1 %;
+macro int$l_p11 = 76,0,32,1 %;
+macro int$l_p12 = 80,0,32,1 %;
+! .
+! 	IRP redefinitions
+! .
+literal irp$m_done_io_mexclf = 16;
+literal irp$m_done_io_request = 256;
+macro vdc_irp_block = 0,0,0,0 %;
+literal irp$s_vdc_irp_block = 76;
+macro irp$b_vdc_irp_sys_defined = 0,0,0,0 %;
+literal irp$s_vdc_irp_sys_defined = 42; !  IRP$W_STS = 2A
+macro irp$r_vdc_irp_sts = 42,0,16,0 %;
+literal irp$s_vdc_irp_sts = 2;
+macro irp$r_vdc_irp_sts_flags = 42,0,16,0 %;
+literal irp$s_vdc_irp_sts_flags = 2;
+macro irp$v_vcd_irp_spare1 = 42,0,4,0 %;
+literal irp$s_vcd_irp_spare1 = 4;
+macro irp$v_done_io_mexclf = 42,4,1,0 %; !  IRP$V_VIRTUAL
+macro irp$v_vcd_irp_spare2 = 42,5,3,0 %;
+literal irp$s_vcd_irp_spare2 = 3;
+macro irp$v_done_io_request = 42,8,1,0 %; !   IRP$V_PHYSIO
+macro irp$v_vcd_irp_spare3 = 42,9,7,0 %;
+literal irp$s_vcd_irp_spare3 = 7;
+macro irp$b_vdc_irp_sys_defined2 = 44,0,0,0 %;
+literal irp$s_vdc_irp_sys_defined2 = 28; !  IRP$L_SEGVBN = 48
+macro irp$l_iip_count = 72,0,32,1 %;
+macro vdc_blk = 0,0,0,0 %;
+literal vdc$s_vdc_blk = 94;
+macro vdc$a_flink = 0,0,32,0 %;
+macro vdc$a_blink = 4,0,32,0 %;
+macro vdc$l_type = 8,0,32,1 %;
+macro vdc$l_refcnt = 12,0,32,1 %;
+macro vdc$l_sts = 16,0,32,1 %;
+macro vdc$a_rca = 20,0,32,0 %;
+macro vdc$w_rcc = 24,0,16,1 %;
+macro vdc$l_efn = 26,0,32,1 %;
+macro vdc$a_astadr = 30,0,32,0 %;
+macro vdc$l_astprm = 34,0,32,1 %;
+macro vdc$w_src_type = 38,0,16,1 %;
+macro vdc$a_src = 40,0,32,0 %;
+macro vdc$r_so_blk = 44,0,32,0 %;
+literal vdc$s_so_blk = 4;
+macro vdc$r_norm_blk = 44,0,32,0 %;
+literal vdc$s_norm_blk = 4;
+macro vdc$w_sox = 44,0,16,1 %;
+macro vdc$w_soy = 46,0,16,1 %;
+macro vdc$r_back_blk = 44,0,32,0 %;
+literal vdc$s_back_blk = 4;
+macro vdc$w_width = 44,0,16,1 %;
+macro vdc$w_height = 46,0,16,1 %;
+macro vdc$w_msk_type = 48,0,16,1 %;
+macro vdc$a_msk = 50,0,32,0 %;
+macro vdc$w_map_type = 54,0,16,1 %;
+macro vdc$a_map = 56,0,32,0 %;
+macro vdc$r_dst_off = 60,0,0,0 %;
+literal vdc$s_dst_off = 6;
+macro vdc$r_dst_off_xy = 60,0,32,0 %;
+literal vdc$s_dst_off_xy = 4;
+macro vdc$w_dox = 60,0,16,1 %;
+macro vdc$w_doy = 62,0,16,1 %;
+macro vdc$r_dst_off_a = 60,0,0,0 %;
+literal vdc$s_dst_off_a = 6;
+macro vdc$w_doa = 60,0,16,1 %;
+macro vdc$a_dof = 62,0,32,0 %;
+macro vdc$r_cmd_blk = 66,0,0,0 %;
+literal vdc$s_cmd_blk = 28;
+macro vdc$r_drw_blk = 66,0,0,0 %;
+literal vdc$s_drw_blk = 28;
+macro vdc$w_path_count = 66,0,16,1 %;
+macro vdc$a_path = 68,0,32,0 %;
+macro vdc$w_pattern_mode = 72,0,16,1 %;
+macro vdc$w_pattern_action = 74,0,16,1 %;
+macro vdc$a_pattern_block = 76,0,32,0 %;
+macro vdc$a_pattern_state = 80,0,32,0 %;
+macro vdc$w_sec_type = 84,0,16,1 %;
+macro vdc$a_sec = 86,0,32,0 %;
+macro vdc$w_ssx = 90,0,16,1 %;
+macro vdc$w_ssy = 92,0,16,1 %;
+macro vdc$r_prn_blk = 66,0,0,0 %;
+literal vdc$s_prn_blk = 18;
+macro vdc$w_txt_type = 66,0,16,1 %;
+macro vdc$w_txtnum = 68,0,16,1 %;
+macro vdc$a_txtadr = 70,0,32,0 %;
+macro vdc$w_control_count = 74,0,16,1 %;
+macro vdc$a_control_addr = 76,0,32,0 %;
+macro vdc$w_char_pad = 80,0,16,1 %;
+macro vdc$w_space_pad = 82,0,16,1 %;

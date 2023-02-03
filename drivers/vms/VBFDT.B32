@@ -1,0 +1,3716 @@
+%title 'VAXstation Display Device Driver FDT Routines'
+module VBFDT (	! VAX/VMS VS100 display device driver FDT routines
+		ident = 'VSTA V1.2-01.'
+		) =
+begin
+!++
+! Facility:
+!
+!	VAX/VMS VS100 display driver
+!
+! Abstract:
+!
+!	This file contains the FDT routines necessary to preprocess
+!	VAXstation device requests.
+!
+! Environment:
+!
+!	This module operates in conjunction with the VS100 device
+!	under VMS. The routines execute in the context of the calling
+!	process, in kernel mode and IPL=IPL$_ASTDEL.
+!
+!--
+
+!
+! Psect definitions:
+!
+!    It is necessary to force all data and code into the device
+!    driver psect $$$115_DRIVER for driver loading by sysgen.
+!
+    psect own = $$$115_DRIVER(align(4),execute);
+    psect global = $$$115_DRIVER(align(4),execute);
+    psect plit = $$$115_DRIVER(align(4),execute);
+    psect code = $$$115_DRIVER(align(4),execute);
+!
+! Include files:
+!
+!    These are the system and VS100 specific libraries used by the
+!    driver.
+!
+    library 'SYS$LIBRARY:LIB.L32';	! System macro library
+    require 'VSTA$LIBRARY:VBDEF.R32';	! VS100 specific definitions
+    require 'VSTA$LIBRARY:VSTADEF.R32';	! VAXstation specific definitions
+    require 'VSTA$LIBRARY:LINKAGE.R32';	! VMS routine linkage definitions
+    require 'VSTA$LIBRARY:VBLINKAGE.R32'; ! VS100 routine linkage definitions
+!
+! Table of contents:
+!
+forward routine
+
+    ! VS100 graphics commands:
+    !
+    VB$FDT_COPY:	FDT novalue,	! Copy area command
+    VB$FDT_DRAW:	FDT novalue,	! Draw curve command
+    VB$FDT_PRINT:	FDT novalue,	! Print text command
+    VB$FDT_FLOOD:	FDT novalue,	! Flood area command
+    VB$FDT_FILL:	FDT novalue,	! Fill area command
+!    VB$FDT_PACKAGE:	FDT novalue,	! Package commands
+    !
+    ! VS100 system level commands
+    !
+    VB$FDT_MOVEOBJ:	FDT novalue,	! Move object command
+    VB$FDT_REPORT:	FDT novalue,	! Report ststus command
+    VB$FDT_FUNC:	FDT novalue,	! VS100 function handler
+    VB$FDT_NOOP:	FDT novalue,	! No operation command
+    !
+    ! System control commands
+    !
+    VB$FDT_STATUS:	FDT novalue,	! Report characteristics
+    VB$FDT_FIBER:	FDT novalue,	! Fiber optics control command
+    VB$FDT_GETPOS:	FDT novalue,	! Get saved cursor position command
+    VB$FDT_DEBUG:	FDT novalue,	! Debug function
+    VB$FDT_PIO:		FDT novalue,	! PIO functions
+    VB$FDT_SAVE_SCREEN: FDT novalue,	! Save screen function
+    !
+    ! AST setup commands
+    !
+    VB$FDT_KEYBOARD:	FDT novalue,	! Set keyboard context command
+    VB$FDT_BUTTON:	FDT novalue,	! Button AST command
+    VB$FDT_MOVE:	FDT novalue,	! Movement AST command
+    !
+    ! VS100 cursor and positioning device commands
+    !
+    VB$FDT_LOADCUR:	FDT novalue,	! Load cursor command
+    VB$FDT_SETCUR:	FDT novalue,	! Set cursor position command
+    VB$FDT_GETCUR:	FDT novalue,	! Get cursor position command
+    VB$FDT_ATTCUR:	FDT novalue,	! Attach cursor command
+    VB$FDT_SETEVENT:	FDT novalue,	! Set event reporting command
+    VB$FDT_GETMOUSE:	FDT novalue,	! Get mouse position command
+    VB$FDT_SETMOUSE:	FDT novalue,	! Set mouse characteristics command
+    VB$FDT_GETTAB:	FDT novalue;	! Get tablet position command
+!
+! Macros:
+!
+macro
+
+    IRP$L_CMD_BLK   = IRP$L_IOST1 %,	! Give two standard IRP fields 
+    IRP$L_CMD_COUNT = IRP$L_IOST2 %,	! different names 
+
+    IRP$L_PIO_PTR  = IRP$L_IOST1 %,
+    IRP$L_PIO_TYPE = IRP$L_IOST2 %,
+
+    FDT_ARGS =				! standard FDT arguments passed by QIO
+	.IRP,.PCB,.UCB,.CCB,.CODE,.ENTRY %;
+!
+! External references:
+!
+external
+
+    EXE$READLOCKR  :	addressing_mode(general),
+    EXE$MODIFYLOCKR:	addressing_mode(general),
+    EXE$WRITELOCKR :	addressing_mode(general),
+    EXE$GL_ABSTIM  :	addressing_mode(general),
+    MMG$GL_SPTBASE :	addressing_mode(general);
+
+external routine
+
+    VB$$SET_PREP_COPY:	FDT_JSB,	! Prepare copy command
+    VB$$SET_PREP_DRAW:	FDT_JSB,	! Prepare draw command
+    VB$$SET_PREP_PRINT:	FDT_JSB,	! Prepare print command
+    VB$$SET_PREP_FILL:	FDT_JSB,	! Prepare fill command
+    VB$$SET_PREP_FLOOD:	FDT_JSB,	! Prepare flood command
+    VB$$SET_PREP_LOAD:	FDT_JSB,	! Prepare load cursor command
+
+    VB$$SET_SETUP_CMD:	FDT_JSB,	! Setup command packet
+    VB$$SET_SETUP_AST:	FDT_JSB,	! Setup ast block
+    VB$$SET_SETUP_SAST:	FDT_JSB,	! Setup single ast block
+
+    VB$$SET_STORE_IRPE:	FDT_JSB,	! Move data from IRP to IRPE
+    VB$$SET_RETURN_IRPE:FDT_JSB,	! Unlock buffers and return IRPE's
+
+    COM$DELATTNAST:	DELATTNAST 	addressing_mode(general),
+    COM$FLUSHATTNS:	FLUSHATTNS 	addressing_mode(general),
+    EXE$ALLOCBUF:	ALLOCBUF 	addressing_mode(general),
+    EXE$ALLOCIRP:	ALLOCIRP 	addressing_mode(general),
+    EXE$DEANONPAGED:	DEANONPAGED 	addressing_mode(general),
+    EXE$READLOCK:	READLOCK 	addressing_mode(general),
+    EXE$MODIFYLOCK:	MODIFYLOCK	addressing_mode(general),
+    EXE$WRITECHK:	WRITECHK 	addressing_mode(general);
+
+%sbttl 'VB$FDT_COPY - Copy area command'
+global routine VB$FDT_COPY( ! FDT routine for VS100 copy area commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will process an IO$_COPY QIO command to the VB
+!	driver. This processing consists of the following steps:
+!
+!	    1. Validate user accessability of function parameters
+!	    2. Allocate a command descriptor block and command packet
+!	    3. Initialize the descriptor block and command packet
+!	    4. Validate and lock buffers via PREPARE_COPY routine
+!	    5. Send command to device
+!
+! Formal parameters:
+!
+!	IRP	- (R3) address of I/O request packet
+!	PCB	- (R4) address of process control block
+!	UCB	- (R5) address of unit control block
+!	CCB	- (R6) address of channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!
+!	AP[ARG$L_P1]	- Descriptor packet address
+!	AP[ARG$L_P2]	- Source packet address
+!	AP[ARG$L_P3]	- Destination packet address
+!	AP[ARG$L_P4]	- Map packet address
+!
+!   P1 packet:    P2 packet:    P3 packet:    P4 packet:
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_       VSTA$K_
+!   P1_LENGTH     P2_LENGTH     P3_LENGTH     P4_LENGTH     
+!  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P3$W_   |  |  P4$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |DST_PACKET|  |MAP_PACKET|
+!  +----------+  +----------+  +----------+  +----------+
+!                |  P2$W_   |  |  P3$W_   |
+!                +-        -+  +-        -+
+!                |SMK_PACKET|  |OFF_PACKET|
+!                +----------+  +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |DMK_PACKET|
+!                              +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	successful completion
+!
+!	SS$_ACCVIO	access violation, operands inaccessable
+!
+!	SS$_INSFMEM	insufficient dynamic mamory, may be returned by:
+!
+!		VB$$SET_SETUP_CMD: When failed to allocate CMD_BLK or CMD_PKT 
+!				   from the nonpaged pool.
+!
+!							
+!
+!
+!	SS$_BADPARAM	- bad parameter, 
+!			<explain more>
+!	
+!	SS$_IVBUFLEN	- invalid buffer length,
+!			<explain more>
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P3 = .ap[ARG$L_P3] : block[,byte],
+	P4 = .ap[ARG$L_P4] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters, if one of the 
+    ! checks fails, EXE$WRITECHK will call EXE$ABORTIO to abort the IO with
+    ! SS$_ACCVIO
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P3,VSTA$K_P3_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P4,VSTA$K_P4_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block. If failed to allocate an IRP for either
+    ! one of the blocks, VB$$SET_SETUP_CMS returns SS$_INSFMEM.
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! put command code into the command descriptor block
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_COPY;
+    !
+    ! Copy information from P1 to P4 blocks into command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH+VSTA$K_SMK_LENGTH,	! Source and source mask
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_COP_SRC]);
+    ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3[P3$W_DST_PACKET],CMD_PKT[VB$W_COP_DST]);
+    ch$move(VSTA$K_DMK_LENGTH,				! Destination mask
+	P3[P3$W_DMK_PACKET],CMD_PKT[VB$W_COP_DMK]);
+    ch$move(VSTA$K_MAP_LENGTH,				! Map
+	P4[P4$W_MAP_PACKET],CMD_PKT[VB$W_COP_MAP]);
+    !
+    ! Call VB$$SET_PREP_COPY to Prepare the packet for device execution, it
+    !
+    !	 - checks the buffer length, if too long, returns SS$_IVBUFLEN
+    !    - locks buffers, if fails, the QIO will be retried
+    !    - checks argument accesability, if failed, returns
+    !    - builds an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_COPY(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_COP_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_COPY
+
+%sbttl 'VB$FDT_DRAW - Draw curve commands'
+global routine VB$FDT_DRAW( ! FDT routine for VS100 draw curve commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will process an IO$_DRAW QIO command to the VB
+!	driver. This processing consists of the following steps:
+!
+!	    1. Validate user accessability of function parameters
+!	    2. Allocate a command descriptor block and command packet
+!	    3. Initialize the descriptor block and command packet
+!	    4. Validate and lock buffers via PREPARE_DRAW routine
+!	    5. Send command to device
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P2]	- Source packet address
+!	    AP[ARG$L_P3]	- Destination packet address
+!	    AP[ARG$L_P4]	- Map packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P2            P3            P4            P5
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_       VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     P2_LENGTH     P3_LENGTH     P4_LENGTH     DRW_LENGTH     
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P3$W_   |  |  P4$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |DST_PACKET|  |MAP_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!                |  P2$W_   |  |  P3$W_   |
+!                +-        -+  +-        -+
+!                |SMK_PACKET|  |OFF_PACKET|
+!                +----------+  +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |DMK_PACKET|
+!                              +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	SIZE,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P3 = .ap[ARG$L_P3] : block[,byte],
+	P4 = .ap[ARG$L_P4] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters P1,P2,and P3
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P3,VSTA$K_P3_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P4,VSTA$K_P4_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P5,VSTA$K_P5_DRW_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_DRAW;
+    !
+    ! Initialize the command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH+VSTA$K_SMK_LENGTH,	! Source and source mask
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_DRW_SRC]);
+    ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3[P3$W_DST_PACKET],CMD_PKT[VB$W_DRW_DST]);
+    ch$move(VSTA$K_DMK_LENGTH,				! Destination mask
+	P3[P3$W_DMK_PACKET],CMD_PKT[VB$W_DRW_DMK]);
+    ch$move(VSTA$K_MAP_LENGTH,				! Map
+	P4[P4$W_MAP_PACKET],CMD_PKT[VB$W_DRW_MAP]);
+    ch$move(VSTA$K_P5_DRW_LENGTH,			! Draw specific parameters
+	P5[P5$W_CMD_PACKET],CMD_PKT[VB$W_DRW_DRAW]);
+    !
+    ! Prepare the packet for device execution
+    !    - lock buffers
+    !    - convert addresses
+    !    - check argument accesability
+    !    - build an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_DRAW(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_DRW_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_DRAW
+
+%sbttl 'VB$FDT_PRINT - Print text command'
+global routine VB$FDT_PRINT( ! FDT routine for VS100 print text commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will process an IO$_PRINT QIO command to the VB
+!	driver. This processing consists of the following steps:
+!
+!	    1. Validate user accessability of function parameters
+!	    2. Allocate a command descriptor block and command packet
+!	    3. Initialize the descriptor block and command packet
+!	    4. Validate and lock buffers via PREPARE_PRINT routine
+!	    5. Send command to device
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P2]	- Source packet address
+!	    AP[ARG$L_P3]	- Destination packet address
+!	    AP[ARG$L_P4]	- Map packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P2            P3            P4            P5
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_       VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     P2_LENGTH     P3_LENGTH     P4_LENGTH     PRT_LENGTH     
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P3$W_   |  |  P4$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |DST_PACKET|  |MAP_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!                |  P2$W_   |  |  P3$W_   |
+!                +-        -+  +-        -+
+!                |SRC_PACKET|  |OFF_PACKET|
+!                +----------+  +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |DMK_PACKET|
+!                              +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P3 = .ap[ARG$L_P3] : block[,byte],
+	P4 = .ap[ARG$L_P4] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters P1,P2,and P3
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P3,VSTA$K_P3_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P4,VSTA$K_P4_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P5,VSTA$K_P5_PRT_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_PRINT;
+    !
+    ! Initialize the command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH+VSTA$K_SMK_LENGTH,	! Source and source mask
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_PRT_SRC]);
+    ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3[P3$W_DST_PACKET],CMD_PKT[VB$W_PRT_DST]);
+    ch$move(VSTA$K_DMK_LENGTH,				! Destination mask
+	P3[P3$W_DMK_PACKET],CMD_PKT[VB$W_PRT_DMK]);
+    ch$move(VSTA$K_MAP_LENGTH,				! Map
+	P4[P4$W_MAP_PACKET],CMD_PKT[VB$W_PRT_MAP]);
+    ch$move(VSTA$K_P5_PRT_LENGTH,			! Print specific parameters
+	P5[P5$W_CMD_PACKET],CMD_PKT[VB$W_PRT_PRINT]);
+    !
+    ! Prepare the packet for device execution
+    !    - lock buffers
+    !    - convert addresses
+    !    - check argument accesability
+    !    - build an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_PRINT(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_PRT_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_PRINT
+
+%sbttl 'VB$FDT_FLOOD - Flood area command'
+global routine VB$FDT_FLOOD( ! FDT routine for VS100 flood area command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will process an IO$_FLOOD QIO command to the VB
+!	driver. This processing consists of the following steps:
+!
+!	    1. Validate user accessability of function parameters
+!	    2. Allocate a command descriptor block and command packet
+!	    3. Initialize the descriptor block and command packet
+!	    4. Validate and lock buffers via PREPARE_FLOOD routine
+!	    5. Send command to device
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P2]	- Source packet address
+!	    AP[ARG$L_P3]	- Destination packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P2            P3            P5
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     P2_LENGTH     P3_LENGTH     FLD_LENGTH
+!  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P3$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |DST_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+  +----------+  +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |OFF_PACKET|
+!                              +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |DMK_PACKET|
+!                              +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P3 = .ap[ARG$L_P3] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters P1,P2,and P3
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P3,VSTA$K_P3_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P5,VSTA$K_P5_FLD_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_FLOOD;
+    !
+    ! Initialize the command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH,				! Source
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_FLD_SRC]);
+    ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3[P3$W_DST_PACKET],CMD_PKT[VB$W_FLD_DST]);
+    ch$move(VSTA$K_DMK_LENGTH,				! Destination mask
+	P3[P3$W_DMK_PACKET],CMD_PKT[VB$W_FLD_DMK]);
+    ch$move(VSTA$K_P5_FLD_LENGTH,			! Flood specific parameters
+	P5[P5$W_CMD_PACKET],CMD_PKT[VB$W_FLD_FLOOD]);
+    !
+    ! Prepare the packet for device execution
+    !    - lock buffers
+    !    - convert addresses
+    !    - check argument accesability
+    !    - build an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_FLOOD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_FLD_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_FLOOD
+
+%sbttl 'VB$FDT_FILL - Fill area command'
+global routine VB$FDT_FILL( ! FDT routine for VS100 fill area command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will process an IO$_FILL QIO command to the VB
+!	driver. This processing consists of the following steps:
+!
+!	    1. Validate user accessability of function parameters
+!	    2. Allocate a command descriptor block and command packet
+!	    3. Initialize the descriptor block and command packet
+!	    4. Validate and lock buffers via PREPARE_FILL routine
+!	    5. Send command to device
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P2]	- Source packet address
+!	    AP[ARG$L_P3]	- Destination packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P2            P3            P4            P5
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_       VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     P2_LENGTH     P3_LENGTH     P4_LENGTH     FIL_LENGTH
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P3$W_   |  |  P4$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |DST_PACKET|  |MAP_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+  +----------+  +----------+  +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |OFF_PACKET|
+!                              +----------+
+!                              |  P3$W_   |
+!                              +-        -+
+!                              |DMK_PACKET|
+!                              +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P3 = .ap[ARG$L_P3] : block[,byte],
+	P4 = .ap[ARG$L_P4] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters P1,P2,and P3
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P3,VSTA$K_P3_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P4,VSTA$K_P4_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P5,VSTA$K_P5_FIL_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_FILL;
+    !
+    ! Initialize the command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH,				! Source
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_FIL_SRC]);
+    ch$move(VSTA$K_DST_LENGTH+VSTA$K_POS_LENGTH,	! Destination and initial position
+	P3[P3$W_DST_PACKET],CMD_PKT[VB$W_FIL_DST]);
+    ch$move(VSTA$K_DMK_LENGTH,				! Destination mask
+	P3[P3$W_DMK_PACKET],CMD_PKT[VB$W_FIL_DMK]);
+    ch$move(VSTA$K_MAP_LENGTH,				! Map
+	P4[P4$W_MAP_PACKET],CMD_PKT[VB$W_FIL_MAP]);
+    ch$move(VSTA$K_P5_FIL_LENGTH,			! Fill specific parameters
+	P5[P5$W_CMD_PACKET],CMD_PKT[VB$W_FIL_FILL]);
+    !
+    ! Prepare the packet for device execution
+    !    - lock buffers
+    !    - convert addresses
+    !    - check argument accesability
+    !    - build an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_FILL(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_FIL_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_FILL
+
+%sbttl 'VB$FDT_PACKAGE - Package draw commands'
+!global routine VB$FDT_PACKAGE( ! FDT routine for VS100 packaged operations
+!		IRP: ref block[,byte],
+!		PCB: ref block[,byte],
+!		UCB: ref block[,byte],
+!		CCB: ref block[,byte],
+!		CODE,
+!		ENTRY
+!			) : FDT novalue =
+!
+!!++
+!! Functional description:
+!!
+!! Formal parameters:
+!!
+!!	IRP	- (R3) I/O request packet
+!!	PCB	- (R4) process control block
+!!	UCB	- (R5) unit control block
+!!	CCB	- (R6) channel control block
+!!	CODE	- (R7) bit number of the I/O function code
+!!	ENTRY	- (R8) address of the FDT table entry for this routine
+!!
+!! Implicit inputs:
+!!
+!!	AP	- address of function dependent QIO parameter block
+!!
+!! Implicit outputs:
+!!
+!!	None
+!!
+!! Completion codes:
+!!
+!!	None
+!!
+!! Side effects:
+!!
+!!	None
+!!
+!!--
+!
+!    begin
+!
+!    builtin ap;
+!    map	ap : ref block[,byte];
+!
+!	
+!    end; ! routine VB$FDT_PACKAGE
+
+%sbttl 'VB$FDT_MOVEOBJ - Move object command'
+global routine VB$FDT_MOVEOBJ( ! FDT routine for VS100 move object command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	The move object command will move a given source object to a
+!	specified destination. The source or destination can be located
+!	any where within the VAX or VS100 memory space.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P5
+!
+!    VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     MOV_LENGTH
+!  +----------+  +----------+
+!  |  P1$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+
+!  |DSC_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OPERATION,
+	MOVE : ref block[,byte],
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	OBJ_DESC = P1[DSC$W_SRC_DESC] : block[,byte],
+	DST_DESC = P1[DSC$W_DST_DESC] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check to see if the parameters are accessable. If they are not then
+    ! WRITECHK will abort and return a SS$_ACCVIO to the user.
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P5,VSTA$K_P5_MOV_LENGTH,.IRP;OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_MOVEOBJ;
+    !
+    ! Initialize the command packet
+    !
+    MOVE = CMD_PKT[VB$W_MOV_MOVE];
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_MOVE;
+    CMD_PKT[VB$L_LINK] = 0;
+    ch$move(VSTA$K_P5_MOV_LENGTH,
+	P5[P5_MOV$W_TYPE],MOVE[MOV$W_TYPE]);
+    !
+    ! Check to see if the source is in VAX space then lock the buffer
+    ! down and save its SVAPTE in the command packet block
+    !
+    if .OBJ_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8
+	then begin
+	    if not (STATUS = $VB$$SUB_LOCK(.MOVE[MOV$A_OBJ],
+	      .MOVE[MOV$L_LENGTH],EXE$WRITELOCKR))
+		then begin
+		    VB$$SET_RETURN_IRPE(FDT_ARGS);
+		    $EXE$ABORTIO(.STATUS)
+		    end; ! if not VB$$SUB_LOCK
+	    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.MOVE[MOV$L_LENGTH],
+	      MOVE[MOV$A_OBJ]-.CMD_PKT))
+		then begin
+		    VB$$SET_RETURN_IRPE(FDT_ARGS);
+		    $EXE$ABORTIO(.STATUS)
+		    end; ! if not VB$$SET_STORE_IRPE
+	    end; ! if .OBJ_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8
+    !
+    ! Now check to see if the destination is in VAX space then lock the buffer
+    ! down and save its SVAPTE in the command packet block
+    !
+    if .DST_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8
+	then begin
+	    if not (STATUS = $VB$$SUB_LOCK(.MOVE[MOV$A_DST],
+	      .MOVE[MOV$L_LENGTH],EXE$MODIFYLOCKR))
+		then begin
+		    VB$$SET_RETURN_IRPE(FDT_ARGS);
+		    $EXE$ABORTIO(.STATUS)
+		    end; ! if not VB$$SUB_LOCK
+	    if not (STATUS = VB$$SET_STORE_IRPE(FDT_ARGS,.MOVE[MOV$L_LENGTH],
+	      MOVE[MOV$A_DST]-.CMD_PKT))
+		then begin
+		    VB$$SET_RETURN_IRPE(FDT_ARGS);
+		    $EXE$ABORTIO(.STATUS)
+		    end; ! if not VB$$SET_STORE_IRPE
+	    end; ! if .DST_DESC[VSTA$B_ADDR] eql VSTA$K_VAXMEM^-8
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_MOV_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_MOVEOBJ
+
+%sbttl 'VB$FDT_REPORT - Report status command'
+global routine VB$FDT_REPORT( ! FDT routine for VS100 report status command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine creates a command packet for a report status
+!	VS100 command. When the command is executed the VS100 writes
+!	data back to the command packet which is then stored in
+!	the UCB.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_REPORT;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_REPORT;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_REP_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_REPORT
+
+%sbttl 'VB$FDT_FUNC - VS100 function handler'
+global routine VB$FDT_FUNC( ! FDT routine for VS100 functions
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine takes the IO$_STARTM function code and passes to
+!	the device level routines who then perform a start microcode
+!	function.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Microcode starting address
+!
+! Implicit outputs:
+!
+!	None
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte];
+
+    !
+    ! Save microcode start address if necessary
+    !
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_STARTM) neq 0
+	then begin
+	    IRP[IRP$L_MEDIA] = .ap[ARG$L_P1]
+	    end; ! IO$M_VB_STARTM
+
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Queue the request to the driver
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_FUNC
+
+%sbttl 'VB$FDT_NOOP - No operation command'
+global routine VB$FDT_NOOP( ! FDT routine for VS100 no operation command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine creates a command packet for a no operation
+!	VS100 command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_NOP;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_NOP;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_NOP_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_NOOP
+
+%sbttl 'VB$FDT_STATUS - Report device characteristics'
+global routine VB$FDT_STATUS( ! FDT routine for report characteristics command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function returns device specific status and configuration.
+!	It can either return all the information or return selected portions
+!	in the following catagories:
+!
+!		1. IO$M_VB_STATUS - device status
+!		2. IO$M_VB_COUNTER - error counters (also clears counters)
+!		3. IO$M_VB_VERSION - various version levels
+!		4. IO$M_VB_CONFIG - device configuration
+!		5. IO$M_VB_DBGAID - debugging aid information
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Output buffer address
+!	    AP[ARG$L_P2]	- Output buffer size
+!
+! Implicit outputs:
+!
+!	Output buffer filled with requested information
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- success
+!	SS$_ACCVIO	- access violation on output buffer
+!	SS$_IVBUFLEN	- out buffer too small
+!
+! Side effects:
+!
+!	Counters cleared if IO$M_VB_COUNTER specified
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OLD_IPL,
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte];
+
+    !
+    ! Check buffer's accessability for a write operation and lock buffer down
+    !
+    EXE$READLOCK(P1,.ap[ARG$L_P2], FDT_ARGS );
+    !
+    ! Find out how much information to return
+    !
+    if (.IRP[IRP$W_FUNC] and
+      (IO$M_VB_STATUS or IO$M_VB_COUNTER or IO$M_VB_VERSION 
+  		or IO$M_VB_CONFIG or IO$M_VB_DBGAID)) eql 0
+	then begin
+	    !
+	    ! Return all information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_CHR_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[CHR_STA$L_DEVDEPEND] = .UCB[UCB$L_DEVDEPEND];	! Status data
+	    P1[CHR_STA$L_KB_STATE] = .UCB[UCB$W_VB_KB_STATE];
+	    P1[CHR_STA$L_MOUSE_STATE] = .UCB[UCB$W_VB_MOUSE_STATE];
+	    P1[CHR_STA$L_TABLET_STATE] = .UCB[UCB$W_VB_TABLET_STATE];
+	    P1[CHR_CNT$L_UNKNOWN] = .UCB[UCB$L_VB_UNKNOWN];	! Counter data
+	    P1[CHR_CNT$L_UNSOL] = .UCB[UCB$L_VB_UNSOL];
+	    P1[CHR_CNT$L_LINK_ERROR] = .UCB[UCB$L_VB_LINK_ERROR];
+	    P1[CHR_CNT$L_FLASH] = .UCB[UCB$L_VB_FLASH];
+	    P1[CHR_CNT$L_LIGHT_ON] = .UCB[UCB$L_VB_LIGHT_ON];
+	    P1[CHR_CNT$L_LIGHT_OFF] = .UCB[UCB$L_VB_LIGHT_OFF];
+	    P1[CHR_VER$L_DRIVER] = .UCB[UCB$W_VB_DRIVER];	! Version data
+	    P1[CHR_VER$L_ROM] = .UCB[UCB$W_VB_ROM];
+	    P1[CHR_VER$L_DEV_TYPE] = .UCB[UCB$L_VB_DEV_TYPE];
+	    P1[CHR_VER$L_DEV_VERSION] = .UCB[UCB$W_VB_DEV_VERSION];
+	    P1[CHR_VER$L_MCODE] = .UCB[UCB$W_VB_MCODE];
+	    P1[CHR_CNF$L_SCREEN] = .UCB[UCB$A_VB_SCREEN];	! Configuration data
+	    P1[CHR_CNF$L_SCREEN_X] = .UCB[UCB$W_VB_SCREEN_X];
+	    P1[CHR_CNF$L_SCREEN_Y] = .UCB[UCB$W_VB_SCREEN_Y];
+	    P1[CHR_CNF$L_SCREEN_Z] = .UCB[UCB$W_VB_SCREEN_Z];
+	    P1[CHR_CNF$L_FRAME] = .UCB[UCB$A_VB_FRAME];
+	    P1[CHR_CNF$L_FRAME_SIZE] = .UCB[UCB$L_VB_FRAME_SIZE];
+	    P1[CHR_CNF$L_PROGRAM] = .UCB[UCB$A_VB_PROGRAM];
+	    P1[CHR_CNF$L_PROGRAM_SIZE] = .UCB[UCB$L_VB_PROGRAM_SIZE];
+	    P1[CHR_CNF$L_UNIBUS] = .UCB[UCB$A_VB_UNIBUS];
+	    P1[CHR_CNF$L_UNIBUS_SIZE] = .UCB[UCB$L_VB_UNIBUS_SIZE];
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and (IO$M_VB_STATUS or ...) eql 0
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_STATUS) neq 0
+	then begin
+	    !
+	    ! Return status information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_STA_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[STA$L_DEVDEPEND] = .UCB[UCB$L_DEVDEPEND];
+	    P1[STA$L_KB_STATE] = .UCB[UCB$W_VB_KB_STATE];
+	    P1[STA$L_MOUSE_STATE] = .UCB[UCB$W_VB_MOUSE_STATE];
+	    P1[STA$L_TABLET_STATE] = .UCB[UCB$W_VB_TABLET_STATE];
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and IO$M_VB_STATUS) neq 0
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_COUNTER) neq 0
+	then begin
+	    !
+	    ! Return counter information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_CNT_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[CNT$L_UNKNOWN] = .UCB[UCB$L_VB_UNKNOWN];
+	    P1[CNT$L_UNSOL] = .UCB[UCB$L_VB_UNSOL];
+	    P1[CNT$L_LINK_ERROR] = .UCB[UCB$L_VB_LINK_ERROR];
+	    P1[CNT$L_FLASH] = .UCB[UCB$L_VB_FLASH];
+	    P1[CNT$L_LIGHT_ON] = .UCB[UCB$L_VB_LIGHT_ON];
+	    P1[CNT$L_LIGHT_OFF] = .UCB[UCB$L_VB_LIGHT_OFF];
+	    UCB[UCB$L_VB_UNKNOWN] = 0;
+	    UCB[UCB$L_VB_UNSOL] = 0;
+	    UCB[UCB$L_VB_LINK_ERROR] = 0;
+	    UCB[UCB$L_VB_FLASH] = 0;
+	    UCB[UCB$L_VB_LIGHT_ON] = 0;
+	    UCB[UCB$L_VB_LIGHT_OFF] = 0;
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and IO$M_VB_COUNTER) neq 0
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_VERSION) neq 0
+	then begin
+	    !
+	    ! Return version information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_VER_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[VER$L_DRIVER] = .UCB[UCB$W_VB_DRIVER];
+	    P1[VER$L_ROM] = .UCB[UCB$W_VB_ROM];
+	    P1[VER$L_DEV_TYPE] = .UCB[UCB$L_VB_DEV_TYPE];
+	    P1[VER$L_DEV_VERSION] = .UCB[UCB$W_VB_DEV_VERSION];
+	    P1[VER$L_MCODE] = .UCB[UCB$W_VB_MCODE];
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and IO$M_VB_VERSION) neq 0
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_CONFIG) neq 0
+	then begin
+	    !
+	    ! Return configuration information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_CNF_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[CNF$L_SCREEN] = .UCB[UCB$A_VB_SCREEN];
+	    P1[CNF$L_SCREEN_X] = .UCB[UCB$W_VB_SCREEN_X];
+	    P1[CNF$L_SCREEN_Y] = .UCB[UCB$W_VB_SCREEN_Y];
+	    P1[CNF$L_SCREEN_Z] = .UCB[UCB$W_VB_SCREEN_Z];
+	    P1[CNF$L_FRAME] = .UCB[UCB$A_VB_FRAME];
+	    P1[CNF$L_FRAME_SIZE] = .UCB[UCB$L_VB_FRAME_SIZE];
+	    P1[CNF$L_PROGRAM] = .UCB[UCB$A_VB_PROGRAM];
+	    P1[CNF$L_PROGRAM_SIZE] = .UCB[UCB$L_VB_PROGRAM_SIZE];
+	    P1[CNF$L_UNIBUS] = .UCB[UCB$A_VB_UNIBUS];
+	    P1[CNF$L_UNIBUS_SIZE] = .UCB[UCB$L_VB_UNIBUS_SIZE];
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and IO$M_VB_CONFIG) neq 0
+
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_DBGAID) neq 0
+	then begin
+	    !
+	    ! Return debuging aid information
+	    !
+	    if .ap[ARG$L_P2] lss VSTA$K_DBGAID_LENGTH
+		then $EXE$ABORTIO(SS$_IVBUFLEN);
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[DBGAID$L_DEVDEPEND] = .UCB[UCB$L_DEVDEPEND];
+	    P1[DBGAID$W_STS] = .UCB[UCB$W_STS];
+  	    P1[DBGAID$W_DEVSTS] = .UCB[UCB$W_DEVSTS];
+	    ENBINT(OLD_IPL);
+	    $EXE$FINISHIOC(SS$_NORMAL);
+	    end; ! if (IRP[IRP$W_FUNC] and IO$M_VB_DBGAID) neq 0
+	
+    end; ! routine VB$FDT_STATUS
+
+%sbttl 'VB$FDT_FIBER - Fiber optic control commands'
+global routine VB$FDT_FIBER( ! FDT routine for VS100 fiber optics commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function controls various states of the VS100 fiber optic
+!	link. This routine performs cancel ast's locally while passing
+!	on light control functions to the driver level.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!
+! Implicit outputs:
+!
+!	None
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_DEVNOTALLOC - Device not allocated
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+
+    !
+    ! Check for ast setup or cancel, perform the operation, and return to user
+    !
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_LINK_AST) neq 0
+	then begin
+	    if ((.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0) or (.ap[ARG$L_P3] eql 0)
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_LINK_AST]);
+		    $EXE$FINISHIOC(SS$_NORMAL)
+		    end ! if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0 or (.ap[ARG$L_P3] eql 0) then
+    !
+    ! This is an ast setup operation, do resource and access checking. Then
+    ! setup the AST control block and return to the user.
+    !
+		else begin
+		    if .PCB[PCB$W_ASTCNT] eql 0 then $EXE$FINISHIOC(SS$_EXQUOTA);
+		    if not (STATUS = VB$$SET_SETUP_AST(FDT_ARGS,
+					UCB[UCB$A_VB_LINK_AST],0,0))
+			then $EXE$ABORTIO(.STATUS);
+		    $EXE$FINISHIOC(SS$_NORMAL);
+		    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0 or (.ap[ARG$L_P3] eql 0)
+	    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_LINK_AST) neq 0 else
+    !
+    ! See if this a fiber manipulation command
+    !
+    if (.IRP[IRP$W_FUNC] and (IO$M_VB_LIGHT_ON or IO$M_VB_LIGHT_OFF)) neq 0
+	then 
+	    begin
+	    !
+	    ! Modify PID to force special cleanup
+	    !
+	    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+	    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+	    !
+	    ! Send command to driver
+	    !
+	    $EXE$QIODRVPKT;
+	    !
+	    end;
+
+
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_LINK_ONEXIT) neq 0 then
+	begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0 then
+		begin
+		! Cancel ONEXIT request
+		if (.UCB[UCB$L_VB_LINK_ONEXIT_PID] eql .IRP[IRP$L_PID]) then
+			begin
+			! Same process that setup request so okay
+			UCB[UCB$L_VB_LINK_ONEXIT_PID] = 0;
+			$EXE$FINISHIOC( SS$_NORMAL );
+			end
+		    else
+			begin
+			! Not the same process that setup request - error
+			$EXE$FINISHIOC( SS$_DEVNOTALLOC );
+			end;
+		end
+	    else
+		begin
+		! Setup Request
+		if ( (.UCB[UCB$L_VB_LINK_ONEXIT_PID] eql 0 )  or
+		     (.UCB[UCB$L_VB_LINK_ONEXIT_PID] eql .IRP[IRP$L_PID] )
+		   )  then
+			begin
+			! Save PID of requestor
+			UCB[UCB$L_VB_LINK_ONEXIT_PID] = .IRP[IRP$L_PID];
+			$EXE$FINISHIOC( SS$_NORMAL);
+			end
+		    else
+			begin
+			! not available - already in use
+			$EXE$FINISHIOC( SS$_DEVNOTALLOC );
+			end;
+		end;
+	end;	! On_Exit Stuff
+
+
+    end; ! routine VB$FDT_FIBER
+
+%sbttl 'VB$FDT_GETPOS - Get saved cursor position'
+global routine VB$FDT_GETPOS( ! FDT routine for get saved cursor position
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will return the current x/y location and button
+!	state of the specified input device.
+!
+!	The following operations are possible:
+!
+!		1. IO$_VB_GETPOS!IO$M_VB_MOUSE
+!		     return mouse x,y, and button state (nomally pointer device)
+!		2. IO$_VB_GETPOS!IO$M_VB_TABLET
+!		     return tablet x,y, and button state
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Output buffer address
+!	    AP[ARG$L_P2]	- Output buffer size
+!
+! Implicit outputs:
+!
+!	Output buffer filled with 3 longwords (x,y,buttons)
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- success
+!	SS$_ACCVIO	- access violation on output buffer
+!	SS$_IVBUFLEN	- out buffer too small
+!	SS$_OPINCOMPL	- insufficient function modifiers
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OLD_IPL,
+	OPERATION;
+    bind
+	P1 = .ap[ARG$L_P1] : vector[,long];
+
+    !
+    ! Check buffer's size and accessability for a read operation 
+    ! and lock down buffer
+    !
+    if .ap[ARG$L_P2] lss 12
+	then $EXE$ABORTIO(SS$_IVBUFLEN);
+    EXE$READLOCK(.ap[ARG$L_P1],12, FDT_ARGS );
+    !
+    ! Find out which data to write back and do it
+    !
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_MOUSE) neq 0
+	then begin
+	    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+	    P1[0] = .UCB[UCB$W_VB_MOUSE_X];
+	    P1[1] = .UCB[UCB$W_VB_MOUSE_Y];
+	    P1[2]= .UCB[UCB$W_VB_MOUSE_STATE];
+	    ENBINT(OLD_IPL);
+	    end ! IO$M_VB_MOUSE then
+	else begin
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_TABLET) neq 0
+		then begin
+		    DSBINT(UCB[UCB$B_DIPL],OLD_IPL);
+		    P1[0] = .UCB[UCB$W_VB_TABLET_X];
+		    P1[1] = .UCB[UCB$W_VB_TABLET_Y];
+		    P1[2]= .UCB[UCB$W_VB_TABLET_STATE];
+		    ENBINT(OLD_IPL);
+		    end ! IO$M_VB_MOUSE
+		else $EXE$ABORTIO(SS$_OPINCOMPL)
+	    end; ! IO$M_VB_MOUSE else
+!
+! Finish with success returned to caller
+!
+    $EXE$FINISHIOC(SS$_NORMAL);
+	
+    end; ! routine VB$FDT_GETPOS
+
+%sbttl 'VB$FDT_DEBUG - DEBUG Functions'
+global routine VB$FDT_DEBUG( ! FDT routine for Debug functions
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will handle some special commands for debugging.
+!		1.  Modify the DEVPENDENT field in the UCB.
+!		2.  Step function for debugging
+!
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P2]	- mask value
+!	    AP[ARG$L_P3]	- value
+!
+! Implicit outputs:
+!
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- success
+!	SS$_OPINCOMPL	- insufficient function modifiers
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	OLD_IPL;
+
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_DEVDEPEND) neq 0 )  then
+	begin	! device dependent field change
+	DSBINT( UCB[UCB$B_DIPL], OLD_IPL );
+
+	!
+	! Field = ( Field and (not Mask)) or ( Value and Mask )
+	!
+
+	UCB[UCB$L_DEVDEPEND] = 	(.UCB[UCB$L_DEVDEPEND] and 
+				(not(.AP[ARG$L_P2])))  or
+				(.AP[ARG$L_P3] and .AP[ARG$L_P2]);
+
+	ENBINT( OLD_IPL );
+	$EXE$FINISHIOC( SS$_NORMAL );
+	end;
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_STEP) neq 0 )  then
+	begin
+	!
+	! reset device timeout to be 2 seconds from now
+	!
+	UCB[UCB$L_DUETIM] = .EXE$GL_ABSTIM + 2;
+	!
+	$EXE$FINISHIOC( SS$_NORMAL );
+	end;
+
+
+    ! missing modifiers - no command 
+    $EXE$ABORTIO(SS$_OPINCOMPL)
+	
+    end; ! routine VB$FDT_DEBUG
+
+%sbttl 'VB$FDT_PIO - PIO Functions'
+global routine VB$FDT_PIO( ! FDT routine for PIO functions
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!  This routine will handle the PIO, Pre-Alloc-Locked-Mapped functions.
+!
+!    - Enable/DisablePIO functions
+!
+!	  IO$M_VB_PIO_ENABLE
+!		enable the process to issue PIO commands
+!
+!	  IO$M_VB_PIO_DISABLE
+!		prevent the process from issuing further PIO commands 
+!
+!
+!    - Create/Destroy       PIO WCP and DB
+!
+!	  IO$M_VB_PIO_CREATE_WCP
+!		allocate a WCP from nonpaged pool, initialize it
+!		and queue it to UCB.
+!
+!	  IO$M_VB_PIO_DELETE_WCP
+!		delete the PALM command packet(s).
+!
+!	  IO$M_VB_PIO_CREATE_DB
+!		allocate a data buffer (size=IRP) from nonpaged pool, 
+!		initialize it and queue the IRP to UCB.
+!		P1 = address of the data buffer
+!		P2 = data buffer size in bytes
+
+!	  IO$M_VB_PIO_DELETE_DB
+!		delete the data buffer.
+!
+!
+!    - Read and/or Zero     PIO counters
+!
+!	  IO$M_VB_PIO_READ_COUNT
+!		read counter values into P1 buffer
+!		P1 = buffer address.
+!		P2 = buffer size, must be greater than or equal to 32.
+!
+!	  IO$M_VB_PIO_COUNT!IO$M_VB_PIO_COUNT
+!		read counter values into P1 buffer and clear 3 counters.
+!		P1 = buffer address.
+!		P2 = buffer size, must be greater than or equal to 32.
+!
+!	  IO$M_VB_PIO_ZERO_COUNT
+!		clear 3 counters
+!
+!
+!
+!
+!		WCP = WGA Command Packet
+!		DB  = Data Buffer
+!
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	P1	- address of buffer
+!	P2	- size of buffer 
+!
+! Implicit outputs:
+!
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- success
+!	SS$_OPINCOMPL	- insufficient function modifiers
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+
+    local
+	OPERATION:	long,
+	STATUS:		long,
+	SIZE:		long,
+	OLD_IPL:	long,
+        DBD:		ref block [, byte],
+	PKT_PTR:	ref block[,byte];
+
+
+   bind
+	P1 = .AP[ARG$L_P1]:	vector[,long],
+	P2 = .AP[ARG$L_P2]:	long,
+	PACK_ADDR    = PKT_PTR:	block[,byte],
+	PACK_ADDR_DB = P1:	block[,byte];
+
+
+!  Check to see if valid call
+!  for now will assume valid call
+
+!
+!  Check to see if a Counter function  (READ and/or Zero)
+!
+!---------------
+!  PIO_COUNT
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_READ_COUNT) neq 0 ) then
+	begin	! PIO Counters
+	! check buffer for access and size
+	EXE$READLOCK( P1, P2, FDT_ARGS );
+	if ( P2 lss 32 ) then
+		$EXE$ABORTIO( SS$_IVBUFLEN );	! buffer is too small
+
+	! disable interrupts while we are reading counters
+	DSBINT( UCB[UCB$B_DIPL], OLD_IPL );
+
+	P1[0] = .UCB[UCB$W_VB_PIO_WCP_CT];
+	P1[1] = .UCB[UCB$W_VB_PIO_WCP_CMR];
+	P1[2] = .UCB[UCB$W_VB_PIO_WCP_CIU];
+	P1[3] = .UCB[UCB$W_VB_PIO_WCP_CMIU];
+	P1[4] = .UCB[UCB$L_VB_PIO_WCP_CNA];
+	P1[5] = .UCB[UCB$L_VB_PIO_WCP_CTR];
+	P1[6] = .UCB[UCB$W_VB_PIO_DB_CT];
+	P1[7] = .UCB[UCB$W_VB_PIO_DB_CMR];
+
+
+
+	if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_ZERO_COUNT) neq 0 ) then
+		begin	! zero counters
+		UCB[UCB$W_VB_PIO_WCP_CMIU] = 0;
+		UCB[UCB$L_VB_PIO_WCP_CNA]  = 0;
+		UCB[UCB$L_VB_PIO_WCP_CTR]  = 0;
+		end;
+
+	ENBINT( OLD_IPL );
+	$EXE$FINISHIOC( SS$_NORMAL );
+	end;
+
+
+!---------------
+!  PIO_ZERO_COUNT
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_ZERO_COUNT) neq 0 ) then
+ 	begin	! zero counters
+	! disable interrupts while zeroing counters
+	DSBINT( UCB[UCB$B_DIPL], OLD_IPL );
+
+	UCB[UCB$W_VB_PIO_WCP_CMIU] = 0;
+	UCB[UCB$L_VB_PIO_WCP_CNA]  = 0;
+	UCB[UCB$L_VB_PIO_WCP_CTR]  = 0;
+
+	ENBINT( OLD_IPL );
+	$EXE$FINISHIOC( SS$_NORMAL );
+	end;
+
+
+
+!
+!  Check to see if an enable function
+!
+!---------------
+!  PIO_ENABLE
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_ENABLE) neq 0 ) then
+	begin	! allocate PIO
+	if (.UCB[UCB$L_VB_PIO_OWNER] eql 0 ) then
+		begin	! allocate
+		UCB[UCB$L_VB_PIO_OWNER] = .IRP[IRP$L_PID];
+		$EXE$FINISHIOC(  SS$_NORMAL );
+		end
+	    else
+		begin	! already allocated
+		if (.UCB[UCB$L_VB_PIO_OWNER] eql .IRP[IRP$L_PID]) then
+			begin  ! already Allocated to this process
+			$EXE$FINISHIOC( SS$_NORMAL );
+			end
+		     else
+			begin
+			$EXE$ABORTIO( SS$_DEVNOTALLOC );
+			end;
+		end;
+	end;
+
+
+!
+!  For the rest of the functions the process must have the PIO
+!  functions enabled. Check to see if this process has it enabled.
+
+if (.UCB[UCB$L_VB_PIO_OWNER] neq .IRP[IRP$L_PID]) then
+	begin	! not allocated by this process
+	$EXE$ABORTIO( SS$_DEVNOTALLOC );
+	end;
+
+
+!
+!  Check to see if disable functions
+!
+!---------------
+!  PIO_DISABLE
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_DISABLE) neq 0 ) then
+	begin	! Deallocate
+	UCB[UCB$L_VB_PIO_OWNER] = 0;
+	$EXE$FINISHIOC( SS$_NORMAL );
+	end;
+
+
+!
+!---------------------------
+!  PIO_CREATE_WCP  
+	
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_CREATE_WCP) neq 0 ) then
+	begin	! create PIO WCP
+	if not( STATUS = EXE$ALLOCIRP( .PCB; SIZE, PKT_PTR )) then
+		begin	! allocation failure
+		$EXE$ABORTIO( .STATUS );
+		end;
+	
+	IRP[IRP$L_PIO_PTR]   = .PKT_PTR;
+	IRP[IRP$L_PIO_TYPE]  = 1;
+	IRP[IRP$L_SVAPTE]    = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+	IRP[IRP$W_BOFF]      = .PACK_ADDR[VA$V_BYTE];
+	IRP[IRP$W_BCNT]      = .IRP[IRP$W_SIZE];
+	
+	! CMD_PKT is allocated - queue it up for mapping
+	!
+	! Modify PID to force special cleanup
+	!
+	IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+	IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+	!
+	!**************** Important Notice **********************
+	!							*
+	! The current Cancel code will not handle the PIO 	*
+	! cleanup properly !					*
+	!********************************************************
+	!
+	$EXE$QIODRVPKT;
+	end;
+
+
+!---------------------------
+!  PIO_DELETE_WCP  
+	
+!************************************************************
+!  This is where the code would be to handle the Delete
+!  function for WCPs.
+!************************************************************
+
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_DELETE_WCP) neq 0 ) then
+	begin	! destroy PIO WCP
+	$EXE$ABORTIO( SS$_PARITY );
+	end;
+
+
+!---------------------------
+!  PIO_CREATE_DB  
+	
+   if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_CREATE_DB) neq 0 ) then
+	begin	! create PIO DBD
+	!  check modify (Read and Write) access to page,
+	!  then lock it down.
+	EXE$MODIFYLOCK( P1, P2, FDT_ARGS;  OPERATION );
+
+	if not( STATUS = EXE$ALLOCIRP( .PCB; SIZE, PKT_PTR )) then
+		begin	! allocation failure
+		$EXE$ABORTIO( .STATUS );
+		end;
+
+	! setup DBD (DB Descriptor block)
+	PKT_PTR[DBD$A_VAX_ADDR] =  P1;
+	PKT_PTR[DBD$L_SVAPTE]   = .IRP[IRP$L_SVAPTE];
+	PKT_PTR[DBD$W_BOFF]     = .IRP[IRP$W_BOFF];
+	PKT_PTR[DBD$L_BCNT]     = .IRP[IRP$W_BCNT];
+	PKT_PTR[DBD$W_SPARE_1]  =  0;
+  	PKT_PTR[DBD$L_CREATOR]	= .IRP[IRP$L_PID];
+
+
+	! setup IRP
+	IRP[IRP$L_PIO_PTR]  = .PKT_PTR;
+	IRP[IRP$L_PIO_TYPE] =  3;
+
+!		     EXE$MODIFYLOCK calculates SVAPTE and BCNT.
+!		IRP[IRP$L_SVAPTE]    = .PACK_ADDR_DB[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+!		IRP[IRP$W_BOFF]      = .PACK_ADDR_DB[VA$V_BYTE];
+!		IRP[IRP$W_BCNT]      =  P2;
+	
+	! DBD is setup - queue it up
+	!
+	! Modify PID to force special cleanup
+	!
+	IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+	IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+	!
+	$EXE$QIODRVPKT;
+  	end;
+
+!---------------------------
+!  PIO_DELETE_DB  
+	
+  if ((.IRP[IRP$W_FUNC] and IO$M_VB_PIO_DELETE_DB) neq 0 ) then
+    begin	! destroy PIO DB
+      !
+      ! Get data buffer descriptor address
+      !
+      DBD = .UCB [UCB$A_VB_PIO_DBD_FL];
+
+      !
+      ! Does graphic processor address match?
+      !
+      if (.DBD [DBD$A_GP_ADDR] neq PACK_ADDR_DB)
+       then
+	$EXE$ABORTIO (SS$_BADPARAM);
+
+      !
+      ! check if pid match
+      !
+      if (.IRP [IRP$L_PID] neq .PACK_ADDR_DB [DBD$L_CREATOR]) 
+       then 
+	$EXE$ABORTIO (SS$_NOTCREATOR);
+
+
+      ! queue this request for further processing
+      !  
+      $EXE$QIODRVPKT;
+    end;
+
+    ! missing modifiers - no command 
+    $EXE$ABORTIO(SS$_OPINCOMPL)
+	
+    end; ! routine VB$FDT_PIO
+
+%sbttl 'VB$FDT_KEYBOARD - Set keyboard parameters command'
+global routine VB$FDT_KEYBOARD( ! FDT routine for VS100 keyboard commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine will set up various keyboard parameters and enable some
+!	asts. The parameters deal with buffers for the placement of incoming
+!	characters. The asts specify what routine should be executed when 
+!	characters are recieved and when the buffer is full. The asts are
+!	fired when some threshold is exceeded.
+!
+!	This routine will also check and allocate if possible the keyboard.
+!	Only one Process can interact with the keyboard at a time.
+!
+!	The following operations are possible:
+!
+!		1. IO$_VB_KEYBOARD!IO$M_VB_CANCEL!IO$M_VB_LOADKB
+!		   IO$_VB_KEYBOARD!IO$M_VB_CANCEL!IO$M_VB_WAKEKB
+!		   IO$_VB_KEYBOARD!IO$M_VB_CANCEL!IO$M_VB_LOADKB!IO$M_VB_WAKEKB
+!		   IO$_VB_KEYBOARD!IO$M_VB_CANCEL!IO$M_VB_KB_SYSRTN
+!		     cancels corresponding keyboard ast or system routine address
+!		2. IO$_VB_KEYBOARD!IO$M_VB_LOADKB
+!		     if p1 neq 0
+!			p1 = keyboard buffer addr, p2 keyboard buffer size
+!		     if p3 neq 0
+!			p3 = ast routine addr, p4 = ast param, p5 = full threshold
+!		3. IO$_VB_KEYBOARD!IO$M_VB_WAKEKB
+!		     p3 = ast routine addr, p4 = ast param, p5 = wake threshold
+!		4. IO$_VB_KEYBOARD!IO$M_VB_KB_SYSRTN
+!		     p3 = system routine address
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    P1	- keyboard buffer address
+!	    P2	- keyboard buffer size in bytes
+!	    P3	- buffer full ast routine
+!	    P4	- buffer full ast parameter
+!	    P5	- buffer full threshold
+!
+! Implicit outputs:
+!
+!	If success then AST control block queued or deleted
+!	For IO$M_VB_LOADKB:
+!	    UCB$A_VB_KB_BUFFER		- keyboard buffer address
+!	    UCB$W_VB_KB_SIZE		- number of keyboard buffer entries
+!	    UCB$A_VB_KB_FULL_AST	- buffer full ast block pointer
+!	    UCB$W_VB_KB_FULL_THRESH	- buffer full threshold
+!	For IO$M_VB_WAKEKB:
+!	    UCB[UCB$W_VB_KB_WAKE_THRESH]  - wake threshold
+!	For IO$M_VB_KB_SYSRTN
+!	    UCB$A_VB_KB_SYSRTN		- system routine address
+!
+! Completion codes:
+!	
+!	SS$_NORMAL	- success
+!	SS$_EXQUOTA	- ast quota exceeded
+!	SS$_OPINCOMPL	- insufficient function modifiers or parameters
+!	SS$_INSFMEM	- insufficient memory to allocate ast block
+!	SS$_DEVNOTALLOC - device not allocated
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	BUFFER : ref vector[,word],
+	NCHAR,
+	OLD_IPL,
+	STATUS;
+
+!
+! Check for cancel operation first
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0
+	then begin
+	    ! see if we are cancelling nothing
+	    if (.IRP[IRP$W_FUNC] and 
+    		(IO$M_VB_LOADKB or IO$M_VB_WAKEKB or IO$M_VB_KB_SYSRTN)) eql 0
+	     then 
+	      begin
+		$EXE$ABORTIO(SS$_OPINCOMPL)
+	      end; ! IO$M_VB_LOADKB or IO$M_VB_WAKEKB or IO$M_VB_KB_SYSRTN
+
+
+	    ! check keyboard ownership - if not owned then allocate
+	    !
+	    if (.UCB[UCB$L_VB_KB_OWNER] neq .IRP[IRP$L_PID]) then
+		begin   ! does not match - keyboard allocated ?
+		DSBINT( UCB[UCB$B_DIPL], OLD_IPL );
+		if (.UCB[UCB$L_VB_KB_OWNER] eql 0 ) then
+			begin	! no - allocate keyboard
+			UCB[UCB$L_VB_KB_OWNER] = .IRP[IRP$L_PID];
+			ENBINT( OLD_IPL );
+			end
+		    else
+			begin	! yes - error
+			ENBINT( OLD_IPL );
+			$EXE$ABORTIO( SS$_DEVNOTALLOC);
+			end;
+		end;
+
+
+	    ! Process request
+	    !
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_KB_WAKE_AST]);
+		    end; ! IO$M_VB_WAKEKB
+
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  						UCB[UCB$A_VB_KB_FULL_AST]);
+		    UCB[UCB$A_VB_KB_BUFFER] = 0;
+		    UCB[UCB$W_VB_KB_SIZE] = 0;
+		    UCB[UCB$L_VB_KB_OWNER] = 0;
+		    end; ! IO$M_VB_LOADKB
+
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) neq 0
+	     then UCB[UCB$A_VB_KB_SYSRTN] = 0;
+
+	    $EXE$FINISHIOC(SS$_NORMAL)
+
+	    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0
+
+! Setup Keyboard Request
+!
+! check for valid modifiers
+!
+    !
+    ! see if none of the modifiers appears
+    !
+    if (.IRP[IRP$W_FUNC] and 
+  	(IO$M_VB_LOADKB or IO$M_VB_WAKEKB or IO$M_VB_KB_SYSRTN)) eql 0
+     then 
+      begin	! all the modifiers are not seen
+	$EXE$ABORTIO(SS$_OPINCOMPL)
+      end;
+
+    !
+    ! see if any two of modifiers appear at the same time
+    !
+    if (((.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) neq 0) and
+        ((.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) neq 0))		
+      or
+       (((.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) neq 0) and
+        ((.IRP[IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) neq 0))		
+      or
+       (((.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) neq 0) and
+        ((.IRP[IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) neq 0))		
+     then
+      begin	! error - both keyboard modifier set
+	$EXE$ABORTIO(SS$_OPINCOMPL)
+      end;
+
+!
+! Do resource and access checking first
+!
+    if ((.IRP[IRP$W_FUNC] and (IO$M_VB_LOADKB or IO$M_VB_WAKEKB)) neq 0) 
+    	and
+        ((.ap[ARG$L_P3] neq 0) and (.PCB[PCB$W_ASTCNT] eql 0))
+     then $EXE$FINISHIOC(SS$_EXQUOTA);
+
+
+! check keyboard ownership - if not owned then allocate
+!
+if (.UCB[UCB$L_VB_KB_OWNER] neq .IRP[IRP$L_PID]) then
+	begin   ! does not match - keyboard allocated ?
+	DSBINT( UCB[UCB$B_DIPL], OLD_IPL );
+	if (.UCB[UCB$L_VB_KB_OWNER] eql 0 ) then
+		begin	! no - allocate keyboard
+		UCB[UCB$L_VB_KB_OWNER] = .IRP[IRP$L_PID];
+		ENBINT( OLD_IPL )
+		end
+	    else
+		begin	! yes - error
+		ENBINT( OLD_IPL );
+		$EXE$ABORTIO( SS$_DEVNOTALLOC)
+		end;
+	end;
+
+
+!
+! Setup AST control block
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) neq 0
+     then 
+      begin
+	if (.ap[ARG$L_P3] neq 0) and (.ap[ARG$L_P1] eql 0)
+	    then $EXE$ABORTIO(SS$_BADPARAM);
+	if .ap[ARG$L_P3] neq 0
+	    then begin
+		if not (STATUS = VB$$SET_SETUP_SAST(FDT_ARGS,UCB[UCB$A_VB_KB_FULL_AST]))
+		    then $EXE$ABORTIO(.STATUS);
+		UCB[UCB$W_VB_KB_FULL_THRESH] = min(.ap[ARG$W_P5],.UCB[UCB$W_VB_KB_SIZE]);
+		end; ! if .ap[ARG$L_P3] neq 0
+	if .ap[ARG$L_P1] neq 0
+	    then begin
+		UCB[UCB$A_VB_KB_BUFFER] = .ap[ARG$L_P1];
+		UCB[UCB$W_VB_KB_SIZE] = (.ap[ARG$W_P2]-4)/2;
+		end; ! if .ap[ARG$L_P1] neq 0
+      end 		! (.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) neq 0 
+     else 		! (.IRP[IRP$W_FUNC] and IO$M_VB_LOADKB) eql 0 
+      begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) neq 0
+	 then 
+	  begin
+	    if .ap[ARG$L_P3] neq 0
+	     then 
+	      begin
+		if not (STATUS = VB$$SET_SETUP_SAST(FDT_ARGS,UCB[UCB$A_VB_KB_WAKE_AST]))
+		 then $EXE$ABORTIO(.STATUS);
+		UCB[UCB$W_VB_KB_WAKE_THRESH] = .ap[ARG$W_P5];
+		BUFFER = .UCB[UCB$A_VB_KB_BUFFER];
+		if .BUFFER eql 0		! Check if buffer is there.
+		 then $EXE$ABORTIO(SS$_OPINCOMPL);
+		if .BUFFER[0] gtr .BUFFER[1]
+		 then NCHAR = .BUFFER[1] + .UCB[UCB$W_VB_KB_SIZE] - .BUFFER[0]
+		 else NCHAR = .BUFFER[1] - .BUFFER[0];
+!		    if .NCHAR gtr .ap[ARG$W_P5]
+!		     then COM$DELATTNAST(UCB[UCB$A_VB_KB_WAKE_AST],.UCB)
+	      end ! if .ap[ARG$L_P3] neq 0
+	     else ! .ap[ARG$L_P3] eql 0
+	      $EXE$ABORTIO(SS$_OPINCOMPL)
+	    end 	! (.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) neq 0
+	  else 		! (.IRP[IRP$W_FUNC] and IO$M_VB_WAKEKB) eql 0 
+      	   begin
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) neq 0
+	     then 
+	      begin
+		!
+		! check if P3 gives us a system address
+		!
+	        if (.ap[ARG$L_P3] and %x'80000000') neq %x'80000000'
+		 then $EXE$ABORTIO (SS$_BADPARAM)
+		 else UCB [UCB$A_VB_KB_SYSRTN] = .ap [ARG$L_P3];
+	      end 	! (.IRP [IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) neq 0
+	     else 	! (.IRP [IRP$W_FUNC] and IO$M_VB_KB_SYSRTN) eql 0
+              !
+	      ! none of the three modifiers is seen, we shouldn't get here
+	      ! because this should be detected above
+	      !
+	      $EXE$ABORTIO (SS$_OPINCOMPL)
+	   end
+      end;
+!
+! Finish with success returned to caller
+!
+    $EXE$FINISHIOC(SS$_NORMAL);
+	
+    end; ! routine VB$FDT_KEYBOARD
+
+%sbttl 'VB$FDT_BUTTON - Button AST command'
+global routine VB$FDT_BUTTON( ! FDT routine for VS100 button commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine sets up AST control blocks for various state
+!	changes of the input device's buttons. The state changes are:
+!
+!		1. mouse button pushed while microcode invalid
+!		2. mouse button pressed or released
+!		3. tablet button pressed or released
+!
+!	The first state change corresponds to an EXIT_IDLE ast control
+!	block of which only one is allowed. The second and third refer
+!	to MOUSE_BUTTON and TABLET_BUTTON resepectively. These types
+!	allow any number of ast blocks to be active, they are fired when
+!	the state transition (up/down) of any device button matches the
+!	up/down mask of any given ast block.
+!
+!	The following operations are possible:
+!
+!		1. IO$_VB_BUTTON!IO$M_VB_CANCEL!IO$M_VB_EXIT_IDLE
+!		   IO$_VB_BUTTON!IO$M_VB_CANCEL!IO$M_VB_MOUSE
+!		   IO$_VB_BUTTON!IO$M_VB_CANCEL!IO$M_VB_TABLET
+!		   IO$_VB_BUTTON!IO$M_VB_CANCEL!IO$M_VB_MOUSE!IO$M_VB_TABLET
+!		     cancels corresponding button ast's
+!		2. IO$_VB_BUTTON!IO$M_VB_EXIT_IDLE
+!		   IO$_VB_BUTTON!IO$M_VB_MOUSE
+!		   IO$_VB_BUTTON!IO$M_VB_TABLET
+!		     enables corresponding button ast
+!		     p1 = down mask, p2 = up mask, p3 = routine addr, p4 = parameter
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$W_P1]	- down mask
+!	    AP[ARG$W_P2]	- up mask
+!	    AP[ARG$L_P3]	- ast routine address
+!	    AP[ARG$L_P4]	- ast parameter
+!
+! Implicit outputs:
+!
+!	If success then AST control block queued or deleted
+!
+! Completion codes:
+!	
+!	SS$_NORMAL	- success
+!	SS$_EXQUOTA	- ast quota exceeded
+!	SS$_OPINCOMPL	- insufficient function modifiers or parameters
+!	SS$_INSFMEM	- insufficient memory to allocate ast block
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	FLAG,
+	STATUS;
+
+!
+! Check for cancel operation first and perform it
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0
+	then begin
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_EXIT_IDLE) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_EXIT_IDLE]);
+		    $EXE$FINISHIOC(SS$_NORMAL)
+		    end; ! IO$M_VB_EXIT_IDLE
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_MOUSE) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_MOUSE_BUTTON]);
+		    end; ! IO$M_VB_MOUSE
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_TABLET) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_TABLET_BUTTON]);
+		    end; ! IO$M_VB_TABLET
+	    if (.IRP[IRP$W_FUNC] and (IO$M_VB_EXIT_IDLE or IO$M_VB_TABLET or IO$M_VB_MOUSE)) eql 0
+		then begin
+		    $EXE$ABORTIO(SS$_OPINCOMPL)
+		    end; ! IO$M_VB_TABLET or IO$M_VB_MOUSE
+	    $EXE$FINISHIOC(SS$_NORMAL)
+	    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0
+!
+! Do resource and access checking next
+!
+    if (.ap[ARG$L_P3] eql 0) or ((.IRP[IRP$W_FUNC] and 
+      (IO$M_VB_EXIT_IDLE or IO$M_VB_TABLET or IO$M_VB_MOUSE)) eql 0)
+	then $EXE$FINISHIOC(SS$_OPINCOMPL);
+    if (.ap[ARG$L_P3] neq 0) and (.PCB[PCB$W_ASTCNT] eql 0)
+	then $EXE$FINISHIOC(SS$_EXQUOTA);
+!
+! Setup Action Flag
+!	none			return AST Parameter
+!	IO$M_VB_RET_POS		return Position (X,Y)
+!	IO$M_VB_RET_BUT		return Button State
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_POS) neq 0 then
+	begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_BUT) neq 0 then
+		$EXE$FINISHIOC( SS$_OPINCOMPL)	! error - both modifiers
+	    else
+		FLAG = ACB_FLAG$M_RETPOS
+	end
+       else
+	begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_BUT) neq 0 then
+		FLAG = ACB_FLAG$M_RETBUT
+	    else
+		FLAG = 0		! default - AST param.
+	end;
+
+
+!
+! Setup AST control block
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_EXIT_IDLE) neq 0
+	then begin
+	    if not(STATUS = VB$$SET_SETUP_AST	! this is for OEM mode
+  				(FDT_ARGS,UCB[UCB$A_VB_EXIT_IDLE]))
+		then $EXE$ABORTIO(.STATUS)
+	    end ! if (.IRP[IRP$W_FUNC] and IO$M_VB_EXIT_IDLE) neq 0 then
+	else begin
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_MOUSE) neq 0
+		then begin
+		    if not (STATUS = VB$$SET_SETUP_AST(FDT_ARGS,
+				UCB[UCB$A_VB_MOUSE_BUTTON],
+				(.ap[ARG$W_P1]+.ap[ARG$W_P2]^16),
+				.FLAG ))
+			then $EXE$ABORTIO(.STATUS)
+		    end ! IO$M_VB_MOUSE
+		else begin
+		    if not (STATUS = VB$$SET_SETUP_AST(FDT_ARGS,
+				UCB[UCB$A_VB_TABLET_BUTTON],
+				(.ap[ARG$W_P1]+.ap[ARG$W_P2]^16),
+				.FLAG ))
+			then $EXE$ABORTIO(.STATUS)
+		    end; ! IO$M_VB_TABLET
+	    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_EXIT_IDLE) neq 0 else
+!
+! Finish with success returned to caller
+!
+    $EXE$FINISHIOC(SS$_NORMAL);
+
+    end; ! routine VB$FDT_BUTTON
+
+%sbttl 'VB$FDT_MOVE - Movement AST commands'
+global routine VB$FDT_MOVE( ! FDT routine for VS100 movement commands
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine sets up AST control blocks for movement of the
+!	various input devices. The movements are:
+!
+!		1. mouse moved
+!		2. tablet puck moved
+!
+!	The following operations are possible:
+!
+!		1. IO$_VB_MOVE!IO$M_VB_CANCEL!IO$M_VB_MOUSE
+!		   IO$_VB_MOVE!IO$M_VB_CANCEL!IO$M_VB_TABLET
+!		   IO$_VB_MOVE!IO$M_VB_CANCEL!IO$M_VB_MOUSE!IO$M_VB_TABLET
+!		     cancels corresponding movement ast
+!		2. IO$_VB_MOVE!IO$M_VB_MOUSE
+!		   IO$_VB_MOVE!IO$M_VB_TABLET
+!		     enables corresponding movement ast
+!		     p3 = routine addr, p4 = parameter
+!		3. IO$_VB_MOVE!IO$M_VB_MOUSE!IO$M_VB_RET_POS
+!		   IO$_VB_MOVE!IO$M_VB_TABLET!IO$M_VB_RET_POS
+!		     enables corresponding movement ast but
+!		     also returns position as AST parameter.
+!		     p3 = routine addr
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P3]	- ast routine address
+!	    AP[ARG$L_P4]	- ast parameter
+!
+! Implicit outputs:
+!
+!	If success then AST control block queued or deleted
+!
+! Completion codes:
+!	
+!	SS$_NORMAL	- success
+!	SS$_EXQUOTA	- ast quota exceeded
+!	SS$_OPINCOMPL	- insufficient function modifiers or parameters
+!	SS$_INSFMEM	- insufficient memory to allocate ast block
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	FLAG,
+	STATUS;
+
+!
+! Check for cancel operation first
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0
+	then begin
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_MOUSE) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_MOUSE_MOVE]);
+		    end; ! IO$M_VB_MOUSE
+	    if (.IRP[IRP$W_FUNC] and IO$M_VB_TABLET) neq 0
+		then begin
+		    COM$FLUSHATTNS(.PCB,.UCB,.IRP[IRP$W_CHAN],
+  					UCB[UCB$A_VB_TABLET_MOVE]);
+		    end; ! IO$M_VB_TABLET
+	    if (.IRP[IRP$W_FUNC] and (IO$M_VB_TABLET or IO$M_VB_MOUSE)) eql 0
+		then begin
+		    $EXE$ABORTIO(SS$_OPINCOMPL)
+		    end; ! IO$M_VB_TABLET or IO$M_VB_MOUSE
+	    $EXE$FINISHIOC(SS$_NORMAL)
+	    end; ! if (.IRP[IRP$W_FUNC] and IO$M_VB_CANCEL) neq 0 or (.ap[ARG$L_P3] eql 0)
+!
+! Do resource and access checking first and verify p3
+!
+    if (.ap[ARG$L_P3] eql 0) or ((.IRP[IRP$W_FUNC] and (IO$M_VB_TABLET or IO$M_VB_MOUSE)) eql 0)
+	then $EXE$FINISHIOC(SS$_OPINCOMPL);
+    if (.ap[ARG$L_P3] neq 0) and (.PCB[PCB$W_ASTCNT] eql 0)
+	then $EXE$FINISHIOC(SS$_EXQUOTA);
+
+
+!
+! Setup Action Flag
+!	none			return AST Parameter
+!	IO$M_VB_RET_POS		return Position (X,Y)
+!	IO$M_VB_RET_BUT		return Button State
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_POS) neq 0 then
+	begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_BUT) neq 0 then
+		$EXE$FINISHIOC( SS$_OPINCOMPL)	! error - both modifiers
+	    else
+		FLAG = ACB_FLAG$M_RETPOS
+	end
+       else
+	begin
+	if (.IRP[IRP$W_FUNC] and IO$M_VB_RET_BUT) neq 0 then
+		FLAG = ACB_FLAG$M_RETBUT
+	    else
+		FLAG = 0		! default - AST param.
+	end;
+
+
+!
+! Setup AST control block
+!
+    if (.IRP[IRP$W_FUNC] and IO$M_VB_MOUSE) neq 0
+	then begin
+	    if not (STATUS = VB$$SET_SETUP_AST(FDT_ARGS,
+				UCB[UCB$A_VB_MOUSE_MOVE],
+				0,
+				.FLAG ))
+		then $EXE$ABORTIO(.STATUS)
+	    end ! IO$M_VB_MOUSE
+	else begin
+	    if not (STATUS = VB$$SET_SETUP_AST(FDT_ARGS,
+				UCB[UCB$A_VB_TABLET_MOVE],
+				0,
+				.FLAG ))
+		then $EXE$ABORTIO(.STATUS)
+	    end; ! IO$M_VB_TABLET
+!
+! Finish with success returned to caller
+!
+    $EXE$FINISHIOC(SS$_NORMAL);
+
+    end; ! routine VB$FDT_MOVE
+
+%sbttl 'VB$FDT_LOADCUR - Load cursor shape'
+global routine VB$FDT_LOADCUR( ! FDT routine for VS100 load cursor command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	load cursor command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Descriptor packet address
+!	    AP[ARG$L_P2]	- Source packet address
+!	    AP[ARG$L_P4]	- Map packet address
+!	    AP[ARG$L_P5]	- Command specific packet address
+!
+!       P1            P2            P4            P5
+!
+!    VSTA$K_       VSTA$K_       VSTA$K_      VSTA$K_P5
+!   P1_LENGTH     P2_LENGTH     P4_LENGTH     LOD_LENGTH
+!  +----------+  +----------+  +----------+  +----------+
+!  |  P1$W_   |  |  P2$W_   |  |  P4$W_   |  |  P5$W_   |
+!  +-        -+  +-        -+  +-        -+  +-        -+
+!  |DSC_PACKET|  |SRC_PACKET|  |MAP_PACKET|  |CMD_PACKET|
+!  +----------+  +----------+  +----------+  +----------+
+!                |  P2$W_   |
+!                +-        -+
+!                |SMK_PACKET|
+!                +----------+
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+
+    local
+	OPERATION,
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	P4 = .ap[ARG$L_P4] : block[,byte],
+	P5 = .ap[ARG$L_P5] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Check the read accessability of the user's parameters
+    !
+    EXE$WRITECHK(P1,VSTA$K_P1_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P2,VSTA$K_P2_LENGTH,.IRP;OPERATION);
+    EXE$WRITECHK(P4,VSTA$K_P4_LENGTH,.IRP;OPERATION);
+    if (P5 neq 0)
+     then EXE$WRITECHK(P5, VSTA$K_P5_LOD_LENGTH, .IRP; OPERATION);
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_LOADCUR;
+    !
+    ! Initialize the command packet
+    !
+    ch$move(VSTA$K_SRC_LENGTH+VSTA$K_SMK_LENGTH,	! Source and source mask
+	P2[P2$W_SRC_PACKET],CMD_PKT[VB$W_LOD_SRC]);
+    ch$move(VSTA$K_MAP_LENGTH,				! Map
+	P4[P4$W_MAP_PACKET],CMD_PKT[VB$W_LOD_MAP]);
+
+    if (P5 neq 0)
+     then 
+       ch$move(VSTA$K_P5_LOD_LENGTH,			! Load cursor specific parameters
+    	   P5[P5$W_CMD_PACKET], CMD_PKT[VB$W_LOD_ATTRIB])
+     else
+       CMD_PKT[VB$W_LOD_ATTRIB] = .ap[ARG$W_P5];	! Load cursor specific parameters
+
+    !
+    ! Prepare the packet for device execution
+    !    - lock buffers
+    !    - check argument accesability
+    !    - build an opcode
+    !
+    if not (STATUS = VB$$SET_PREP_LOAD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_LOD_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_LOADCUR
+
+%sbttl 'VB$FDT_SETCUR - Set cursor position'
+global routine VB$FDT_SETCUR( ! FDT routine for VS100 set cursor position command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	set cursor position command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- X position
+!	    AP[ARG$L_P2]	- Y position
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_SETCUR;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_SET_CUR;
+    CMD_PKT[VB$L_LINK] = 0;
+    CMD_PKT[VB$W_SET_X] = .ap[ARG$W_P1];
+    CMD_PKT[VB$W_SET_Y] = .ap[ARG$W_P2];
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_SET_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_SETCUR
+
+%sbttl 'VB$FDT_GETCUR - Get cursor position'
+global routine VB$FDT_GETCUR( ! FDT routine for VS100 get cursor position command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	get cursor position command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_GETCUR;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_GET_CUR;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_GET_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_GETCUR
+
+%sbttl 'VB$FDT_ATTCUR - Attach cursor'
+global routine VB$FDT_ATTCUR( ! FDT routine for VS100 attach cursor command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	attach cursor command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Device code
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_ATTCUR;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_ATT_CUR;
+    CMD_PKT[VB$L_LINK] = 0;
+    CMD_PKT[VB$W_ATT_DEVICE] = .ap[ARG$W_P1];
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_ATT_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_ATTCUR
+
+%sbttl 'VB$FDT_SETEVENT - Set event reporting command'
+global routine VB$FDT_SETEVENT( ! FDT routine for VS100 set event reporting command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	set set event reporting command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- Enable flag
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_SETEVENT;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_SET_RPT;
+    CMD_PKT[VB$L_LINK] = 0;
+    CMD_PKT[VB$W_EVE_ENABLE] = .ap[ARG$W_P1];
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_EVE_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_SETEVENT
+
+%sbttl 'VB$FDT_GETMOUSE - Get mouse position command'
+global routine VB$FDT_GETMOUSE( ! FDT routine for VS100 get mouse position command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	get mouse position command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_GETMOUSE;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_GET_MOU;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_GMO_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_GETMOUSE
+
+%sbttl 'VB$FDT_SETMOUSE - Set mouse characteristics command'
+global routine VB$FDT_SETMOUSE( ! FDT routine for VS100 set mouse characteristics command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	set mouse position command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P1]	- X position
+!	    AP[ARG$L_P2]	- Y position
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!	SS$_ACCVIO	- access violation, operands inaccessable
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	P1 = .ap[ARG$L_P1] : block[,byte],
+	P2 = .ap[ARG$L_P2] : block[,byte],
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_SETMOUSE;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_SET_MOU;
+    CMD_PKT[VB$L_LINK] = 0;
+    CMD_PKT[VB$W_SMO_MULT] = .ap[ARG$W_P1];
+    CMD_PKT[VB$W_SMO_DIV] = .ap[ARG$W_P2];
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_SMO_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_SETMOUSE
+
+%sbttl 'VB$FDT_GETTAB - Get tablet position command'
+global routine VB$FDT_GETTAB( ! FDT routine for VS100 get tablet position command
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This function performs the necessary preprocessing for a VS100
+!	get tablet position command.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	None
+!
+! Implicit outputs:
+!
+!	IRP[IRP$L_SVAPTE]	- sva pointer of command packet
+!	IRP[IRP$L_CMD_BLK]	- pointer to command descriptor block
+!	IRP[IRP$L_CMD_COUNT]	- command count
+!	IRP[IRP$L_EXTEND]	- linked list of IRPE's describing command operands
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+    local
+	STATUS;
+    bind
+	CMD_BLK = IRP[IRP$L_ABCNT] : ref block[,byte],
+	CMD_PKT = IRP[IRP$L_OBCNT] : ref block[,byte],
+	PACK_ADDR = CMD_PKT : block[,byte];
+
+    !
+    ! Allocate and initialize blocks for use as the VAXstation command packet
+    ! and the command descriptor block
+    !
+    if not (STATUS = VB$$SET_SETUP_CMD(FDT_ARGS))
+	then $EXE$ABORTIO(.STATUS);
+    !
+    ! Initialize the command specific info
+    !
+    CMD_BLK[CMD$W_FUNCTION] = VSTA$K_GETTAB;
+    !
+    ! Initialize the command packet
+    !
+    CMD_PKT[VB$L_OPCODE] = VB$K_OPC_GET_TAB;
+    CMD_PKT[VB$L_LINK] = 0;
+    !
+    ! Compute system virtual address of command packet
+    !
+    IRP[IRP$L_SVAPTE] = .PACK_ADDR[VA$V_VPN]*4+.MMG$GL_SPTBASE;
+    IRP[IRP$W_BOFF] = .PACK_ADDR[VA$V_BYTE];
+    IRP[IRP$W_BCNT] = VB$K_GTB_LENGTH;
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Send the command to the device
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_GETTAB
+
+%sbttl 'VB$FDT_SAVE_SCREEN - VS100 function handler'
+global routine VB$FDT_SAVE_SCREEN( ! FDT routine for saving the VS100 screen
+		IRP: ref block[,byte],
+		PCB: ref block[,byte],
+		UCB: ref block[,byte],
+		CCB: ref block[,byte],
+		CODE,
+		ENTRY
+			) : FDT novalue =
+
+!++
+! Functional description:
+!
+!	This routine takes the IO$VB_SAVE_SCREEN function code and passes to
+!	the device level routines who then perform a save screen
+!	function.
+!
+! Formal parameters:
+!
+!	IRP	- (R3) I/O request packet
+!	PCB	- (R4) process control block
+!	UCB	- (R5) unit control block
+!	CCB	- (R6) channel control block
+!	CODE	- (R7) bit number of the I/O function code
+!	ENTRY	- (R8) address of the FDT table entry for this routine
+!
+! Implicit inputs:
+!
+!	AP	- address of function dependent QIO parameter block
+!	    AP[ARG$L_P3] - address of the AST routine to receive control
+!			   when the VS100 is reactivated.
+!
+!	    AP[ARG$L_P4] - AST parameter
+!
+!
+! Implicit outputs:
+!
+!	None
+!
+! Completion codes:
+!
+!	SS$_NORMAL	- successful completion
+!
+! Side effects:
+!
+!	None
+!
+!--
+
+    begin
+
+    builtin ap;
+    map	ap : ref block[,byte];
+
+    local status;
+
+    !
+    ! store the AST routine address if there is one
+    !
+    if .ap [ARG$L_P3] neq 0
+     then
+      begin
+	if not (status = VB$$SET_SETUP_AST 
+  			   (FDT_ARGS,
+  			    UCB [UCB$A_VB_SAVE_SCREEN_AST]))
+   	 then $EXE$ABORTIO (.STATUS) 
+      end;	! if .ap [ARG$L_P3] neq 0
+
+    !
+    ! Modify PID to force special cleanup
+    !
+    IRP[IRP$L_WIND] = .IRP[IRP$L_PID];
+    IRP[IRP$L_PID]  = .IRP[IRP$L_PID] and %x'FFFF';
+    !
+    ! Queue the request to the driver
+    !
+    $EXE$QIODRVPKT;
+	
+    end; ! routine VB$FDT_SAVE_SCREEN
+
+end ! module VBFDT
+eludom

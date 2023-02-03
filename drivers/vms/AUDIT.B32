@@ -1,0 +1,476 @@
+MODULE audit (IDENT = 'V04-000',
+	      ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:
+!
+!	LOGIN
+!
+! ABSTRACT:
+!
+!	Performs security auditing functions for LOGINOUT.
+!
+! ENVIRONMENT:
+!
+!	VAX/VMS operating system
+!
+!--
+!
+! Include files
+!
+
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+
+!
+! Table of contents
+!
+
+FORWARD ROUTINE
+    security_audit:	NOVALUE;	! Perform a security audit
+
+!
+! External routines
+!
+
+EXTERNAL ROUTINE
+    nsa$event_audit;			! Kernel mode auditing routine
+
+!
+! External storage (flags)
+!
+
+EXTERNAL
+    job_type,				! Job type (JIB$C_xxx values)
+    subprocess:		BYTE,		! True if subprocess
+    pcb_sts:		BITVECTOR,	! PCB status (copy of PCB$L_STS)
+    nsa$gr_alarmvec:	VECTOR [,BYTE],	! Security audit alarm vector
+    nsa$gr_journvec:	VECTOR [,BYTE];	! Security audit journal vector
+
+!
+! External storage (auditing data)
+!
+
+EXTERNAL
+    parent_pid,				! Parent process PID
+    ctl$t_nodeaddr:	VECTOR [,BYTE],	! Node address (ASCIC)
+    fail_password:	VECTOR,		! Failing password desc
+    term_name:		VECTOR,		! Terminal name desc
+    phy_term_name:	VECTOR,		! Physical terminal name desc
+    ctl$t_nodename:	VECTOR [,BYTE],	! Node name (ASCIC)
+    ctl$t_remoteid:	VECTOR [,BYTE],	! Remote ID (ASCIC)
+    creator_username:	VECTOR;		! Creator process username desc
+
+!
+! Validate NSA$K_RECTYP_LOGx to NSA$B_EVT_LOGx ordering so that we
+! can use a record's type (NSA$K_RECTYP_LOGx) to index into both
+! the security audit alarm vector (NSA$GR_ALARMVEC) and security
+! audit journal vector (NSA$GR_JOURNVEC).  In addition, define the
+! offset (TO_EVT_BYTE_BIAS) to be used to do the indexing.
+!
+
+LITERAL
+    to_evt_byte_bias = $BYTEOFFSET(nsa$b_evt_logb) - nsa$k_rectyp_logb;
+
+$ASSUME($BYTEOFFSET(nsa$b_evt_logb),EQL,nsa$k_rectyp_logb + to_evt_byte_bias);
+$ASSUME($BYTEOFFSET(nsa$b_evt_logi),EQL,nsa$k_rectyp_logi + to_evt_byte_bias);
+$ASSUME($BYTEOFFSET(nsa$b_evt_logf),EQL,nsa$k_rectyp_logf + to_evt_byte_bias);
+$ASSUME($BYTEOFFSET(nsa$b_evt_logo),EQL,nsa$k_rectyp_logo + to_evt_byte_bias);
+
+!
+! Validate NSA$K_RECTYP_LOGx ordering so that we know our "indexed by
+! record type" arrays are in the correct order.  The order should be
+! LOGB, LOGI, LOGF, then LOGO incrementing by 1 each time.  In addition,
+! define the offset (TYPE_INDEX_BIAS) to be used to do the indexing
+! and define the size (TYPE_INDEX_SIZE) of the arrays.
+!
+
+LITERAL
+    type_index_bias = 0 - nsa$k_rectyp_logb,
+    type_index_size = 4;
+
+$ASSUME(0,EQL,nsa$k_rectyp_logb + type_index_bias);
+$ASSUME(1,EQL,nsa$k_rectyp_logi + type_index_bias);
+$ASSUME(2,EQL,nsa$k_rectyp_logf + type_index_bias);
+$ASSUME(3,EQL,nsa$k_rectyp_logo + type_index_bias);
+$ASSUME(4,EQL,type_index_size);
+
+!
+! Validate job type (JOB_TYPE = JIB$C_xxx) ordering so that we know our
+! "indexed by job type" arrays are in the correct order.  The order
+! should be DETACHED, NETWORK, BATCH, LOCAL, DIALUP, then REMOTE
+! incrementing by 1 each time.  An additional catagory (SUBPROCESS_INDEX)
+! for subprocesses (SUBPROCESS = true) is added to correspond to all
+! possible record subtypes.  We then have array entries for subtypes
+! DET, NET, BAT, LOC, DIA, REM, and SUB.  In addition, define the size
+! (JOB_TYPE_INDEX_SIZE) of the arrays.
+!
+
+LITERAL
+    subprocess_index = 6,
+    job_type_index_size = 7;
+
+$ASSUME(0,EQL,jib$c_detached);		! For NSA$K_RECTYP_LOGx_DET
+$ASSUME(1,EQL,jib$c_network);		! For NSA$K_RECTYP_LOGx_NET
+$ASSUME(2,EQL,jib$c_batch);		! For NSA$K_RECTYP_LOGx_BAT
+$ASSUME(3,EQL,jib$c_local);		! For NSA$K_RECTYP_LOGx_LOC
+$ASSUME(4,EQL,jib$c_dialup);		! For NSA$K_RECTYP_LOGx_DIA
+$ASSUME(5,EQL,jib$c_remote);		! For NSA$K_RECTYP_LOGx_REM
+$ASSUME(6,EQL,subprocess_index);	! For NSA$K_RECTYP_LOGx_SUB
+$ASSUME(7,EQL,job_type_index_size);
+
+!
+! Pure storage of event masks and record subtypes (via BINDs)
+!
+
+BIND
+    audit_vector_masks =		! Audit vector event mask array
+	UPLIT BYTE(nsa$m_evt_log_det,
+		   nsa$m_evt_log_net,
+		   nsa$m_evt_log_bat,
+		   nsa$m_evt_log_loc,
+		   nsa$m_evt_log_dia,
+		   nsa$m_evt_log_rem,
+		   nsa$m_evt_log_sub)
+	: VECTOR [job_type_index_size,BYTE];
+
+BIND
+    audit_logb_subtypes =		! Audit LOGB record subtype array
+	UPLIT WORD(nsa$k_rectyp_logb_det,
+		   nsa$k_rectyp_logb_net,
+		   0,			!  LOGB w/ BAT doesn't exist
+		   nsa$k_rectyp_logb_loc,
+		   nsa$k_rectyp_logb_dia,
+		   nsa$k_rectyp_logb_rem,
+		   0)			!  LOGB w/ SUB doesn't exist
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logi_subtypes =		! Audit LOGI record subtype array
+	UPLIT WORD(nsa$k_rectyp_logi_det,
+		   nsa$k_rectyp_logi_net,
+		   nsa$k_rectyp_logi_bat,
+		   nsa$k_rectyp_logi_loc,
+		   nsa$k_rectyp_logi_dia,
+		   nsa$k_rectyp_logi_rem,
+		   nsa$k_rectyp_logi_sub)
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logf_subtypes =		! Audit LOGF record subtype array
+	UPLIT WORD(nsa$k_rectyp_logf_det,
+		   nsa$k_rectyp_logf_net,
+		   nsa$k_rectyp_logf_bat,
+		   nsa$k_rectyp_logf_loc,
+		   nsa$k_rectyp_logf_dia,
+		   nsa$k_rectyp_logf_rem,
+		   nsa$k_rectyp_logf_sub)
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logo_subtypes =		! Audit LOGO record subtype array
+	UPLIT WORD(nsa$k_rectyp_logo_det,
+		   nsa$k_rectyp_logo_net,
+		   nsa$k_rectyp_logo_bat,
+		   nsa$k_rectyp_logo_loc,
+		   nsa$k_rectyp_logo_dia,
+		   nsa$k_rectyp_logo_rem,
+		   nsa$k_rectyp_logo_sub)
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_subtypes =			! Audit type to subtype array array
+	UPLIT LONG(audit_logb_subtypes,
+		   audit_logi_subtypes,
+		   audit_logf_subtypes,
+		   audit_logo_subtypes)
+	: VECTOR [type_index_size,LONG];
+
+!
+! Packet building bits and prototype masks
+!
+
+LITERAL
+    packet_parent_pid	    = 0,	! Packet w/ Parent process's PID
+    packet_node_address	    = 1,	! Packet w/ Node address
+    packet_logf_status	    = 2,	! Packet w/ Login failure status
+    packet_fail_password    = 3,	! Packet w/ Failing password
+    packet_term_name	    = 4,	! Packet w/ Terminal name
+    packet_phy_term_name    = 5,	! Packet w/ Physical terminal name
+    packet_node_name	    = 6,	! Packet w/ Node name
+    packet_remote_id	    = 7,	! Packet w/ Remote ID
+    packet_creator_username = 8,	! Packet w/ Creator process's username
+    max_pos_packets	    = 9,	! Max number of possible packets
+    max_packet_size	    = 2 + 2 + 8; ! Max packet size (type + mech + quad)
+
+LITERAL
+    det_packets = 0,				! DET: <nothing>
+    net_packets = (1 ^ packet_node_address)	! NET: Node address
+	       OR (1 ^ packet_node_name)	!      Node name
+	       OR (1 ^ packet_remote_id),	!      Remote ID
+    bat_packets = 0,				! BAT: <nothing>
+    loc_packets = (1 ^ packet_term_name)	! LOC: Terminal name
+	       OR (1 ^ packet_phy_term_name),	!      Physical terminal name
+    dia_packets = (1 ^ packet_term_name)	! DIA: Terminal name
+	       OR (1 ^ packet_phy_term_name),	!      Physical terminal name
+    rem_packets = (1 ^ packet_node_address)	! REM: Node address
+	       OR (1 ^ packet_term_name)	!      Terminal name
+	       OR (1 ^ packet_node_name)	!      Node name
+	       OR (1 ^ packet_remote_id),	!      Remote ID
+    sub_packets = (1 ^ packet_parent_pid);	! SUB: Parent process's PID
+
+!
+! Pure storage of packet masks (via BINDs)
+!
+
+BIND
+    audit_logb_packets =		! Audit LOGB packet mask array
+	UPLIT WORD(det_packets OR (1 ^ packet_fail_password)
+			       OR (1 ^ packet_creator_username),
+		   net_packets OR (1 ^ packet_fail_password),
+		   0,			!  LOGB w/ BAT doesn't exist
+		   loc_packets OR (1 ^ packet_fail_password),
+		   dia_packets OR (1 ^ packet_fail_password),
+		   rem_packets OR (1 ^ packet_fail_password),
+		   0)			!  LOGB w/ SUB doesn't exist
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logi_packets =		! Audit LOGI packet mask array
+	UPLIT WORD(det_packets OR (1 ^ packet_creator_username),
+		   net_packets,
+		   bat_packets,
+		   loc_packets,
+		   dia_packets,
+		   rem_packets,
+		   sub_packets)
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logf_packets =		! Audit LOGF packet mask array
+	UPLIT WORD(det_packets OR (1 ^ packet_logf_status)
+			       OR (1 ^ packet_creator_username),
+		   net_packets OR (1 ^ packet_logf_status),
+		   bat_packets OR (1 ^ packet_logf_status),
+		   loc_packets OR (1 ^ packet_logf_status),
+		   dia_packets OR (1 ^ packet_logf_status),
+		   rem_packets OR (1 ^ packet_logf_status),
+		   sub_packets OR (1 ^ packet_logf_status))
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_logo_packets =		! Audit LOGO packet mask array
+	UPLIT WORD(det_packets,
+		   net_packets,
+		   bat_packets,
+		   loc_packets,
+		   dia_packets,
+		   rem_packets,
+		   sub_packets)
+	: VECTOR [job_type_index_size,WORD];
+
+BIND
+    audit_packets =			! Audit type to packet array array
+	UPLIT LONG(audit_logb_packets,
+		   audit_logi_packets,
+		   audit_logf_packets,
+		   audit_logo_packets)
+	: VECTOR [type_index_size,LONG];
+
+GLOBAL ROUTINE security_audit (record_type, logf_status): NOVALUE =
+
+!+++
+!
+!	Optionally perform a security audit.
+!
+! Inputs:
+!
+!	record_type = Audit record type (NSA$K_RECTYP_LOGx)
+!	logf_status = Login failure status for LOGF records
+!
+! Outputs:
+!
+!	None.
+!
+!---
+
+BEGIN
+
+LOCAL
+    arglist:				! Argument list for NSA$EVENT_AUDIT
+	BLOCK [nsa$k_arghdr_length + (max_packet_size * max_pos_packets),BYTE],
+    type_index,				! Index into type arrays
+    job_type_index,			! Index into job type arrays
+    audit_flag,				! Audit flag
+    packets:	    BITVECTOR [32],	! Packets to insert flags
+    arglist_ptr;			! Packet fill in pointer
+
+CH$FILL(0, %ALLOCATION(arglist), arglist); ! Clear out the argument list
+
+type_index = .record_type;		! Fetch the type index
+
+job_type_index = .job_type;		! Assume job type will be the index
+IF .subprocess				! But, if a subprocess,
+THEN job_type_index = subprocess_index;	!  use the subprocess index
+
+audit_flag = 0;				! Assume no audit initially
+
+IF .pcb_sts [$BITPOSITION(pcb$v_secaudit)] ! If mandatory auditing,
+THEN audit_flag = nsa$m_arg_flag_mandy;	!  perform mandatory audit
+
+IF (					! If alarm auditing,
+    .nsa$gr_alarmvec [.type_index + to_evt_byte_bias]
+    AND
+    .audit_vector_masks [.job_type_index]
+   ) NEQ 0
+THEN audit_flag =			!  perform alarm audit
+	.audit_flag OR nsa$m_arg_flag_alarm;
+
+IF (					! If journal auditing,
+    .nsa$gr_journvec [.type_index + to_evt_byte_bias]
+    AND
+    .audit_vector_masks [.job_type_index]
+   ) NEQ 0
+THEN audit_flag =			!  perform journal audit
+	.audit_flag OR nsa$m_arg_flag_journ;
+
+IF .audit_flag EQL 0			! If no audit requested,
+THEN RETURN;				!  simply exit
+
+arglist [nsa$w_arg_type] = .type_index;		! Set audit record type
+arglist [nsa$w_arg_subtype] =			! Set audit record subtype
+    .VECTOR [ .audit_subtypes [.type_index + type_index_bias],
+		.job_type_index; ,WORD];
+arglist [nsa$b_arg_flag] = .audit_flag;		! Set audit flags
+arglist [nsa$b_arg_pktnum] = 0;			! Set no packets initially
+
+packets =					! Get packets to do BITVECTOR
+    .VECTOR [ .audit_packets [.type_index + type_index_bias],
+		.job_type_index; ,WORD];
+arglist_ptr = arglist [nsa$t_arg_list];		! Address packet(s) in arg list
+
+IF .packets [packet_parent_pid]		! Do parent process's PID?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_epid;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_long;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = .parent_pid; ! Set parent process's PID
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_node_address]	! Do node address?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_nodeid;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_quad;
+    arglist_ptr = .arglist_ptr + 2;
+    CH$COPY(.ctl$t_nodeaddr [0],	! Set node address
+	    ctl$t_nodeaddr [1],		!  from control region
+	    0,8,.arglist_ptr);		!   as a quadword
+    arglist_ptr = .arglist_ptr + 8;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_logf_status]	! Do login failure status?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_status;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_long;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = .logf_status; ! Set login failure status
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_fail_password]	! Do failing password?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_password;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_adescr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = fail_password; ! Set failing password desc addr
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_term_name]		! Do terminal name?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_devnam;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_adescr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = term_name;	! Set terminal name desc addr
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_phy_term_name]	! Do physical terminal name?
+AND CH$NEQ(.phy_term_name [0], .phy_term_name [1],
+	   .term_name [0], .term_name [1], 0)
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_devnam;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_adescr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = phy_term_name; ! Set physical term name desc addr
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_node_name]		! Do node name?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_nodenam;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_descr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = .ctl$t_nodename [0]; ! Set node name length
+    arglist_ptr = .arglist_ptr + 4;
+    (.arglist_ptr) <0,32> = ctl$t_nodename [1]; !  and address
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_remote_id]		! Do remote ID?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_usernam;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_descr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = .ctl$t_remoteid [0]; ! Set remote ID length
+    arglist_ptr = .arglist_ptr + 4;
+    (.arglist_ptr) <0,32> = ctl$t_remoteid [1]; !  and address
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+IF .packets [packet_creator_username]	! Do creator process's username?
+THEN
+    BEGIN
+    (.arglist_ptr) <0,16> = nsa$k_pkttyp_usernam;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,16> = nsa$k_arg_mech_adescr;
+    arglist_ptr = .arglist_ptr + 2;
+    (.arglist_ptr) <0,32> = creator_username; ! Set creator username desc addr
+    arglist_ptr = .arglist_ptr + 4;
+    arglist [nsa$b_arg_pktnum] = .arglist [nsa$b_arg_pktnum] + 1;
+    END;
+
+arglist [nsa$l_arg_count] = (.arglist_ptr - (arglist + 4)) / 4; ! Set # args
+
+$CMKRNL(ROUTIN = nsa$event_audit,	! Go do the actual audit
+	ARGLST = arglist);
+
+END;
+
+END
+ELUDOM

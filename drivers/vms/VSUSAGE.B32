@@ -1,0 +1,88 @@
+%title 'VS$USAGE  --  VAX Station ACP usage tracing'
+module VS$ACP_USAGE	( 			! 
+		addressing_mode (external=general,nonexternal=general)
+		 ) =
+begin
+
+!++
+! FACILITY:
+!	VaxStation ACP usage tracing.
+!
+! ABSTRACT:
+!	Time-stamps and writes usage message to SYS$OUTPUT 
+!			(VSTA$EXE:VSxOUT.LOG)
+!
+!--
+
+%sbttl	'Declarations'
+!
+! INCLUDE FILES:
+!
+
+library	'SYS$LIBRARY:LIB.L32';		! System constants and routines
+library 'VSTA$LIBRARY:LIBMACROS';	! PSECT definitions
+
+$vsta_psect;
+
+external routine 
+	LIB$PUT_OUTPUT;
+
+forward routine	
+	VS$$ACP_USAGE_TRACE;		! Writes time and operation to 
+					! SYS$OUTPUT
+global
+	VS$GL_ALL_USAGE_ON: INITIAL(0);	! Always show usage trace flag
+
+own
+	STAMPBUFF: vector [23,byte];	! ASCII buffer for time-stamp
+
+
+%sbttl	'VS$$ACP_USAGE_TRACE  --  Writes to SYS$OUTPUT'
+global routine VS$$ACP_USAGE_TRACE ( OPERATION: ref vector [0,long] )  =
+
+!++
+! FUNCTIONAL DESCRIPTION:
+!	Writes a timestamp to SYS$OUTPUT.
+!	Writes the operation performed to SYS$OUTPUT.
+!
+! INPUT PARAMETER:
+!	OPERATION	Address of character string descriptor to be sent
+!			to SYS$OUTPUT.
+!
+!--
+
+    begin
+    builtin
+	ACTUALCOUNT,
+	ACTUALPARAMETER;
+    literal
+	ALWAYS_TRACE = 1;
+    local
+	TIMESTAMP: vector [2,long] initial (23,STAMPBUFF);
+	
+!
+! If the flag is off which indicates that we should trace ALL usage, then
+! we only trace those calls where there is a second parameter which dictates
+! it must always be traced.
+!
+	if not .VS$GL_ALL_USAGE_ON then
+	  begin
+	    if ACTUALCOUNT() leq 1 then
+	      return SS$_NORMAL;
+	    if ACTUALPARAMETER(2) neq ALWAYS_TRACE then
+	      return SS$_NORMAL;
+	  end;
+!
+! Okay to trace this call. Time-stamp the message and write to SYS$OUTPUT
+!
+	$ASCTIM (timbuf=TIMESTAMP);	! Convert the current time to ASCII
+	LIB$PUT_OUTPUT ( TIMESTAMP );	! Write the current time to SYS$OUTPUT
+
+	LIB$PUT_OUTPUT ( .OPERATION );	! Write the current operation to SYS$OUTPUT
+	return SS$_NORMAL;
+
+    end;			!End of VS$$ACP_USAGE_TRACE
+
+
+end				!End of module VS$ACP_USAGE
+eludom

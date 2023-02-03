@@ -1,0 +1,1563 @@
+%TITLE 'vs$vds_paste -- Routines for pasting and unpasting vd''s and pb''s'
+MODULE vs$vds_paste (
+		IDENT = '1.2-01',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!	This module contains routines for pasting virtual displays and
+!	pasteboards on pasteboards, and the unpasting there of.
+!
+! ENVIRONMENT:
+!   VSACP.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+	vs$$vds_paste_pb_to_pb,		!Paste a pasteboard on a pasteboard
+	vs$$vds_unpaste_pb_from_pb,	!Unpaste a pasteboard from a PB
+	vs$$vds_paste_vd_to_pb,		!Paste virtual display on pasteboard
+	vs$$vds_unpaste_vd_from_pb,	!Unpaste virual display from PB
+	vs$$vds_unpaste_vd_deleted,	!When a VD is deleted, call this.
+	int1_unpaste_vd_from_pb,	!Internal routine to unpaste
+	can_we_paste_pb,		!See if PB is already pasted to a PB
+	vs$$vds_update_pon_pbs,		!Update pasted-on PB's after VD change
+	vs$$vds_pon_found,		!Find a pasted-on block in linked list
+	vs$$vds_pme_found;		!Find a pasted-on-me block in list
+!
+! INCLUDE FILES:
+!
+library 'VSTA$LIBRARY:LIBMACROS';	! Things like "$return_error"
+library 'VSTA$LIBRARY:VSVDSPB';		! Symbols like "rectangle_block"
+library 'VSTA$LIBRARY:VSACPDEF';	! ACP symbols and defs.
+library 'VSTA$LIBRARY:VSERRORS';	! Define error symbols
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! BUILT-IN MACHINE INSTRUCTIONS INTO BLISS-32
+!
+BUILTIN
+	INSQUE,				! Insert element into queue
+	REMQUE;				! Remove element from queue
+!
+! MACROS:
+!
+MACRO
+    MAKE_LONG(a,b,c,d) =		!Make bytes into longword
+	((a)^24 or (b)^16 or (c)^8 or (d))%;
+!
+! When a non-privileged user program performs some operation that involves
+! manipulating an object that the user doesn't have access to
+! (such as pasting vt100 on it's pasteboard or pasting header with tablet
+! icon on a human interface pasteboard), we need to allow the operation.
+! The "requestor_pid" OPTIONAL parameter allows the human interface to declare
+! that this operation is being done by US rather than the USER.
+!
+! The following macro sees if a specific requestor was specified, and uses
+! it.  Otherwise, the global calling process's pid is used.
+!
+macro $requestor =
+	begin
+	external vs$gl_pid;
+	if $parameter_or_0 (requestor_pid) neq 0
+	then .requestor_pid
+	else .vs$gl_pid
+	end % ;
+!
+! EQUATED SYMBOLS:
+!
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+! EXTERNAL STORAGE:
+!
+
+EXTERNAL
+	default_color_table: BLOCKVECTOR[vs$vds_k_color_table_size,4,BYTE],
+!	    INITIAL(REP vs$vds_k_color_table_size OF (MAKE_LONG(5,5,5,5))),
+					!Default pasteboard color lookup table
+	vs$vds_a_pb_lh_ptr: VECTOR[2],
+!			INITIAL(REP 2 OF (vs$vds_a_pb_lh_ptr[0])),
+					!Pasteboard queue head pointer
+	vs$vds_l_curr_w_id,
+!		:INITIAL(0);		!Most recent assigned window ID
+	vs$gl_pid,			! Global contains PID from current QIO
+	vs$gw_vbchan: WORD;		! VB channel (used for VKB call)
+
+EXTERNAL ROUTINE
+	vsta$$acp_check_read_access,	!Check read access to object
+	vsta$$acp_check_write_access,	!Check write access to object
+	vsta$$acp_check_delete_access,	!Check delete access to object
+	vsta$$srv_window_created,	!Tell HI about a new window
+	vsta$$srv_window_deleted,	!Tell HI about a removed window
+	vs$$vds_add_rec_to_pb,		!Add a rectangle to a pasteboard
+	vs$$vds_move_vd_in_pb,		!Move virtual display in pasteboard
+	vs$$vds_move_vd_to_top_of_pb,	!Move VD to the top of a pasteboard
+	vs$$vds_pb_found,		!Find a pasteboard by ID in linked list
+	vs$$vds_remove_rec_from_pb,	!Remove a rectangle from a pasteboard
+	vs$$vds_vd_found,		!Find a VD by ID in linked list
+	vs$$vds_vrec_intersect,		!Get dimensions of intersecting rect.
+	vs$$vss_set_vp_color,		!Update the color of viewport
+	vs$$vss_delete_vp,		!Delete a viewport by ID
+	vs$$vds_vd_onto_pb,		!Tell VD about adding new PB
+	vs$$vds_vd_from_pb,		!Tell VD about removing a PB
+	vs$$vds_set_vd_char,		!Set VD characteristics by ID
+	vs$$vds_get_vd_char,		!Get VD characteristics by ID
+	vs$$vds_create_vd,		!Create a virtual display
+	vs$$vds_delete_vd,		!Delete a virtual display
+	vs$$create_vkb,			!Create a virtual keyboard for a PB
+	vs$$delete_vkb,			!Delete a virtual keyboard for a PB
+	vs$$create_vtb,			!Create a virtual tablet for a PB
+	vs$$delete_vtb,			!Delete a virtual tablet for a PB
+	vsta$$error,			!ACP error return status handler
+	vs$$acp_get_vm,			! memory allocation routine
+	vs$$acp_free_vm;		! memory deallocation routine
+!
+!
+
+
+%SBTTL 'vs$$vds_paste_pb_to_pb -- Paste a Pasteboard to a Pasteboard'
+GLOBAL ROUTINE vs$$vds_paste_pb_to_pb(
+			bottom_pb_id,		!Bottom pasteboard ID
+			top_pb_id,		!Top pasteboard ID
+			x_coor,			!X-coordinate on pasteboard
+			y_coor,			!Y-coordinate on pasteboard
+			requestor_pid		!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "paste" a pasteboard to another pasteboard if it
+! can be entirely contained within the bottom pasteboard. Object on both
+! pasteboards will still behave the same, but virtual displays on the top
+! pasteboard will now be potentially visible on the bottom pasteboard and any
+! pasteboards that the bottom pasteboard is pasted on. A pasteboard may be
+! pasted on any number of other pasteboards (especially if you like infinitely
+! compute bound cpu's).
+!
+! FORMAL PARAMETERS:
+!
+!	BOTTOM_PB_ID  : Longword unique ID of the pasteboard to be attached to
+!			(input parameter)
+!	TOP_PB_ID     : Longword ID of the pasteboard being pasted
+!			(input parameter)
+!	X_COOR	      : Longword X-coordinate on the bottom pasteboard
+!			(input parameter)
+!	Y_COOR	      : Longword Y-coordinate on the bottom pasteboard
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_PBWONTFIT		!PB's the same or won't fit
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_MULTPB		!PB already pasted on other PB
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be consumed if possible. A potential change
+! to the user's display.
+!
+!--
+BEGIN
+LOCAL
+    status,			!To contain return status value
+    vd_id,			!To store VD ID created
+    pon : REF pon_block, 	!Ptr to arbitrary PON block element
+    pme : REF pme_block, 	!Ptr to arbitrary PME block element
+    bottom_pb : REF pb_block,	!Ptr to bottom PB block element
+    top_pb : REF pb_block,	!Ptr to top PB block element
+    vd_ptr : REF vd_block;	!Address of arbitrary virtual display
+
+!
+! See if these pasteboard ID's exist in linked list -- 
+! Return error status if not found or if access denied.
+!
+IF NOT vs$$vds_pb_found (.bottom_pb_id, bottom_pb)
+  THEN RETURN $error (vsta$_nosuchpb);
+!
+! If the requestor does not have WRITE access to the bottom pasteboard, don't
+! allow the paste
+!
+IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.bottom_pb[vs$vds_l_pb_uic],
+				.bottom_pb[vs$vds_w_pb_prot])
+  THEN RETURN $error	(vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .bottom_pb_id);
+!
+IF NOT vs$$vds_pb_found (.top_pb_id, top_pb)
+  THEN RETURN $error (vsta$_nosuchpb);
+
+!
+! If the requestor does not have READ access to the top pasteboard, don't
+! allow the paste
+!
+IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.top_pb[vs$vds_l_pb_uic],
+				.top_pb[vs$vds_w_pb_prot])
+  THEN RETURN $error	(vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .top_pb_id);
+!
+! Make sure that the top_pb will fit on the bottom_pb
+!
+IF (.x_coor + .top_pb[vs$vds_l_pb_length]) GTR
+   (.bottom_pb[vs$vds_l_pb_length])
+ THEN RETURN $error	(vsta$_pbwontfit,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+IF (.y_coor + .top_pb[vs$vds_l_pb_height]) GTR
+   (.bottom_pb[vs$vds_l_pb_height])
+  THEN RETURN $error	(vsta$_pbwontfit,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+! Make sure we're not pasting recursively, (A on B which is on A),
+! and make sure a VD on the top PB is not already pasted on a lower
+! PB.
+!
+IF NOT (status =
+    can_we_paste_pb
+		(.top_pb
+		,.bottom_pb
+		)
+	)
+  THEN RETURN .status;		!No. (vsta$$error already called)
+
+!
+! We can do it - Create a text-less, graphics-less virtual display the
+! size of the top_pb to take care of occlusion by the top_pb.
+!
+IF NOT (status =
+    vs$$vds_create_vd
+		(.top_pb[vs$vds_l_pb_height],
+		.top_pb[vs$vds_l_pb_length],
+		1,	!depth of VD
+		.top_pb[vs$vds_l_pb_color],
+		0,	!foreground color
+		3,	!text-mode (internal device)
+		0,	!no graphics or text
+		0,	!Owner UIC
+		vs$m_perm_vd,	!Permanent
+		0,	!UIC Protection code
+		vd_id
+		)
+	)
+  THEN RETURN $error	(vsta$_pbnotpasted,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+! O.K. add a pon (pasted-on) block to the top_pb to remember who we're pasted
+! on, where, and what virtual display we used to take care of occlusion.
+!
+IF NOT vs$$acp_get_vm (UPLIT (vs$vds_k_pon_length),pon, 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.vd_id,0, $requestor);
+    RETURN $sysres	(vsta$_getmem
+			,integer_type, UPLIT (vs$vds_k_pon_length)
+			,string_type, %ASCID 'Pasted-on block'
+			);
+    END;
+!
+pon[vs$vds_w_pon_size] = vs$vds_k_pon_length;
+pon[vs$vds_w_pon_type] = 0;
+pon[vs$vds_l_pon_pb_id] = .bottom_pb_id;
+pon[vs$vds_l_pon_vd_id] = .vd_id;
+pon[vs$vds_l_pon_x_coor] = .x_coor;
+pon[vs$vds_l_pon_y_coor] = .y_coor;
+
+!
+! Now add a PME (pasted-on-me) block to the bottom_pb to remember who's
+! pasted on it and where
+!
+IF NOT vs$$acp_get_vm (UPLIT (vs$vds_k_pme_length),pme, 0)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd (.vd_id,0, $requestor);
+    vs$$acp_free_vm (UPLIT (vs$vds_k_pon_length),pon, 0);
+    RETURN $sysres	(vsta$_getmem
+			,integer_type, UPLIT (vs$vds_k_pon_length)
+			,string_type, %ASCID 'Pasted-on-me block'
+			);
+    END;
+!
+pme[vs$vds_w_pme_size] = vs$vds_k_pme_length;
+pme[vs$vds_w_pme_type] = 0;
+pme[vs$vds_l_pme_pb_id] = .top_pb_id;
+pme[vs$vds_l_pme_x_coor] = .x_coor;
+pme[vs$vds_l_pme_y_coor] = .y_coor;
+!
+!
+! Paste this virtual display on the bottom_pb at the specified location
+!
+IF NOT vs$$vds_paste_vd_to_pb
+		(.bottom_pb_id	!Pasteboard to paste to
+		,.vd_id		!Vd to paste
+		,.x_coor	!X, Y coords
+		,.y_coor	!  where to paste
+		,0		!On top
+		,$requestor
+		)
+  THEN
+    BEGIN
+    vs$$vds_delete_vd(.vd_id,0, $requestor);	!Delete the occlusion VD
+    vs$$acp_free_vm (UPLIT (vs$vds_k_pon_length),pon, 0);
+    vs$$acp_free_vm (UPLIT (vs$vds_k_pme_length),pme, 0);
+    $return_error( vsta$_pbnotpasted,
+		    integer_type, .top_pb_id,
+		    integer_type, .bottom_pb_id);
+    END;
+!
+! Now paste all of top_pb's virtual displays onto the bottom_pb and any pb's
+! that the bottom pb is pasted on and anything those pb's are pasted on and
+! so on...
+!
+vd_ptr = .top_pb[vs$vds_a_pb_vdl_tail];
+WHILE .vd_ptr NEQ top_pb[vs$vds_a_pb_vdl_ptr] DO
+    BEGIN
+    IF (NOT (status = vs$$vds_paste_vd_to_pb(
+			.bottom_pb_id,
+			.vd_ptr[vs$vds_l_vd_id],
+			.x_coor + .vd_ptr[vs$vds_l_vd_x_coor],
+			.y_coor + .vd_ptr[vs$vds_l_vd_y_coor],
+			0,
+			$requestor)))
+      THEN
+	BEGIN
+        vs$$vds_delete_vd(.vd_id,0, $requestor);!Delete the occlusion VD
+        vs$$acp_free_vm (UPLIT (vs$vds_k_pon_length),pon, 0);
+        vs$$acp_free_vm (UPLIT (vs$vds_k_pme_length),pme, 0);
+
+	RETURN $error	(vsta$_pbnotpasted,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+	END;
+    vd_ptr = .vd_ptr[vs$vds_a_vd_back_ptr];
+    END;
+
+!
+! Link up the PME/PON connection.
+!
+INSQUE (.pme, bottom_pb [vs$vds_a_pb_pme_ptr]);
+INSQUE (.pon, top_pb [vs$vds_a_pb_pon_ptr]);
+!
+! Since this change in what's pasted may have caused the mouse pointer
+! to be on a different object than before, update mouse information.
+!
+	$ertn (vsta$$update_mouse_info) ();
+
+RETURN SS$_NORMAL	!Made it through for normal return
+END;			! end of routine vs$$vds_paste_pb_to_pb
+
+%SBTTL 'vs$$vds_paste_vd_to_pb -- Paste Virtual Display to Pasteboard'
+GLOBAL ROUTINE vs$$vds_paste_vd_to_pb(
+			pb_id,			!Pasteboard ID
+			vd_id,			!Unique virtual display ID
+			x_coor,			!X-coordinate on pasteboard
+			y_coor,			!Y-coordinate on pasteboard
+			position,		!Where to paste (if not top)
+			requestor_pid		!WHO is doing the operation
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "paste" or associate a virtual display to a
+! previously created pasteboard. Virtual displays provide the virtual devices
+! with which application programs may do I/O. Data which is written to a
+! virtual display may or may not be visible on the display of the user, but is
+! potentially visible.
+!	This routine adds this virtual display to its PB's virtual display
+! linked list, provides the PB with the list head pointer to this VD's visible
+! rectangle list, initializes this VD's occluded rectangle list to empty (since
+! this virtual display is now on top of everything else), and display this
+! virtual display within the pasteboard specified.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be attached to
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being pasted to the PB
+!			(input parameter)
+!	X_COOR : Longword X-coordinate of the VD being pasted to the PB
+!			(input parameter)
+!	Y_COOR : Longword Y-coordinate of the VD being pasted to the PB
+!			(input parameter)
+!	POSITION : Address of list position to be inserted (0 => top)
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_ALREADYPASTED	!VD already pasted on PB
+!	VSTA$_VDWONTFIT		!VD won't fit on pasteboard
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be consumed if possible. A potential change
+! to the user's display.
+!
+!--
+BEGIN
+LOCAL
+    status,				!To contain return status value
+    uic,				!UIC of virtual display owner
+    height,				!Height of virtual display
+    length,				!Length of virtual display
+    protection,				!Protection on virtual display
+    temp_rect: BLOCK[vs$vds_k_rec_length,BYTE],
+					!Temporary rectangle holder
+    pb_ptr : REF pb_block,		!Ptr to current PB block element
+    vd_ptr : REF vd_block,		!Address of arbitrary virtual display
+    vdb : REF vd_block;			!Address of allocated virtual display
+!
+! Confirm that the pasteboard exists AND that this VD isn't already pasted on
+! this pasteboard.
+!
+IF NOT vs$$vds_pb_found (.pb_id, pb_ptr)
+  THEN RETURN $error (vsta$_nosuchpb);
+!
+IF vs$$vds_vd_found (.pb_id, .vd_id, pb_ptr, vd_ptr)
+  THEN RETURN $error (vsta$_alreadypasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! If the requestor does not have WRITE access to this pasteboard then
+! pastes are completely out of the question
+!
+IF NOT vsta$$acp_check_write_access
+		($requestor
+		,.pb_ptr[vs$vds_l_pb_uic]
+		,.pb_ptr[vs$vds_w_pb_prot]
+		)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'WRITE'
+			,string_type, %ASCID 'Pasteboard'
+			,integer_type, .pb_id
+			);
+
+IF NOT (status = vs$$vds_get_vd_char
+			(.vd_id
+			,uic
+			,height
+			,length
+			,0,0,0,0,0
+			,protection
+			)
+	)
+  THEN RETURN $error	(vsta$_cantpaste	!Could not get VD chars.
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+!
+! Verify requestor has READ access to this virtual display as well
+!
+IF NOT vsta$$acp_check_read_access
+			($requestor
+			,.uic
+			,.protection
+			)
+  THEN RETURN $error	(vsta$_noaccess
+			,string_type, %ASCID 'READ'
+			,string_type, %ASCID 'Virtual Display'
+			,integer_type, .vd_id
+			);
+!
+! Make sure virtual display will fit on this pasteboard
+!
+x_coor = MAX(.x_coor,0);
+y_coor = MAX(.y_coor,0);
+!
+IF (.x_coor + .length) GTR .pb_ptr[vs$vds_l_pb_length]
+  THEN RETURN $error	(vsta$_vdwontfit
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+IF (.y_coor + .height) GTR .pb_ptr[vs$vds_l_pb_height]
+  THEN RETURN $error	(vsta$_vdwontfit
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+!
+! Allocate virtual memory for this virtual display block
+!
+IF NOT vs$$acp_get_vm (UPLIT (vs$vds_k_vd_length),vdb, 0)
+  THEN RETURN $sysres	(vsta$_getmem
+			,integer_type, UPLIT (vs$vds_k_vd_length)
+			,string_type, %ASCID 'VDB block'
+			);
+!
+! Now initialize this new VD element's data structure to contain the
+! dimensions and coordinates within this pasteboard
+!
+vdb[vs$vds_w_vd_size] = vs$vds_k_vd_length;
+vdb[vs$vds_w_vd_type] = 0;
+vdb[vs$vds_l_vd_id] = .vd_id;
+vdb[vs$vds_l_vd_x_coor] = .x_coor;
+vdb[vs$vds_l_vd_y_coor] = .y_coor;
+vdb[vs$vds_l_vd_length] = .length;
+vdb[vs$vds_l_vd_height] = .height;
+vdb[vs$vds_a_vd_vvr_ptr] = vdb[vs$vds_a_vd_vvr_ptr];
+vdb[vs$vds_a_vd_vvr_tail] = vdb[vs$vds_a_vd_vvr_ptr];
+vdb[vs$vds_a_vd_vor_ptr] = vdb[vs$vds_a_vd_vor_ptr];
+vdb[vs$vds_a_vd_vor_tail] = vdb[vs$vds_a_vd_vor_ptr];
+!
+! Virtual memory successfully added for this virtual display -- Add this VD
+! to this PB's virtual display list (either on top or at the specified
+! position
+!
+IF .position EQL 0
+  THEN INSQUE (.vdb, pb_ptr[vs$vds_a_pb_vdl_ptr])
+  ELSE INSQUE (.vdb, .position);
+!
+! The PB and VD data blocks have been initialized -- Now all effected windows
+! and virtual displays in this pasteboard must have their visible and occluded
+! rectangle lists updated to reflect the addition of this virtual display on
+! top of the pasteboard.
+!
+IF NOT (status = vs$$vds_add_rec_to_pb
+			(.pb_ptr
+			,.vdb
+			,vdb[vs$vds_l_vd_x_coor]
+			)
+	)
+  THEN RETURN $error	(vsta$_cantpaste
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+!
+! Now this virtual display needs to know its associated pasteboard's ID and
+! complete initialization of its data structure.
+!
+IF NOT (status = vs$$vds_vd_onto_pb (.pb_id,.vd_id))
+  THEN RETURN $error	(vsta$_cantpaste
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+!
+! This paste operation has to be reflected on any pasteboards that this
+! pasteboard is attached to
+!
+IF NOT (status = vs$$vds_update_pon_pbs
+			(.pb_ptr
+			,.vd_id
+			,.x_coor
+			,.y_coor
+			,1		!"Paste VD"
+			,$requestor
+			)
+	)
+  THEN
+    BEGIN
+    int1_unpaste_vd_from_pb (.pb_id,.vd_id,$requestor);	!Try to un-do
+    RETURN $error	(vsta$_cantpaste
+			,integer_type, .vd_id
+			,integer_type, .pb_id
+			);
+    END;
+!
+! Since this change in what's pasted may have caused the mouse pointer
+! to be on a different object than before, update mouse information.
+!
+	$ertn (vsta$$update_mouse_info) ();
+
+RETURN SS$_NORMAL	!Made it through for normal return
+END;			! end of routine vs$$vds_paste_vd_to_pb
+
+%SBTTL 'vs$$vds_unpaste_pb_from_pb -- Unpaste a Pasteboard from a Pasteboard'
+GLOBAL ROUTINE vs$$vds_unpaste_pb_from_pb(
+			bottom_pb_id,		!Bottom pasteboard ID
+			top_pb_id,		!Top pasteboard ID
+			requestor_pid		!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "unpaste" a pasteboard from another pasteboard if it
+! top_pb is pasted on the bottom pasteboard. Objects on both pasteboards will
+! still behave the same, but virtual displays on the top pasteboard will now
+! be invisible on the bottom pasteboard and any pasteboards that the bottom
+! pasteboard is pasted on. A pasteboard may be pasted on any number of other
+! pasteboards .
+!
+! FORMAL PARAMETERS:
+!
+!	BOTTOM_PB_ID  : Longword unique ID of the pasteboard attached to
+!			(input parameter)
+!	TOP_PB_ID     : Longword ID of the pasteboard being unpasted
+!			(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_PBWONTFIT		!PB's the same or won't fit
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_NOTPASTED		!PB not pasted on other PB
+!
+! SIDE EFFECTS:
+!
+!	Virtual memory will be released if possible. A potential change
+! to the user's display.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !To contain return status value
+	pon : REF pon_block, 	 !Ptr to arbitrary PON block element
+	pme : REF pme_block, 	 !Ptr to arbitrary PME block element
+	bottom_pb : REF pb_block, !Ptr to bottom PB block element
+	top_pb : REF pb_block, !Ptr to top PB block element
+	vd_ptr : REF vd_block; !Address of arbitrary virtual display
+!
+! First make sure that these aren't the same pasteboard
+!
+	IF .bottom_pb_id EQL .top_pb_id THEN
+	  $return_error( vsta$_pbnotpasted,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+! See if these pasteboard ID's exist in linked list -- 
+! Return error status if not found or if access to them is not permitted.
+!
+	IF NOT vs$$vds_pb_found(.bottom_pb_id,bottom_pb) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have WRITE access to the bottom pasteboard, he
+! can't change the appearance
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.bottom_pb[vs$vds_l_pb_uic],
+				.bottom_pb[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .bottom_pb_id);
+!
+	IF NOT vs$$vds_pb_found(.top_pb_id,top_pb) THEN
+	  $return_error(vsta$_nosuchpb);
+!
+! If the requestor does not have READ access to the top pasteboard, it can't
+! be moved
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.top_pb[vs$vds_l_pb_uic],
+				.top_pb[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .top_pb_id);
+!
+! Find the PON (pasted-on) and PME (pasted-on-me) blocks in top_pb and
+! bottom_pb respectively to insure a valid operation.
+!
+	IF NOT vs$$vds_pon_found(.top_pb,.bottom_pb_id,pon) THEN
+	  $return_error( vsta$_pbnotpasted,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+	IF NOT vs$$vds_pme_found(.bottom_pb,.top_pb_id,pme) THEN
+	  $return_error( vsta$_pbnotpasted,
+			integer_type, .top_pb_id,
+			integer_type, .bottom_pb_id);
+!
+! We can do it - Delete the virtual display used for occlusion.
+!
+	vs$$vds_delete_vd(
+			.pon[vs$vds_l_pon_vd_id],
+			0,
+			$requestor);	!Owner UIC
+!
+! Now unpaste all of top_pb's virtual displays from the bottom_pb and any pb's
+! that the bottom pb is pasted on and anything those pb's are pasted on and
+! so on...
+!
+	vd_ptr = .top_pb[vs$vds_a_pb_vdl_ptr];
+	WHILE .vd_ptr NEQ top_pb[vs$vds_a_pb_vdl_ptr] DO
+	  BEGIN
+	    int1_unpaste_vd_from_pb(
+				.bottom_pb_id,
+				.vd_ptr[vs$vds_l_vd_id],
+				$requestor);
+	    vd_ptr = .vd_ptr[vs$vds_a_vd_next_ptr];
+	  END;
+!
+! O.K. free the pon (pasted-on) and pme (pasted-on-me) blocks virtual memory
+!
+	REMQUE(.pon,pon);
+	REMQUE(.pme,pme);
+	vs$$acp_free_vm (UPLIT (vs$vds_k_pon_length),pon, 0);
+	vs$$acp_free_vm (UPLIT (vs$vds_k_pme_length),pme, 0);
+!
+! Since this change in what's pasted may have caused the mouse pointer
+! to be on a different object than before, update mouse information.
+!
+	$ertn (vsta$$update_mouse_info) ();
+
+	RETURN SS$_NORMAL;	!Made it through for normal return
+    END;			! end of routine vs$$vds_unpaste_pb_from_pb
+
+
+%SBTTL 'vs$$vds_unpaste_vd_from_pb -- Unpaste Virtual Display in Pasteboard'
+GLOBAL ROUTINE vs$$vds_unpaste_vd_from_pb(
+			pb_id,		!Unique pasteboard ID
+			vd_id,		!Unique virtual display ID
+			requestor_pid		!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!      	This routine will "unpaste" or disassociate a virtual display from a
+! pasteboard. Virtual displays provide the virtual devices with which
+! application programs may do I/O. Data which is written to a virtual display
+! may or may not be visible on the display of the user, but is potentially
+! visible.
+!	This routine deletes this virtual display from its PB's virtual display
+! linked list, removes any virtual display visible rectangles from this PB,
+! and updates the corresponding physical screen to redisplay any rectangles
+! occluded by that virtual display.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be unattached from
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being unpasted from the PB
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen. Virtual memory
+! will be released if operation is successful.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !To contain return status value
+	uic,				 !UIC of VD owner
+	protection,
+	pb_ptr : REF pb_block, !Ptr to current PB block element
+	vvr_ptr : REF vvr_block, !Ptr to current VVR block element
+	next_vvr,			 !Save ptr to next VVR block element
+	vor_ptr : REF vor_block, !Ptr to current VOR block element
+	next_vor,			 !Save ptr to next VOR block element
+	occ_ptr : REF occ_block, !Ptr to current OCC block element
+	next_occ,			 !Save ptr to next OCC block element
+	vd_ptr : REF vd_block, !Address of arbitrary VD block
+	vdb : REF vd_block,	 !Address of virtual display block(ID)
+	pme : REF pme_block;	!Address of pasted-on-me block
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vdb) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+
+!
+! See if the VD is on a PB that is pasted on this one. (if so, return
+! vsta$_vdnotpasted error, because it's not REALLY pasted on this
+! PB according to the SDA; it's just there because of our implementation
+! of pasteboards pasted on pasteboards.)
+!
+	pme = .pb_ptr[vs$vds_a_pb_pme_ptr];
+	WHILE (.pme NEQ pb_ptr[vs$vds_a_pb_pme_ptr]) DO
+	    BEGIN
+	    LOCAL
+		top_pb_id,
+		top_pb_ptr,
+		top_vdb;
+
+	    top_pb_id = .pme[vs$vds_l_pme_pb_id];
+	    IF vs$$vds_vd_found (.top_pb_id, .vd_id, top_pb_ptr, top_vdb) THEN
+		$return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+
+	    pme = .pme[vs$vds_a_pme_next_ptr];
+	    END;
+!
+! OK - no harm will be done, do it.
+!
+	int1_unpaste_vd_from_pb (.pb_id, .vd_id, $requestor);
+!
+! Since this change in what's pasted may have caused the mouse pointer
+! to be on a different object than before, update mouse information.
+!
+	$ertn (vsta$$update_mouse_info) ()
+
+    END;
+
+%SBTTL 'int1_unpaste_vd_from_pb -- Unpaste Virtual Display in Pasteboard'
+ROUTINE int1_unpaste_vd_from_pb(
+			pb_id,		!Unique pasteboard ID
+			vd_id,		!Unique virtual display ID
+			requestor_pid	!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "unpaste" or disassociate a virtual display from a
+! pasteboard. Virtual displays provide the virtual devices with which
+! application programs may do I/O. Data which is written to a virtual display
+! may or may not be visible on the display of the user, but is potentially
+! visible.
+!	This routine deletes this virtual display from its PB's virtual display
+! linked list, removes any virtual display visible rectangles from this PB,
+! and updates the corresponding physical screen to redisplay any rectangles
+! occluded by that virtual display.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be unattached from
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being unpasted from the PB
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen. Virtual memory
+! will be released if operation is successful.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !To contain return status value
+	uic,				 !UIC of VD owner
+	protection,
+	pb_ptr : REF pb_block, !Ptr to current PB block element
+	vvr_ptr : REF vvr_block, !Ptr to current VVR block element
+	next_vvr,			 !Save ptr to next VVR block element
+	vor_ptr : REF vor_block, !Ptr to current VOR block element
+	next_vor,			 !Save ptr to next VOR block element
+	occ_ptr : REF occ_block, !Ptr to current OCC block element
+	next_occ,			 !Save ptr to next OCC block element
+	vd_ptr : REF vd_block, !Address of arbitrary VD block
+	vdb : REF vd_block;	 !Address of virtual display block(ID)
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vdb) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! If the requestor does not have WRITE access to this pasteboard, its
+! appearance can not be changed
+!
+	IF NOT vsta$$acp_check_write_access(
+				$requestor,
+				.pb_ptr[vs$vds_l_pb_uic],
+				.pb_ptr[vs$vds_w_pb_prot]) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'WRITE',
+			string_type, %ASCID 'Pasteboard',
+			integer_type, .pb_id);
+!
+! Verify requestor has READ access to this virtual display as well
+!
+	IF (NOT (status = vs$$vds_get_vd_char(
+					.vd_id,
+					uic,
+					0,0,0,0,0,0,0,
+					protection)))
+	  THEN
+	    $return_error( vsta$_vdnotpasted,	!Could not get VD characteristics
+			  integer_type, .vd_id,
+			  integer_type, .pb_id);
+!
+	IF NOT vsta$$acp_check_read_access(
+				$requestor,
+				.uic,
+				.protection) THEN
+	  $return_error( vsta$_noaccess,
+			string_type, %ASCID 'READ',
+			string_type, %ASCID 'Virtual Display',
+			integer_type, .vd_id);
+!
+! Get the X,Y coordinates, height, and length of this virtual display and
+! remove this "rectangle" from the pasteboard. Of course, this means updating
+! other virtual display's and this pasteboard's window's visible rectangle
+! lists to reflect the deletion of this virtual display...
+!
+	IF (NOT (status = vs$$vds_remove_rec_from_pb(
+						.pb_ptr,
+						.vdb,
+						vdb[vs$vds_l_vd_x_coor]))) THEN
+	  $return_error( vsta$_cantremove,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! Free all the memory occupied by this virtual display's visible rectangle
+! block data structures
+!
+	vvr_ptr = .vdb[vs$vds_a_vd_vvr_ptr];
+	WHILE .vvr_ptr NEQ vdb[vs$vds_a_vd_vvr_ptr] DO
+	  BEGIN
+	    next_vvr = .vvr_ptr[vs$vds_a_vvr_next_ptr];
+	    REMQUE(.vvr_ptr,vvr_ptr);
+	    vs$$acp_free_vm(UPLIT (vs$vds_k_vvr_length),vvr_ptr, 0);
+	    vvr_ptr = .next_vvr;
+	  END;
+!
+! Free all the memory occupied by this virtual display's occluded rectangle
+! block data structures and associated occlusion blocks
+!
+	vor_ptr = .vdb[vs$vds_a_vd_vor_ptr];
+	WHILE .vor_ptr NEQ vdb[vs$vds_a_vd_vor_ptr] DO
+	  BEGIN
+	    next_vor = .vor_ptr[vs$vds_a_vor_next_ptr];
+!
+	    occ_ptr = .vor_ptr[vs$vds_a_vor_occ_ptr];
+	    WHILE .occ_ptr NEQ vor_ptr[vs$vds_a_vor_occ_ptr] DO
+	      BEGIN
+		next_occ = .occ_ptr[vs$vds_a_occ_next_ptr];
+	        REMQUE(.occ_ptr,occ_ptr);
+		vs$$acp_free_vm(UPLIT (vs$vds_k_occ_length),occ_ptr, 0);
+		occ_ptr = .next_occ;
+	      END;		!Of while OCC blocks remain
+!
+	    REMQUE(.vor_ptr,vor_ptr);
+	    vs$$acp_free_vm(UPLIT (vs$vds_k_vor_length),vor_ptr, 0);
+	    vor_ptr = .next_vor;
+	  END;		!Of while occluded rectangle blocks remain
+!
+! Now this virtual display needs to know its associated pasteboard's ID and
+! complete deletions within its data structure of all references to this PB.
+!
+	IF (NOT (status = vs$$vds_vd_from_pb(.pb_id,.vd_id))) THEN
+	  $return_error( vsta$_cantremove,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! This unpaste operation has to be reflected on any pasteboards that this
+! pasteboard is attached to
+!
+	IF (NOT (status = vs$$vds_update_pon_pbs(
+				.pb_ptr,
+				.vd_id,
+				0,
+				0,
+				2,
+				$requestor))) THEN		!Unpaste VD
+	  $return_error( vsta$_cantremove,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! Remove this VD from this PB's virtual display list
+!
+	REMQUE(.vdb,vdb);
+!
+! Deallocate virtual memory for this virtual display block
+!
+	vs$$acp_free_vm (UPLIT (vs$vds_k_vd_length),vdb, 0);
+!
+	RETURN SS$_NORMAL;	! Return status value
+    END;			! end of routine vs$$vds_unpaste_vd_from_pb
+
+%SBTTL 'vs$$vds_unpaste_vd_deleted -- Unpaste Virtual Display in Pasteboard'
+GLOBAL ROUTINE vs$$vds_unpaste_vd_deleted(
+			pb_id,		!Unique pasteboard ID
+			vd_id,		!Unique virtual display ID
+			delete_flag,	!Set to 1 if some VDB is deleted
+			requestor_pid	!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine will "unpaste" or disassociate a virtual display from a
+! pasteboard. Virtual displays provide the virtual devices with which
+! application programs may do I/O. Data which is written to a virtual display
+! may or may not be visible on the display of the user, but is potentially
+! visible.
+!	This routine deletes this virtual display from its PB's virtual display
+! linked list, removes any virtual display visible rectangles from this PB,
+! and updates the corresponding physical screen to redisplay any rectangles
+! occluded by that virtual display.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ID  : Longword unique ID of the pasteboard to be unattached from
+!			(input parameter)
+!	VD_ID  : Longword ID of the virtual display being unpasted from the PB
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	VSTA$_VDNOTPASTED	!VD not pasted on pasteboard specified
+!
+! SIDE EFFECTS:
+!
+!	A potential change to the user's display screen. Virtual memory
+! will be released if operation is successful.
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,				 !To contain return status value
+	pb_ptr : REF pb_block,		!Ptr to current PB block element
+	vdb : REF vd_block,	 !Address of virtual display block(ID)
+	pme : REF pme_block;	!Pasted-on-me block address
+
+	.delete_flag = 0;		!Assume nothing will be deleted.
+!
+! See if this pasteboard ID was found in linked list -- 
+! Return error status if not found.
+!
+	IF NOT vs$$vds_vd_found(.pb_id,.vd_id,pb_ptr,vdb) THEN
+	  $return_error( vsta$_vdnotpasted,
+			integer_type, .vd_id,
+			integer_type, .pb_id);
+!
+! If another PB on this one, don't do anything.
+!
+	pme = .pb_ptr[vs$vds_a_pb_pme_ptr];
+	WHILE (.pme NEQ pb_ptr[vs$vds_a_pb_pme_ptr]) DO
+	    BEGIN
+	    LOCAL
+		top_pb_id,
+		top_pb_ptr,
+		top_vdb;
+	    top_pb_id = .pme[vs$vds_l_pme_pb_id];
+	    IF vs$$vds_vd_found(.top_pb_id,.vd_id,top_pb_ptr,top_vdb) THEN
+		RETURN SS$_NORMAL;	!Do nothing.
+	    pme = .pme[vs$vds_a_pme_next_ptr];
+	    END;
+!
+! OK to unpaste it.
+!
+    IF (status = int1_unpaste_vd_from_pb (.pb_id, .vd_id, $requestor)
+	) THEN .delete_flag = 1;	!Remember we deleted something
+    RETURN .status
+    END;
+
+
+%SBTTL 'can_we_paste_pb -- See if Pasteboard Already Pasted'
+ROUTINE can_we_paste_pb (
+		top_pb : REF pb_block,		!PB to be pasted
+		bottom_pb : REF pb_block	!ID of PB to be pasted on
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for making sure that a pasteboard is not
+! being pasted to itself or is already pasted to a pasteboard which is pasted
+! to it, etc. This is to allow a pasteboard to be pasted onto another 
+! pasteboard which is the same size while preventing the circular, recursive
+! situation of PB1 being pasted onto PB2 and PB2 pasted onto PB1...
+!
+! FORMAL PARAMETERS:
+!
+!	TOP_PB : pasteboard to be pasted
+!				(input parameter)
+!	BOTTOM_PB : pasteboard to be potentially pasted on
+!				(input parameter)
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful completion of updates
+!	VSTA$_NOSUCHPB		!No such pasteboard
+!	VSTA$_MULTPB		!Pasteboard already pasted on specified PB
+!	VSTA$_ALREADYPASTED	!Vd is already pasted on PB
+!
+! SIDE EFFECTS:
+!
+!	Process stack space will be consumed as this routine is recursive.
+!
+!--
+BEGIN
+LOCAL
+    status,				 !Return status value
+    count,
+    top_pb_id,
+    bottom_pb_id,
+    pme_ptr: REF pme_block,	 	 !Ptr to arbitrary PME block
+    pon_ptr: REF pon_block,	 	 !Ptr to arbitrary PON block
+    vd_ptr: REF vd_block,		!Address of vdb for bottom pb
+    vd1_ptr: REF vd_block;		!Address of vdb for top pb
+
+!
+! Let's get to the bottom of this.
+! Get which pasteboard(s) the BOTTOM one is pasted on, and
+! call this routine recursively until we've got to the bottom level.
+!
+
+pon_ptr = .bottom_pb [vs$vds_a_pb_pon_ptr];
+count = 0;				!If stays 0, we are at the bottom
+WHILE (.pon_ptr NEQ bottom_pb [vs$vds_a_pb_pon_ptr]) DO
+    BEGIN		!Call this routine recursively for each PON.
+    LOCAL
+	lower_pb_id,
+	lower_pb;
+    count = .count + 1;			!Calling recursively...
+    lower_pb_id = .pon_ptr [vs$vds_l_pon_pb_id];
+    IF NOT vs$$vds_pb_found (.lower_pb_id, lower_pb) THEN
+	  $return_error(vsta$_nosuchpb);
+    IF NOT (status =
+	can_we_paste_pb (.top_pb, .lower_pb)
+	    )
+      THEN RETURN .status;		!Nope, can't.
+    pon_ptr = .pon_ptr[vs$vds_a_pon_next_ptr];
+    END;
+
+!
+! If we didn't get to the bottom yet, return - the recursion above did the work
+!
+IF (.count NEQ 0)
+  THEN RETURN SS$_NORMAL;		!Work done at the real "Bottom" levels.
+
+!
+! Alright, the "bottom-pb" is itself not pasted on any pasteboards.
+!
+IF (.top_pb EQL .bottom_pb)		!Guard against recursive paste attempt
+  THEN RETURN $error (vsta$_multpb
+			,integer_type, .top_pb [vs$vds_l_pb_id]
+			);
+!
+! Now, for each VD already pasted on the bottom PB, make sure it is not
+! pasted on the top PB. This is the what all the recursion eventually
+! leads us to. Note: If there are a lot of VD's on both PB's, or
+! a lot of levels of pasteboards pasted on pasteboards pasted on..
+! this will involve a lot of pointer chasing!
+!
+vd_ptr = .bottom_pb [vs$vds_a_pb_vdl_tail];
+WHILE (.vd_ptr NEQ bottom_pb [vs$vds_a_pb_vdl_ptr]) DO
+    BEGIN		!For each VD pasted on the bottom PB
+    vd1_ptr = .top_pb [vs$vds_a_pb_vdl_tail];
+    WHILE .vd1_ptr NEQ top_pb [vs$vds_a_pb_vdl_ptr] DO
+	BEGIN		!For each VD pasted on the top PB
+	IF (.vd_ptr [vs$vds_l_vd_id] EQL .vd1_ptr [vs$vds_l_vd_id])
+	  THEN RETURN $error (vsta$_alreadypasted
+				,integer_type, .vd_ptr [vs$vds_l_vd_id]
+				,integer_type, .bottom_pb [vs$vds_l_pb_id]
+				);
+	vd1_ptr = .vd1_ptr [vs$vds_a_vd_back_ptr];
+	END;		!.. for each VD pasted on the top PB
+    vd_ptr = .vd_ptr [vs$vds_a_vd_back_ptr];
+    END;		!.. for each VD pasted on the bottom PB
+
+RETURN SS$_NORMAL
+END;			! end of routine can_we_paste_pb
+
+%SBTTL 'vs$$vds_update_pon_pbs -- Update pasted-on Pasteboards'
+global ROUTINE vs$$vds_update_pon_pbs(
+		pb_adr: REF pb_block,	!Address of PB
+		vd_id,			!Unique VD ID to update
+		x_coor,			!VD X-coor if applicable
+		y_coor,			!VD Y-coor if applicable
+		operation,		!Update operation
+		requestor_pid		!Who's doing it
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for updating all the pasteboards that
+! the specified pasteboard is pasted on based on the operation specified for
+! the given VD_ID.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ADR  : Address of source pasteboard block
+!			(input parameter)
+!	VD_ID   : Longword unique virtual display ID being manipulated
+!		  (or new pasteboard color for all its PON VDs)
+!			(input parameter)
+!	X_COOR  : Longword virtual display X-coordinate if needed
+!			(input parameter)
+!	Y_COOR  : Longword virtual display Y-coordinate if needed
+!			(input parameter)
+!	OPERATION : Longword operation being performed:
+!				1 => Paste,
+!				2 => Unpaste,
+!				3 => Move (no change in stacking order),
+!				4 => Pop to top
+!				5 => Set background color
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Normal successful completion of updates
+!	SS$_BADPARAM		!Illegal pasteboard update operation
+!	VSTA$_ALREADYPASTED	!VD already pasted on pasteboard
+!
+! SIDE EFFECTS:
+!
+!	Process stack space will be consumed as this routine calls routines
+! which in turn call this routine again...
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	status,					 !Return status value
+	fore_color,				 !Temp. for foreground color
+	text_mode,				 !Temp. for text mode
+	uic,					 !Temp. for current UIC
+	bottom_pb: REF pb_block,	 !Ptr to arbitrary PB block
+	top_vd: REF vd_block,	 	 !Ptr to current top VD block
+	vd_ptr: REF vd_block,	 	 !Ptr to arbitrary VD block
+	pon_ptr: REF pon_block;	 	 !Ptr to arbitrary PON block
+!
+! Perform the specified operation to every pasteboard that the source
+! pasteboard is pasted on and to every pasteboard that those pasteboards
+! are pasted on and so on and so on...
+!
+! NOTE that return status' are not being checked since we want to continue
+! through the loop and a bad return status indicates that the state of the
+! pasted-on pasteboard has been altered by external forces, possibly alien,
+! except when pasting to avoid the multiple instance problem for now.
+!
+	pon_ptr = .pb_adr[vs$vds_a_pb_pon_ptr];
+	WHILE (.pon_ptr NEQ pb_adr[vs$vds_a_pb_pon_ptr]) DO
+	  BEGIN
+!
+! Perform the specified operation on it
+!
+	    CASE .operation FROM 1 TO 5 OF
+	      SET
+		[1] : BEGIN		!Paste VD
+!
+! Figure out where the top VD for this pasteboard is located in the stacking
+! order on the pasteboard its pasted on
+!
+			top_vd = ..pb_adr[vs$vds_a_pb_vdl_ptr];
+			IF .top_vd EQL pb_adr[vs$vds_a_pb_vdl_ptr] THEN
+			  BEGIN
+			    IF vs$$vds_vd_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.pon_ptr[vs$vds_l_pon_vd_id],
+				bottom_pb,
+				vd_ptr) THEN
+!
+! Now paste it at the appropriate stacking position
+!
+			      IF (NOT (status = vs$$vds_paste_vd_to_pb(
+				  .pon_ptr[vs$vds_l_pon_pb_id],
+				  .vd_id,
+				  .x_coor + .pon_ptr[vs$vds_l_pon_x_coor],
+				  .y_coor + .pon_ptr[vs$vds_l_pon_y_coor],
+				  .vd_ptr[vs$vds_a_vd_back_ptr],
+				  $requestor))) THEN
+				$return_error( vsta$_pbupdfail,
+					integer_type, .pb_adr[vs$vds_l_pb_id]);
+			  END
+			ELSE
+			  IF vs$$vds_vd_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.top_vd[vs$vds_l_vd_id],
+				bottom_pb,
+				vd_ptr) THEN
+!
+! Now paste it at the appropriate stacking position
+!
+			      IF (NOT (status = vs$$vds_paste_vd_to_pb(
+				  .pon_ptr[vs$vds_l_pon_pb_id],
+				  .vd_id,
+				  .x_coor + .pon_ptr[vs$vds_l_pon_x_coor],
+				  .y_coor + .pon_ptr[vs$vds_l_pon_y_coor],
+				  .vd_ptr[vs$vds_a_vd_back_ptr],
+				  $requestor))) THEN
+				$return_error( vsta$_pbupdfail,
+					integer_type, .pb_adr[vs$vds_l_pb_id]);
+		      END;
+!
+		[2] : BEGIN		!Unpaste VD
+			IF vs$$vds_pb_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				bottom_pb) THEN
+!
+			  int1_unpaste_vd_from_pb(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.vd_id,
+				$requestor);
+		      END;
+!
+		[3] : BEGIN		!Move VD
+			IF vs$$vds_pb_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				bottom_pb) THEN
+!
+			  vs$$vds_move_vd_in_pb(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.vd_id,
+				.x_coor + .pon_ptr[vs$vds_l_pon_x_coor],
+				.y_coor + .pon_ptr[vs$vds_l_pon_y_coor]);
+		      END;
+!
+		[4] : BEGIN		!Pop VD to top
+!
+! Figure out where the top VD for this pasteboard is located in the stacking
+! order on the pasteboard its pasted on
+!
+			top_vd = ..pb_adr[vs$vds_a_pb_vdl_ptr];
+			IF .top_vd EQL pb_adr[vs$vds_a_pb_vdl_ptr] THEN
+			  BEGIN
+			    IF vs$$vds_vd_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.pon_ptr[vs$vds_l_pon_vd_id],
+				bottom_pb,
+				vd_ptr) THEN
+!
+! Now put it at the "top" of the pasteboard which is on top of the VD which
+! we know to be on top with respect to this pasteboard
+!
+			      vs$$vds_move_vd_to_top_of_pb(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.vd_id,
+				.vd_ptr[vs$vds_a_vd_back_ptr]);
+			  END
+			ELSE
+			  IF vs$$vds_vd_found(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.top_vd[vs$vds_l_vd_id],
+				bottom_pb,
+				vd_ptr) THEN
+!
+! Now put it at the "top" of the pasteboard which is on top of the VD which
+! we know to be on top with respect to this pasteboard
+!
+			      vs$$vds_move_vd_to_top_of_pb(
+				.pon_ptr[vs$vds_l_pon_pb_id],
+				.vd_id,
+				.vd_ptr[vs$vds_a_vd_back_ptr]);
+		      END;
+!
+		[5] : BEGIN		!Set background color
+			vs$$vds_set_vd_char(
+				.pon_ptr[vs$vds_l_pon_vd_id],
+				-1,		!Do not change
+				.vd_id,		!New background color
+				-1,-1,-1,-1);	!Do not change
+		      END;
+		[OUTRANGE] : RETURN SS$_BADPARAM;
+	      TES;
+!
+	    pon_ptr = .pon_ptr[vs$vds_a_pon_next_ptr];
+	  END;
+!
+        RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vds_update_pon_pbs
+
+
+%SBTTL 'vs$$vds_pon_found -- Find pasted-on block by ID'
+ROUTINE vs$$vds_pon_found(
+		pb_adr: REF pb_block,	!Address of PB
+		pb_id,				!Unique PB ID to look for
+		pon_adr				!Address of PON block found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating a pasted-on block in the
+! specified pasteboard based on the pb_id passed. If the pasteboard specified
+! by address is pasted on the pasteboard specified by ID, the address of the
+! PON block will be returned.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ADR  : Address of pasteboard block to look for ID
+!			(input parameter)
+!	PB_ID   : Longword unique pasteboard ID to look for
+!			(input parameter)
+!	PON_ADR : Address to contain address of PON block found
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Pasteboard ID found, PON address in PON_ADR
+!	$false (=0)		!Pasteboard ID NOT found
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pon_ptr: REF pon_block;	 !Ptr to arbitrary PON block
+!
+! Find this pasteboard ID in the linked list of pasted-on blocks for this
+! pasteboard
+!
+	pon_ptr = .pb_adr[vs$vds_a_pb_pon_ptr];
+	WHILE (.pon_ptr NEQ pb_adr[vs$vds_a_pb_pon_ptr]) DO
+	  IF .pon_ptr[vs$vds_l_pon_pb_id] EQL .pb_id THEN
+	    BEGIN
+	      .pon_adr = .pon_ptr;
+	      RETURN $true;
+	    END
+	  ELSE
+	    pon_ptr = .pon_ptr[vs$vds_a_pon_next_ptr];
+!
+        RETURN $false;
+    END;			! end of routine vs$$vds_pon_found
+
+
+%SBTTL 'vs$$vds_pme_found -- Find pasted-on-me block by ID'
+ROUTINE vs$$vds_pme_found(
+		pb_adr: REF pb_block,	!Address of PB
+		pb_id,				!Unique PB ID to look for
+		pme_adr				!Address of PME block found
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for locating a pasted-on block in the
+! specified pasteboard based on the pb_id passed. If the pasteboard specified
+! by ID is pasted on the pasteboard specified by address, the address of the
+! PME block will be returned.
+!
+! FORMAL PARAMETERS:
+!
+!	PB_ADR  : Address of pasteboard block to look for ID
+!			(input parameter)
+!	PB_ID   : Longword unique pasteboard ID to look for
+!			(input parameter)
+!	PME_ADR : Address to contain address of PME block found
+!			(output parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	$true (=1)		!Pasteboard ID found, PME address in PME_ADR
+!	$false (=0)		!Pasteboard ID NOT found
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	pme_ptr: REF pme_block;	 !Ptr to arbitrary PME block
+!
+! Find this pasteboard ID in the linked list of pasted-on blocks for this
+! pasteboard
+!
+	pme_ptr = .pb_adr[vs$vds_a_pb_pme_ptr];
+	WHILE (.pme_ptr NEQ pb_adr[vs$vds_a_pb_pme_ptr]) DO
+	  IF .pme_ptr[vs$vds_l_pme_pb_id] EQL .pb_id THEN
+	    BEGIN
+	      .pme_adr = .pme_ptr;
+	      RETURN $true;
+	    END
+	  ELSE
+	    pme_ptr = .pme_ptr[vs$vds_a_pme_next_ptr];
+!
+        RETURN $false;
+    END;			! end of routine vs$$vds_pme_found
+
+end
+eludom

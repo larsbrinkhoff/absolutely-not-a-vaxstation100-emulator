@@ -1,0 +1,476 @@
+MODULE breakin (IDENT = 'V04-000',
+    	        ADDRESSING_MODE(EXTERNAL = GENERAL)) =
+BEGIN
+
+!++
+! FACILITY:  Login
+!
+! ABSTRACT:
+!
+!	This module contains all the routines to scan and manipulate the
+!	Compound Intrusion Analysis blocks, add new entries to the CIA
+!	queues, locate intruders, and remove suspects.
+!
+! ENVIRONMENT:
+!	VAX/VMS operating system.
+!
+!--
+
+!
+! Include files
+!
+LIBRARY 'SYS$LIBRARY:LIB';		! VAX/VMS system definitions
+
+!
+! Declare the linkages to allocate and deallocate nonpaged pool, as well
+! as grab the CIA mutex.
+!
+LINKAGE
+        CVTDEV = JSB (REGISTER = 0,		! Length of output buffer,
+		      REGISTER = 1,		! Address of output buffer
+		      REGISTER = 4,		! Format of device name
+		      REGISTER = 5;		! Address of UCB
+		      REGISTER = 1),		! Length of final name
+        ALLO   = JSB (REGISTER = 1; 		! R1 = size (on input)
+    		  REGISTER = 1,			! R1 = size of block
+    		  REGISTER = 2):		! R2 = address of block
+    		  NOPRESERVE (3,4,5),		! R3, R4, R5 destroyed
+	DEALLO = JSB (REGISTER = 0):		! R0 = address of block
+    		  NOPRESERVE (1,2,3,4,5),	! R1-R5 destroyed
+    	LOCK   = JSB (REGISTER = 0,		! R0 = address of mutex
+    		      REGISTER = 4);		! R4 = PCB address
+
+
+!
+! Macro to set the processor interrupt priority level register
+!
+BUILTIN
+	MTPR;
+
+MACRO						! set processor IPL
+    SET_IPL (LEVEL) = MTPR (%REF (LEVEL), PR$_IPL)%;
+
+
+!
+! Table of contents
+!
+FORWARD ROUTINE
+    cia_scan,				! Set up for elevated-IPL scans
+    check_intruder,			! Check intruder block
+    check_suspect,			! Check suspect block
+    add_suspect;			! Add a suspect block
+
+!
+! External routines
+!
+EXTERNAL ROUTINE
+    ioc$cvt_devnam : CVTDEV,		! Construct device name from UCB
+    sch$lockw : LOCK,			! Lock CIA mutex
+    sch$unlock : LOCK,			! Unlock CIA mutex
+    exe$alononpaged : ALLO,		! Allocate non-paged pool
+    exe$deanonpaged : DEALLO;		! Deallocate non-paged pool
+
+!
+! Declare system areas
+!
+EXTERNAL
+    break_attempt : BYTE,
+    terminal_device : BYTE,
+    phy_term_name : VECTOR,
+    uaf_record : REF $BBLOCK,
+    org_username,
+    ctl$gl_pcb : REF $BBLOCK,
+    ctl$t_nodename : VECTOR[,BYTE],
+    ctl$t_remoteid : VECTOR[,BYTE],
+    cia$gl_mutex,
+    cia$gq_intruder : $BBLOCK,
+    sys$gb_brk_lim : BYTE,
+    sys$gl_brk_tmo,
+    sys$gl_hid_tim,
+    exe$gl_dynamic_flags : BITVECTOR;
+
+EXTERNAL LITERAL
+    exe$v_brk_term : UNSIGNED (6);
+
+GLOBAL ROUTINE cia_scan (intruder) =
+BEGIN
+
+!+++
+!
+! This is the routine that is called to start either a suspect
+! or intruder scan.
+!
+! Inputs:
+!	intruder - indicator for which type of scan to perform
+!		  1 ==> intruder list
+!		  0 ==> suspect list
+!
+! Outputs:
+!	None.
+!
+! Return status: (low bit)
+!	0 - intruder (either new, or in evasive action)
+!	1 - just another suspect, or an expired intruder
+!
+!---
+
+BUILTIN
+    emul,
+    addm,
+    cmpm,
+    remque;
+
+LABEL
+    cia_search,
+    cia_check;
+
+LOCAL
+    type : BYTE,
+    data : VECTOR [cia$s_data, BYTE],
+    time : VECTOR[2],
+    term_length,
+    delta,
+    dummy,
+    status,
+    next,
+    cia : REF $BBLOCK;
+
+!
+! Get the current time.
+!
+$gettim (timadr = time);
+
+!
+! Get the data string to match on, which is meant to correspond to the
+! source of the login. It is, in order of preference:
+!	node name and remote ID
+!	terminal if a real terminal plus username if real user
+!	original username (presumably creator of this process)
+!
+IF .ctl$t_nodename[0] NEQ 0			! If node present,
+OR .ctl$t_remoteid[0] NEQ 0
+THEN						! get the remote node ID,
+    BEGIN
+    type = cia$k_network;
+    CH$COPY(.ctl$t_nodename[0],			! Copy the nodename first,
+    	    ctl$t_nodename[1],
+    	    .ctl$t_remoteid[0],			! then the remote id
+    	    ctl$t_remoteid[1],
+    	    ' ',
+	    cia$s_data,
+    	    data);
+    END
+
+ELSE IF .terminal_device
+THEN
+    BEGIN
+    IF .exe$gl_dynamic_flags[exe$v_brk_term]
+    THEN term_length = .phy_term_name[0]
+    ELSE term_length = 0;
+
+    IF .uaf_record NEQ 0
+    THEN
+	BEGIN
+	type = cia$k_term_user;
+	CH$COPY(.term_length,
+		.phy_term_name[1],
+		uaf$s_username,
+		uaf_record[uaf$t_username],
+    		' ',
+		cia$s_data,
+    		data);
+	END
+    ELSE
+	BEGIN
+	type = cia$k_terminal;
+	CH$COPY(.term_length,
+		.phy_term_name[1],
+    		' ',
+		cia$s_data,
+    		data);
+	END;
+    END
+
+ELSE
+    BEGIN
+    type = cia$k_username;
+    CH$COPY(uaf$s_username,
+	    org_username,
+    	    ' ',
+	    cia$s_data,
+    	    data);
+    END;
+
+!
+! Set up pointers to the address of the data.  Also set STATUS = 1, to show
+! that nothing so far.
+!
+status = 1;
+
+!
+! Scan the lists, if there are any blocks.
+!
+cia_search: BEGIN
+sch$lockw(cia$gl_mutex, .ctl$gl_pcb);
+cia = .cia$gq_intruder;
+
+UNTIL .cia EQL cia$gq_intruder
+DO
+    BEGIN
+    cia_check: BEGIN
+    next = .cia[cia$l_flink];
+!
+! Check expiration on each entry encountered. Expiration is done with
+! a simple compare of the entry's time against current time.
+!
+
+    IF cmpm (2, cia[cia$q_time], time) LEQ 0
+    THEN
+	BEGIN
+
+!
+! An expired intruder is turned back into a suspect with the
+! count set to one short of the limit. The time is computed
+! from the current time plus the count times the break timeout.
+!
+
+	IF .cia[cia$v_intruder]
+	THEN
+	    BEGIN
+	    cia[cia$v_intruder] = 0;
+	    cia[cia$w_count] = .sys$gb_brk_lim;
+	    delta = .sys$gb_brk_lim * .sys$gl_brk_tmo;
+	    emul(%REF (10000000),	! Convert seconds into delta time
+		 delta,
+		 %REF(0),
+		 cia[cia$q_time]);
+	    addm(2, time, cia[cia$q_time], cia[cia$q_time]);
+	    END
+
+!
+! An expired suspect entry is removed from the list.
+!
+
+	ELSE
+	    BEGIN
+	    remque(.cia, dummy);		! Remove the block
+	    exe$deanonpaged(.cia);		! And return to pool
+	    LEAVE cia_check;			! No entry to check
+	    END;
+	END;
+
+!
+! Now check for a match on the type we are looking for.
+!
+
+    IF .type EQL .cia[cia$b_subtype]
+    AND CH$EQL (cia$s_data, data, cia$s_data, cia[cia$t_data])
+!
+! If we have a matching block, make the appropriate checks.
+!
+    THEN
+	BEGIN
+	IF .intruder
+	THEN status = check_intruder(.cia, time)
+	ELSE status = check_suspect(.cia, time);
+	LEAVE cia_search;
+	END;
+    END;				! end of block CIA_CHECK
+    cia = .next;
+    END;
+
+!
+! If this is a failed login and no list entry was found, create a
+! suspect entry.
+!
+IF NOT .intruder
+THEN add_suspect(.type, data, time);
+END;					! end of block CIA_SEARCH
+
+!
+! Unlock the mutex and lower IPL.
+!
+sch$unlock(cia$gl_mutex, .ctl$gl_pcb);
+SET_IPL(0);
+
+break_attempt = NOT .status;
+RETURN .status;
+END;
+
+ROUTINE check_suspect (cia, time) = 
+BEGIN
+
+!+++
+!
+! Check if enough login failures have occurred to change the suspect
+! to an intruder.
+!
+! Inputs:
+!	cia - address of the Compound Intrusion Analysis block
+!	time - address of current time of login failure
+!
+! Outputs:
+!	None.
+!
+! Return status:
+!	0 - this is an intruder
+!	1 - just another suspect
+!
+!---
+
+BUILTIN
+    emul,
+    addm;
+
+MAP
+    time : REF VECTOR[,WORD],
+    cia : REF $BBLOCK;
+
+LOCAL
+    delta : VECTOR [2];
+
+!
+! Bump the count of login (perhaps breakin) attempts. Also bump the
+! expiration time of the entry. 
+!
+cia[cia$w_count] = .cia[cia$w_count] + 1;
+emul (sys$gl_brk_tmo,			! Convert timeout into
+      %REF (10000000),			! delta time value
+      %REF (0),
+      delta);
+addm (2, delta, cia[cia$q_time], cia[cia$q_time]);
+
+!
+! If the number of attempts is greater than the number of retries allowed,
+! then remove the CIA block from the suspect queue and put it on the
+! intruder queue.
+!
+IF .cia[cia$w_count] GTR .sys$gb_brk_lim
+THEN
+    BEGIN
+    LOCAL
+	semi_second;
+
+!
+! Obtain a number between 10000000 and 15000000, which represents a unit of
+! time between 1.0 and 1.5 seconds.  
+!
+! This is done by taking the system time, and using the longword in the
+! "middle", swapping the words of that longword, scaling that  quantity
+! down to be in the range of 5000000 or less, and adding 10000000.
+!
+    BEGIN
+    MAP semi_second : VECTOR[2,WORD];
+    semi_second[0] = .time[2];			! Get middle longword, 
+    semi_second[1] = .time[1];			! swapping words on the way.
+    END;
+    semi_second = .semi_second / ((1^31-1)/5000000) + 10000000;
+
+    emul(sys$gl_hid_tim,			! Multiply the hide time
+    	 semi_second,				! to get number of seconds
+    	 %REF(0),
+    	 cia[cia$q_time]);			! and put it in the block
+    addm(2,					! then add
+	 .time,					! the current time
+	 cia[cia$q_time],			! 
+	 cia[cia$q_time]);			! and put it in the block
+    cia[cia$v_intruder] = 1;			! Show it's an intruder
+    RETURN 0;
+    END;
+
+RETURN 1;
+END;
+
+ROUTINE check_intruder (cia, time) = 
+BEGIN
+
+!+++
+!
+! Check if list entry is an intruder (for otherwise successful
+! validation).
+!
+! Inputs:
+!	cia - address of intruder block
+!	time - current time
+!
+! Outputs:
+!	none.
+!
+! Return status:
+!	0 - this is an intruder, perform evasive action
+!	1 - this is only suspect, no action
+!
+!---
+
+MAP
+    cia : REF $BBLOCK;
+
+LOCAL
+    dummy;
+
+!
+! If this is not an intruder entry, take no action.
+!
+IF NOT .cia[cia$v_intruder]
+THEN RETURN 1;
+
+cia[cia$w_count] = .cia[cia$w_count] + 1;
+RETURN 0;
+END;
+
+ROUTINE add_suspect (type, data,  time) =
+BEGIN
+
+!+++
+!
+! Add a suspect block
+!
+! Inputs:
+!	type - type code of data
+!	data - data string to match on
+!	time - time of login attempt
+!
+! Outputs:
+!	None.
+!
+!---
+
+BUILTIN
+    emul,
+    addm,
+    insque;
+
+LOCAL
+    size,
+    cia : REF $BBLOCK;
+
+!
+! Get a chunk of non-paged pool.
+!
+IF NOT exe$alononpaged(cia$c_length; size, cia)
+THEN RETURN 1;
+
+!
+! Fill in the block.
+!
+cia[cia$w_size] = .size;			! Put in size
+cia[cia$b_type] = dyn$c_cia;			! Type
+cia[cia$b_subtype] = .type;			! Data type
+cia[cia$w_flags] = 0;				! This is a suspect
+cia[cia$w_count] = 1;				! Tried one time
+emul (sys$gl_brk_tmo,				! Convert timeout into
+      %REF (10000000),				! delta time
+      %REF (0),					! and add to current time
+      cia[cia$q_time]);
+addm (2, .time, cia[cia$q_time], cia[cia$q_time]);
+CH$MOVE(cia$s_data,				! And this is the
+	.data,					! match data
+    	cia[cia$t_data]);
+
+insque(.cia, .cia$gq_intruder[cia$l_blink]);	! Put at end of intruder queue
+
+RETURN 1;
+END;
+
+END
+ELUDOM

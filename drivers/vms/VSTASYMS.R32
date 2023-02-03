@@ -1,0 +1,558 @@
+!----------------------------------------------------------------------------
+!
+! FUNCTIONAL DESCRIPTION:
+!
+! This file contains the macro definitions used in the acp.
+!
+!---
+
+
+!
+! TABLE OF CONTENTS:
+!
+
+REQUIRE 'VD:VSTANATIV.R32';
+REQUIRE 'VD:VSDBFRS.R32';
+REQUIRE 'VD:VSTADEF.R32';
+
+
+keywordmacro!s
+	 $RETERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 RETURN (VSTA$$ERROR(STATUS)))%
+	,$RETLOG(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR(STATUS);
+		 RETURN SS$_NORMAL)%
+	,$LOGERR(STATUS) =
+		(EXTERNAL LITERAL STATUS;
+		 EXTERNAL ROUTINE VSTA$$ERROR;
+		 VSTA$$ERROR(STATUS))%
+
+	,$VDSOPR(
+		 OPCODE=VSTA$K_COPY_AREA
+		,SRCTYP=VSTA$K_SRC_CONST
+		,SOURCE=1
+		,SRCOFX=0
+		,SRCOFY=0
+		,MSKTYP=VSTA$K_MSK_NONE
+		,MASK  =0
+		,DST   =0
+		,DSTOFA=VSTA$K_DST_NO_UPDATE
+		,DSTOFF=0
+		,DSTOFX=0
+		,DSTOFY=0
+		,MAPTYP=VSTA$K_MAP_IDENTITY
+		,MAPVAL=0
+		,RECDBF=0
+		,PTHDBF=0
+		,PATMOD=VSTA$K_PTN_SINGLE_SRC
+		,PATACT=VSTA$K_PTN_NO_UPDATE
+		,PATBLK=0
+		,SSRTYP=VSTA$K_SRC_CONST
+		,SSOURC=1
+		,SSOFFX=0
+		,SSOFFY=0
+		,TXTTYP=VSTA$K_TXT_8BITS
+		,TXTDBF=0
+		,CNTDBF=0
+		,CHRPAD=0
+		,SPCPAD=0
+		,BNDMAP=0
+		,SEDPTX=0
+		,SEDPTY=0
+		) =
+		
+	(EXTERNAL ROUTINE VSTA$$VDS_CREATE_VDC;
+	 VSTA$$VDS_CREATE_VDC(
+		 OPCODE
+		,SRCTYP
+		,SOURCE
+		,SRCOFX
+		,SRCOFY
+		,MSKTYP
+		,MASK  
+		,DST   
+		,DSTOFA
+		,DSTOFF
+		,DSTOFX
+		,DSTOFY
+		,MAPTYP
+		,MAPVAL   
+		,PATMOD
+		,PATACT
+		,PATBLK
+		,SSRTYP
+		,SSOURC
+		,SSOFFX
+		,SSOFFY
+		,TXTTYP
+		,CHRPAD
+		,SPCPAD
+		,BNDMAP
+		,SEDPTX
+		,SEDPTY
+		,RECDBF
+		,PTHDBF
+		,TXTDBF
+		,CNTDBF
+		)) %
+
+	,$VSTACOPY(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPADR = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_COPY_AREA;
+	VSTA$$NAT_COPY_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPADR 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTADRAW(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_rectangle
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPADR = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,SSRTYP = VSTA$K_SRC_CONST
+		,SSOURC = 1
+		,SSOFFX	= 0
+		,SSOFFY	= 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_DRAW_CURVE;
+	VSTA$$NAT_DRAW_CURVE(
+		 SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPADR 
+		,PTHNUM 
+		,PTHADR 
+		,PATMOD 
+		,PATACT 
+		,PATBLK 
+		,SSRTYP 
+		,SSOURC 
+		,SSOFFX
+		,SSOFFY
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTAPRINT(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPADR = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTDSC = 0
+		,CTRNUM = 0
+		,CONTRL = 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_PRINT_TEXT;
+	VSTA$$NAT_PRINT_TEXT(
+		 SRCTYP	
+		,SOURCE 
+		,MSKTYP 
+		,MASK	
+		,DSTTYP 
+		,DST
+		,DSTOFA
+		,DSTOFF	
+		,MAPTYP 
+		,MAPADR 
+		,TXTTYP 
+		,TXTDSC 
+		,CTRNUM 
+		,CONTRL 
+		,CHRPAD 
+		,SPCPAD 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$VSTAFILL(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPADR = 0
+		,PTHNUM = 0
+		,PTHADR = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_FILL_AREA;
+	VSTA$$NAT_FILL_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPADR 
+		,PTHNUM 
+		,PTHADR 
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+
+	,$VSTAFLOOD(
+		 SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,BNDMAP = 0
+		,SEDPTX = 0
+		,SEDPTY = 0
+		,RECNUM = 0
+		,RECADR = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$NAT_FLOOD_AREA;
+	VSTA$$NAT_FLOOD_AREA(
+		 SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,BNDMAP
+		,SEDPTX
+		,SEDPTY
+		,RECNUM 
+		,RECADR 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEBACK(
+		 CHAN	= 0
+		,COLOR	= 0
+		,DST	= 0
+		,OFFX	= 0
+		,OFFY	= 0
+		,WIDTH	= 0
+		,HEIGHT	= 0
+		,RECNUM	= 0
+		,RECADR	= 0
+		) =
+
+	(EXTERNAL ROUTINE VSTA$$DRIVE_BACKGROUND;
+	VSTA$$DRIVE_BACKGROUND(
+		 CHAN
+		,COLOR
+		,DST
+		,OFFX
+		,OFFY
+		,WIDTH
+		,HEIGHT
+		,RECNUM
+		,RECADR
+		))%
+
+	,$DRIVECOPY(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,RECDBF = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_COPY_AREA;
+	VSTA$$DRIVE_COPY_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,RECDBF
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEDRAW(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX = 0
+		,SRCOFY = 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHDBF = 0
+		,PATMOD = VSTA$K_ptn_single_src
+		,PATACT = VSTA$K_ptn_no_update
+		,PATBLK = 0
+		,SSRTYP = VSTA$K_SRC_CONST
+		,SSOURC = 1
+		,SSOFFX	= 0
+		,SSOFFY	= 0
+		,RECDBF = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_DRAW_CURVE;
+	VSTA$$DRIVE_DRAW_CURVE(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,SRCOFX 
+		,SRCOFY 
+		,MSKTYP 
+		,MASK	
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,PTHDBF
+!		,PATMOD 
+!		,PATACT 
+		,PATBLK 
+!		,SSRTYP 
+!		,SSOURC 
+!		,SSOFFX
+!		,SSOFFY
+		,RECDBF 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEPRINT(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,SRCOFX	= 0
+		,SRCOFY	= 0
+		,MSKTYP = VSTA$K_msk_none
+		,MASK	= 0
+		,DST	= 0
+		,DSTOFA = VSTA$K_dst_no_update
+		,DSTOFF = 0
+		,DSTOFX = 0	!@@ TEMP @@
+		,DSTOFY = 0	!@@ TEMP @@
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,TXTTYP = VSTA$K_txt_8bits
+		,TXTDBF = 0
+		,CNTDBF = 0
+		,CHRPAD = 0
+		,SPCPAD = 0
+		,RECDBF = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_PRINT_TEXT;
+	VSTA$$DRIVE_PRINT_TEXT(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,SRCOFX
+		,SRCOFY
+!		,MSKTYP 
+		,MASK	
+		,DST
+!		,DSTOFA
+!		,DSTOFF
+		,DSTOFX
+		,DSTOFY	
+		,MAPTYP 
+		,MAPVAL 
+!		,TXTTYP 
+		,TXTDBF 
+		,CNTDBF
+		,CHRPAD 
+		,SPCPAD 
+		,RECDBF
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+	,$DRIVEFILL(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,MAPTYP = VSTA$K_map_identity
+		,MAPVAL = 0
+		,PTHDBF = 0
+		,RECDBF = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_FILL_AREA;
+	VSTA$$DRIVE_FILL_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,MAPTYP 
+		,MAPVAL 
+		,PTHDBF
+		,RECDBF 
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+
+
+	,$DRIVEFLOOD(
+		 CHAN	= 0
+		,SRCTYP	= VSTA$K_SRC_CONST
+		,SOURCE = 1
+		,DSTTYP = VSTA$K_dst_vd
+		,DST	= 0
+		,DSTOFX = 0
+		,DSTOFY = 0
+		,BNDMAP = 0
+		,SEDPTX = 0
+		,SEDPTY = 0
+		,RECDBF = 0
+		,EFN	= 0
+		,ASTADR = 0
+		,ASTPRM = 0
+		) =
+	(EXTERNAL ROUTINE VSTA$$DRIVE_FLOOD_AREA;
+	VSTA$$DRIVE_FLOOD_AREA(
+		 CHAN
+		,SRCTYP	
+		,SOURCE 
+		,DSTTYP 
+		,DST	
+		,DSTOFX 
+		,DSTOFY 
+		,BNDMAP
+		,SEDPTX
+		,SEDPTY
+		,RECDBF
+		,EFN	
+		,ASTADR 
+		,ASTPRM 
+		))%
+	;
+

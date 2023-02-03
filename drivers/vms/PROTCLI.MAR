@@ -1,0 +1,273 @@
+	.TITLE	PROTCLI - SET PROTECTION ON CLI PAGES
+	.IDENT	'V04-000'
+
+
+;++
+; FACILITY:	LOGINOUT
+;
+; ABSTRACT:	INITIALIZE CLI CODE SECTION
+;
+; ENVIRONMENT:	NATIVE MODE PRIVILEGED PROCEDURE
+;
+;---
+
+	.SBTTL	DECLARATIONS
+;
+; SYMBOLIC CONSTANTS
+;
+	ROUTIN = 4
+	ARGLST = 8
+;
+; MACROS
+;
+	$IPLDEF				; INTERRUPT PRIORITY LEVELS
+	$PCBDEF				; PROCESS CONTROL BLOCK
+	$PRDEF				; PROCESSOR REGISTERS
+	$PRTDEF				; PAGE PROTECTION CODES
+	$PSLDEF				; PROGRAM STATUS LONGWORD
+	$PTEDEF				; PAGE TABLE ENTRY
+	$SFDEF				; OFFSETS INTO CALL FRAME
+	$VADEF				; VIRTUAL ADDRESS FIELDS
+
+	.PSECT	$CODE$,NOWRT,EXE,WORD
+
+	.SBTTL	CHANGE THE PROTECTION ON THE CLI PAGES
+;++
+; LGI$PROTECT_CLI - CHANGE THE PROTECTION ON THE CLI PAGES
+;
+;	THIS ROUTINE IS CALLED TO CHANGE THE OWNER AND PROTECTION OF THE
+;	MAPPED CLI PAGES.  THEY ARE CREATED OWNED BY USER MODE, AND THIS
+;	ROUTINE CHANGES THE OWNER TO SUPERVISOR MODE;  IF ANY PAGES ARE
+;	WRITEABLE, THE PROTECTION IS CHANGED TO DISALLOW USER MODE WRITING.
+;
+; INPUTS:
+;
+;	4(AP) = ADDRESS OF CLI $IMGACT RETURN ADDRESS ARRAY
+;
+;	MODE = KERNEL
+;
+; OUTPUTS:
+;
+;	CTL$AG_IMAGE = SAVED CLI ADDRESS ARRAY
+;
+;	PTE$V_OWN OF ALL CLI PTE'S CHANGED TO PSL$C_SUPER
+;	PTE$V_PROT OF ALL WRITEABLE CLI PTE'S CHANGED TO PRT$C_URSW
+;--
+
+	.ENABLE	LSB
+
+LGI$PROTECT_CLI::
+	.WORD	^M<R2,R3,R4,R5,R6>	;
+	$LKWSET_S INADR=PROT_ROUTINE	; LOCK ROUTINE IN WORKING SET
+	BLBC	R0,20$			; BR IF FAILURE
+	MOVL	4(AP),R1		; GET ADDRESS OF CLI ADDRESS ARRAY
+	MOVQ	(R1),R5			; GET CLI ADDRESS ARRAY
+	CMPL	R5,R6			; FIRST ADDRESS GTRU LAST?
+	BGTRU	10$			; BR IF YES - ORDER IS OK
+	MOVL	R6,R5			; SWITCH ORDER OF ADDRESSES
+	MOVL	(R1),R6			; ...
+10$:	BICW	#VA$M_BYTE,R5		; CLEAR BYTE OFFSETS
+	BICW	#VA$M_BYTE,R6		; ...
+	MOVL	R5,R2			; GET FIRST ADDRESS OF CLI
+	DSBINT	#IPL$_ASTDEL		; DISABLE AST DELIVERY
+	MOVL	G^SCH$GL_CURPCB,R4	; GET ADDRESS OF PCB
+	MOVL	G^CTL$GL_PHD,R5		; GET ADDRESS OF PHD WINDOW
+	JSB	G^MMG$PTEINDX		; CONVERT VA TO PTE INDEX
+	BLBS	R0,30$			; BRANCH IF SUCCESS
+	ENBINT				; RE-ENABLE AST'S
+20$:	RET				; RETURN FAILURE
+
+30$:	MOVL	G^MMG$GL_SPTBASE,R1	; GET ADDRESS OF SYSTEM PAGE TABLE
+PROT_LOOP:
+	TSTL	@PCB$L_PHD(R4)[R3]	; FAULT IN PAGE TABLE PAGE
+	DSBINT	#IPL$_SYNCH		; DISABLE SWAPPING
+	MOVAL	@PCB$L_PHD(R4)[R3],R5	; VA OF PAGE TABLE ENTRY
+	EXTZV	#VA$V_VPN,#VA$S_VPN,R5,R0 ; GET SYSTEM VPN OF PTE
+	TSTL	(R1)[R0]		; CHECK IF SYSTEM PTE IS STILL VALID
+	BGTR	60$			; BRANCH IF NOT - RETRY
+	MOVL	(R5),R0			; GET PAGE TABLE ENTRY
+	CMPZV	#PTE$V_OWN,#PTE$S_OWN,-	; IS PAGE CURRENTLY OWNED BY USER MODE?
+		R0,#PSL$C_USER		;
+	BNEQ	50$			; BR IF NOT
+	INSV	#PSL$C_SUPER,-		; MAKE THE OWNER SUPERVISOR MODE
+		#PTE$V_OWN,#PTE$S_OWN,R0
+	IFNOWRT #1,(R2),40$		; BR IF PAGE NOT WRITEABLE
+	INSV	#PRT$C_URSW,-		; MAKE PAGE WRITEABLE ONLY BY SUPER
+		#PTE$V_PROT,#PTE$S_PROT,R0
+40$:	MOVL	R0,(R5)			; SAVE NEW PTE
+	BGTR	50$			; BR IF NOT VALID
+	INVALID	R2			; INVALIDATE TRANSLATION BUFFER
+50$:	DECL	R3			; DECREMENT PTE INDEX
+	MOVAB	-512(R2),R2		; DECREMENT VA
+60$:	ENBINT				; RE-ENABLE SWAPPING AND PAGEFAULTS
+	CMPL	R2,R6			; ALL PAGES DONE?
+	BGEQU	PROT_LOOP		; BR IF NO - CONTINUE
+	ENBINT				; RE-ENABLE AST'S
+	MOVL	#1,R0			; SET SUCCESS
+	RET
+
+PROT_ROUTINE:				; PROTECTION ROUTINE DESCRIPTOR
+	.LONG	LGI$PROTECT_CLI,PROT_ROUTINE
+
+	.DISABLE LSB
+
+	.SBTTL	EXECUTE_IMAGE, ACTIVATE AN IMAGE
+;---
+;
+;	THIS ROUTINE IS COPIED INTO P1 SPACE (AND THEREFORE MUST BE PIC),
+;	AND WHEN CALLED, WILL RUNDOWN THE LOGIN IMAGE AND ACTIVATE ANOTHER
+;	IMAGE (ESSENTIALLY A CHAIN).  AFTER THE IMAGE COMPLETES, THE PROCESS
+;	WILL BE TERMINATED.
+;
+; INPUTS:
+;
+;	ACCESS MODE IS EXECUTIVE.
+;
+;	MMG$IMGHDRBUF = IMAGE HEADER BUFFER, THE FIRST QUADWORD CONTAINS
+;			A DESCRIPTOR OF THE IMAGE FILE SPECIFICATION.
+;
+; OUTPUTS:
+;
+;	NONE, CONTROL NEVER RETURNS TO THE CALLER.
+;---
+
+EXECUTE_IMAGE::
+	.WORD	0
+
+	$RUNDWN_S ACMODE=#PSL$C_USER	; RUNDOWN LOGIN IMAGE
+	MOVAB	G^MMG$IMGHDRBUF,AP	; POINT TO IMGHDR BUFFER/FILESPEC
+	JMP	G^EXE$PROCIMGACT	; ACTIVATE THE REQUESTED IMAGE
+
+	.SUBTITLE	LGI$CMSUPR - Change Mode to Supervisor
+;+
+; Functional Description:
+;
+;	This procedure allows a process with CMEXEC or CMKRNL privilege to
+;	call an arbitrary procedure in supervisor mode. The code drops from
+;	exec mode to supervisor mode in such a way that the exec stack is
+;	empty when supervisor mode is entered. 
+;
+; Calling Sequence:
+;
+;	$CMEXEC (routin = LGI$CMSUPR)
+;
+; Input Parameters:
+;
+;	04(AP) - Address of procedure to be executed in supervisor mode
+;	08(AP) - Address of argument list to pass to said procedure.
+;
+; Implicit Input:
+;
+;	It is assumed that this routine is entered via a $CMEXEC system
+;	service so that there are only two call frames on the exec stack.
+;	The current frame is the result of the CALLG instruction inside
+;	the $CMEXEC system service. The previous frame is created by the
+;	change mode dispatcher.
+;
+; Output Parameters:
+;
+;	There are no explicit output parameters from this procedure.
+;
+; Implicit Output:
+;
+;	The frame built by the change mode dispatcher is moved from the
+;	exec stack to the supervisor stack. The procedure specified by
+;	the first parameter is called in supervisor mode.
+;
+;	The exec stack is empty when supervisor mode is entered.
+;
+; Side Effects:
+;
+;	The procedure, although entered in exec mode, exits in supervisor mode.
+;
+; Status:
+;
+;	This routine simply passes back whatever status is returned by
+;	the caller's supervisor procedure.
+;
+;	If the $ADJSTK call fails, this procedure passes back the error
+;	status without attempting to enter supervisor mode.
+;
+;	If this procedure is called (via $CMEXEC or $CMKRNL) from exec
+;	or kernel mode, the failure status SS$_IVSSRQ is returned.
+;
+; Note:
+;
+;	Modification of a call frame is a flagrant violation of the VAX-11 
+;	Calling Standard. 
+;-
+
+LGI$CMSUPR::
+	.WORD	0			; Make this part simple
+	MOVPSL	R0			; Get current PSL
+
+; This procedure could cause ugly things to happen (an REI instruction will
+; cause a reserved operand exception) if called from exec or kernel mode and
+; supervisor mode were blindly entered.
+
+	BBS	#PSL$V_PRVMOD+1,-	; Branch if previous mode is
+		R0, 10$			;  supervisor or user.
+	MOVZWL	#SS$_IVSSRQ, R0		; Otherwise, report an error
+	RET
+
+; We want to evaporate the frame put here by EXE$CMKRNL. The argument list
+; passed to this procedure must be preserved.
+
+10$:	MOVL	AP, SF$L_SAVE_AP(FP)	; Alter the saved AP
+	MOVAB	B^20$, SF$L_SAVE_PC(FP)	; Alter the return PC
+	RET				; Transfer control to 20$
+
+; We arrive here with the exec stack in the following shape.
+;
+;	00(SP) = 0					\   Frame
+;	04(SP) = 0					 \  built by
+;	08(SP) = Saved AP				  > system's
+;	12(SP) = Saved FP				 /  change mode
+;	16(SP) = Address of SRVEXIT in CMODSSDSP	/   dispatcher
+;	20(SP) = Saved PC of CHME exception
+;	24(SP) = Saved PSL of CHME exception
+
+20$:	CLRL	-(SP)			; Indicate simple SP adjustment
+	$ADJSTK_S	-		; Expand supervisor stack
+		ACMODE = #PSL$C_SUPER,-	;  by seven longwords
+		ADJUST = #-<EXE$C_CMSTKSZ+8>,-
+		NEWADR = (SP)		; New SSP returned in (SP)
+	BLBC	R0,40$			; Quit if error occurs
+
+;  At this point, the frame created by CMODSSDSP as well as the PC,PSL
+;  exception pair generated by the CHMK must be moved to the supervisor
+;  stack so that the returns all work correctly. 
+
+	PUSHR	#^M<R0,R1,R2,R3,R4,R5>	; Save MOVC registers
+
+; This adds 24 bytes to the stack so the operands to MOVC3 must be
+; adjusted accordingly. (The NEWSP longword is also on the stack.)
+
+	MOVC3	#<EXE$C_CMSTKSZ+8>,-	; Move frame and PC/PSL pair
+		<<6+1>*4>(SP),-		; Former 4(SP). Address of first
+			 -		;  longword that must be moved
+		@<6*4>(SP)		; Former top of stack. Contains
+					;  adjusted value of supervisor
+					;  stack pointer
+	POPR	#^M<R0,R1,R2,R3,R4,R5>	; Restore MOVC registers
+
+	MOVL	(SP)+, FP		; Point FP to supervisor stack
+	ADDL2	#<EXE$C_CMSTKSZ+8>, SP	; Remove rest of stuff from exec stack
+
+; At this point, the exec stack is empty. The change mode dispatcher's frame
+; and the PC/PSL pair from the CHME exception are located at the top of the
+; supervisor stack. 
+
+	PUSHL	#<<PSL$C_SUPER@PSL$V_PRVMOD>+-	; Fabricate PSL to get into
+		 <PSL$C_SUPER@PSL$V_CURMOD>>	;  supervisor mode
+	PUSHAB	B^30$			; We will begin executing at 30$
+	REI				; Change mode to supervisor
+
+; We are now in supervisor mode. The stack contents are exactly the same
+; as pictured above. 
+
+30$:	CALLG	@ARGLST(AP),-		; Call specified procedure
+		@ROUTIN(AP)		;  with specified argument list
+40$:	RET				; Return to caller
+
+	.END

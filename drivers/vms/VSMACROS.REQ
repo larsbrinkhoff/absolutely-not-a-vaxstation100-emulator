@@ -1,0 +1,195 @@
+! Generally useful macros for Vax-station software.
+!
+! To make these macros available, put the statement
+!
+!	require 'vsmacros';
+!
+! near the beginning of your module.
+
+literal
+	true = 1,		! result values for routines
+	false = 0;
+
+macro!s
+
+    ! Allocate number of fullwords, return address of block.
+    ! Exit current routine if there's a failure.
+    allocateFullwords(n) =
+	begin
+	local addr, s;
+	if not (s = alcful ((n), addr))
+	then return .s
+	else .addr
+	end
+	% ,
+	
+    ! Allocate number of bytes, return address of block.
+    ! Exit current routine if there's a failure.
+    allocateBytes(n) =
+	begin
+	local addr, s;
+	if not (s = alcbyt ((n), addr))
+	then return .s
+	else .addr
+	end
+	% ,
+	
+    ! Test to see if the nth argument is supplied to a routine
+    argumentExists(n) =
+	begin
+	builtin nullParameter;
+	not nullParameter(n)
+	end
+	% ,
+
+! The following macro takes an error code and and parameters as arguments,
+! and causes the current routine to be terminated.  At the time of this
+! printing, there was confusion about which of several ways to do this:
+!
+! 1)	We could merely "return" the error code.  That has the problem
+!	that the parameters are lost.  Hence an error message that is
+!	supposed to contain a filespec (whose descriptor is one of the
+!	passed parameters) loses the filespec.
+!
+! 2)	We could do a "signal".  However, if routine A calls routine B,
+!	and routine expects to check B's status and cleanup if B fails,
+!	then doing a "signal" from B prevents A from getting a chance
+!	to clean up (unless A sets up a handler beforehand, which is even
+!	more work).
+!
+! 3)	The problem is even more compunded by the fact that if parameters
+!	are being passed back, how would we pass them across the acp/user
+!	void ?
+!
+! For now, we'll just return the status code.
+!
+return_error(mess)[] =
+    (external literal mess; return (mess)) % ,
+
+! Macro to report a software bug.  This should be used in lieu of
+! return_error when an error is detected that isn't due to the caller's
+! bad args, but rather is an unexpected situation suggesting the existence
+! of an internal software or hardware problem.
+!
+! This macro also returns the supplied error status and parameters as the
+! value of the routine that called the macro.
+!
+return_bug(code_and_params)[] =
+    begin
+    macro all = code_and_params %if not %null (%remaining) %then , %fi
+	%remaining %quote % ;
+    external literal code_and_params;
+    external routine vsta$$report_bug;
+    vsta$$report_bug (all);
+    return_error (all)
+    end % ,
+
+    ! The defineStructure(foo) macro call allows data items to be declared
+    ! as in
+    !
+    !			zot:ref foo
+    !
+    ! which declares zot to point to a structure which has a fullword length of
+    !
+    !			foo_length
+    !
+    ! and defines a symbol
+    !
+    !			foo_id = id
+    !
+    ! and has fields named under the field set called
+    !
+    !			foo_fields
+    defineStructure(strName, id) =
+	literal %name(strName, '_id') = id;
+
+	structure %name(strName,'_str')[offset,position,bitWidth;size] =
+	    [size*4]		! number of bytes to allocate
+	    (%name(strName,'_str') + offset*4)<position,bitWidth,0>;
+
+	global literal %name(strName,'_length') = this+1;
+
+	macro strName =
+	     %name(%name('%qu','ote') strName,'_str')
+		[%name(%name('%qu','ote') strName,'_length')]
+	    field (%name(%name('%qu','ote') strName,'_fields'), genFields)
+	    %quote %
+	%,
+
+    next =			! allocate a fullword in field
+	%assign(this, this+1)	! step to next slot
+	this			! use it
+	%,
+
+    fieldSet =			! start new field set
+	%assign(this,firstValue)! reset length for this set
+	field %;
+
+! for tallying lengths of blocks
+compileTime
+    firstValue = 0,		! blocks always start with word to hold id
+    this = firstValue;
+
+    ! The parameters in each field are
+    !
+    !		[fullword offset, bits from right, size in bits]
+    !
+
+! All blocks have the following fields defined for them
+field genFields =
+    set
+    base = [0,0,32],		! use foo[base] to get base address
+    block_id = [0,0,32]		! holds identification of type of block
+    tes;
+
+! Define macro which basically performs the function of a field definition,
+! except that it also issues the statement
+!
+!	global literal name_offset = n
+!
+! where n is the first field component, presumably the offset into the block.
+! This global literal definition, in conjunction with the symbol file being
+! "required" instead of "libraryed" in each source module, allows link to
+! detect stale object modules that need recompilation due to this symbol
+! library being updated with the insertion of a new offset.
+
+macro df (name, offset, pos, size) =
+    name = 
+	[
+	    begin
+	    global literal %name(name,'_offset') = (offset);
+	    %name(name,'_offset')
+	    end
+	    ,pos
+	    ,size
+	] %;
+
+! The following definition allows code such as:
+!
+!	local our_name : string_descriptor;
+!
+!	! Fill in length
+!	our_name[sd_len] = . . .
+!
+!	! Fill in address of string
+!	our_name[sd_adr] = . . .
+!
+! or for another example:
+!
+!	routine doit (str : ref string_descriptor) =
+!	begin
+!
+!	local len, adr;
+!
+!	! Get length and address of string.
+!
+!	len = .str[sd_len];
+!	adr = .str[sd_adr]	. . .
+!
+fieldSet string_descriptor_fields =
+    set
+	%assign (this,firstValue-1)	! no id for string descriptor
+    df(sd_len,next,0,16),	! length of string
+    df(sd_adr,next,0,32)	! address of string
+    tes;
+    defineStructure (string_descriptor, 0);

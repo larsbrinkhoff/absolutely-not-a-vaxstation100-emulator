@@ -1,0 +1,1182 @@
+%TITLE 'vs$generic_emulator -- VAX STATION GENERIC TERMINAL EMULATOR'
+MODULE vs$generic_emulator(
+		IDENT = '1.2-01',
+		ADDRESSING_MODE (EXTERNAL = GENERAL,NONEXTERNAL = GENERAL)
+		) =
+BEGIN
+
+!++
+! FACILITY:
+!   VAX WORKSTATIONS
+!
+! ABSTRACT:
+!
+!   This module contains all the routines and data structures relevent to
+!   dealing with the VAXstation Generic Terminal as an entity in the context of
+!   a VAX workstation running the associated workstation display software;
+!   an implementation of the System Display Architecture.
+!
+!   Operations have been provided to allow the manipulation of text within
+!   the generic terminal device. This module assumes that the device specified
+!   is indeed a generic terminal and that the checking has been performed
+!   elsewhere.
+!
+! ENVIRONMENT:
+!   VAX workstation: 780, 750, 730 running VMS with at least one ONYX
+!   graphics subsystem.
+!
+!--
+!
+! TABLE OF CONTENTS:
+!
+
+%SBTTL 'DECLARATIONS'
+!
+FORWARD ROUTINE
+!
+! Public routines
+!
+!	NONE
+!
+! Private routines
+!
+	vs$$vtem_generic_create,	!To create a generic terminal device
+	vs$$vtem_generic_delete,	!To delete a generic terminal device
+	vs$$vtem_generic_write,		!To handle $QIO IO$_WRITEVBLK!IO$M_TEXT
+					!to a native (generic) display device
+	get_lens_and_adrs;		!Extract lengths and address of items.
+!
+! INCLUDE FILES:
+!
+REQUIRE 'vsta$library:VXSLIB.R32';	! Text typeface masks
+REQUIRE 'vsta$library:VSGENEM.R32';	! Native display specific offsets
+LIBRARY 'vsta$library:TXTCODES';	! Text function codes ($QIO P3 param.)
+library 'vsta$library:vserrors';	! symbols like "$toperr"
+LIBRARY 'vsta$library:VSVDSVD';		! Virtual display symbols
+LIBRARY 'vsta$library:VSTAGBL';		! Common symbols and definitions
+LIBRARY 'vsta$library:libmacros';	! Common VSTA symbols/macros
+LIBRARY 'SYS$LIBRARY:STARLET';		! Get access to VMS system services
+!
+! MACROS:
+!
+MACRO
+	RETURN_ERROR(status) =
+		(EXTERNAL LITERAL status; RETURN (status))% ;
+!
+! PSECTS
+!
+$VSTA_PSECT;
+!
+!
+! OWN STORAGE:
+!
+LITERAL
+	true = 1,
+	false = 0;
+
+!
+! Note: Space is allocated for the maximum number of VDs, rather
+!	than using a Queue. 
+!
+OWN
+	vs$vtem_native_display: BLOCKVECTOR[vs$vtem_k_max_vds,
+					    vs$vtem_S_native_display_block,
+					    BYTE]
+			FIELD (vs$vtem_native_display_block_FI) 
+	INITIAL(REP (vs$vtem_k_max_vds * vs$vtem_k_ndb_length / 4) OF (0));
+					    
+!
+! EXTERNAL REFERENCES:
+!
+EXTERNAL
+	vs$gl_pid;			!PID of current ACP request
+
+EXTERNAL ROUTINE
+!
+! Basic text operations
+!
+	vs$$txt_writetext,		!Write the given text
+	vs$$txt_inserttext,		!Insert the given text
+	vs$$txt_appendtext,		!Append the given text
+	vs$$txt_measure_text,		!Measure space taken by text
+	vs$$txt_definefield,		!Define a field of text
+	vs$$txt_deletefield,		!Delete a field of text
+	vs$$txt_clearline,		!Clear the specified line
+	vs$$txt_clearfield,		!Clear the specified field
+!	vs$$txt_rewritetext,		!Rewrite the specified text
+	vs$$txt_addlines,		!Add blank lines to end of text
+	vs$$txt_removelines,		!Remove lines from end of text block
+	vs$$txt_deletecharacters,	!Delete N characters
+	vs$$txt_scrollup,		!Scroll text up from specified position
+	vs$$txt_scrolldown,		!Scroll text down from specified posn
+!
+! Parameter setting routines
+!
+	vs$$txt_definefont,		!Define a font/typeface for a terminal
+	vs$$txt_definesystemwidefont,	!Define a font/typeface for the system
+	vs$$txt_deletefont,		!Delete a font/typeface for a terminal
+	vs$$txt_deletesystemwidefont,	!Delete a font/typeface for the system
+	vs$$txt_settypeface,		!Establish a character typeface to use
+	vs$$txt_change_typeface,	!Change typeface of existing text
+	vs$$txt_set_rendition,		!Establish a character rendition to use
+	vs$$txt_change_rendition,	!Change the rendition of existing text
+	vs$$txt_settypesize,		!Establish a character type size to use
+	vs$$txt_change_typesize,	!Change the type size of existing text
+	vs$$txt_setbaseline,		!Set baseline offset to next text line
+	vs$$txt_change_baseline,	!Change baseline offset on text line
+	vs$$txt_setoffset,		!Set offset to next character position
+	vs$$txt_set_field_format,	!Set field justification
+	vs$$txt_setbackgroundcolor,	!Set character background color
+	vs$$txt_change_background_color,!Change background color of existing text
+	vs$$txt_setwritingcolor,	!Set character writing color
+	vs$$txt_change_writing_color,	!Change color of existing text
+!
+! Access/privilege checking routines
+!
+	vsta$$acp_check_privileges,	!Check privileges of requesting process
+	vsta$$error,			!acp error block
+!
+! Virtual Display manipulation routines (for creating, deleting, and getting
+! characteristics)
+!
+	vs$$vds_create_vd,		!Create a virtual display
+	vs$$vds_get_vd_char,		!Get characteristics of a VD
+	vs$$vds_delete_vd,		!Delete a virtual display
+	vsta$$rgn_lib_request;		! Handle library region request.
+
+
+%SBTTL 'vs$$vtem_generic_create -- Generic Terminal Create'
+GLOBAL ROUTINE vs$$vtem_generic_create(
+	vd_id,		!Virtual Display id
+	rows,		!No. of rows for this device
+	line_height,	!Text line height for this device
+	columns_normal,	!No. of columns in normal mode (** IGNORED **)
+	columns_wide,	!Number of columns in wide mode (** IGNORED **)
+	uic,		!VD owner's UIC
+	height,		!Height of virtual display
+	length,		!Length of virtual display
+	depth,		!Bitplanes in virtual display
+	write_color,	!Color of VD text
+	color,		!Color of virtual display
+	chars,		!Permanence, Shareable characteristics
+	protection,	!UIC protection code
+	nam_desc	!Terminal name descriptor
+	) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for any setup operations necessary to
+! create a generic terminal device. Since no state is maintained for such a
+! device, all that is required is to create the virtual display and a text
+! block for it.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID          : Longword Virtual Display id
+!				(input parameter)		
+!	ROWS           : Word number of rows for this generic device
+!				(input parameter)		
+!	LINE_HEIGHT    : Word text line height for this generic device
+!				(input parameter)		
+!	COLUMNS_NORMAL : Word number of columns in normal mode
+!				(input parameter)		
+!	COLUMNS_WIDE   : Word number of columns in wide mode
+!				(input parameter)		
+!	HEIGHT         : Word virtual display height
+!				(input parameter)		
+!	LENGTH         : Word virtual display length
+!				(input parameter)		
+!	DEPTH	       : Word virtual display depth or number of bitplanes
+!				(input parameter)		
+!	WRITE_COLOR    : Word virtual display text color number
+!				(input parameter)		
+!	COLOR	       : Word virtual display background color number
+!				(input parameter)		
+!
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE
+! Returns "SS$_NORMAL" if successful, or error status returned by LIB$GET_VM
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+BEGIN
+LOCAL
+	status;					!To contain return status value
+
+!
+! If we got here with the intention of creating a native display with illegal
+! height or length, then tell the caller we've got more important things to do
+!
+	depth = 1;				! Single Bitplane for now
+	IF (.height LEQ 0) OR (.length LEQ 0) OR (.depth LEQ 0) THEN
+	  return_error(vsta$_vdbadsize);
+	IF (.height * .length) GTR vsta$k_max_vd_area THEN
+	  return_error(vsta$_vdbadsize);
+!
+! First try creating the virtual display with both default parameters and
+! those passed by the application program
+!	
+	IF (NOT (status = vs$$vds_create_vd(
+				.height,
+				.length,
+				.depth,
+				.color,
+				.write_color,
+				vs$k_vtem_generic,
+				vdb$k_text_and_graphics,
+				.uic,
+				.chars,
+				.protection,
+				.vd_id
+					))) THEN 
+	  RETURN .status;
+!
+! Next add the lines requested to the virtual display -- If we can't do
+! that, we better delete the virtual display
+!
+	IF (NOT (status = vs$$txt_addLines(
+				..vd_id,
+				.rows,			
+				.line_height
+						))) THEN
+	  BEGIN
+	    vs$$vds_delete_vd(..vd_id,.uic);
+	    RETURN .status;
+	  END;
+!
+! Save certain information in this native display for future reference
+! (Needed to support such user functions as "delete from beg of field"
+! since the text services don't)
+!
+	vs$vtem_native_display[..vd_id - 1,vs$vtem_w_number_of_rows] =
+						.rows;
+	vs$vtem_native_display[..vd_id - 1,vs$vtem_w_char_height] =
+						.line_height;
+	vs$vtem_native_display[..vd_id - 1,vs$vtem_l_curr_position] =
+						1;
+						
+!
+! Set up the writing and background color for this native display device
+!
+	IF (NOT (status = vs$$txt_setwritingcolor(
+						..vd_id,
+						.write_color
+						))) THEN
+	  RETURN .status;
+!
+	IF (NOT (status = vs$$txt_setbackgroundcolor(
+						..vd_id,
+						.color
+						))) THEN
+	  RETURN .status;
+!
+	RETURN SS$_NORMAL;	!return success
+END;				! of routine vs$$vtem_generic_create
+
+
+%SBTTL 'vs$$vtem_generic_delete -- Generic Terminal Delete'
+GLOBAL ROUTINE vs$$vtem_generic_delete(
+				vd_id,		!Virtual Display id
+				requestor_pid	!Who is trying to do it
+					) =
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+! 	This routine is resposible for deleting generic display devices.
+! This is done by releasing the text block associated with this virtual
+! display ID and deleting the virtual display itself.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID :	Longword Virtual Display id
+!			(input parameter)
+!
+!
+! IMPLICIT INPUTS:
+!
+!	 NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	 NONE
+!
+! ROUTINE VALUE
+! Returns "ss$_normal" if successfully deleted, or ss$_nosuchdev if not found
+!
+! COMPLETION CODES:
+!
+!	NONE
+!
+! SIDE EFFECTS:
+!
+!	If this device was previously visible on any physical screens, it
+! won't be when this routine finishes
+!
+!--
+
+BEGIN
+
+LOCAL
+	uic,					!Virtual display owner's UIC
+	vd_ht,					!Virtual display height
+	vd_wd,					!Virtual display width
+	vd_dp,					!Virtual display Bitplanes
+	bg_color,				!VD background color
+	fg_color,				!VD foreground color
+	text_mode,				!VD current text mode
+	chars,					!VD permanence, shareability
+	protection,				!VD uic protection code
+	status;					!Return status value
+!
+! First get the UIC associated with this virtual display ID
+!
+	IF (NOT (status = vs$$vds_get_vd_char(
+				.vd_id,
+				uic,
+				vd_ht,
+				vd_wd,
+				vd_dp,
+				bg_color,
+				fg_color,
+				text_mode,
+				chars,
+				protection
+					))) THEN
+	  RETURN .status;
+!
+! Now try and delete this virtual display
+!
+	IF (NOT (status = vs$$vds_delete_vd(
+					.vd_id,
+					0,
+					.requestor_pid
+						))) THEN
+	  RETURN .status;
+	RETURN SS$_NORMAL;	!return success
+END;				!of routine vs$$vtem_generic_delete
+
+
+%SBTTL 'vs$$vtem_generic_write -- Generic Terminal Emulator'
+GLOBAL ROUTINE vs$$vtem_generic_write(
+		vd_id,					!Virtual display ID
+		arg_block: REF VECTOR,			!Argument block address
+		arg_length,				!Argument block length
+		txtcode,				!Text operation code
+		low_position: VECTOR[2,WORD,SIGNED],	!Terminal position-low
+		high_position: VECTOR[2,WORD,SIGNED],	!Terminal position-high
+		returned_txt_info: REF VECTOR [,WORD]
+			) =
+!
+!++
+! FUNCTIONAL DESCRIPTION:
+!
+!	This routine is responsible for providing the application program
+! interface to text and graphics operations on native, generic VAXstation
+! display devices. This ACP routine is responsible for calling the appropriate
+! VS$TEXT routines to perform the function specified at the $QIO level either
+! by the application program directly or from the VAXstation Application
+! Program Interface Library.
+!
+! FORMAL PARAMETERS:
+!
+!	VD_ID	      : Longword virtual display ID for text operation
+!			(input parameter)
+!	ARG_BLOCK     : Address of argument block ($QIO P1 parameter)
+!		 	(input parameter)
+!	ARG_LENGTH    : Longword argument block length ($QIO P2 parameter)
+!			(input parameter)
+!	TXTCODE       : Longword text function code ($QIO P3 parameter)
+!			(input parameter)
+!	LOW_POSITION  : Longword terminal position for opertion (line,field)
+!			(input parameter)
+!	HIGH_POSITION : Longword terminal position for opertion (char.,no.)
+!			(input parameter)
+!
+! IMPLICIT INPUTS:
+!
+!	NONE
+!
+! IMPLICIT OUTPUTS:
+!
+!	NONE
+!
+! ROUTINE VALUE and
+! COMPLETION CODES:
+!
+!	SS$_NORMAL		!Successful return
+!	SS$_ILLIOFUNC		!Bad parameter value (Illegal $QIO P3 text code)
+!
+! SIDE EFFECTS:
+!
+!	NONE
+!
+!--
+
+    BEGIN
+
+    LOCAL
+	designator,			!Character set designator
+	priv_mask: INITIAL(0),		!Required privilege mask
+	typesize_adr,			!Address of type size
+	rendition_adr,			!Address of rendition
+	lascii_desc: VECTOR[2],		!General purpose ascii descriptor
+	lascii_desc2: VECTOR[2],	!General purpose ascii descriptor
+	temp_args: REF VECTOR[0,BYTE],	!Temporary argument block holder
+	text_width,text_height,
+	status;				!To hold return status value
+
+!
+! Initialize the return text information.
+	returned_txt_info [0] = 0;
+	returned_txt_info [1] = 0;
+!
+	CASE .txtcode FROM txt$_first_code TO txt$_last_code OF
+	  SET
+	    [txt$_measure_text] :	!Measure room text will take when printed.
+		begin
+
+		local
+
+		    string_len, string_adr,
+		    typeface_len, typeface_adr,
+		    typesize_len, typesize_adr,
+		    rendition_len, rendition_adr;
+
+		! Get string to be measured, and font attributes.  The lengths
+		! for numeric items are requested so that we can differentiate
+		! between supplied and defaulted ones.
+		!
+		if not get_lens_and_adrs (arg_block[0],
+		    string_len, string_adr,
+		    typeface_len, typeface_adr,
+		    typesize_len, typesize_adr,
+		    rendition_len, rendition_adr)
+		then return $toperr (vsta$_meatxt);
+
+		! Do the work.
+		!
+		text_width = 0;
+		text_height = 0;
+		if not vs$$txt_measure_text (.vd_id,
+		    .string_len, .string_adr,
+		    .typeface_len, .typeface_adr,
+		    .typesize_len, .typesize_adr,
+		    .rendition_len, .rendition_adr,
+		    text_width,text_height)
+
+		then return $toperr (vsta$_meatxt);
+
+		returned_txt_info [0] = .text_width;
+		returned_txt_info [1] = .text_height;
+
+		end;
+
+	    [txt$_set_font] :		!Establish a new font
+	      BEGIN
+		! Get lengths and addresses for items.
+		!
+		if not get_lens_and_adrs ( arg_block[0],
+		    lascii_desc[0], lascii_desc[1],
+		    lascii_desc2[0], lascii_desc2[1],
+		    0, typesize_adr,
+		    0, rendition_adr)
+		then return $toperr (vsta$_deffnt);
+!
+		IF NOT vs$$txt_definefont(
+				.vd_id,
+				lascii_desc,
+				lascii_desc2,
+				..typesize_adr,
+				..rendition_adr
+						) THEN
+		  RETURN $toperr (vsta$_deffnt)
+	      END;
+	    [txt$_set_system_font] :		!Establish a new system font
+	      BEGIN
+		! Verify that requestor has privilege to do this
+		!
+		BEGIN
+		  MAP priv_mask: BLOCK[4,BYTE];
+		  priv_mask[PRV$V_SYSNAM] = true;
+		END;
+!
+		IF NOT (status = vsta$$acp_check_privileges(
+						.vs$gl_pid,
+						.priv_mask)) THEN
+		  BEGIN
+		    vsta$$error(.status);
+		    RETURN $toperr (vsta$_defsyf);
+		  END;
+!
+		! Get lengths and addresses for items.
+		!
+		if not get_lens_and_adrs ( arg_block[0],
+		    lascii_desc[0], lascii_desc[1],
+		    lascii_desc2[0], lascii_desc2[1],
+		    0, typesize_adr,
+		    0, rendition_adr)
+		then return $toperr (vsta$_defsyf);
+!
+		IF NOT vs$$txt_defineSystemWideFont(
+				lascii_desc,
+				lascii_desc2,
+				..typesize_adr,
+				..rendition_adr
+						) THEN
+		  RETURN $toperr (vsta$_defsyf)
+	      END;
+	    [txt$_delete_font] :		!Delete a font
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+!
+		IF NOT vs$$txt_deletefont(
+				.vd_id,
+				lascii_desc,
+				((.low_position[1]^16) + .low_position[0]),
+				((.high_position[1]^16) + .high_position[0])
+						) THEN
+		  RETURN $toperr (vsta$_delfnt)
+	      END;
+	    [txt$_delete_system_font] :		!Delete a system-wide font
+	      BEGIN
+		! Verify that requestor has privilege to do this
+		!
+		BEGIN
+		  MAP priv_mask: BLOCK[4,BYTE];
+		  priv_mask[PRV$V_SYSNAM] = true;
+		END;
+!
+		IF NOT (status = vsta$$acp_check_privileges(
+						.vs$gl_pid,
+						.priv_mask)) THEN
+		  BEGIN
+		    vsta$$error(.status);
+		    RETURN $toperr (vsta$_delsyf);
+		  END;
+!
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+!
+		IF NOT vs$$txt_deletesystemwidefont(
+				lascii_desc,
+				((.low_position[1]^16) + .low_position[0]),
+				((.high_position[1]^16) + .high_position[0])
+						) THEN
+		  RETURN $toperr (vsta$_delsyf)
+	      END;
+	    [txt$_set_typeface] :		!Establish a new typeface
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+		IF NOT vs$$txt_settypeface(
+						.vd_id,
+						lascii_desc
+						) THEN
+		  RETURN $toperr (vsta$_settyf)
+	      END;
+	    [txt$_change_typeface] : !Alter the existing text typeface
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+		IF NOT vs$$txt_change_typeface(
+						.vd_id,
+						lascii_desc,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgtyf)
+	      END;
+	    [txt$_set_rendition] :	!Alter the current rendition
+	      BEGIN
+		IF NOT vs$$txt_set_rendition(
+						.vd_id,
+						.arg_block[1],
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_setren)
+	      END;
+	    [txt$_change_rendition] : !Alter the existing text rendition
+	      BEGIN
+		IF NOT vs$$txt_change_rendition(
+						.vd_id,
+						.arg_block[1],
+						.arg_block[0],
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgren)
+	      END;
+	    [txt$_set_typesize] :	!Alter the current type size
+	      BEGIN
+		IF NOT vs$$txt_settypesize(
+						.vd_id,
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_settys)
+	      END;
+	    [txt$_change_typesize] : !Alter the existing text type szie
+	      BEGIN
+		IF NOT vs$$txt_change_typesize(
+						.vd_id,
+						.arg_block[0],
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgtys)
+	      END;
+	    [txt$_set_backgroundcolor] :	!Alter the text back. color
+	      BEGIN
+		IF NOT vs$$txt_setbackgroundcolor(
+						.vd_id,
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_settxb)
+	      END;
+	    [txt$_change_backgroundcolor] : !Alter the text background color
+	      BEGIN
+		IF NOT vs$$txt_change_background_color(
+						.vd_id,
+						.arg_block[0],
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgtxb)
+	      END;
+	    [txt$_set_writingcolor] :		!Alter the text writing color
+	      BEGIN
+		IF NOT vs$$txt_setwritingcolor(
+						.vd_id,
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_settxc)
+	      END;
+	    [txt$_change_writingcolor] : !Alter the existing text color
+	      BEGIN
+		IF NOT vs$$txt_change_writing_color(
+						.vd_id,
+						.arg_block[0],
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgtxc)
+	      END;
+	    [txt$_set_characteroffset] :	!Alter the character baseline
+	      BEGIN
+		IF NOT vs$$txt_setbaseline(
+						.vd_id,
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_setbas)
+
+	      END;
+	    [txt$_change_baseline] : !Alter existing baseline offsets
+	      BEGIN
+		IF NOT vs$$txt_change_baseline(
+						.vd_id,
+						.arg_block[0],
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.high_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_chgbas)
+	      END;
+	    [txt$_get_characteroffset] :	!Get the character offsets
+	      BEGIN
+		status = SS$_ILLIOFUNC;
+	      END;
+	    [txt$_define_field] :
+	      BEGIN
+		IF NOT vs$$txt_definefield(
+						.vd_id,
+						.arg_block[0],
+						.arg_block[1],
+						.arg_block[2]
+						) THEN
+		  RETURN $toperr (vsta$_deffld);
+	      END;
+	    [txt$_set_field_format] :
+	      BEGIN
+		  IF NOT vs$$txt_set_field_format(
+						.vd_id,
+						.low_position[0],
+						.low_position[1],
+						.arg_block[0]
+						) THEN
+			      RETURN $toperr (vsta$_setfmt);
+	      END;
+	    [txt$_get_field_definition] :
+	      BEGIN
+		status = SS$_ILLIOFUNC;
+	      END;
+	    [txt$_scroll_up] :
+	      BEGIN
+		IF .arg_block[2] NEQ 0 THEN
+		    begin
+		    if not vs$$txt_scrollup(
+					.vd_id,
+					.arg_block[0],
+					.arg_block[1],
+					.arg_block[2])
+		    then return $toperr (vsta$_sclup)
+		    end
+		ELSE
+		    begin
+		    if not vs$$txt_scrollup(
+					.vd_id,
+					.arg_block[0],
+					.arg_block[1])
+		    then return $toperr (vsta$_sclup)
+		    end;
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.arg_block[1] + 1;
+	      END;
+	    [txt$_scroll_down] :
+	      BEGIN
+		IF .arg_block[2] NEQ 0 THEN
+		    begin
+		    if not vs$$txt_scrolldown(
+					.vd_id,
+					.arg_block[0],
+					.arg_block[1],
+					.arg_block[2])
+		    then return $toperr (vsta$_scldwn)
+		    end
+		ELSE
+		    begin
+		    if not vs$$txt_scrolldown(
+					.vd_id,
+					.arg_block[0],
+					.arg_block[1])
+		    then return $toperr (vsta$_scldwn)
+		    end;
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.arg_block[0] - 1;
+	      END;
+	    [0] :	!Someone is doing a straight $QIO to native display
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+!
+		IF .vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position]
+	       GEQ .vs$vtem_native_display[.vd_id - 1,vs$vtem_w_number_of_rows]
+		THEN
+		  BEGIN
+		    IF (NOT (status = vs$$txt_scrollup(
+		.vd_id,
+		1,
+		.vs$vtem_native_display[.vd_id - 1,vs$vtem_w_number_of_rows],
+		0
+						))) THEN
+		      RETURN .status;
+		    IF (NOT (status = vs$$txt_clearline(
+		.vd_id,
+		.vs$vtem_native_display[.vd_id - 1,vs$vtem_w_number_of_rows]
+						))) THEN
+		      RETURN .status;
+		    IF (NOT (status = vs$$txt_writetext(
+		.vd_id,
+		lascii_desc,
+		.vs$vtem_native_display[.vd_id - 1,vs$vtem_w_number_of_rows],
+		1,
+		1
+						))) THEN
+		      RETURN .status;
+		  END
+		ELSE
+		  BEGIN
+		    IF (NOT (status = vs$$txt_clearline(
+		.vd_id,
+		.vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position]
+						))) THEN
+		      RETURN .status;
+		    IF (NOT (status = vs$$txt_writetext(
+		.vd_id,
+		lascii_desc,
+		.vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position],
+		1,
+		1
+						))) THEN
+		      RETURN .status;
+		    vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position]
+		 = .vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position]
+							+ 1;
+		  END;
+	      END;
+	    [txt$_write] :
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+		IF NOT vs$$txt_writetext(
+						.vd_id,
+						lascii_desc,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0]
+						) THEN
+		  RETURN $toperr (vsta$_wrttxt);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0] + 1;
+	      END;
+	    [txt$_insert] :
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+		IF NOT vs$$txt_inserttext(
+						.vd_id,
+						lascii_desc,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0]
+						) THEN
+		  RETURN $toperr (vsta$_instxt);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0] + 1;
+	      END;
+	    [txt$_append] :
+	      BEGIN
+		lascii_desc[0] = .arg_length;
+		lascii_desc[1] = .arg_block;
+		IF NOT vs$$txt_appendtext(
+						.vd_id,
+						lascii_desc,
+						.low_position[0],
+						.low_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_apptxt);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0] + 1;
+	      END;
+	    [txt$_insert_blank] :
+	      BEGIN
+		IF .arg_block[0] EQL 0 THEN
+		  BEGIN
+		    IF .arg_block[1] NEQ 0 THEN
+		      BEGIN
+			IF NOT vs$$txt_scrollup(
+						.vd_id,
+						1,
+						.low_position[0],
+						.arg_block[1]
+						) THEN
+			  RETURN $toperr (vsta$_inslin)
+		      END
+		    ELSE
+		      IF NOT vs$$txt_scrollup(
+						.vd_id,
+						1,
+						.low_position[0]
+						) THEN
+		        RETURN $toperr (vsta$_inslin);
+		  END
+		ELSE
+		  BEGIN
+		    IF .arg_block[1] NEQ 0 THEN
+		      BEGIN
+			IF NOT vs$$txt_scrolldown(
+						.vd_id,
+						.low_position[0],
+						0,
+						.arg_block[1]
+						) THEN
+		          RETURN $toperr (vsta$_inslin);
+		      END
+		    ELSE
+		      IF NOT vs$$txt_scrolldown(
+						.vd_id,
+						.low_position[0],
+						0
+						) THEN
+		        RETURN $toperr (vsta$_inslin);
+		  END;
+		IF NOT vs$$txt_clearline(
+						.vd_id,
+						.low_position[0]
+						) THEN
+		  RETURN $toperr (vsta$_inslin);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_clear_line] :
+	      BEGIN
+		IF NOT vs$$txt_clearline(
+						.vd_id,
+						.low_position[0]
+						) THEN
+		  RETURN $toperr (vsta$_clrlin);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_clear_field] :
+	      BEGIN
+		IF NOT vs$$txt_clearfield(
+						.vd_id,
+						.low_position[0],
+						.low_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_clrfld);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_clear_from_begoffield] :
+	      BEGIN
+		IF NOT vs$$txt_deletecharacters(
+						.vd_id,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						-1 * .high_position[0]
+						) THEN
+		  RETURN $toperr (vsta$_clrbeg);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_clear_to_endoffield] :
+	      BEGIN
+		IF NOT vs$$txt_deletecharacters(
+						.vd_id,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						0
+						) THEN
+		  RETURN $toperr (vsta$_clrend);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_delete_line] :
+	      BEGIN
+		IF .arg_block[0] EQL 0 THEN
+		  BEGIN
+		    IF NOT vs$$txt_scrollup(
+						.vd_id,
+						.low_position[0],
+						0
+						) THEN
+		      RETURN $toperr (vsta$_dellin);
+		  END
+		ELSE
+		  BEGIN
+		    IF NOT vs$$txt_scrolldown (
+						.vd_id,
+						1,
+						.low_position[0]
+						) THEN
+		      RETURN $toperr (vsta$_dellin);
+		  END;
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_delete_field] :
+	      BEGIN
+		IF NOT vs$$txt_deletefield(
+						.vd_id,
+						.low_position[0],
+						.low_position[1]
+						) THEN
+		  RETURN $toperr (vsta$_delfld);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_delete_characters] :
+	      BEGIN
+		IF NOT vs$$txt_deletecharacters(
+						.vd_id,
+						.low_position[0],
+						.low_position[1],
+						.high_position[0],
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_delchr);
+		vs$vtem_native_display[.vd_id - 1,vs$vtem_l_curr_position] =
+				.low_position[0];
+	      END;
+	    [txt$_add_lines] :
+	      BEGIN
+		IF NOT vs$$txt_addlines(
+						.vd_id,
+						.arg_block[0],
+						.arg_block[1]
+						) THEN
+		  RETURN $toperr (vsta$_addlin)
+	      END;
+	    [txt$_remove_lines] :
+	      BEGIN
+		IF NOT vs$$txt_removelines(
+						.vd_id,
+						.arg_block[0]
+						) THEN
+		  RETURN $toperr (vsta$_remlin);
+	      END;
+	    [txt$_region] :		! region function
+		if not (status = vsta$$rgn_lib_request (.vd_id, arg_block[0]))
+		then return .status;
+	    [INRANGE] :
+	      RETURN SS$_ILLIOFUNC;
+	    [OUTRANGE] :
+	      RETURN SS$_ILLIOFUNC;
+	  TES;
+!
+	RETURN SS$_NORMAL;
+    END;			! end of routine vs$$vtem_generic_write
+
+global routine get_lens_and_adrs
+!++
+! Functional description:
+!
+!	Given the address of a packed block and n pairs of addresses, return
+!	the lengths and addresses of the packed items.
+!
+!	The format of a packed block is:
+!
+!	+===============================================+
+!	| total bytes in block INCLUDING this  fullword |
+!	+-----------------------------------------------+
+!	|total bytes in item NOT including this fullword|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		item			    . . .
+!
+!	|						|
+!	+-----------------------------------------------+
+!	|total bytes in item NOT including this fullword|
+!	+-----------------------------------------------+
+!	|						|
+!	. . .		item			    . . .
+!
+!	|						|
+!	+=========== as many items as necessary ========+
+!
+!	In general, strings would have an item length equal to the number of
+!	characters in the string, and numeric values would have a length of 4,
+!	with the next longword's worth being the numeric value itself.
+!	Numeric values can be defaulted by giving them a length of 0 and then
+!	omitting the item.
+!
+! Formal parameters:
+ (
+	packed_block : ref vector,	! Address of packed block.
+
+	addresses, more_addresses, as_many_as_needed, taken_as_pairs,
+	first_of_pair,
+	is_where_to_write_item_length, second_is_where, to_write_address,
+	but_length_address_can_be_zero, useful_for_numeric_items, where_you,
+	know_length_is_4
+ ) =
+!
+! Completion codes:
+!
+!	An error results if there aren't exactly as many pairs of addresses
+!	supplied as items in the block.
+!--
+
+	begin
+
+	builtin actualCount;
+
+	external
+
+	    vsta$_too_few_prs,	! Error indicating caller didn't ask for whole
+				! block.
+
+	    vsta$_too_mny_prs;	! Error indicating caller asked for more items
+				! than are in block
+
+	local
+
+	    used_item_space,
+
+	    ! Vector representing the block of items that hasn't been scanned
+	    ! yet.
+	    !
+	    rest_of_block : ref vector,
+
+	    ! Vector of pairs of caller-supplied addresses, first into which to
+	    ! write length of item, second into which to write address of item.
+	    !
+	    params : ref vector;
+
+	bind
+
+	    ! Calculate address just beyond block.
+	    adr_beyond_block = packed_block[0] + .packed_block[0],
+
+	    ! Calculate number of items asked for.
+	    n_items = (actualCount() - 1) / 2;
+
+	! Calculate where unprocessed items start.
+	rest_of_block = packed_block[1];
+
+	! Calculate where pairs of items begin.
+	params = addresses;
+
+	! Loop over all items, returning their lengths and addresses.
+	!
+	incr i from 0 to n_items - 1 do
+
+	    begin
+	    bind
+		! Addresses into which to write length and address of item.
+		!
+		item_len_dest = .params[.i*2],
+		item_adr_dest = .params[.i*2+1],
+
+		item_length = .rest_of_block[0],
+		item_adr = rest_of_block[1];
+
+	    ! Make sure caller didn't ask for more than is available.
+	    !
+	    if rest_of_block[0] geq adr_beyond_block
+	    then return vsta$_too_mny_prs;
+
+	    ! Return length of item if requested.
+	    !
+	    if item_len_dest neq 0
+	    then item_len_dest = item_length;
+
+	    ! Give address of item.
+	    item_adr_dest = item_adr;
+	    
+	    ! Calculate where next length and address address can be found.
+	    !
+	    used_item_space = .used_item_space + item_length;
+	    rest_of_block = rest_of_block[1] + item_length
+
+	    end;
+
+	! Make sure all items have been requested.
+	!
+	if rest_of_block[0] neq adr_beyond_block
+	then vsta$_too_few_prs
+	else ss$_normal
+
+	end;
+
+END
+ELUDOM

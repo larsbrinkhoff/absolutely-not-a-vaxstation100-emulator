@@ -1,0 +1,169 @@
+module pmesetimr (addressing_mode (external = general, nonexternal = general))
+= begin
+!
+! This module is called by npmeclock 
+! in order to set up the pme sampling timer ast.  The module
+! attempts to set up the ast in supervisor mode.  This allows pc samplings to
+! be taken even when the program being diagnosed is at ast level.
+!
+! A useful enhancement would be to make this module use non-supervisor mode
+! for the timer ast if the caller does not have sufficient privileges.  This
+! current version merely exits with a failure in such a case.
+
+forward routine!s . . .
+
+	pme_cantim,		! Cancel timer.
+	pme_setimr,		! Call dclast to get things going.
+	dclast,			! declare supervisor ast
+	setimr;			! perform $setimr in supervisor mode.
+
+library 'sys$library:starlet';	! symbols like $setimr
+
+external routine
+
+	    sys$cantim,		! Cancel timer
+	    sys$setimr,		! system set-timer service
+	    vsta$$kernel_call;	! convenient interface to $cmkrnl
+
+global routine pme_cantim
+!++
+! Functional description:
+!
+!	Perform $cantim system service, except do it in kernel mode such
+!	that supervisor-mode timer request can be canceled.
+!
+! Formal parameters:
+ (
+	reqidt		! i.d. of timer to be canceled
+ ) =
+!
+!--
+
+	begin
+
+	vsta$$kernel_call (
+	    sys$cantim,	! routine to call in kernel mode
+	    .reqidt,	! first parameter for routine
+	    psl$c_super	! second parameter (specifies supervisor timer)
+	    )
+
+	end;
+
+global routine pme_setimr
+!++
+! Functional description:
+!
+!	Call inner routine via $cmkrnl in order to do $setimr in kernel mode.
+!
+! Formal parameters:
+ (
+	efn,		! same params as $setimr
+	daytim,
+	astadr,
+	reqidt
+ ) =
+!
+! Side effects:
+!
+!	The specified timer is set up in supervisor mode.
+!
+!--
+
+	begin
+
+	local s;
+
+!
+! We want to do our $setimr in supervisor mode, but there's no $cmsupervisor
+! system service, so we'll go into kernel mode, in which we can declare a
+! supervisor mode ast routine.
+	s = 
+	vsta$$kernel_call (
+	    dclast,		! routine to call in kernel mode
+	    .efn,		! send these params to it (and on to $setimr)
+	    .daytim,
+	    .astadr,
+	    .reqidt
+	    );
+
+	.s
+
+	end;
+
+routine dclast
+!++
+! Functional description:
+!
+!	This routine is called in kernel mode in order that it be allowed
+!	to declare a supervisor mode ast, which will fire off a $setimr
+!	call, hence allowing subsequent timer ast's to be delivered in
+!	supervisor mode, a mode powerful enough to interrupt user ast
+!	routines (which pme wants to be able to collect data on), but
+!	not too powerful to be able to use rms to write the data to the file.
+!
+! Formal parameters:
+ (
+	efn,		! same params as $setimr
+	daytim,
+	astadr,
+	reqidt
+ ) =
+!
+!--
+
+	begin
+
+	own
+!
+! Allocate storage for the parameters, since ast routines really can have
+! only one parameter.
+!
+	    setimr_params : vector [4];
+!
+! Copy the parameters into the block.
+!
+	    ch$move (4*4, efn, setimr_params[0]);
+!
+! Fire off setimr as a supervisor mode ast routine.
+!
+	$dclast (
+	    astadr = setimr,		! routine to call
+	    astprm = setimr_params[0],	! address of block of $setimr params
+	    acmode = psl$c_super	! specify supervisor mode
+	    )
+
+	end;
+
+routine setimr
+!++
+! Functional description:
+!
+!	This is called as a supervisor mode ast routine, in order that it
+!	call $setimr in supervisor mode, thus causing all subsequent timer
+!	ast's to be in supervisor mode, which allows the timer ast routine
+!	to use RMS as well as be able to interrupt user-mode ast routines.
+!
+! Formal parameters:
+ (
+	params : ref vector [4]		! vector of parameters for $setimr
+ ) =
+!
+!--
+
+	begin
+!
+! Establish the timer ast's.  Note that the timer ast routine needn't call
+! this routine, since subsequent timer ast's will automatically be in
+! supervisor mode.
+!
+	$setimr (
+	    efn = .params[0],
+	    daytim = .params[1],
+	    astadr = .params[2],
+	    reqidt = .params[3]
+	    )
+
+	end;
+
+end
+eludom

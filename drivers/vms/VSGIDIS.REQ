@@ -1,0 +1,296 @@
+! VSGIDIS.REQ - VaxStation GIDIS, Require for using Gidis
+!
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!	The require file declares the symbols and routines used in
+!	interfacing a parser, such as TK4014, or the VAXstation driver
+!	to Gidis. 
+!
+! Environment:
+!	Use this require file to declare the interface to Gidis
+!
+!--
+
+EXTERNAL ROUTINE VSTA$$GID_Process;
+!+
+!	VSTA$$GID_PROCESS( VDtag, buffer, length, done_routine,
+!	    done_parameter) - Sends an instruction stream to Gidis.
+!
+!	    VDTag (Input) - Virtual display ID of display to draw in.
+!
+!	    buffer (Input) - Starting address of a buffer of words for
+!		Gidis to process.  Gidis instructions are allowed to span
+!		buffer boundaries.
+!
+!	    length (Input) - Number of words in the buffer.
+!
+!	    done_routine (Input) - Starting address of a completion
+!		routine to call with parameter done_parameter.  In some
+!		cases Gidis will return before buffer processing is
+!		complete. In any case, when buffer processing is complete
+!		the done routine will be queued to be called at ACP
+!		process priority.
+!
+!	    done_parameter (input) - Value to pass as parameter to the
+!		done_routine.
+!
+!	Routine value is a success code indicator.
+!
+
+EXTERNAL ROUTINE VSTA$$GID_Linked_process;
+!	VSTA$$GID_LINKED_PROCESS( VDtag, link, length, done_routine,
+!	    done_parameter) - Sends an instruction stream to Gidis. This
+!	    is the same as VSTA$$GID_PROCESS, except that the buffer
+!	    parameter is the address of a linked list of buffers in the
+!	    following format:
+!
+!		link<0,31> (first longword) address of this buffer of
+!		    Gidis instructions.
+!
+!		link<32,63> (second longword) address of next link or
+!		    zero if this link is last. (Next link is the same
+!		    format as this.)
+!
+!		link<64,95> (third longword) number of words in this
+!		    buffer of Gidis instructions.
+!
+!	    The length parameter is the total number of Gidis words in all
+!	    links.
+!-
+
+EXTERNAL ROUTINE VSTA$$GID_sync;
+!+	VSTA$$GID_sync( VDtag)
+!	This routine resets the instruction stream to be expecting the
+!	start of a new instruction.  This should be called any time a
+!	parer resets its own state.  (To reset all of gidis state to its
+!	initial value, re-call new_gidis.  New_gidis will re-initialize
+!	without allocating new dynamic memory.)
+!	Returns 1 (ss$normal) if successful, 0 if VDtag is not recognized.
+!-
+
+EXTERNAL ROUTINE VSTA$$GID_report;
+!+	buflen = VSTA$$GID_report(
+!	    VDtag,		! Id of virtual display to get input from
+!	    buffer: REF VECTOR[ ,WORD],
+!				! Address of a buffer to receive reports
+!	    length)		! Length in words of avilable space in the buffer
+!	Return value is the number of words actually reported, which may be 0.
+!	This routine returns the values that have been requested by sending
+!	report request opcodes.
+!-
+
+EXTERNAL ROUTINE VSTA$$GID_create;
+!+	status = VSTA$$GID_Create(
+!	    VDtag)		! ID of virtual display to create state for
+!	Return value is ss$_normal, or the error status from failing system
+!	service.
+!	This routine creates or reinitializes the state information for a
+!	display.  You must call GID_create before you call GID_process for
+!	any display.
+!-
+
+EXTERNAL ROUTINE VSTA$$GID_dispose;
+!+	status = VSTA$$GID_Dispose(
+!	    VDtag)		! ID of virtual display to dispose state for
+!	Return value is ss$_normal, or the error status from failing system
+!	service.
+!	This routine deallocates state information for a display.  You must
+!	not call GID_process for any display after you call GID_Dispose,
+!	until you call GID_Create again.
+!-
+
+!	**** W A R N I N G ****
+!	Changing the OP-CODE assignments in this file will invalidate the
+!	instruction length table macro generated later in this file
+!	This table is generated assuming the sequential order of the op-
+!	codes. The "_op" literal values are not used in generating this table,
+!	but their values are assumed to ascend in this order.
+!
+LITERAL
+    gidi_position_op = 1,
+    gidi_position_len = 3,
+    gidi_position_push_op = 2,
+    gidi_position_push_len = 1,
+    gidi_position_pop_op = 3,
+    gidi_position_pop_len = 1,
+    gidi_vector_op = 4,
+    gidi_vector_len = 3,
+    gidi_vector_pop_op = 5,
+    gidi_vector_pop_len = 1,
+    gidi_screen_erase_op = 6,
+    gidi_screen_erase_len = 1,
+    gidi_screen_addressing_op = 7,
+    gidi_screen_addressing_len = 3,
+    gidi_screen_scroll_op = 8,
+    gidi_screen_scroll_len = 3,
+    gidi_select_background_color_op = 9,
+    gidi_select_background_color_le = 2,
+    gidi_select_writing_color_op = 10,
+    gidi_select_writing_color_len = 2,
+    gidi_set_color_map_op = 11,
+    gidi_set_color_map_len = 7,
+    gidi_set_writing_mode_op = 12,
+    gidi_set_writing_mode_len = 2,
+    gidi_set_pixel_size_op = 13,
+    gidi_set_pixel_size_len = 3,
+    gidi_line_texture_op = 14,
+    gidi_line_texture_len = 4,
+    gidi_area_texture_op = 15,
+    gidi_area_texture_len = 5,
+    gidi_fill_to_X_op = 16,
+    gidi_fill_to_X_len = 2,
+    gidi_fill_to_Y_op = 17,
+    gidi_fill_to_Y_len = 2,
+    gidi_fill_to_XY_op = 18,
+    gidi_fill_to_XY_len = 3,
+    gidi_fill_off_op = 19,
+    gidi_fill_off_len = 1,
+    gidi_flood_op = 20,
+    gidi_flood_len = 2,
+    gidi_circum_arc_op = 21,
+    gidi_circum_arc_len = 4,
+    gidi_center_arc_op = 22,
+    gidi_center_arc_len = 4,
+    gidi_curve_begin_open_op = 23,
+    gidi_curve_begin_open_len = 1,
+    gidi_curve_begin_closed_op = 24,
+    gidi_curve_begin_closed_len = 1,
+    gidi_curve_continue_op = 25,
+    gidi_curve_continue_len = 3,
+    gidi_curve_end_op = 26,
+    gidi_curve_end_len = 1,
+    gidi_plane_select_op = 27,
+    gidi_plane_select_len = 2,
+    gidi_swap_top_of_stack_op = 28,
+    gidi_swap_top_of_stack_len = 1,
+    gidi_character_op = 29,
+    gidi_character_len = 2,
+    gidi_reserved_30_op = 30,
+    gidi_reserved_30_len = 1,
+    gidi_cell_cursor_movement_op = 31,
+    gidi_cell_cursor_movement_len = 3,
+    gidi_cell_storage_size_op = 32,
+    gidi_cell_storage_size_len = 4,
+    gidi_cell_unit_size_op = 33,
+    gidi_cell_unit_size_len = 3,
+    gidi_report_cell_standard_op = 34,
+    gidi_report_cell_standard_len = 1,
+    gidi_cell_display_size_op = 35,
+    gidi_cell_display_size_len = 3,
+    gidi_cell_rotation_op = 36,
+    gidi_cell_rotation_len = 2,
+    gidi_cell_italic_op = 37,
+    gidi_cell_italic_len = 2,
+    gidi_save_position_op = 38,
+    gidi_save_position_len = 2,
+    gidi_restore_position_op = 39,
+    gidi_restore_position_len = 2,
+    gidi_cursor_style_op = 40,
+    gidi_cursor_style_len = 2,
+    gidi_select_alphabet_op = 41,
+    gidi_select_alphabet_len = 2,
+    gidi_load_alphabet_op = 42,
+    gidi_load_alphabet_len = 2,
+    gidi_marker_op = 43,
+    gidi_marker_len = 2,
+    gidi_initialize_op = 44,
+    gidi_initialize_len = 1,
+    gidi_wait_op = 45,
+    gidi_wait_len = 2,
+    gidi_save_state_op = 46,
+    gidi_save_state_len = 2,
+    gidi_restore_state_op = 47,
+    gidi_restore_state_len = 2,
+    gidi_report_position_op = 48,
+    gidi_report_position_len = 1,
+    gidi_report_all_states_op = 49,
+    gidi_report_all_states_len = 1,
+    gidi_set_all_states_op = 50,
+    gidi_set_all_states_len = 1,
+    gidi_screen_print_op = 51,
+    gidi_screen_print_len = 7,
+    gidi_set_clipping_region_op = 52,
+    gidi_set_clipping_region_len = 5,
+    gidi_filled_poly_begin_op = 53,
+    gidi_filled_poly_begin_len = 1,
+    gidi_filled_poly_continue_op = 54,
+    gidi_filled_poly_continue_len = 3,
+    gidi_filled_poly_end_op = 55,
+    gidi_filled_poly_end_len = 1,
+    gidi_set_number_colors_op = 56,
+    gidi_set_number_colors_len = 2,
+    gidi_last_opcode = 56;
+
+
+!+
+!	GIDIS Op-code instruction length table: This table of bytes can be
+!	indexed by a gidis op-code to return the corresponding opcode length
+!	(in words).  This table is generated assuming that the corresponding
+!	instruction op-codes are in this order. If there is a change in
+!	the opcode assignments, this table must be fixed accordingly. 
+!-
+MACRO
+    gidis_instruction_length_table = UPLIT BYTE(
+	1,					! Null opcode is length 1
+	gidi_position_len,
+	gidi_position_push_len,
+	gidi_position_pop_len,
+	gidi_vector_len,
+	gidi_vector_pop_len,
+	gidi_screen_erase_len,
+	gidi_screen_addressing_len,
+	gidi_screen_scroll_len,
+	gidi_select_background_color_le,
+	gidi_select_writing_color_len,
+	gidi_set_color_map_len,
+	gidi_set_writing_mode_len,
+	gidi_set_pixel_size_len,
+	gidi_line_texture_len,
+	gidi_area_texture_len,
+	gidi_fill_to_X_len,
+	gidi_fill_to_Y_len,
+	gidi_fill_to_XY_len,
+	gidi_fill_off_len,
+	gidi_flood_len,
+	gidi_circum_arc_len,
+	gidi_center_arc_len,
+	gidi_curve_begin_open_len,
+	gidi_curve_begin_closed_len,
+	gidi_curve_continue_len,
+	gidi_curve_end_len,
+	gidi_plane_select_len,
+	gidi_swap_top_of_stack_len,
+	gidi_character_len,
+	gidi_reserved_30_len,
+	gidi_cell_cursor_movement_len,
+	gidi_cell_storage_size_len,
+	gidi_cell_unit_size_len,
+	gidi_report_cell_standard_len,
+	gidi_cell_display_size_len,
+	gidi_cell_rotation_len,
+	gidi_cell_italic_len,
+	gidi_save_position_len,
+	gidi_restore_position_len,
+	gidi_cursor_style_len,
+	gidi_select_alphabet_len,
+	gidi_load_alphabet_len,
+	gidi_marker_len,
+	gidi_initialize_len,
+	gidi_wait_len,
+	gidi_save_state_len,
+	gidi_restore_state_len,
+	gidi_report_position_len,
+	gidi_report_all_states_len,
+	gidi_set_all_states_len,
+	gidi_screen_print_len,
+	gidi_set_clipping_region_len,
+	gidi_filled_poly_begin_len,
+	gidi_filled_poly_continue_len,
+	gidi_filled_poly_end_len,
+	gidi_set_number_colors_len)%;
+
+! End of VSGIDIS.REQ

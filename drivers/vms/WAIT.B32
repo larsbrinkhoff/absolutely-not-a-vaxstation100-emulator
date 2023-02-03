@@ -1,0 +1,135 @@
+module wait(	
+		addressing_mode(nonexternal=general,external=general),
+		ident = 'V01-000'
+		) =
+begin
+
+!++
+! Facility:
+!	VAXstation 100 software
+!
+! Abstract:
+!	Waits specified time.
+!
+!
+!--
+!
+! Include files:
+!
+!    library 'SYS$LIBRARY:STARLET.L32';
+    library 'SYS$LIBRARY:LIB.L32';		! System macro library
+!
+! Table of contents:
+!
+forward routine
+    wait: novalue;
+!
+!
+!global
+!
+! External references:
+EXTERNAL ROUTINE
+
+	LIB$GET_VM
+	,LIB$FREE_VM
+	,LIB$GET_EF
+	,LIB$FREE_EF
+	,LIB$SIGNAL
+	,LIB$PUT_OUTPUT
+	;
+
+!
+!
+!
+
+global routine wait(a): novalue =
+
+!++
+! Functional description:
+!
+! Formal parameters:
+!	 a is the number of seconds to wait
+! Implicit inputs:
+!
+! Implicit outputs:
+!
+! Completion codes:
+!
+! Side effects:
+!
+!--
+
+    begin
+
+	LOCAL	 mult
+		,l_tics	: SIGNED
+		,f_tics
+		,l_60	: INITIAL (60)
+		,f_60
+		,adder
+		,efn
+		,ns100_time: VECTOR [2,long]
+		,s
+		;
+
+		BUILTIN emul, mulf, cvtlf, cvtfl;
+	!
+	!  convert the time given in floating point seconds to
+	!  to floating point tics 60ths of seconds
+	!
+	cvtlf( l_60, f_60);
+	mulf( .a, f_60, f_tics);
+		!
+	!  Convert floating tics into longword integer tics
+	!
+	IF NOT cvtfl( f_tics, l_tics)
+	THEN l_tics = 0;
+
+	!
+	!  If the number of tics is negative then let them be
+	!  zero
+	!
+	IF .l_tics LSS 0
+	THEN l_tics = 0;
+		!
+	!  mult is the number of 100 nano seconds units in a 1/60 
+	!	 second
+	!  adder is set to 0 since we don't want to add anything to
+	!        the result
+	!  ns100_time is the number of 100 nano second units in the
+	!        time specified by the caller
+	!
+	mult = -10*1000*1000/60;
+	adder = 0;
+
+	!
+	!  Use the extended multiply to get the resulting system time
+	!  to wait
+	!
+	emul( mult, l_tics, adder, ns100_time);
+		!
+	!  Get a unique event flag
+	!
+	IF NOT (S = LIB$GET_EF( efn))
+	THEN RETURN .S;
+
+	!
+	!  Use the system service to wait this amount of time
+	!
+	s = $SETIMR(
+		 EFN 	= .efn
+		,DAYTIM	= ns100_time
+		);
+		IF NOT .s
+		THEN RETURN .s;
+		$WAITFR( EFN	= .efn);
+
+	!
+	!  Free the aquired efn
+	!
+	LIB$FREE_EF( efn);
+
+	END;
+end
+eludom
+     

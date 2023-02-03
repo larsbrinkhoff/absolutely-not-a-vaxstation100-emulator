@@ -1,0 +1,755 @@
+ 
+!*** MODULE $VSACPDEF ***
+! +++
+!  Facility:
+! .
+! 	VAX Workstation ACPcontrol and VDDRIVER routines
+! .
+!  Abstract:
+! .
+! 	This file contains all the Workstation ACP control and the VDDRIVER
+! 	( pseudo-device driver) data structures.  Various constants are also 
+! 	defined. The data
+! 	definitions are defined to be language independent.
+! .
+!  Environment:
+! .
+! 	VSACP process.
+! .
+! .
+! ---
+! .
+!  Internal Constants
+! .
+! .
+!  Data Block Types
+! .
+literal VS$K_RX_TYPE = 123;
+literal VS$K_VB_DEVICE = 124;
+literal VS$K_VC_DEVICE = 125;
+literal VS$K_ACP_TYPE = 126;
+literal VS$K_VSX_TYPE = 127;
+! .
+!  Device Types 
+! ***************	Remove these when VMS defines them in $DCDEF	****
+! .
+! 	constant VS100	equals 40
+! 		prefix DT$	tag "";
+! 	constant VS125	equals 41
+! 		prefix DT$	tag "";
+! 	constant VS300	equals 42
+! 		prefix DT$	tag "";
+literal DT$_TEK4014 = 42;
+! .
+!  Sizes
+! .
+literal VS$K_TTY_WB_DATA = 48;          !  Size of Write block header
+literal VS$K_TTY_RB_DATA = 80;          !  Size of Read block header
+literal VS$K_TTY_DATA = 12;             !  Size of data block header
+! .
+!   Numbers of things
+! .
+literal VS$K_VD_MAX = 128;              !  Maximum no. of VDs on the system
+literal VS$K_VB_MAX = 50;               !  Maximum no. of VBs on the system
+literal VS$K_VC_MAX = 50;               !  Maximum no. of VCs on the system
+literal VS$K_VD_DUMMY_FDTS = 10;        !  No. of dummy VD FDT rtns for padding
+! .
+!   Random things
+! .
+literal VS$K_VD_UIC = 65543;            !  Default virtual display/ACP owner
+literal VS$K_VD_PROT = 0;               !  Default virtual display protection
+literal VS$K_SMALL_VTEM_BUF = 4;        !  Max. small packet size for VTEM data
+literal VS$K_VTEM_HEAD_SIZE = 12;       !  VTEM packet header size for VTEM data
+! .
+!  Keyboard things
+! .
+literal CTRL_KEY = 175;
+literal CPSLCK_KEY = 176;
+literal SHIFT_KEY = 174;
+literal ALL_UPS_KEY = 179;
+literal METRONOME_KEY = 180;
+literal TOTAL_KEYS = 256;
+literal UNUSED_KEYS = 86;
+literal KEY_ENTRIES = 170;
+! 
+literal KB_LEVEL_1 = 1;
+literal KB_LEVEL_2 = 2;
+! 
+literal VS$K_HELP_KEY = 124;
+literal VS$K_MENU_KEY = 125;
+literal VS$K_CR = 13;
+literal VS$K_CRLF = 2573;
+literal VS$K_ESC = 27;
+literal VS$K_BS = 8;
+literal VS$K_LF = 10;
+literal VS$K_DELETE = 127;
+literal VS$K_CTRL_Q = 17;
+literal VS$K_CTRL_S = 19;
+literal VS$K_ESC_LB = 23323;
+literal VS$K_CSI = 155;
+literal VS$K_SS3 = 143;
+literal VS$K_F11 = 23;
+literal VS$K_F12 = 24;
+literal VS$K_F13 = 25;
+! 
+literal VS$K_MODE_TABLE_SIZE = 334;
+literal VS$K_MAX_MODE_TABLES = 17;
+literal VS$K_TABLE_LIST_SIZE = 68;
+literal VS$K_ALL_MODE_SIZE = 5678;
+literal VS$K_SYMBOL_TABLE_SIZE = 1310;
+literal VS$K_SYMBOL_LIST_SIZE = 68;
+literal VS$K_ALL_SYMBOL_SIZE = 20960;
+literal VS$K_NRC_SIZE = 256;
+literal VS$K_DEAD_INDEX = 16;
+! 
+literal KB$M_UP_DOWN = 256;
+literal KB$M_CAPS_LOCK = 512;
+literal KB$M_SHIFT = 1024;
+literal KB$M_CONTROL = 2048;
+literal KB$M_COMPOSE = 4096;
+literal KB$M_DELETE = 8192;
+literal KB$M_TRANSLATED = 16384;
+FIELD KB$UNENCODED_FLAGS_FIELDSET =
+  SET
+  KB$V_KEYCODE = [0,0,8,0],             !  Actual LK201 keycode
+  KB$V_UP_DOWN = [0,8,1,0],             !  Up/down indicator
+  KB$V_CAPS_LOCK = [0,9,1,0],           !  CAPS lock pressed
+  KB$V_SHIFT = [0,10,1,0],              !  Shift key pressed
+  KB$V_CONTROL = [0,11,1,0],            !  Ctrl key pressed
+  KB$V_COMPOSE = [0,12,1,0],            !  Compose key pressed
+  KB$V_DELETE = [0,13,1,0],             !  Marked for delete
+  KB$V_TRANSLATED = [0,14,1,0]          !  Already translated
+  TES;
+literal KB$S_UNENCODED_FLAGS = 2;
+MACRO UNENCODED_FLAGS = BLOCK [KB$S_UNENCODED_FLAGS,byte] FIELD (KB$UNENCODED_FLAGS_FIELDSET) %;
+! 
+literal KBT$M_IGNORE = 4096;
+literal KBT$M_SYMBOL = 8192;
+literal KBT$M_DEAD = 16384;
+literal KBT$M_SPECIAL = 32768;
+FIELD KBT$ENCODED_FLAGS_FIELDSET =
+  SET
+  KBT$V_KEYCODE = [0,0,8,0],            !  Translated keycode
+  KBT$V_UNUSED = [0,8,4,0],             !  Unused bits
+  KBT$V_IGNORE = [0,12,1,0],            !  Ignore indicator
+  KBT$V_SYMBOL = [0,13,1,0],            !  Symbol indicator
+  KBT$V_DEAD = [0,14,1,0],              !  Dead diacritical key
+  KBT$V_SPECIAL = [0,15,1,0]            !  Requires expansion
+  TES;
+literal KBT$S_ENCODED_FLAGS = 2;
+MACRO ENCODED_FLAGS = BLOCK [KBT$S_ENCODED_FLAGS,byte] FIELD (KBT$ENCODED_FLAGS_FIELDSET) %;
+! .
+!  Unsolicited Input Types
+! .
+literal VSX$K_UNSOLIC_DATA = 0;
+literal VSX$K_CTRLC = 1;
+literal VSX$K_CTRLY = 2;
+literal VSX$K_MESS_UNSOL = 2;           !  Number of UIO types
+! .
+!  SDA object manipulation
+! .
+literal VS$K_NORMAL = 0;
+literal VS$K_SLIDE = 1;
+literal VS$K_POP_TO_TOP = 2;
+! 
+!  The PBFLAGS in vsacpdef are used interchangably with the PB_CHARS ones in
+!  vsvdspb.  It would be nice if one set were eliminated, but until then,
+!  make sure that you keep symbols the same value that have the same meaning.
+!  For instance, PERM_PB must be the same value as PB_PERM etc.
+! 
+literal VS$M_PERM_PB = 1;
+literal VS$M_VKB = 2;
+literal VS$M_VTB = 4;
+literal VS$M_TERM = 8;
+FIELD VS$PBFLAGS_FIELDSET =          !  In VSX$W_PB_FLAGS
+  SET
+  VS$V_PERM_PB = [0,0,1,0],
+  VS$V_VKB = [0,1,1,0],
+  VS$V_VTB = [0,2,1,0],
+  VS$V_TERM = [0,3,1,0]
+  TES;
+literal VS$S_PBFLAGS = 1;
+MACRO PBFLAGS = BLOCK [VS$S_PBFLAGS,byte] FIELD (VS$PBFLAGS_FIELDSET) %; !  In VSX$W_PB_FLAGS
+literal VS$M_PERM_VD = 1;
+literal VS$M_SHARE_VD = 2;
+FIELD VS$VDCHARS_FIELDSET =          !  In VSX$W_VD_CHARS
+  SET
+  VS$V_PERM_VD = [0,0,1,0],
+  VS$V_SHARE_VD = [0,1,1,0]
+  TES;
+literal VS$S_VDCHARS = 1;
+MACRO VDCHARS = BLOCK [VS$S_VDCHARS,byte] FIELD (VS$VDCHARS_FIELDSET) %; !  In VSX$W_VD_CHARS
+! 		.
+!  IO codes.  When defining new ones, the strategy for picking values is
+!  to avoid overlapping existing functions that already mean something for
+!  virtual displays.  For instance, don't use 48 since that means WRITEVBLK,
+!  whose meaning we can't change.  (See STARLET.REQ for list of codes.)
+! 		.
+!  The following codes are privileged (require PHY_IO, DIAGNOSE)
+! 
+literal IO$_BROADCAST = 16;             !  16 overlaps READTRACKD
+literal IO$_ACTIVATE = 17;              !  17 overlaps AVAILABLE
+literal IO$_DEACTIVATE = 18;            !  18
+literal IO$_VTEMDATA = 19;              !  19
+literal IO$_VSTAHI = 20;                !  20
+! 
+!  The following codes are non-privileged and do NOT conflict with any VMS
+!  or VSTA function codes (IO$_LOGICAL < code <= IO$_VIRTUAL).
+! 
+literal IO$_VSTAPTR = 52;               !  
+literal IO$_READ_VKB = 60;              !  
+literal IO$_WRITE_GRAPHICS = 61;        !  
+literal IO$_WRITE_VD = 62;              !  
+literal IO$_CREATE_MENU = 63;           !  
+! 
+!  Define VSTA function code modifiers
+! 
+literal IO$M_TEXT = 64;
+literal IO$M_SW = 256;
+literal IO$M_GRAPHICS = 512;
+literal IO$M_VD = 1024;
+literal IO$M_PB = 2048;
+literal IO$M_W = 4096;
+literal IO$M_VP = 8192;
+literal IO$M_VS = 16384;
+literal IO$M_PS = 32768;
+FIELD IO$IOCODES_FIELDSET =
+  SET
+  IO$v_reserved = [0,0,6,0],            !  Function code
+  IO$V_TEXT = [0,6,1,0],
+  IO$v_skip = [0,7,1,0],
+  IO$V_SW = [0,8,1,0],
+  IO$V_GRAPHICS = [0,9,1,0],
+  IO$V_VD = [0,10,1,0],
+  IO$V_PB = [0,11,1,0],
+  IO$V_W = [0,12,1,0],
+  IO$V_VP = [0,13,1,0],
+  IO$V_VS = [0,14,1,0],
+  IO$V_PS = [0,15,1,0]
+  TES;
+literal IO$S_IOCODES = 2;
+MACRO IOCODES = BLOCK [IO$S_IOCODES,byte] FIELD (IO$IOCODES_FIELDSET) %;
+literal IO$M_VKB = 64;
+literal IO$M_VTB = 128;
+literal IO$M_TRANS_TABLE = 256;
+literal IO$M_VKB_CHAR = 4096;
+literal IO$M_VD_CANCEL = 8192;
+FIELD IO$IOCODES2_FIELDSET =
+  SET
+  IO$v_reserv2 = [0,0,6,0],             !  Function code
+  IO$V_VKB = [0,6,1,0],
+  IO$V_VTB = [0,7,1,0],
+  IO$V_TRANS_TABLE = [0,8,1,0],
+  IO$V_SPARE_MODS2 = [0,9,3,0],
+  IO$V_VKB_CHAR = [0,12,1,0],
+  IO$V_VD_CANCEL = [0,13,1,0]
+  TES;
+literal IO$S_IOCODES2 = 2;
+MACRO IOCODES2 = BLOCK [IO$S_IOCODES2,byte] FIELD (IO$IOCODES2_FIELDSET) %;
+literal IO$M_MOUSE = 64;
+literal IO$M_TABLET = 128;
+literal IO$M_MOVE_AST = 256;
+literal IO$M_BUTTON_AST = 512;
+literal IO$M_BOUNDARY_AST = 1024;
+literal IO$M_PTR_INFO = 2048;
+FIELD IO$IOCODES3_FIELDSET =
+  SET
+  IO$v_reserv3 = [0,0,6,0],             !  Function code
+  IO$V_MOUSE = [0,6,1,0],
+  IO$V_TABLET = [0,7,1,0],
+  IO$V_MOVE_AST = [0,8,1,0],
+  IO$V_BUTTON_AST = [0,9,1,0],
+  IO$V_BOUNDARY_AST = [0,10,1,0],
+  IO$V_PTR_INFO = [0,11,1,0],
+  IO$V_SPARE_MODS3 = [0,12,4,0]
+  TES;
+literal IO$S_IOCODES3 = 2;
+MACRO IOCODES3 = BLOCK [IO$S_IOCODES3,byte] FIELD (IO$IOCODES3_FIELDSET) %;
+literal IO$M_VD_INTERNAL = 64;
+literal IO$M_VD_NEWSYM = 128;
+literal IO$M_VD_SPKEY = 256;
+literal IO$M_VD_HOLD = 512;
+literal IO$M_VD_OEM = 1024;
+literal IO$M_VD_NOTICE = 2048;
+literal IO$M_VD_TRANS_TABLE = 4096;
+literal IO$M_VD_SYMBOL_TABLE = 8192;
+literal IO$M_VD_NRC_TABLE = 16384;
+literal IO$M_VD_GIN = 32768;
+FIELD IO$IOCODES4_FIELDSET =
+  SET
+  IO$v_reserv4 = [0,0,6,0],             !  Function code
+  IO$V_VD_INTERNAL = [0,6,1,0],
+  IO$V_VD_NEWSYM = [0,7,1,0],
+  IO$V_VD_SPKEY = [0,8,1,0],
+  IO$V_VD_HOLD = [0,9,1,0],
+  IO$V_VD_OEM = [0,10,1,0],
+  IO$V_VD_NOTICE = [0,11,1,0],
+  IO$V_VD_TRANS_TABLE = [0,12,1,0],
+  IO$V_VD_SYMBOL_TABLE = [0,13,1,0],
+  IO$V_VD_NRC_TABLE = [0,14,1,0],
+  IO$V_VD_GIN = [0,15,1,0]
+  TES;
+literal IO$S_IOCODES4 = 2;
+MACRO IOCODES4 = BLOCK [IO$S_IOCODES4,byte] FIELD (IO$IOCODES4_FIELDSET) %;
+literal VS$M_ST_VKB = 1;
+literal VS$M_ST_DEL = 2;
+literal VS$M_ST_POINTER = 4;
+literal VS$M_ST_CONTROL = 8;
+literal VS$M_ST_ERRBLOCK = 16;
+literal VS$M_ST_MODIFY = 32;
+literal VS$M_ST_WRITE = 64;
+literal VS$M_ST_BRDCST = 128;
+literal VS$M_ST_VD = 512;
+literal VS$M_ST_READ = 1024;
+literal VS$M_ST_PB = 2048;
+literal VS$M_ST_W = 4096;
+literal VS$M_ST_VP = 8192;
+literal VS$M_ST_VS = 16384;
+literal VS$M_ST_PS = 32768;
+FIELD VS$TTYSTATE_FIELDSET =
+  SET
+  VS$V_ST_VKB = [0,0,1,0],
+  VS$V_ST_DEL = [0,1,1,0],
+  VS$V_ST_POINTER = [0,2,1,0],          !  Matches TTY...CURSOR
+  VS$V_ST_CONTROL = [0,3,1,0],          !  Matches TTY...CH_LOWER
+  VS$V_ST_ERRBLOCK = [0,4,1,0],
+  VS$V_ST_MODIFY = [0,5,1,0],           !  Matches TTY...DMA
+  VS$V_ST_WRITE = [0,6,1,0],
+  VS$V_ST_BRDCST = [0,7,1,0],
+  VS$v_res3 = [0,8,1,0],
+  VS$V_ST_VD = [0,9,1,0],
+  VS$V_ST_READ = [0,10,1,0],            !  Matches TTY...READ
+  VS$V_ST_PB = [0,11,1,0],
+  VS$V_ST_W = [0,12,1,0],
+  VS$V_ST_VP = [0,13,1,0],
+  VS$V_ST_VS = [0,14,1,0],
+  VS$V_ST_PS = [0,15,1,0]
+  TES;
+literal VS$S_TTYSTATE = 2;
+MACRO TTYSTATE = BLOCK [VS$S_TTYSTATE,byte] FIELD (VS$TTYSTATE_FIELDSET) %;
+! .
+!  TMBU PID list structure
+! .
+literal TMBU$K_LEN = 6;
+FIELD TMBU$PID_TMBU_FIELDSET =
+  SET
+  TMBU$L_EPID = [0,0,32,0],             ! Internal PID
+  TMBU$W_MBX_UNIT = [4,0,16,0]          ! Term. mbx unit no.
+  TES;
+literal TMBU$S_PID_TMBU = 6;
+MACRO PID_TMBU = BLOCK [TMBU$S_PID_TMBU,byte] FIELD (TMBU$PID_TMBU_FIELDSET) %;
+! .
+!  VD Controller fields
+! .
+literal CTRL$M_OEM = 1;
+literal CTRL$M_EXTRA = 254;
+literal CTRL$K_LEN = 158;
+literal CTRL$S_TTABLE_LIST = 68;
+literal CTRL$S_SYMBOL_LIST = 68;
+FIELD CTRL$VD_CTRL_BLOCK_FIELDSET =
+  SET
+  CTRL$A_ACTIVE_UCB = [0,0,32,0],       ! Active UCB on ctrl
+  CTRL$L_TTABLE = [4,0,32,0],           ! Translation table ID
+  CTRL$A_TTABLE = [8,0,32,0],           ! Translation table adr.
+  CTRL$B_TTABLE_LIST = [12,0,0,0],
+  CTRL$A_SYMBOL_TABLE = [80,0,32,0],    ! Symbol table adr.
+  CTRL$B_SYMBOL_LIST = [84,0,0,0],
+  CTRL$A_NRC_TABLE = [152,0,32,0],      ! NRC table adr.
+    CTRL$W_STATUS = [156,0,16,0],       ! VD controller state
+      CTRL$V_OEM = [156,0,1,0],         ! OEM mode in effect
+      CTRL$V_EXTRA = [156,1,7,0],       ! For future DEC abuse
+    CTRL$R_STATUS_BITS = [156,0,8,0],
+  CTRL$R_STATUS_FIELD = [156,0,16,0]
+  TES;
+literal CTRL$S_VD_CTRL_BLOCK = 158;
+MACRO VD_CTRL_BLOCK = BLOCK [CTRL$S_VD_CTRL_BLOCK,byte] FIELD (CTRL$VD_CTRL_BLOCK_FIELDSET) %;
+! .
+!  VD UCB extension fields
+! .
+literal UCB$K_VD_MAX_TYPAHD = 64;       ! 32 16-bit entries
+literal UCB$K_VD_MAX_TYPIDX = 29;
+literal UCB$K_VD_MAX_OUTDAT = 24;       ! Output data buffer
+literal VS$K_MAX_IRP_CNT = 10;          ! Max. outstanding IRPs
+literal UCB$M_VD_ABORT = 1;
+literal UCB$M_VD_XOFF = 2;
+literal UCB$M_VD_FORK_ACT = 4;
+literal UCB$M_VD_LOADTT_IP = 8;
+literal UCB$M_VD_DATA_AVAIL = 16;
+literal UCB$M_VD_INPUT_IP = 32;
+literal UCB$M_VD_LEVEL = 960;
+literal UCB$M_VD_EIGHTBIT = 1024;
+literal UCB$M_VD_KEYPAD = 2048;
+literal UCB$M_VD_CURSOR_KEY = 4096;
+literal UCB$M_VD_VT52 = 8192;
+literal UCB$M_VD_NEW_LINE = 16384;
+literal UCB$M_VD_GIN = 32768;
+literal UCB$K_VD_LEN = 427;
+literal UCB$S_VD_SYS_DEFINED = 308;
+literal UCB$S_VD_TYPAHD = 64;
+literal UCB$S_VD_OUTDAT = 24;
+FIELD UCB$VD_UCB_BLOCK_FIELDSET =
+  SET
+  UCB$B_VD_SYS_DEFINED = [0,0,0,0],
+  UCB$L_VD_ID = [308,0,32,0],
+  UCB$L_VD_EMULATOR = [312,0,32,0],
+  UCB$A_VD_CTRL = [316,0,32,0],
+  UCB$B_VD_TYPAHD = [320,0,0,0],
+  UCB$L_VD_OUT_CNT = [384,0,32,0],
+  UCB$B_VD_OUTDAT = [388,0,0,0],
+  UCB$L_VD_SYMBOL_SHIFT = [412,0,32,0],
+  UCB$L_VD_SYMBOL_LOWER = [416,0,32,0],
+  UCB$B_VD_DEAD = [420,0,8,0],
+    UCB$W_VD_STATUS = [421,0,16,0],     ! Virtual device state
+      UCB$V_VD_ABORT = [421,0,1,0],     ! Abort output bit
+      UCB$V_VD_XOFF = [421,1,1,0],      ! XOFF state bit
+      UCB$V_VD_FORK_ACT = [421,2,1,0],  ! Fork active bit
+      UCB$V_VD_LOADTT_IP = [421,3,1,0], ! Load in progress bit
+      UCB$V_VD_DATA_AVAIL = [421,4,1,0], ! Data available bit
+      UCB$V_VD_INPUT_IP = [421,5,1,0],  ! Input scan in progress
+! 
+!  NOTE: The following bits are position dependent. Do not modify the number of
+! 	 bits above. Also, do not modify the order below or introduce any new
+! 	 bits in between the existing ones.
+! 
+      UCB$V_VD_LEVEL = [421,6,4,0],     ! Level 1/2 conformance
+      UCB$V_VD_EIGHTBIT = [421,10,1,0], ! Native eight-bit/seven-bit
+      UCB$V_VD_KEYPAD = [421,11,1,0],   ! Keypad application mode
+      UCB$V_VD_CURSOR_KEY = [421,12,1,0], ! Cursor key mode
+      UCB$V_VD_VT52 = [421,13,1,0],     ! VT52 mode
+      UCB$V_VD_NEW_LINE = [421,14,1,0], ! New-line mode
+! 
+      UCB$V_VD_GIN = [421,15,1,0],      ! TEK GIN mode
+    UCB$R_VD_STATUS_BITS = [421,0,16,0],
+  UCB$R_VD_STATUS_FIELD = [421,0,16,0],
+  UCB$L_VD_IRP_CNT = [423,0,32,0]
+  TES;
+literal UCB$S_VD_UCB_BLOCK = 427;
+MACRO VD_UCB_BLOCK = BLOCK [UCB$S_VD_UCB_BLOCK,byte] FIELD (UCB$VD_UCB_BLOCK_FIELDSET) %;
+! 					.
+!  Vax Station Transport Buffer  --  VSX
+! 					.
+literal VSX$K_HDR_LEN = 12;
+literal VSX$K_W_NAME_POS = 26;
+literal VSX$K_DATA_LEN = 40;
+!  This symbol will be used during the
+literal VSX$S_VSXDEPENDENT = 28;
+FIELD VSX$VSXBLOCK_FIELDSET =
+  SET
+  VSX$L_UIC = [0,0,32,0],
+  VSX$W_ID = [4,0,16,0],
+  VSX$w_spare1 = [6,0,16,1],
+  VSX$W_SIZE = [8,0,16,0],
+  VSX$B_TYPE = [10,0,8,0],
+  VSX$b_spare2 = [11,0,8,1],
+      VSX$W_VD_MODE = [12,0,16,0],
+      VSX$W_VD_CHARS = [14,0,16,0],
+      VSX$W_VD_BACKGROUND = [16,0,16,0],
+      VSX$W_VD_FOREGROUND = [18,0,16,0],
+      VSX$W_VD_HEIGHT = [20,0,16,0],
+      VSX$W_VD_WIDTH = [22,0,16,0],
+      VSX$W_VD_DEPTH = [24,0,16,0],
+      VSX$W_VD_BIT_PLANES = [26,0,16,0],
+      VSX$W_VD_LINE_HITE = [28,0,16,0],
+      VSX$W_VD_COLS_NORM = [30,0,16,0],
+      VSX$W_VD_COLS_WIDE = [32,0,16,0],
+      VSX$W_VD_ROWS = [34,0,16,0],
+      VSX$W_VD_TEXT_CODE = [36,0,16,0],
+      VSX$W_VD_PROTECTION = [38,0,16,0],
+    VSX$R_VSXVD = [12,0,0,0],
+      VSX$W_PB_COLOR_SPEC = [12,0,16,0],
+      VSX$W_PB_COLOR = [14,0,16,0],
+      VSX$W_PB_WIDTH = [16,0,16,0],
+      VSX$W_PB_HEIGHT = [18,0,16,0],
+      VSX$L_PB_FLAGS = [20,0,32,0],
+      VSX$W_PB_PROTECTION = [24,0,16,0],
+      VSX$w_spare8 = [26,0,16,1],
+      VSX$l_spare9 = [28,0,32,1],
+      VSX$l_spare10 = [32,0,32,1],
+      VSX$l_spare11 = [36,0,32,1],
+    VSX$R_VSXPB = [12,0,0,0],
+      VSX$W_W_X0 = [12,0,16,1],
+      VSX$W_W_Y0 = [14,0,16,1],
+      VSX$W_W_DX = [16,0,16,0],
+      VSX$W_W_DY = [18,0,16,0],
+      VSX$W_W_PB_ID = [20,0,16,0],
+      VSX$W_W_VP_ID = [22,0,16,0],
+      VSX$W_W_NAME_LEN = [24,0,16,0],
+      VSX$B_W_NAME = [26,0,8,1],
+      VSX$b_w_spare3 = [27,0,8,1],
+      VSX$l_w_spare5 = [28,0,32,1],
+      VSX$l_w_spare6 = [32,0,32,1],
+      VSX$l_w_spare7 = [36,0,32,1],
+    VSX$R_VSXW = [12,0,0,0],
+      VSX$W_VP_X0 = [12,0,16,1],
+      VSX$W_VP_Y0 = [14,0,16,1],
+      VSX$W_VP_DX = [16,0,16,0],
+      VSX$W_VP_DY = [18,0,16,0],
+      VSX$W_VP_W_ID = [20,0,16,0],
+      VSX$W_VP_VS_ID = [22,0,16,0],
+      VSX$W_VP_BASE = [24,0,16,0],
+      VSX$w_vp_spare3 = [26,0,16,1],
+      VSX$l_vp_spare4 = [28,0,32,1],
+      VSX$l_vp_spare5 = [32,0,32,1],
+      VSX$l_vp_spare6 = [36,0,32,1],
+    VSX$R_VSXVP = [12,0,0,0],
+      VSX$W_VS_COLOR = [12,0,16,0],
+      VSX$w_vs_spare1 = [14,0,16,1],
+      VSX$l_vs_spare2 = [16,0,32,1],
+      VSX$l_vs_spare3 = [20,0,32,1],
+      VSX$l_vs_spare4 = [24,0,32,1],
+      VSX$l_vs_spare5 = [28,0,32,1],
+      VSX$l_vs_spare6 = [32,0,32,1],
+      VSX$l_vs_spare7 = [36,0,32,1],
+    VSX$R_VSXVS = [12,0,0,0],
+      VSX$W_PS_DEV_TYPE = [12,0,16,0],
+      VSX$W_PS_UNIT = [14,0,16,0],
+      VSX$W_PS_X0 = [16,0,16,0],
+      VSX$W_PS_Y0 = [18,0,16,0],
+      VSX$W_PS_VS_ID = [20,0,16,0],
+      VSX$w_ps_spare2 = [22,0,16,1],
+      VSX$W_PS_DX = [24,0,16,1],
+      VSX$W_PS_DY = [26,0,16,1],
+      VSX$l_ps_spare4 = [28,0,32,1],
+      VSX$l_ps_spare5 = [32,0,32,1],
+      VSX$l_ps_spare6 = [36,0,32,1],
+    VSX$R_VSXPS = [12,0,0,0],
+      VSX$L_VKB_STATE_BITS = [12,0,32,0],
+      VSX$L_VKB_TRANS_TABLE = [16,0,32,0],
+      VSX$L_VKB_DEVDEPEND = [20,0,32,0],
+      VSX$L_VKB_MOD_STATES = [24,0,32,0],
+      VSX$l_vkb_spare1 = [28,0,32,1],
+      VSX$l_vkb_spare2 = [32,0,32,1],
+      VSX$l_vkb_spare3 = [36,0,32,1],
+    VSX$R_VSXVKB = [12,0,0,0],
+      VSX$Q_VD_CHAR = [12,0,0,0],
+      VSX$L_VD_CHAR2 = [20,0,32,0],
+      VSX$q_ch_spare2 = [24,0,0,0],
+      VSX$q_ch_spare3 = [32,0,0,0],
+    VSX$R_VSXCHARS = [12,0,0,0],
+      VSX$W_CTRL_SUBJECT_ID = [12,0,16,0],
+      VSX$W_CTRL_OBJECT_ID = [14,0,16,0],
+      VSX$W_CTRL_X0 = [16,0,16,1],
+      VSX$W_CTRL_Y0 = [18,0,16,1],
+      VSX$W_CTRL_STACKING = [20,0,16,0],
+    VSX$R_VSXCTRL = [12,0,0,0],
+      VSX$L_PTR_X0 = [12,0,32,1],
+      VSX$L_PTR_Y0 = [16,0,32,1],
+      VSX$L_PTR_DX = [20,0,32,0],
+      VSX$L_PTR_DT = [24,0,32,0],
+      VSX$L_PTR_UP_MASK = [28,0,32,0],
+      VSX$L_PTR_DOWN_MASK = [32,0,32,0],
+      VSX$L_PTR_PB_ID = [36,0,32,1],
+    VSX$R_VSXPTR = [12,0,0,0],
+!  compilation of vddriver.mar to
+!  guarantee that the longest block
+!  defined up above does not hit
+!  the data used by the system.
+  VSX$R_VSXDEPENDENT = [12,0,0,0]
+  TES;
+literal VSX$S_VSXBLOCK = 40;
+MACRO VSXBLOCK = BLOCK [VSX$S_VSXBLOCK,byte] FIELD (VSX$VSXBLOCK_FIELDSET) %;
+! 					.
+!  VAX Station User Buffer structures  --  VSU
+! 					.
+literal VSU$K_W_NAME_POS = 14;
+literal VSU$S_VSUDEPENDENT = 28;
+FIELD VSU$VSUBLOCK_FIELDSET =
+  SET
+      VSU$W_VD_MODE = [0,0,16,0],
+      VSU$W_VD_CHARS = [2,0,16,0],
+      VSU$W_VD_BACKGROUND = [4,0,16,0],
+      VSU$W_VD_FOREGROUND = [6,0,16,0],
+      VSU$W_VD_HEIGHT = [8,0,16,0],
+      VSU$W_VD_WIDTH = [10,0,16,0],
+      VSU$W_VD_DEPTH = [12,0,16,0],
+      VSU$W_VD_BIT_PLANES = [14,0,16,0],
+      VSU$W_VD_LINE_HITE = [16,0,16,0],
+      VSU$W_VD_COLS_NORM = [18,0,16,0],
+      VSU$W_VD_COLS_WIDE = [20,0,16,0],
+      VSU$W_VD_ROWS = [22,0,16,0],
+      VSU$W_VD_TEXT_CODE = [24,0,16,0],
+      VSU$W_VD_PROTECTION = [26,0,16,0],
+    VSU$R_VSUVD = [0,0,0,0],
+      VSU$W_PB_COLOR_SPEC = [0,0,16,0],
+      VSU$W_PB_COLOR = [2,0,16,0],
+      VSU$W_PB_WIDTH = [4,0,16,0],
+      VSU$W_PB_HEIGHT = [6,0,16,0],
+      VSU$L_PB_FLAGS = [8,0,32,0],
+      VSU$W_PB_PROTECTION = [12,0,16,0],
+      VSU$w_spare8 = [14,0,16,1],
+      VSU$l_spare9 = [16,0,32,1],
+      VSU$l_spare10 = [20,0,32,1],
+      VSU$l_spare11 = [24,0,32,1],
+    VSU$R_VSUPB = [0,0,0,0],
+      VSU$W_W_X0 = [0,0,16,1],
+      VSU$W_W_Y0 = [2,0,16,1],
+      VSU$W_W_DX = [4,0,16,0],
+      VSU$W_W_DY = [6,0,16,0],
+      VSU$W_W_PB_ID = [8,0,16,0],
+      VSU$W_W_VP_ID = [10,0,16,0],
+      VSU$W_W_NAME_LEN = [12,0,16,0],
+      VSU$B_W_NAME = [14,0,8,1],
+      VSU$b_w_spare3 = [15,0,8,1],
+      VSU$l_w_spare5 = [16,0,32,1],
+      VSU$l_w_spare6 = [20,0,32,1],
+      VSU$l_w_spare7 = [24,0,32,1],
+    VSU$R_VSUW = [0,0,0,0],
+      VSU$W_VP_X0 = [0,0,16,1],
+      VSU$W_VP_Y0 = [2,0,16,1],
+      VSU$W_VP_DX = [4,0,16,0],
+      VSU$W_VP_DY = [6,0,16,0],
+      VSU$W_VP_W_ID = [8,0,16,0],
+      VSU$W_VP_VS_ID = [10,0,16,0],
+      VSU$W_VP_BASE = [12,0,16,0],
+      VSU$w_vp_spare3 = [14,0,16,1],
+      VSU$l_vp_spare4 = [16,0,32,1],
+      VSU$l_vp_spare5 = [20,0,32,1],
+      VSU$l_vp_spare6 = [24,0,32,1],
+    VSU$R_VSUVP = [0,0,0,0],
+      VSU$W_VS_COLOR = [0,0,16,0],
+      VSU$w_vs_spare1 = [2,0,16,1],
+      VSU$l_vs_spare2 = [4,0,32,1],
+      VSU$l_vs_spare3 = [8,0,32,1],
+      VSU$l_vs_spare4 = [12,0,32,1],
+      VSU$l_vs_spare5 = [16,0,32,1],
+      VSU$l_vs_spare6 = [20,0,32,1],
+      VSU$l_vs_spare7 = [24,0,32,1],
+    VSU$R_VSUVS = [0,0,0,0],
+      VSU$W_PS_DEV_TYPE = [0,0,16,0],
+      VSU$W_PS_UNIT = [2,0,16,0],
+      VSU$W_PS_X0 = [4,0,16,0],
+      VSU$W_PS_Y0 = [6,0,16,0],
+      VSU$W_PS_VS_ID = [8,0,16,0],
+      VSU$w_ps_spare2 = [10,0,16,1],
+      VSU$W_PS_DX = [12,0,16,1],
+      VSU$W_PS_DY = [14,0,16,1],
+      VSU$l_ps_spare4 = [16,0,32,1],
+      VSU$l_ps_spare5 = [20,0,32,1],
+      VSU$l_ps_spare6 = [24,0,32,1],
+    VSU$R_VSUPS = [0,0,0,0],
+      VSU$L_VKB_STATE_BITS = [0,0,32,0],
+      VSU$L_VKB_TRANS_TABLE = [4,0,32,0],
+      VSU$L_VKB_DEVDEPEND = [8,0,32,0],
+      VSU$L_VKB_MOD_STATES = [12,0,32,0],
+      VSU$l_vkb_spare1 = [16,0,32,1],
+      VSU$l_vkb_spare2 = [20,0,32,1],
+      VSU$l_vkb_spare3 = [24,0,32,1],
+    VSU$R_VSUVKB = [0,0,0,0],
+      VSU$Q_VD_CHAR = [0,0,0,0],
+      VSU$L_VD_CHAR2 = [8,0,32,0],
+      VSU$q_ch_spare2 = [12,0,0,0],
+      VSU$q_ch_spare3 = [20,0,0,0],
+    VSU$R_VSUCHARS = [0,0,0,0],
+      VSU$W_CTRL_SUBJECT_ID = [0,0,16,0],
+      VSU$W_CTRL_OBJECT_ID = [2,0,16,0],
+      VSU$W_CTRL_X0 = [4,0,16,1],
+      VSU$W_CTRL_Y0 = [6,0,16,1],
+      VSU$W_CTRL_STACKING = [8,0,16,0],
+    VSU$R_VSUCTRL = [0,0,0,0],
+      VSU$L_PTR_X0 = [0,0,32,1],
+      VSU$L_PTR_Y0 = [4,0,32,1],
+      VSU$L_PTR_DX = [8,0,32,0],
+      VSU$L_PTR_DT = [12,0,32,0],
+      VSU$L_PTR_UP_MASK = [16,0,32,0],
+      VSU$L_PTR_DOWN_MASK = [20,0,32,0],
+      VSU$L_PTR_PB_ID = [24,0,32,0],
+    VSU$R_VSUPTR = [0,0,0,0],
+  VSU$R_VSUDEPENDENT = [0,0,0,0]
+  TES;
+literal VSU$S_VSUBLOCK = 28;
+MACRO VSUBLOCK = BLOCK [VSU$S_VSUBLOCK,byte] FIELD (VSU$VSUBLOCK_FIELDSET) %;
+! 					.
+!  Read Extension Block -- RX
+! 					.
+FIELD RX$RXBLOCK_FIELDSET =
+  SET
+  RX$A_NXT = [0,0,32,0],
+  RX$A_PROMPT_UVA = [4,0,32,0],
+  RX$W_SIZE = [8,0,16,0],
+  RX$B_TYPE = [10,0,8,0],
+  RX$b_rx_spare1 = [11,0,8,1],
+  RX$L_BREAK_TABLE = [12,0,32,0],
+  RX$L_BT2 = [16,0,32,0],
+  RX$L_BT3 = [20,0,32,0],
+  RX$L_BT4 = [24,0,32,0],
+  RX$L_BT5 = [28,0,32,0],
+  RX$L_BT6 = [32,0,32,0],
+  RX$L_BT7 = [36,0,32,0],
+  RX$L_BT8 = [40,0,32,0],
+  RX$L_REGION = [44,0,32,0],
+  RX$W_LINE = [48,0,16,0],
+  RX$W_FIELD = [50,0,16,0],
+  RX$W_PROMPT_SIZE = [52,0,16,0],
+  RX$W_PB_ID = [54,0,16,0],
+  RX$B_PROMPT = [56,0,8,0]
+  TES;
+literal RX$S_RXBLOCK = 57;
+MACRO RXBLOCK = BLOCK [RX$S_RXBLOCK,byte] FIELD (RX$RXBLOCK_FIELDSET) %;
+! 
+!  Define font weight structure.  The code assumes that this structure
+!  completely fits in the low 31 bits of a longword, such that two of them
+!  can be quickly compared with simple arithmetic, so be careful not to
+!  expand this too much !
+! 
+!  For the same reason, the code also assumes that the more important
+!  weightings are in the more significant bits, so be careful about order.
+! 
+FIELD fw$font_weight_FIELDSET =
+  SET
+  fw$v_fits = [0,0,1,0],                !  On if font fits on line
+  fw$v_alg_rend = [0,1,1,0],            !  On if only mismatched rendition bits
+!  are algorithmically generatable
+!  renditions
+  fw$v_rend = [0,2,1,0],                !  On if all renditions match
+  fw$v_typesize = [0,3,8,0],
+!  100 - difference in type size
+  fw$v_typeface = [0,11,1,0]            !  On if typeface matches exactly
+  TES;
+literal fw$s_font_weight = 2;
+MACRO font_weight = BLOCK [fw$s_font_weight,byte] FIELD (fw$font_weight_FIELDSET) %;
+! 
+!  Define virtual memory block.  The block contains bookkeeping as well
+!  as actual memory for caller usage.
+! 
+!  The bookkeeping allows us to determine:
+! 
+! 	1)  whether callers clobber memory before or after their allocated
+! 	    portion.
+! 	2)  whether callers neglect to free memory (checked at end of session)
+! 
+literal vm$k_first_adr = 28;            !  Caller's usable portion
+!  --- Caution ! ---
+FIELD vm$vm_block_FIELDSET =
+  SET
+!  --- Caution ! ---
+!  "first_adr" MUST end up with a value
+!  divisible by 4, due to some usages
+!  which depend on their memory buffers
+!  aligned on words or longwords.
+  vm$a_flink = [0,0,32,0],              !  Forward link to another memory blk
+  vm$a_blink = [4,0,32,0],              !  Backward link to another memory blk
+  vm$a_caller_pc = [8,0,32,0],          !  PC of requestor for this memory
+  vm$a_callr_callr_pc = [12,0,32,0],    !  PC of caller of requestor for memory
+  vm$a_clr_clr_clr_pc = [16,0,32,0],    !  PC of caller of caller of requestor
+  vm$a_cl_cl_cl_cl_pc = [20,0,32,0],    !  Hopefully four is enough for
+!  diagnosis
+  vm$l_hdr_len = [24,0,32,1],           !  Number of bytes of mem requested.
+!  "first_adr" MUST end up with a value
+!  divisible by 4, due to some usages
+!  which depend on their memory buffers
+!  aligned on words or longwords.
+! 
+!  The following fields are prefixed with "end_" to remind programmers
+!  that these must be accessed by adding the caller's buffer size.
+!  They float beyond that buffer.
+! 
+  vm$l_end_tlr_len = [28,0,32,1]        !  Number of bytes of mem requested.
+!  This item floats just after usable
+!  portion to catch callers that write
+!  beyond their usable portion
+  TES;
+literal vm$s_vm_block = 32;
+MACRO vm_block = BLOCK [vm$s_vm_block,byte] FIELD (vm$vm_block_FIELDSET) %;
+! 					.
+!  End of module $VSDEF
+! 					.

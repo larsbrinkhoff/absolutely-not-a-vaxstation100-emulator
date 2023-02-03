@@ -1,0 +1,797 @@
+! VSGISP.BLI - VaxStation GIdis Shaded Pathes processes, Bliss source
+!
+!
+MODULE VSTA$GID_sp(
+    IDENT = 'GIDIS Shaded paths',
+    ADDRESSING_MODE (NONEXTERNAL = GENERAL, EXTERNAL = GENERAL)) =
+BEGIN
+!++
+! Facility: VAXStation software (vs)
+!
+! GIDIS - General Image Display Instruction Set
+!
+! Abstract:
+!
+!	This module handles calls to the WGA fill_area command.  This is
+!	done for the explicit polygon fill Gidis commands, and for the fill
+!	to line and fill-to-point modes.
+!
+! Environment:
+!
+GLOBAL LITERAL GID$$SP_Edit_level = 1;
+!
+!--
+LIBRARY 'VSTA$LIBRARY:vsging';			! Native Graphics interface
+LIBRARY 'VSTA$LIBRARY:vsgisf';			! Gidis state fetcher
+LIBRARY 'VSTA$LIBRARY:vsgias';			! Appearance selector
+LIBRARY 'VSTA$LIBRARY:libmacros';		! For PSECT definitions
+LIBRARY 'vsta$library:vstasyms';
+
+library_file_crock;
+
+$vsta_psect;
+
+LITERAL			! Pathing_submode literals
+    GID$$SP_polygon_mode = 1,
+    GID$$SP_vector_mode = 2,
+    GID$$SP_open_curve_mode = 3,
+    GID$$SP_closed_curve_mode = 4,
+    GID$$SP_last_submode = 4;
+
+EXTERNAL ROUTINE	! Memory allocation routines
+    VS$$ACP_get_vm,
+    VS$$ACP_free_vm;
+
+EXTERNAL ROUTINE vsta$$error;
+
+
+		 !---------------------------------------!
+		 !       State block for fl_stuff        !
+		 !---------------------------------------!
+
+    COMPILETIME state_file_size = 0;
+
+!	This block contains any data that is part of fill_area and is passed
+!	by reference.  Because fill_area is asynchronous, this must be kept
+!	seperate from other state data.  A new buffer of this stuff is
+!	allocated each time fill_area is called.  The fill_area completion
+!	routine deallocates this buffer after the operation is complete.
+!
+
+    FIELD fill_area_fields =
+	SET
+	fl_block_length		= longword_scalar, ! Length for free_vm of this
+
+!	First and last X and Y are the points where the drawn curve actually
+!	begins and ends in fill-to modes. These are used in end_shaded to
+!	produce a closed polygon against the fill-to object.
+
+	fl_first_x		= word_scalar,
+	fl_first_y		= word_scalar,
+	fl_last_x		= word_scalar,
+	fl_last_y		= word_scalar,
+	fl_useful_path		= byte_scalar,
+word_align	fl_map			= longword_scalar, ! Write map data
+word_align	fl_clip_list		= what_follows,	  ! The clipping region
+		    fl_clip_x		= word_scalar,
+		    fl_clip_y		= word_scalar,
+		    fl_clip_width	= word_scalar,
+		    fl_clip_height	= word_scalar,
+word_align	fl_path			= what_follows_word_vector
+	TES;
+
+    LITERAL fl_table_size = state_file_size;
+
+    UNDECLARE state_file_size;
+
+FORWARD ROUTINE add_to_polygon;
+
+
+!+
+ROUTINE path_length_heuristic =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Guess at how big of a path buffer we need for polygon fill,
+!	in coordinate pairs
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    100
+    END;
+
+
+GLOBAL ROUTINE GID$$SP_new_shaded =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+!	Current Fill_area buffer area state, if any
+! Implicit outputs:
+!	New fill_area state, initialized
+! Function:
+!	Create a new fill area buffer
+! Algorithm:
+!	If one already exists, free it.
+!	Then create a new one.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	fl_block : REF state_instance FIELD (fill_area_fields),
+	status;
+
+    IF .sf[ fl_len] NEQ 0
+    THEN	! Buffer exists, cause it to go away
+        VS$$ACP_free_vm( sf[ fl_len], sf[ fl_stuff]);
+    sf[ path_buffer_size] = path_length_heuristic();
+!	For each coordinate pair, there is 3 words in the path
+!	buffer, so multiply by 6 bytes the path size estimate
+!	when allocating memory
+    sf[ fl_len] = (.sf[ path_buffer_size] * 6) + fl_table_size;
+    status = VS$$ACP_get_vm( sf[ fl_len], sf[ fl_stuff]);
+    IF NOT .status THEN VSTA$$Error( .status);
+    sf[ path_count] = 0;
+    sf[ shading_direction] = 0;
+    sf[ pathing_mode] = GID$$PA_shaded_path;
+    sf[ pathing_submode] = -1;
+    fl_block = .sf[ fl_stuff];
+    fl_block[ fl_last_x] = .sf[ x_hard_pos];
+    fl_block[ fl_last_y] = .sf[ y_hard_pos];
+    fl_block[ fl_useful_path] = 0;
+    .status
+    END;
+
+!+
+ROUTINE add_to_polygon(
+    flag_word,			! Flag word to use in path buffer
+    X,		!
+    Y		!
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status,
+	fl_block : REF state_instance FIELD (fill_area_fields),
+	path_index;		! Word index into PATH for next entry
+
+!	Check the path to see if the new point is the same as the last point in
+!	the path.  Only add the point if it is not redundant.  This helps the
+!	68000 firmware, since it doesn't do repeated points very well, especially
+!	the null polygon.
+
+    fl_block = .sf[ fl_stuff];
+    path_index = (.sf[ path_count]-1)*3;
+    IF .fl_block[ fl_path, .path_index] EQL .X		! X matches
+    THEN IF .fl_block[ fl_path, .path_index+1] EQL .Y	! Y matches
+    THEN IF .flag_word EQL 0 OR .flag_word EQL 2	! Flags uninteresting
+    THEN RETURN( 1);
+
+    IF .sf[ path_count] GEQ .sf[ path_buffer_size]
+    THEN ! We have exceed the buffer size, create a larger one
+	BEGIN
+	LOCAL
+	    new_buffer: REF state_instance FIELD (fill_area_fields),
+	    new_len;
+
+!	Determine the new buffer size
+
+	sf[ path_buffer_size] = .sf[ path_buffer_size]
+	    + path_length_heuristic();
+	new_len = (.sf[ path_buffer_size] * 6) + fl_table_size;
+
+!	Get a new buffer
+
+	status = VS$$ACP_get_vm( new_len, new_buffer);
+	IF NOT .status THEN VSTA$$Error( .status);
+
+!	Copy over the old data into the new buffer
+
+	CH$MOVE( .sf[ fl_len], .sf[ fl_stuff], .new_buffer);
+
+!	Deallocate the old buffer
+
+        IF .sf[ fl_len] NEQ 0
+        THEN	! Buffer exists, cause it to go away
+            VS$$ACP_free_vm( sf[ fl_len], sf[ fl_stuff]);
+
+!	Make the new buffer current
+
+	sf[ fl_len] = .new_len;
+	sf[ fl_stuff] = .new_buffer;
+	END;
+
+    fl_block = .sf[ fl_stuff];
+    path_index = .sf[ path_count]*3;
+    fl_block[ fl_path, .path_index] = .X;
+    fl_block[ fl_path, .path_index+1] = .Y;
+    fl_block[ fl_path, .path_index+2] = .flag_word;
+    sf[ path_count] = .sf[ path_count] + 1;
+    1
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$SP_end_shaded =
+! Routine value:
+!	Error status
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Perform actions needed before leaving shaded mode.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    ROUTINE fl_completion_routine(
+	state: REF state_instance FIELD (fill_area_fields)
+	) =
+	BEGIN
+	VS$$ACP_Free_vm( state[ fl_block_length], state)
+	END;
+
+    LOCAL
+	fl_block : REF state_instance FIELD (fill_area_fields),
+        status;
+
+    fl_block = .sf[ fl_stuff];
+
+!	The useful_path flag is set to TRUE when the first actual DRAWING
+!	operation is done on this path.  If it is not true, the fill is
+!	invalid, and should not be used.
+
+
+    IF .fl_block[ fl_useful_path] EQL 0
+    THEN ! This packet is not valid, do not send it !
+	BEGIN
+	status = VS$$ACP_free_vm( sf[ fl_len], sf[ fl_stuff]);
+	IF NOT .status THEN VSTA$$Error( .status);
+	sf[ fl_len] = 0;
+	sf[ fl_stuff] = 0;
+	sf[ pathing_mode] = GID$$PA_no_path_in_progress;
+	RETURN( .status);
+	END;
+
+    CASE .sf[ pathing_submode] FROM 1 TO GID$$SP_last_submode OF
+    SET
+    [ GID$$SP_vector_mode, GID$$SP_open_curve_mode, GID$$SP_closed_curve_mode]:
+	BEGIN
+
+!	Add the vectors needed to shade the area
+
+	add_to_polygon(
+	    path_move_flag,
+	    .fl_block[ fl_last_x],
+	    .fl_block[ fl_last_y]);
+	CASE .sf[ shading_mode]
+	FROM GID$$AS_not_shading
+	TO GID$$AS_number_of_shading_modes-1
+	OF
+	    SET
+	    [GID$$AS_not_shading]:;
+
+	    [GID$$AS_shade_to_mast]:
+	        BEGIN
+		add_to_polygon( 0, .sf[ shading_x], .fl_block[ fl_last_y]);
+		add_to_polygon( 0, .sf[ shading_x], .fl_block[ fl_first_y]);
+		END;
+
+	    [GID$$AS_shade_to_boom]:
+		BEGIN
+		add_to_polygon( 0, .fl_block[ fl_last_x], .sf[ shading_y]);
+		add_to_polygon( 0, .fl_block[ fl_first_x], .sf[ shading_y]);
+		END;
+
+	    [GID$$AS_shade_to_point]:
+		BEGIN
+		add_to_polygon( 0, .sf[ shading_x], .sf[ shading_y]);
+		END;
+	    TES;
+	END;
+    [ GID$$SP_polygon_mode]: !Gidis not in a vectored shading mode
+	;
+    TES;
+
+!	Close the polygon
+
+    add_to_polygon( path_end_closed_figure_flag,
+	.fl_block[ fl_first_x], .fl_block[ fl_first_y]);
+
+!	Set the fill_area block to contain the current values of things.
+!	(The path is already there, but that is all.)
+
+    fl_block[ fl_block_length] = .sf[ fl_len];
+    fl_block[ fl_map] = .sf[ map_for_ca];
+    fl_block[ fl_clip_x] = .sf[ clipping_x];
+    fl_block[ fl_clip_y] = .sf[ clipping_y];
+    fl_block[ fl_clip_width] = .sf[ clipping_width];
+    fl_block[ fl_clip_height] = .sf[ clipping_height];
+
+    IF .sf[ shading_needs_updating]
+    THEN GID$$AS_Area_texture(
+	.sf[ shading_alphabet],
+	.sf[ shading_char],
+	.sf[ shading_width],
+	.sf[ shading_height]);
+
+!	Work around firmware problem with null polygons. 
+
+    IF .sf[ path_count] LEQ 2
+    THEN
+	BEGIN
+	fl_block[ fl_path, 2] = 2;
+	fl_block[ fl_path, 5] = 0;
+	status = $VSTADRAW(
+	SRCTYP = .sf[ area_texture_type],
+	SOURCE = (IF .sf[ area_texture_type] EQL nat$k_src_constant
+	    THEN .sf[ source1]
+	    ELSE sf[ area_texture_descriptor]),
+	MSKTYP = nat$k_msk_rectangle,
+	MASK = UPLIT WORD( 1, 1),
+	PATBLK = UPLIT WORD( 1, 1, 1), PATSTA = UPLIT WORD( 0, 0),
+	DSTTYP = nat$k_dst_vd,
+	DST = .sf[ display_id],
+	MAPTYP = .sf[ map_type_for_ca],
+	MAPADR = fl_block[ fl_map],
+	PTHNUM = .sf[ path_count],
+	PTHADR = fl_block[ fl_path, 0],
+	RECNUM = 1,
+	RECADR = fl_block[ fl_clip_list],
+	ASTADR = fl_completion_routine,
+	ASTPRM = .sf[ fl_stuff])
+	END
+    ELSE status = $VSTAFILL(
+	SRCTYP = .sf[ area_texture_type],
+	SOURCE = (IF .sf[ area_texture_type] EQL nat$k_src_constant
+	    THEN .sf[ source1]
+	    ELSE sf[ area_texture_descriptor]),
+	DSTTYP = nat$k_dst_vd,
+	DST = .sf[ display_id],
+	MAPTYP = .sf[ map_type_for_ca],
+	MAPADR = fl_block[ fl_map],
+	PTHNUM = .sf[ path_count],
+	PTHADR = fl_block[ fl_path, 0],
+	RECNUM = 1,
+	RECADR = fl_block[ fl_clip_list],
+	ASTADR = fl_completion_routine,
+	ASTPRM = .sf[ fl_stuff]);
+
+    IF NOT .status THEN VSTA$$Error( .status);
+    sf[ fl_len] = 0;
+    sf[ fl_stuff] = 0;
+    sf[ pathing_mode] = GID$$PA_no_path_in_progress;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$SP_flush_shaded =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Perform any possible partial drawing and remain in current pathing
+!	mode.  This routine is called when in a shading mode when a buffer
+!	boundary is reached.
+! Algorithm:
+!	In polygon-fill mode, flush has no effect.  In vector mode, the vector
+!	is terminated, and the resulting polygon is filled.
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	status;
+
+    SELECTONE .sf[ pathing_submode] OF
+    SET
+    [ GID$$SP_open_curve_mode, GID$$SP_closed_curve_mode]:
+	BEGIN
+	LOCAL
+	    fl_block : REF state_instance FIELD (fill_area_fields),
+	    next_fl_stuff: REF state_instance FIELD (fill_area_fields),
+	    next_path_buffer_size,
+	    next_fl_len,
+	    next_path_count,
+	    next_last_x,
+	    next_last_y;
+
+	IF .sf[ path_count] LEQ 3
+	THEN ! There are 3 or fewer points, so nothing changes
+	    BEGIN
+	    status = 1;
+	    END
+	ELSE
+	    BEGIN
+	    fl_block = .sf[ fl_stuff];
+	    next_path_buffer_size = path_length_heuristic();
+	    next_fl_len = (.next_path_buffer_size * 6) + fl_table_size;
+	    status = VS$$ACP_get_vm( next_fl_len, next_fl_stuff);
+	    IF NOT .status THEN VSTA$$Error( .status);
+	    next_last_x = .fl_block[ fl_last_x];
+	    next_last_y = .fl_block[ fl_last_y];
+
+!	Move the last 3 points to new buffer, make the 1st a move.
+
+	    INCR i FROM 0 TO 8 DO
+		BEGIN
+		LOCAL offset;
+		offset = (.sf[ path_count] - 3) * 3;
+		next_fl_stuff[fl_path, .i] = .fl_block[ fl_path, .i + .offset];
+		END;
+	    next_fl_stuff[ fl_path, 2] = path_move_flag;! Change flag words
+	    next_fl_stuff[ fl_path, 5] = path_move_flag
+		OR path_curved_flag
+		OR path_start_closed_flag;
+	    next_fl_stuff[ fl_first_x] = .next_fl_stuff[ fl_path, 3];
+	    next_fl_stuff[ fl_first_y] = .next_fl_stuff[ fl_path, 4];
+
+	    status = GID$$SP_end_shaded();
+
+	    sf[ fl_stuff] = .next_fl_stuff;
+	    sf[ fl_len] = .next_fl_len;
+	    sf[ path_count] = 3;
+	    sf[ path_buffer_size] = .next_path_buffer_size;
+	    sf[ shading_direction] = 0;
+	    sf[ pathing_mode] = GID$$PA_shaded_path;
+	    fl_block = .sf[ fl_stuff];
+	    fl_block[ fl_last_x] = .next_last_x;
+	    fl_block[ fl_last_y] = .next_last_y;
+	    fl_block[ fl_useful_path] = 0;
+	    END;
+	END;
+    [ GID$$SP_vector_mode]:
+	BEGIN
+	LOCAL
+	    fl_block : REF state_instance FIELD (fill_area_fields);
+
+	status = GID$$SP_end_shaded();
+	status = GID$$SP_new_shaded();
+	fl_block = .sf[ fl_stuff];
+	fl_block[ fl_first_x] = .sf[ x_hard_pos];
+	fl_block[ fl_first_y] = .sf[ y_hard_pos];
+	sf[ pathing_submode] = GID$$SP_vector_mode;
+	add_to_polygon(
+	    path_move_flag OR path_start_closed_flag,
+	    .sf[ x_hard_pos],
+	    .sf[ y_hard_pos])
+	END;
+    [ GID$$SP_polygon_mode, OTHERWISE]: status = 1;
+!	Polygons are never flushed !
+    TES;
+    .status
+    END;
+
+!+
+ROUTINE check_fill_to_flush(
+    X,Y		! Ending point of vector to add, in hard coordinate space
+    ) =
+! Routine value:
+!	Status code
+! Implicit inputs:
+!	The last position in the path buffer must be the starting point
+!	of this vector.  The path buffer will be left at the provided [X, Y].
+! Implicit outputs:
+! Function:
+!	Check for the need to flush the polygon when in fill-to modes
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	x_sign,
+	y_sign,
+	fl_block : REF state_instance FIELD (fill_area_fields),
+	status;
+
+    status = 1;
+    fl_block = .sf[ fl_stuff];
+
+!	Find out which way the vector is going
+
+    x_sign = sign( .x - .fl_block[ fl_last_x]);
+    y_sign = sign( .y - .fl_block[ fl_last_y]);
+
+!	Decide if we need to flush
+
+    CASE .sf[ shading_mode]
+    FROM GID$$AS_not_shading
+    TO GID$$AS_number_of_shading_modes-1
+    OF
+	SET
+	[GID$$AS_not_shading]:;
+
+	[GID$$AS_shade_to_mast]:
+	    BEGIN
+	    IF .sf[ shading_direction] EQL 0
+	    THEN sf[ shading_direction] = .y_sign;
+	    IF .y_sign EQL -.sf[ shading_direction]
+	    THEN ! Shading has folded back, flush this polygon
+		BEGIN
+		status = GID$$SP_flush_shaded();
+		END;
+	    END;
+
+	[GID$$AS_shade_to_boom]:
+	    BEGIN
+	    IF .sf[ shading_direction] EQL 0
+	    THEN sf[ shading_direction] = .x_sign;
+	    IF .x_sign EQL -.sf[ shading_direction]
+	    THEN ! Shading has folded back, flush this polygon
+		BEGIN
+		status = GID$$SP_flush_shaded();
+		END;
+	    END;
+
+	[GID$$AS_shade_to_point]:
+	    BEGIN
+	    status = GID$$SP_flush_shaded();
+	    END;
+	TES;
+
+    fl_block = .sf[ fl_stuff];
+    fl_block[ fl_last_x] = .x;
+    fl_block[ fl_last_y] = .y;
+
+    .status
+    END;
+
+!+
+GLOBAL ROUTINE GID$$SP_Shade_continue(	! Continue a path
+    X,					! Ending X in Hardware coordinate space
+    Y					! Ending Y in Hardware coordinate space
+    ) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Continue a path in the current shading mode and path type
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	fl_block : REF state_instance FIELD (fill_area_fields),
+        status;
+
+    fl_block = .sf[ fl_stuff];
+    SELECTONE .sf[ pathing_submode] OF
+    SET
+    [ GID$$SP_polygon_mode]:
+	BEGIN
+	fl_block[ fl_useful_path] = 1;	! Path is useful
+	status = add_to_polygon( 0,
+	    .X,
+	    .Y);
+	END;
+    [ GID$$SP_vector_mode]:
+	BEGIN
+	status = check_fill_to_flush( .X, .Y);
+	IF NOT .status THEN RETURN .status;
+	fl_block = .sf[ fl_stuff];
+	fl_block[ fl_useful_path] = 1;	! Path is useful
+	status = add_to_polygon( 0, .x, .y);
+	END;
+    [ GID$$SP_open_curve_mode, GID$$SP_closed_curve_mode]:
+	BEGIN
+	LOCAL first_flag;
+
+	first_flag = 0;
+	sf[ first_counter] = .sf[ first_counter] + 1;
+	IF .sf[ first_counter] EQL 1
+	THEN ! This will be the first drawn point, set it
+	    BEGIN
+	    fl_block[ fl_first_x] = .x;
+	    fl_block[ fl_first_y] = .y;
+	    first_flag = path_start_closed_flag;
+	    END;
+	IF .sf[ first_counter] GTR 2
+	THEN ! Check for filling-to boundary,
+	     ! There are printable segments in the curve, so turn off the
+	     ! move flag in the last printable segment, and mark path as useful
+	    BEGIN
+
+!	Find out if drawing the last segment will require that the buffer be
+!	flushed,
+
+	    check_fill_to_flush(
+		.fl_block[ fl_path, .sf[ path_count]*3 -3],	! Last X
+		.fl_block[ fl_path, .sf[ path_count]*3 -2]);	! Last Y
+
+!	Change the last thing in the path to a draw (Note that if the above
+!	did a flush, that the path count will be different.)
+
+	    fl_block = .sf[ fl_stuff];
+	    fl_block[ fl_path, .sf[ path_count]*3 - 1] = path_curved_flag;
+	    fl_block[ fl_useful_path] = 1;	! Path is useful
+	    END;
+	IF .sf[ first_counter] LSS 3
+	THEN ! We are getting the endpoints for closing the curve
+	    BEGIN
+	    sf[ first_few_x, .sf[ first_counter]] = .X;
+	    sf[ first_few_y, .sf[ first_counter]] = .Y;
+	    END;
+
+	status = add_to_polygon(
+	    path_curved_flag OR path_move_flag OR .first_flag,
+	    .X,
+	    .Y);
+	END;
+    [ OTHERWISE]: !Gidis not in correct pathing submode
+	BEGIN
+	status = 1;
+	END;
+    TES;
+    .status
+    END;
+
+
+GLOBAL ROUTINE GID$$SP_reposition(
+	X,
+	Y
+	) =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	In this version of Gidis, this is what happens if a
+!	position occurs in a polygon.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    GID$$SP_end_shaded()
+    END;
+
+!+
+GLOBAL ROUTINE GID$$SP_polyshade_begin_open =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Start filling to current fill point in current fill mode?
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    IF .sf[ pathing_submode] NEQ GID$$SP_vector_mode
+    THEN
+	BEGIN
+	LOCAL
+	    fl_block : REF state_instance FIELD (fill_area_fields);
+
+	fl_block = .sf[ fl_stuff];
+	fl_block[ fl_first_x] = .sf[ x_hard_pos];
+	fl_block[ fl_first_y] = .sf[ y_hard_pos];
+	sf[ pathing_submode] = GID$$SP_vector_mode;
+	add_to_polygon(
+	    path_move_flag OR path_start_closed_flag,
+	    .sf[ x_hard_pos],
+	    .sf[ y_hard_pos])
+	END;
+    1
+    END;
+
+!+
+GLOBAL ROUTINE GID$$SP_curveshade_begin_open =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation, filling in current
+!	fill mode.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ first_counter] = 0;
+    sf[ first_few_x, 0] = .sf[ x_hard_pos];
+    sf[ first_few_y, 0] = .sf[ y_hard_pos];
+    sf[ pathing_submode] = GID$$SP_open_curve_mode;
+    add_to_polygon(
+	path_move_flag,
+	.sf[ x_hard_pos],
+	.sf[ y_hard_pos])
+    END;
+
+!+
+GLOBAL ROUTINE GID$$SP_curveshade_begin_closed =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Force the start of a new curve interpolation, filling in current
+!	fill mode.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    sf[ first_counter] = 0;
+    sf[ first_few_x, 0] = .sf[ x_hard_pos];
+    sf[ first_few_y, 0] = .sf[ y_hard_pos];
+    sf[ pathing_submode] = GID$$SP_closed_curve_mode;
+    add_to_polygon(
+	path_move_flag,
+	.sf[ x_hard_pos],
+	.sf[ y_hard_pos])
+    END;
+
+!+
+GLOBAL ROUTINE GID$$SP_Shade_end =
+! Routine value:
+!	Error status code
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Terminate the shaded curve interpolation, or terminate the
+!	polygon fill.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	fl_block : REF state_instance FIELD (fill_area_fields),
+        status;
+
+    fl_block = .sf[ fl_stuff];
+    SELECTONE .sf[ pathing_submode]
+    OF SET
+    [ GID$$SP_closed_curve_mode]:
+	BEGIN !	Add points needed to close curve and end it!
+	status = GID$$SP_shade_continue(
+	    .sf[ first_few_x, 0],
+	    .sf[ first_few_y, 0]);
+	status = GID$$SP_shade_continue(
+	    .sf[ first_few_x, 1],
+	    .sf[ first_few_y, 1]);
+	status = GID$$SP_shade_continue(
+	    .sf[ first_few_x, 2],
+	    .sf[ first_few_y, 2]);
+	IF NOT .status THEN VSTA$$Error( .status);
+	status = GID$$SP_end_shaded();
+	END;
+    [ GID$$SP_polygon_mode]: 
+	status = GID$$SP_end_shaded();
+    [ OTHERWISE]: status = 1;
+    TES;
+    .status
+    END;
+
+
+!+
+GLOBAL ROUTINE GID$$SP_filled_poly_begin =
+! Routine value:
+! Implicit inputs:
+! Implicit outputs:
+! Function:
+!	Switch to polygon fill mode.  We assume that a new_shaded
+!	call has just been done.  The polygon is continued with
+!	GID$$SP_shade_continue, and ended with GID$$SP_shade_end.
+! Algorithm:
+! Side effects:
+!-
+    BEGIN
+    LOCAL
+	fl_block : REF state_instance FIELD (fill_area_fields);
+
+    sf[ pathing_submode] = GID$$SP_polygon_mode;
+    fl_block = .sf[ fl_stuff];
+    fl_block[ fl_first_x] = .sf[ x_hard_pos];
+    fl_block[ fl_first_y] = .sf[ y_hard_pos];
+    add_to_polygon(
+	path_move_flag OR path_start_closed_flag,
+	.sf[ x_hard_pos],
+	.sf[ y_hard_pos])
+    END;
+END
+ELUDOM

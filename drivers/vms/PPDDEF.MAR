@@ -1,0 +1,105 @@
+  ;
+ ;	LOGINOUT data structure definitions
+ ;
+ ; IDENT	'V04-000'
+ ;
+ ;++
+ ; FACILITY:  Command language interpreter
+ ;
+ ; ABSTRACT:
+ ;
+ ;	These are the structure definitions used by LOGIN
+ ;
+ ; ENVIRONMENT:
+ ;
+ ;	VAX/VMS operating system.
+ ;
+ 
+
+ ;
+ ; Define LOGIN <--> CLI <--> LOGOUT communication region
+ ;
+ ; This structure is based at CTL$AG_CLIDATA.  It contains all cells
+ ; which are used by both LOGINOUT and the CLI.
+ ;
+ ; Do NOT define LOGINOUT private storage here.  Any cells which are
+ ; strictly local to LOGIN and LOGOUT are defined in LGI.
+ ;
+ ; These cells MUST be maintained constant from release to release,
+ ; or else all CLIs will have to be re-assembled.
+ ;
+ ; In addition to the following data items, the following logical names
+ ; are also passed from LOGIN to the CLI initialization code:
+ ;
+ ;	PROC1-8				; Procedures to initially execute
+ ;	P1-8				; Initial parameters for batch jobs
+ ;	SYS$INPUT			; Primary input stream (PPF)
+ ;	SYS$OUTPUT			; Primary output stream (PPF)
+ ;	SYS$ERROR			; Primary error stream (PPF)
+ ;	SYS$COMMAND			; Command terminal (PPF)
+ ;
+
+ 	.MACRO	$PPDDEF,$GBL
+
+ 	$DEFINI	PPD,$GBL
+
+
+ $DEF	PPD$W_SIZE	.BLKW		; Actual size of structure
+ $EQU	PPD$V_NOCTLY	0		; Initially disable CTRL/Y in CLI
+ $EQU	PPD$M_NOCTLY	1
+ $EQU	PPD$V_MODE	1		; 1 if network, batch, or detached
+ $EQU	PPD$M_MODE	2
+					; 0 if subprocess or interactive
+ $EQU	PPD$V_CONTINUE	2		; Used by DCL for context in batch
+ $EQU	PPD$M_CONTINUE	4
+ $EQU	PPD$V_CAPTIVE	3		; 1 if captive, 0 if not
+ $EQU	PPD$M_CAPTIVE	8
+ $EQU	PPD$V_RESTART	4		; 1 if a restart, 0 otherwise
+ $EQU	PPD$M_RESTART	16
+ $EQU	PPD$V_INPCCL	5		; 1 if input is concealed
+ $EQU	PPD$M_INPCCL	32
+ $EQU	PPD$V_OUTCCL	6		; 1 if output is concealed
+ $EQU	PPD$M_OUTCCL	64
+ $DEF	PPD$W_FLAGS	.BLKW		; Flags
+ $EQU	PPD$S_CLIREG	8
+ 					; (approximately 2-3 pages or so)
+ $DEF	PPD$Q_CLIREG	.BLKB	4	; Descriptor of CLI private data storage
+ $DEF	PPD$L_PRC	.BLKL		; Address of CLI private data storage
+ $EQU	PPD$S_CLISYMTBL	8
+ 					; (size from SYSGEN param CLISYMTBL)
+ $DEF	PPD$Q_CLISYMTBL	.BLKQ		; Descriptor of symbol table storage
+ $DEF	PPD$L_LGI	.BLKL		; Address of LOGINOUT private storage
+ $DEF	PPD$L_LSTSTATUS	.BLKL		; Final status code from CLI to LOGOUT
+ 					; execute (names in lognames PROC1-N)
+ $DEF	PPD$B_NPROCS	.BLKB		; Number of procedures to initially
+ 				
+ 			.BLKB	1
+ 					; outstanding I/O)
+ $DEF	PPD$W_INPCHAN	.BLKW		; Channel to SYS$INPUT (used to $CANCEL
+ $DEF	PPD$W_INPIFI	.BLKW		; SYS$INPUT IFI
+ $DEF	PPD$W_INPISI	.BLKW		; SYS$INPUT ISI
+ $DEF	PPD$W_OUTIFI	.BLKW		; SYS$OUTPUT IFI
+ $EQU	PPD$C_DVIFID	28			; Length of DVI/DID/FID block
+ $DEF	PPD$W_OUTISI	.BLKW		; SYS$OUTPUT ISI
+ $EQU	PPD$S_INPDVI	16
+ $DEF	PPD$T_INPDVI	.BLKB	16	; SYS$INPUT ASCIC device name
+ $EQU	PPD$S_INPFID	6
+ $DEF	PPD$W_INPFID	.BLKW	3	; SYS$INPUT file id
+ $EQU	PPD$S_INPDID	6
+ $DEF	PPD$W_INPDID	.BLKW	3	; SYS$INPUT directory file id
+ $DEF	PPD$L_INPDEV	.BLKL		; SYS$INPUT device characteristics
+ $EQU	PPD$S_OUTDVI	16
+ $DEF	PPD$T_OUTDVI	.BLKB	16	; SYS$OUTPUT ASCIC device name
+ $EQU	PPD$S_OUTFID	6
+ $DEF	PPD$W_OUTFID	.BLKW	3	; SYS$OUTPUT file id
+ $EQU	PPD$S_OUTDID	6
+ $DEF	PPD$W_OUTDID	.BLKW	3	; SYS$OUTPUT directory file id
+ $DEF	PPD$L_OUTDEV	.BLKL		; SYS$OUTPUT device characteristics
+ $EQU	PPD$S_FILENAME	256
+ $DEF	PPD$T_FILENAME	.BLKB	256	; Name of SYS$INPUT at login
+ $DEF	PPD$C_LENGTH
+
+ $DEF	PPD$K_LENGTH			; Length of fixed portion
+ 	$DEFEND	PPD,$GBL,DEF
+
+ 	.ENDM	$PPDDEF
