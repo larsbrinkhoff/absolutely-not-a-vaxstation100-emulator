@@ -3,12 +3,12 @@
 
 #include "mc2661.c"
 
-u8 read_tablet(u32 a) {
+u8 read_b_tablet(u32 a) {
   u8 x = mc2661_read(a);
   return x;
 }
 
-void write_tablet(u32 a, u8 x) {
+void write_b_tablet(u32 a, u8 x) {
   mc2661_write(a, x);
 }
 

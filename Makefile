@@ -1,4 +1,4 @@
-CFLAGS=-Wall -O3 -g -I. -Icommon `sdl2-config --cflags`
+CFLAGS=-Wall -g -I. -Icommon `sdl2-config --cflags`
 LDLIBS=`sdl2-config --libs` -lSDL2_image
 LDLIBS+=-lSDL2_net
 LDLIBS+=-lGL

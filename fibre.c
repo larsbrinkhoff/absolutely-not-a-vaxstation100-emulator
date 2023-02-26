@@ -71,11 +71,12 @@ void fibre_csr(int n, u16 data) {
   send(x, sizeof x);
 }
 
-u8 fibre_read(u32 address) {
-  fprintf(stderr, "FIBRE: Send read %06X\n", address);
+u16 fibre_read(u32 address, u8 type) {
+  fprintf(stderr, "FIBRE: Send read%s %06X\n",
+          type == FIBRE_READ8 ? "8" : "16", address);
   u8 x[5];
-  u8 data;
-  x[0] = FIBRE_READ8;
+  u16 data;
+  x[0] = type;
   x[1] = (address >> 24) & 0xFF;
   x[2] = (address >> 16) & 0xFF;
   x[3] = (address >>  8) & 0xFF;
@@ -97,15 +98,36 @@ u8 fibre_read(u32 address) {
   return data;
 }
 
-void fibre_write(u32 address, u8 data) {
-  fprintf(stderr, "FIBRE: Send write %06X %02X\n", address, data);
-  u8 x[7];
+u8 fibre_read_b(u32 address) {
+  return fibre_read(address, FIBRE_READ8);
+}
+
+u16 fibre_read_w(u32 address) {
+  return fibre_read(address, FIBRE_READ16);
+}
+
+void fibre_write_b(u32 address, u8 data) {
+  fprintf(stderr, "FIBRE: Send write8 %06X %02X\n", address, data);
+  u8 x[6];
   x[0] = FIBRE_WRITE8;
   x[1] = (address >> 24) & 0xFF;
   x[2] = (address >> 16) & 0xFF;
   x[3] = (address >>  8) & 0xFF;
   x[4] = (address >>  0) & 0xFF;
   x[5] = data;
+  send(x, sizeof x);
+}
+
+void fibre_write_w(u32 address, u16 data) {
+  fprintf(stderr, "FIBRE: Send write16 %06X %02X\n", address, data);
+  u8 x[7];
+  x[0] = FIBRE_WRITE16;
+  x[1] = (address >> 24) & 0xFF;
+  x[2] = (address >> 16) & 0xFF;
+  x[3] = (address >>  8) & 0xFF;
+  x[4] = (address >>  0) & 0xFF;
+  x[5] = data >> 8;
+  x[6] = data & 0xFF;
   send(x, sizeof x);
 }
 

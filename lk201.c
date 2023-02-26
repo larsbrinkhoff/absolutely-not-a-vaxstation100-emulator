@@ -15,12 +15,12 @@ static int pressed = 0;
 static void callback(void);
 EVENT(lk201_event, callback);
 
-u8 read_keyboard(u32 a) {
+u8 read_b_keyboard(u32 a) {
   u8 x = mc2661_read(a);
   return x;
 }
 
-void write_keyboard(u32 a, u8 x) {
+void write_b_keyboard(u32 a, u8 x) {
   mc2661_write(a, x);
 }
 

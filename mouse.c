@@ -4,7 +4,7 @@
 static u8 mx = 0;
 static u8 my = 0;
 
-u8 read_mouse(u32 a) {
+u8 read_b_mouse(u32 a) {
   u8 x;
   if (a & 1)
     x = mx;
@@ -13,8 +13,11 @@ u8 read_mouse(u32 a) {
   return x;
 }
 
-void write_mouse(u32 a, u8 x) {
+void write_b_mouse(u32 a, u8 x) {
 }
+
+DEFAULT_READ_W(mouse)
+SAME_WRITE_W(mouse)
 
 void mouse_motion (int x, int y) {
   mx += x;

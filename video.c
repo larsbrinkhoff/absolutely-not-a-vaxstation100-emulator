@@ -13,11 +13,11 @@ static uint32_t color[] = {
   0xFFFFFFFF
 };
 
-u8 read_fb(u32 a) {
+u8 read_b_fb(u32 a) {
   return frame_buffer[a - 0x100000];
 }
 
-void write_fb(u32 a, u8 x) {
+void write_b_fb(u32 a, u8 x) {
   int i;
   a -= 0x100000;
   frame_buffer[a] = x;
@@ -31,6 +31,9 @@ void write_fb(u32 a, u8 x) {
     x >>= 1;
   }
 }
+
+DEFAULT_READ_W(fb)
+DEFAULT_WRITE_W(fb)
 
 void refresh (void)
 {

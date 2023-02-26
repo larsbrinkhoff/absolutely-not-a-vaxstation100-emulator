@@ -88,8 +88,10 @@
   DEFINSN_WL(INSN)
 
 typedef void (*insn_fn)(void);
-typedef u8 (*mem_read_fn)(u32);
-typedef void (*mem_write_fn)(u32, u8);
+typedef u8 (*mem_read_b_fn)(u32);
+typedef void (*mem_write_b_fn)(u32, u8);
+typedef u16 (*mem_read_w_fn)(u32);
+typedef void (*mem_write_w_fn)(u32, u16);
 
 static unsigned long long cycles = 0;
 
@@ -104,8 +106,10 @@ static u16 mem_data;
 static int ipl;
 static int vec;
 
-static mem_read_fn mem_read[1024];
-static mem_write_fn mem_write[1024];
+static mem_read_b_fn read_b[1024];
+static mem_write_b_fn write_b[1024];
+static mem_read_w_fn read_w[1024];
+static mem_write_w_fn write_w[1024];
 static u8 ram[128*1024];
 static u8 rom[16*1024];
 static u32 retry_finite_counter = 0;
@@ -135,24 +139,27 @@ static void add_cycles(int n) {
 }
 
 static void mem_region(u32 address, u32 size,
-		       mem_read_fn r, mem_write_fn w) {
+		       mem_read_b_fn rb, mem_write_b_fn wb,
+		       mem_read_w_fn rw, mem_write_w_fn ww) {
   int i;
   address >>= 14;
   size += (1 << 14) - 1;
   size >>= 14;
   for (i = 0; i < size; i++) {
-    mem_read[address + i] = r;
-    mem_write[address + i] = w;
+    read_b[address + i] = rb;
+    write_b[address + i] = wb;
+    read_w[address + i] = rw;
+    write_w[address + i] = ww;
   }
 }
 
 static void mem_read_b(void) {
-  mem_data = mem_read[mem_addr >> 14](mem_addr);
+  mem_data = read_b[mem_addr >> 14](mem_addr);
   add_cycles(4);
 }
 
 static void mem_write_b(void) {
-  mem_write[mem_addr >> 14](mem_addr, mem_data);
+  write_b[mem_addr >> 14](mem_addr, mem_data);
   add_cycles(4);
 }
 
@@ -161,8 +168,7 @@ static void mem_read_w(void) {
     printf("Address error: %06X\n", mem_addr);
     exit(1);
   }
-  mem_data = mem_read[mem_addr >> 14](mem_addr) << 8;
-  mem_data |= mem_read[mem_addr >> 14](mem_addr + 1);
+  mem_data = read_w[mem_addr >> 14](mem_addr);
   add_cycles(4);
 }
 
@@ -171,8 +177,7 @@ static void mem_write_w(void) {
     printf("Address error: %06X\n", mem_addr);
     exit(1);
   }
-  mem_write[mem_addr >> 14](mem_addr, mem_data >> 8);
-  mem_write[mem_addr >> 14](mem_addr + 1, mem_data);
+  write_w[mem_addr >> 14](mem_addr, mem_data);
   add_cycles(4);
 }
 
@@ -2235,65 +2240,80 @@ static void init_rom(const char *file) {
   memcpy(ram, rom, 8);
 }
 
-static u8 read_bus_error(u32 a) {
+static u8 read_b_bus_error(u32 a) {
   printf("Bus error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
   return 0;
 }
 
-static void write_bus_error(u32 a, u8 x) {
+static void write_b_bus_error(u32 a, u8 x) {
   printf("Bus Error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
 }
 
-static u8 read_ram(u32 a) {
+SAME_READ_W(bus_error)
+SAME_WRITE_W(bus_error)
+
+static u8 read_b_ram(u32 a) {
   return ram[a];
 }
 
-static void write_ram(u32 a, u8 x) {
+static void write_b_ram(u32 a, u8 x) {
   ram[a] = x;
 }
 
-static u8 read_rom(u32 a) {
+DEFAULT_READ_W(ram)
+DEFAULT_WRITE_W(ram)
+
+static u8 read_b_rom(u32 a) {
   return rom[a - 0x180000];
 }
 
-static void write_rom(u32 a, u8 x) {
+static void write_b_rom(u32 a, u8 x) {
   printf("Write to ROM.\n");
   exit(1);
 }
 
-static u8 read_retry_finite(u32 a) {
+DEFAULT_READ_W(rom)
+SAME_WRITE_W(rom)
+
+static u8 read_b_retry_finite(u32 a) {
   fprintf(stderr, "Read RETRY_FINITE: %06X.\n", a);
   retry_finite_counter = 0;
   return 0;
 }
 
-static void write_retry_finite(u32 a, u8 x) {
+static void write_b_retry_finite(u32 a, u8 x) {
   fprintf(stderr, "Write RETRY_FINITE: %06X %02X\n", a, x);
 }
 
-static u8 read_retry_infinite(u32 a) {
+SAME_READ_W(retry_finite)
+SAME_WRITE_W(retry_finite)
+
+static u8 read_b_retry_infinite(u32 a) {
   fprintf(stderr, "Read RETRY_INFINITE: %06X.\n", a);
   retry_infinite_counter = 0;
   return 0;
 }
 
-static void write_retry_infinite(u32 a, u8 x) {
+static void write_b_retry_infinite(u32 a, u8 x) {
   fprintf(stderr, "Write RETRY_INFINITE: %06X %02X\n", a, x);
 }
 
-static u8 read_vsync(u32 a) {
+SAME_READ_W(retry_infinite);
+SAME_WRITE_W(retry_infinite);
+
+static u8 read_b_vsync(u32 a) {
   irq_set(6, 0);
   return 0;
 }
 
-static void write_vsync(u32 a, u8 x) {
+static void write_b_vsync(u32 a, u8 x) {
 }
 
-static u8 read_crt_controller(u32 a) {
+static u8 read_b_crt_controller(u32 a) {
   switch (a) {
   case 01: return mc6845_addr; break;
   case 03: return mc6845_reg[mc6845_addr]; break;
@@ -2301,18 +2321,18 @@ static u8 read_crt_controller(u32 a) {
   return 0;
 }
 
-static void write_crt_controller(u32 a, u8 x) {
+static void write_b_crt_controller(u32 a, u8 x) {
   switch (a) {
   case 01: mc6845_addr = x; break;
   case 03: mc6845_reg[mc6845_addr] = x; break;
   }
 }
 
-static u8 read_leds(u32 a) {
+static u8 read_b_leds(u32 a) {
   return 0;
 }
 
-static void write_leds(u32 a, u8 x) {
+static void write_b_leds(u32 a, u8 x) {
   fprintf(stderr, "LED %c%c%c%c%c\n",
 	  (x & 0x01) ? '.' : 'R',  // Red 4
 	  (x & 0x02) ? '.' : 'R',  // Red 3
@@ -2321,54 +2341,84 @@ static void write_leds(u32 a, u8 x) {
 	  (x & 0x10) ? '-' : 'G'); // Green
 }
 
-static u8 read_io(u32 a) {
+static u8 read_b_io(u32 a) {
   switch (a & 0xFE) {
   case 0x00: case 0x02: case 0x04: case 0x06:
-    return read_keyboard(a & 7);
+    return read_b_keyboard(a & 7);
   case 0x20: case 0x22: case 0x24: case 0x26:
-    return read_tablet(a & 7);
+    return read_b_tablet(a & 7);
   case 0x40:
-    return read_fibre_control(a & 1);
+    return read_b_fibre_control(a & 1);
   case 0x60:
-    return read_mouse(a & 1);
+    return read_b_mouse(a & 1);
   case 0x80:
-    return read_leds(a & 1);
+    return read_b_leds(a & 1);
   case 0xA0: case 0xA2:
-    return read_crt_controller(a & 3);
+    return read_b_crt_controller(a & 3);
   case 0xC0:
-    return read_status(a & 1);
+    return read_b_status(a & 1);
   case 0xE0:
-    return read_vsync(a & 1);
+    return read_b_vsync(a & 1);
   default:
-    return read_bus_error(a);
+    return read_b_bus_error(a);
   }
 }
 
-static void write_io(u32 a, u8 x) {
+static void write_b_io(u32 a, u8 x) {
   switch (a & 0xFE) {
   case 0x00: case 0x02: case 0x04: case 0x06:
-    write_keyboard(a & 7, x); return;
+    write_b_keyboard(a & 7, x); return;
   case 0x20: case 0x22: case 0x24: case 0x26:
-    write_tablet(a & 7, x); return;
+    write_b_tablet(a & 7, x); return;
   case 0x40:
-    write_fibre_control(a, x); return;
+    write_b_fibre_control(a, x); return;
   case 0x60:
-    write_bus_error(a, x); return;
+    write_b_bus_error(a, x); return;
   case 0x80:
-    write_leds(a & 1, x); return;
+    write_b_leds(a & 1, x); return;
   case 0xA0: case 0xA2:
-    write_crt_controller(a & 3, x); return;
+    write_b_crt_controller(a & 3, x); return;
   case 0xC0:
-    write_status(a & 1, x); return;
+    write_b_status(a & 1, x); return;
   case 0xE0:
-    write_vsync(a & 1, x); return;
+    write_b_vsync(a & 1, x); return;
   default:
-    write_bus_error(a, x); return;
+    write_b_bus_error(a, x); return;
   }
 }
 
-#define DEF_REGION(START, SIZE, DEVICE) \
-  mem_region(START, SIZE, read_##DEVICE, write_##DEVICE)
+static u16 read_w_io(u32 a) {
+  switch (a & 0xFE) {
+  case 0x00: case 0x02: case 0x04: case 0x06:
+    return read_b_keyboard(a & 7);
+  case 0x20: case 0x22: case 0x24: case 0x26:
+    return read_b_tablet(a & 7);
+  case 0x40:
+    return read_b_fibre_control(a & 1);
+  case 0x60:
+    return read_w_mouse(a & 1);
+  case 0x80:
+    return read_b_leds(a & 1);
+  case 0xA0: case 0xA2:
+    return read_b_crt_controller(a & 3);
+  case 0xC0:
+    return read_b_status(a & 1);
+  case 0xE0:
+    return read_b_vsync(a & 1);
+  default:
+    return read_w_bus_error(a);
+  }
+}
+
+static void write_w_io(u32 a, u16 x) {
+  fprintf(stderr, "Write word to I/O region.\n");
+  exit(1);
+}
+
+#define DEF_REGION(START, SIZE, DEVICE)		\
+  mem_region(START, SIZE,			\
+	     read_b_##DEVICE, write_b_##DEVICE,	\
+	     read_w_##DEVICE, write_w_##DEVICE)
 
 static void init_regions(void) {
   DEF_REGION(0x000000, 16*1024*1024, bus_error);

@@ -17,7 +17,7 @@ void status_clear(u8 bits) {
   SDL_UnlockMutex(mutex);
 }
 
-u8 read_status(u32 a) {
+u8 read_b_status(u32 a) {
   // 0 = manufacturing mode (0).
   // 1 = BBA present (0).
   // 2 = NXM (1).
@@ -38,7 +38,7 @@ u8 read_status(u32 a) {
   return 0;
 }
 
-void write_status(u32 a, u8 x) {
+void write_b_status(u32 a, u8 x) {
 }
 
 void status_init(void) {
