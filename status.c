@@ -1,6 +1,6 @@
 #include "vs100.h"
 
-static u8 status = 0xF3;
+static u8 status = 0xE3;
 static SDL_mutex *mutex;
 
 void status_set(u8 bits) {

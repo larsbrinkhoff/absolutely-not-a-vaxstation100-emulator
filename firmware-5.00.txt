@@ -1730,11 +1730,11 @@ ram_ok:
 1813e8:	6006           	          bras 0x1813f0
 1813ea:	207c 0018 0990 	          moveal #0x180990,%a0 ;trouble icon
 1813f0:	6100 fb94      	          bsrw 0x180f86  ;draw
-1813f4:	323c 0080      	          movew #128,%d1
+1813f4:	323c 0080      	          movew #0x80,%d1 ;powerup done
 1813f8:	6100 ed42      	          bsrw 0x18013c ;check link
 1813fc:	46fc 2000      	          movew #0x2000,%sr
 181400:	4242           	          clrw %d2
-181402:	6100 09f2      	          bsrw 0x181df6 ;send 0080/0000 to host
+181402:	6100 09f2      	          bsrw 0x181df6 ;send powerup done to host
 181406:	0800 001c      	          btst #28,%d0
 18140a:	6600 096c      	          bnew 0x181d78 ;command loop?
 ;idle loop?
@@ -2381,13 +2381,13 @@ test_vsync:
 181cb8:	20c1           	          movel %d1,%a0@+
 181cba:	30fc 0003      	          movew #3,%a0@+
 181cbe:	30fc 0000      	          movew #0,%a0@+
-181cc2:	223c 0010 0000 	          movel #1048576,%d1
+181cc2:	223c 0010 0000 	          movel #0x100000,%d1
 181cc8:	4841           	          swap %d1
 181cca:	20c1           	          movel %d1,%a0@+
 181ccc:	30fc 0440      	          movew #1088,%a0@+
 181cd0:	30fc 0360      	          movew #864,%a0@+
 181cd4:	30fc 0001      	          movew #1,%a0@+
-181cd8:	223c 0011 cb00 	          movel #1166080,%d1
+181cd8:	223c 0011 cb00 	          movel #0x11cb00,%d1
 181cde:	4841           	          swap %d1
 181ce0:	20c1           	          movel %d1,%a0@+
 181ce2:	223c 0006 3500 	          movel #406784,%d1
@@ -2399,7 +2399,7 @@ test_vsync:
 181cf2:	223c 0002 0000 	          movel #131072,%d1
 181cf8:	4841           	          swap %d1
 181cfa:	20c1           	          movel %d1,%a0@+
-181cfc:	223c 0008 0000 	          movel #524288,%d1
+181cfc:	223c 0008 0000 	          movel #0x80000,%d1
 181d02:	4841           	          swap %d1
 181d04:	20c1           	          movel %d1,%a0@+
 181d06:	223c 0004 0000 	          movel #262144,%d1
@@ -2457,14 +2457,14 @@ trap1_handler:
 181dbe:	6000 f64e      	          braw 0x18140e
 181dc2:	33c0 0048 0000 	          movew %d0,0x480000
 181dc8:	e248           	          lsrw #1,%d0
-181dca:	0240 001f      	          andiw #31,%d0
+181dca:	0240 001f      	          andiw #31,%d0 ;function code
 181dce:	5340           	          subqw #1,%d0
 181dd0:	6b16           	          bmis 0x181de8
 181dd2:	0c40 0012      	          cmpiw #18,%d0
 181dd6:	6e10           	          bgts 0x181de8
 181dd8:	207c 0018 1d12 	          moveal #0x181d12,%a0
 181dde:	e540           	          aslw #2,%d0
-181de0:	2070 0000      	          moveal %a0@(%d0:w),%a0
+181de0:	2070 0000      	          moveal %a0@(%d0:w),%a0 ;dispatch
 181de4:	4e90           	          jsr %a0@
 181de6:	6004           	          bras 0x181dec
 181de8:	323c 8001      	          movew #0x8001,%d1
@@ -2482,22 +2482,23 @@ trap1_handler:
 181e14:	4a79 004c 0000 	          tstw 0x4c0000      ;host interrupt
 181e1a:	4e75           	          rts
 
-;
+;init
 181e1c:	223c 0008 0000 	          movel #0x80000,%d1 ;unibus
 181e22:	4841           	          swap %d1
-181e24:	23c1 0048 0006 	          movel %d1,0x480006 ;CSR3 - Unibus address
-181e2a:	33fc 0500 0048 000a       movew #1280,0x48000a ;CSR5 - id
+181e24:	23c1 0048 0006 	          movel %d1,0x480006 ;CSR3+4 - Unibus address
+181e2a:	33fc 0500 0048 000a       movew #1280,0x48000a ;CSR5 - firmware version
 181e32:	0800 0011      	          btst #17,%d0  ;BBA present?
 181e36:	6604           	          bnes 0x181e3c
 181e38:	4241           	          clrw %d1     ;no
 181e3a:	600c           	          bras 0x181e48
 181e3c:	3239 0030 01fe 	          movew 0x3001fe,%d1 ;yes
 181e42:	33c1 0030 01fe 	          movew %d1,0x3001fe
-181e48:	33c1 0048 000c 	          movew %d1,0x48000c ;CSR6 - unused?
-181e4e:	323c 0001      	          movew #1,%d1
+181e48:	33c1 0048 000c 	          movew %d1,0x48000c ;CSR6 - BBA version
+181e4e:	323c 0001      	          movew #1,%d1 ;init done
 181e52:	4e75           	          rts
 
-181e54:	2239 0048 0006 	          movel 0x480006,%d1 ;CSR3 - function param
+;command packet
+181e54:	2239 0048 0006 	          movel 0x480006,%d1 ;CSR3+4 - function param
 181e5a:	4841           	          swap %d1
 181e5c:	2041           	          moveal %d1,%a0
 181e5e:	2218           	          movel %a0@+,%d1
@@ -2512,18 +2513,19 @@ trap1_handler:
 181e7e:	e541           	          aslw #2,%d1
 181e80:	2271 1000      	          moveal %a1@(%d1:w),%a1
 181e84:	4e91           	          jsr %a1@
-181e86:	323c 0002      	          movew #2,%d1
+181e86:	323c 0002      	          movew #2,%d1 ;command done
 181e8a:	6004           	          bras 0x181e90
-181e8c:	323c 8002      	          movew #-32766,%d1
+181e8c:	323c 8002      	          movew #0x8002,%d1 ;command error
 181e90:	4e75           	          rts
 
+;start firmware
 181e92:	46fc 2700      	          movew #0x2700,%sr
-181e96:	2039 0048 0006 	          movel 0x480006,%d0 ;CSR3 - func parm
+181e96:	2039 0048 0006 	          movel 0x480006,%d0 ;CSR3+4 - func parm
 181e9c:	4840           	          swap %d0
 181e9e:	2040           	          moveal %d0,%a0
 181ea0:	4ed0           	          jmp %a0@
 
-181ea2:	323c 8000      	          movew #-32768,%d1
+181ea2:	323c 8000      	          movew #0x8000,%d1
 181ea6:	4e75           	          rts
 
 ;reset
@@ -2533,21 +2535,21 @@ trap1_handler:
 181eb4:	2050           	          moveal %a0@,%a0
 181eb6:	4ed0           	          jmp %a0@
 
-181eb8:	323c 8000      	          movew #-32768,%d1
+181eb8:	323c 8000      	          movew #0x8000,%d1
 181ebc:	4e75           	          rts
 
-181ebe:	323c 8000      	          movew #-32768,%d1
+181ebe:	323c 8000      	          movew #0x8000,%d1
 181ec2:	4e75           	          rts
 
-181ec4:	323c 8000      	          movew #-32768,%d1
+181ec4:	323c 8000      	          movew #0x8000,%d1
 181ec8:	4e75           	          rts
 
 181eca:	4a79 000e 0000 	          tstw 0xe0000
-181ed0:	323c 0002      	          movew #2,%d1
+181ed0:	323c 0002      	          movew #2,%d1 ;command done
 181ed4:	4e75           	          rts
 
 181ed6:	4a79 000c 0000 	          tstw 0xc0000
-181edc:	323c 0002      	          movew #2,%d1
+181edc:	323c 0002      	          movew #2,%d1 ;command done
 181ee0:	4e75           	          rts
 
 ;font data

@@ -52,13 +52,17 @@
 // A/D (IR & 0x8000) ? areg[r] : dreg[r];
 
 
-#if 1
-#define TRACE()
-#else
-#define TRACE()					\
-  fprintf(stderr, "TRACE: %06X %04X/%06o %s\n",	\
-	  PC-4, IRD, IRD, __func__)
-#endif
+static u32 trace_pc[10000];
+static u32 trace_i = 0;
+static int trace_p = 0;
+#define TRACE()						\
+  do {							\
+    trace_pc[trace_i++] = PC-4;				\
+    trace_i %= 10000;					\
+    if (trace_p)					\
+      fprintf(stderr, "TRACE: %06X %04X/%06o %s\n",	\
+	      PC-4, IRD, IRD, __func__);		\
+  } while(0)
 
 #define DEFINSN_BW(INSN)			\
   static void insn_##INSN##b(void) {		\
@@ -867,7 +871,6 @@ static void insn_addal(void) {
   }
 
 static void insn_addi(const struct s *size) {
-  TRACE();
   CHECK_ALUI_EA(insn_illegal, insn_illegal);
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
@@ -1189,7 +1192,6 @@ static void insn_cmpm(void) {
 }
 
 static void insn_eor(const struct s *size) {
-  TRACE();
   u32 src = DREG;
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(EOR, src, dst));
@@ -1559,7 +1561,6 @@ static void insn_misc(void) {
 }
 
 static void insn_move(const struct s *size) {
-  TRACE();
   u32 x = size->read_ea();
   IRD = ((IRD & 0700) >> 3) | ((IRD & 07000) >> 9);
   size->write_ea(x);
@@ -1572,7 +1573,6 @@ static void insn_move(const struct s *size) {
 DEFINSN_BWL(move)
 
 static void insn_movea(const struct s *size) {
-  TRACE();
   areg[REG_FIELD] = size->read_ea();
 }
 
@@ -1622,7 +1622,6 @@ static void insn_nbcd(void) {
 }
 
 static void insn_neg(const struct s *size) {
-  TRACE();
   u32 dst = size->read_ea();
   u32 result = size->alu(SUB, dst, 0);
   size->modify_ea(result);
@@ -1637,7 +1636,6 @@ static void insn_negx(void) {
 }
 
 static void insn_not(const struct s *size) {
-  TRACE();
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(EOR, 0xFFFFFFFF, dst));
 }
@@ -1877,7 +1875,6 @@ static void insn_subal(void) {
 }
 
 static void insn_subi(const struct s *size) {
-  TRACE();
   CHECK_ALUI_EA(insn_illegal, insn_illegal);
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
@@ -1926,7 +1923,6 @@ static void insn_tst(const struct s *size) {
 DEFINSN_BWL(tst)
 
 static void insn_ori(const struct s *size) {
-  TRACE();
   CHECK_ALUI_EA(insn_ori_ccr, insn_ori_sr);
   u32 src = size->read_imm();
   u32 dst = size->read_ea();

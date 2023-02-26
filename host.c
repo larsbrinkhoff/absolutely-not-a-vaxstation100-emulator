@@ -10,6 +10,7 @@
 //    5 id
 //    7 interrupt vector
 static u16 host_csr[8];
+static u16 loopback_csr[8];
 
 // bit 1-0
 // 00 - powerup state
@@ -50,9 +51,11 @@ void write_w_host_csr(u32 a, u16 x) {
   SDL_LockMutex(csr_mutex);
   //fprintf(stderr, "Write HOST CSR%d: %02X\n", r, x);
   if (fibre_control & 2)
+    loopback_csr[r] = x;
+  else {
     host_csr[r] = x;
-  else
     fibre_csr(r, x);
+  }
   SDL_UnlockMutex(csr_mutex);
   if (fibre_control & 4)
     status_set(0x04);
@@ -68,7 +71,7 @@ u8 read_b_host_loopback(u32 a) {
   int r = (a - 0x4A0000) >> 1;
   fprintf(stderr, "Read LOOPBACK\n");
   SDL_LockMutex(csr_mutex);
-  u16 x = host_csr[r];
+  u16 x = loopback_csr[r];
   SDL_UnlockMutex(csr_mutex);
   if ((a & 1) == 0)
     x >>= 8;
@@ -83,7 +86,7 @@ SAME_WRITE_W(host_loopback)
 
 u8 read_b_host_interrupt(u32 a) {
   fprintf(stderr, "Read HOST INTERRUPT\n");
-  irq_set(5, 0);
+  fibre_int();
   return 0;
 }
 
@@ -114,7 +117,7 @@ u8 read_b_unibus(u32 a) {
 }
 
 void write_b_unibus(u32 a, u8 data) {
-  fibre_write_b(a, data);
+  fibre_write_b(a = 0x080000, data);
 }
 
 u16 read_w_unibus(u32 a) {
@@ -122,5 +125,5 @@ u16 read_w_unibus(u32 a) {
 }
 
 void write_w_unibus(u32 a, u16 data) {
-  fibre_write_w(a, data);
+  fibre_write_w(a - 0x080000, data);
 }

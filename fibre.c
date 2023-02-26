@@ -3,15 +3,16 @@
 #include "vs100.h"
 
 //Sender: V=VS100, H=Host.
-#define FIBRE_XMIT_ON    1 //VH No data.
-#define FIBRE_XMIT_OFF   2 //VH No data.
-#define FIBRE_CSR        3 //VH 8-bit number, 16-bit data.
-#define FIBRE_READ8      4 //V  32-bit address.
-#define FIBRE_READ16     5 //V  32-bit address.
-#define FIBRE_DATA       6 // H 16-bit data.
-#define FIBRE_NXM        7 // H No data.
-#define FIBRE_WRITE8     8 //V  32-bit address, 8-bit data.
-#define FIBRE_WRITE16    9 //V  32-bit address, 16-bit data.
+#define FIBRE_XMIT_ON    1  //VH No data.
+#define FIBRE_XMIT_OFF   2  //VH No data.
+#define FIBRE_INT        3  //VH No data.
+#define FIBRE_CSR        4  //VH 8-bit number, 16-bit data.
+#define FIBRE_READ8      5  //V  32-bit address.
+#define FIBRE_READ16     6  //V  32-bit address.
+#define FIBRE_DATA       7  // H 16-bit data.
+#define FIBRE_NXM        8  // H No data.
+#define FIBRE_WRITE8     9  //V  32-bit address, 8-bit data.
+#define FIBRE_WRITE16    10 //V  32-bit address, 16-bit data.
 
 #define MEM_WAIT  0
 #define MEM_DATA  1
@@ -58,6 +59,12 @@ void fibre_xmit(int on) {
     x = FIBRE_XMIT_ON;
   else
     x = FIBRE_XMIT_OFF;
+  send(&x, sizeof x);
+}
+
+void fibre_int(void) {
+  fprintf(stderr, "FIBRE: Send interrupt.\n");
+  u8 x = FIBRE_INT;
   send(&x, sizeof x);
 }
 
@@ -151,7 +158,7 @@ static void fibre_receive(void) {
     break;
   case FIBRE_CSR:
     net_read(message, 3);
-    x = message[1] << 18;
+    x = message[1] << 8;
     x |= message[2];
     fprintf(stderr, "FIBRE: Receive CSR%d %04X\n", message[0], x);
     host_update_csr(message[0], x);

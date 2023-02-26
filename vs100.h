@@ -62,6 +62,7 @@ extern void host_update_csr(u8 r, u16 x);
 extern void fibre_init(void);
 extern void fibre_connect(const char *h, int p);
 extern void fibre_xmit(int on);
+extern void fibre_int(void);
 extern void fibre_csr(int n, u16 data);
 extern u8 fibre_read_b(u32 address);
 extern void fibre_write_b(u32 address, u8 data);
