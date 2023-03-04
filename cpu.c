@@ -2512,8 +2512,7 @@ static void init_regions(void) {
   DEF_REGION(0x0E0000,        2, retry_infinite);
   DEF_REGION(0x100000, 512*1024, fb);
   DEF_REGION(0x180000,  16*1024, rom);
-  DEF_REGION(0x260000,        2, bba_go);
-  DEF_REGION(0x280000,        2, bba_clear);
+  DEF_REGION(0x280000,        2, bba_control);
   DEF_REGION(0x300000,      512, bba_scratchpad);
   DEF_REGION(0x480000,       16, host_csr);
   DEF_REGION(0x4A0000,       16, host_loopback);
@@ -2522,7 +2521,7 @@ static void init_regions(void) {
 }
 
 static void vsync_callback(void);
-EVENT(vsync_event, vsync_callback);
+static EVENT(vsync_event, vsync_callback);
 
 static void vsync_callback(void) {
   static Uint32 then = 0;

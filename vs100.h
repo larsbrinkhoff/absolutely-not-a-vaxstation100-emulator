@@ -13,8 +13,7 @@ typedef signed int s32;
   extern u16 read_w_##NAME(u32); \
   extern void write_w_##NAME(u32, u16)
 
-DEFDEV(bba_clear);
-DEFDEV(bba_go);
+DEFDEV(bba_control);
 DEFDEV(bba_scratchpad);
 DEFDEV(fb);
 DEFDEV(fibre_control);

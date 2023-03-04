@@ -13,7 +13,7 @@ static int *ptr;
 static int pressed = 0;
 
 static void callback(void);
-EVENT(lk201_event, callback);
+static EVENT(lk201_event, callback);
 
 u8 read_b_keyboard(u32 a) {
   u8 x = mc2661_read(a);
