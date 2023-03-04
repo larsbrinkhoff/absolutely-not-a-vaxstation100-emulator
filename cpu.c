@@ -420,7 +420,8 @@ static void modify_w_ea(u32 x) {
   switch(EA_M_FIELD) {
   case 0: dreg[r] = (dreg[r] & 0xFFFF0000) | (x & 0xFFFF);
 	  return;
-  case 1: insn_illegal(); return;
+  case 1: areg[r] = x;
+          return;
   case 2:
   case 3:
   case 4:
@@ -487,7 +488,8 @@ static void modify_l_ea(u32 x) {
   switch(EA_M_FIELD) {
   case 0: dreg[r] = x;
 	  return;
-  case 1:
+  case 1: areg[r] = x;
+	  return;
   case 2:
   case 3:
   case 4:
@@ -882,10 +884,14 @@ DEFINSN_BWL(addi)
 
 static void insn_addq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst = size->read_ea();
+  u32 dst;
+  if ((IRD & 070) == 010)
+    dst = areg[EA_R_FIELD];
+  else
+    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size->alu(ADD, src, dst));
+  size->modify_ea(size_l.alu(ADD, src, dst));
 }
 
 DEFINSN_BWL(addq)
@@ -1948,14 +1954,12 @@ DEFINSN_BWL(sub)
 
 static void insn_subaw(void) {
   TRACE();
-  u32 src = EXTW(read_w_ea());
-  areg[REG_FIELD] -= src;
+  areg[REG_FIELD] -= EXTW(read_w_ea());
 }
 
 static void insn_subal(void) {
   TRACE();
-  u32 src = read_l_ea();
-  areg[REG_FIELD] -= src;
+  areg[REG_FIELD] -= read_l_ea();
 }
 
 static void insn_subi(const struct s *size) {
@@ -1969,10 +1973,14 @@ DEFINSN_BWL(subi)
 
 static void insn_subq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst = size->read_ea();
+  u32 dst;
+  if ((IRD & 070) == 010)
+    dst = areg[EA_R_FIELD];
+  else
+    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size->alu(SUB, src, dst));
+  size->modify_ea(size_l.alu(SUB, src, dst));
 }
 
 DEFINSN_BWL(subq)
