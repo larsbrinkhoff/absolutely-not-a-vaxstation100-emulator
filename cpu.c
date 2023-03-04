@@ -204,6 +204,7 @@ static void mem_write_l(u32 a, u32 x) {
   mem_data = x & 0xFFFF;
   mem_addr += 2;
   mem_write_w();
+  mem_addr -= 2;
 }
 
 static void push(u16 x) {
@@ -1287,7 +1288,17 @@ static void insn_eori(const struct s *size) {
 
 DEFINSN_BWL(eori)
 
+static u16 reverse(u16 data)
+{
+  data = (data & 0xFF00) >> 8 | (data & 0x00FF) << 8;
+  data = (data & 0xF0F0) >> 4 | (data & 0x0F0F) << 4;
+  data = (data & 0xCCCC) >> 2 | (data & 0x3333) << 2;
+  data = (data & 0xAAAA) >> 1 | (data & 0x5555) << 1;
+  return data;
+}
+
 static void insn_movemw_rm(void) {
+  int i;
   TRACE();
   switch(IRD & 070) {
   case 000: case 010: case 030:
@@ -1298,17 +1309,33 @@ static void insn_movemw_rm(void) {
       return;
     }
   }
-  printf("Unimplemented.\n");
-  exit(1);
-}
-
-static u16 reverse(u16 data)
-{
-  data = (data & 0xFF00) >> 8 | (data & 0x00FF) << 8;
-  data = (data & 0xF0F0) >> 4 | (data & 0x0F0F) << 4;
-  data = (data & 0xCCCC) >> 2 | (data & 0x3333) << 2;
-  data = (data & 0xAAAA) >> 1 | (data & 0x5555) << 1;
-  return data;
+  fetch();
+  u16 mask = IR;
+  compute_ea(0);
+  if ((IRD & 070) == 040) {
+    mask = reverse(mask);
+    for (i = 7; i >= 0; i--)
+      if (mask & (1 << (i+8))) {
+	areg[EA_R_FIELD] -= 2;
+	mem_write_l(areg[EA_R_FIELD], areg[i]);
+      }
+    for (i = 7; i >= 0; i--)
+      if (mask & (1 << i)) {
+	areg[EA_R_FIELD] -= 2;
+	mem_write_l(areg[EA_R_FIELD], dreg[i]);
+      }
+  } else {
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << i)) {
+	mem_write_l(mem_addr, dreg[i]);
+	mem_addr += 2;
+      }
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << (i+8))) {
+	mem_write_l(mem_addr, areg[i]);
+	mem_addr += 2;
+      }
+  }
 }
 
 static void insn_moveml_rm(void) {
@@ -1325,32 +1352,72 @@ static void insn_moveml_rm(void) {
   }
   fetch();
   u16 mask = IR;
+  compute_ea(0);
   if ((IRD & 070) == 040) {
     mask = reverse(mask);
     for (i = 7; i >= 0; i--)
-      if (mask & (1 << (i+8)))
-	write_l_ea(areg[i]);
+      if (mask & (1 << (i+8))) {
+	areg[EA_R_FIELD] -= 4;
+	mem_write_l(areg[EA_R_FIELD], areg[i]);
+      }
     for (i = 7; i >= 0; i--)
-      if (mask & (1 << i))
-	write_l_ea(dreg[i]);
+      if (mask & (1 << i)) {
+	areg[EA_R_FIELD] -= 4;
+	mem_write_l(areg[EA_R_FIELD], dreg[i]);
+      }
   } else {
     for (i = 0; i < 8; i++)
-      if (mask & (1 << i))
-	write_l_ea(dreg[i]);
+      if (mask & (1 << i)) {
+	mem_write_l(mem_addr, dreg[i]);
+	mem_addr += 4;
+      }
     for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8)))
-	write_l_ea(areg[i]);
+      if (mask & (1 << (i+8))) {
+	mem_write_l(mem_addr, areg[i]);
+	mem_addr += 4;
+      }
   }
 }
 
 static void insn_movemw_mr(void) {
+  int i;
   TRACE();
   switch(IRD & 070) {
   case 000: case 010: case 040:
     insn_illegal(); return;
   }
-  printf("Unimplemented.\n");
-  exit(1);
+  fetch();
+  u16 mask = IR;
+  compute_ea(0);
+  if ((IRD & 070) == 030) {
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << i)) {
+	mem_addr = areg[EA_R_FIELD];
+	mem_read_w();
+	dreg[i] = mem_data;
+	areg[EA_R_FIELD] += 2;
+      }
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << (i+8))) {
+	mem_addr = areg[EA_R_FIELD];
+	mem_read_w();
+	areg[i] = mem_data;
+	areg[EA_R_FIELD] += 2;
+      }
+  } else {
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << i)) {
+	mem_read_w();
+	dreg[i] = mem_data;
+	mem_addr += 2;
+      }
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << (i+8))) {
+	mem_read_w();
+	areg[i] = mem_data;
+	mem_addr += 2;
+      }
+  }
 }
 
 static void insn_moveml_mr(void) {
@@ -1362,12 +1429,30 @@ static void insn_moveml_mr(void) {
   }
   fetch();
   u16 mask = IR;
-  for (i = 0; i < 8; i++)
-    if (mask & (1 << i))
-      dreg[i] = read_l_ea();
-  for (i = 0; i < 8; i++)
-    if (mask & (1 << (i+8)))
-      areg[i] = read_l_ea();
+  compute_ea(0);
+  if ((IRD & 070) == 030) {
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << i)) {
+	dreg[i] = mem_read_l(areg[EA_R_FIELD]);
+	areg[EA_R_FIELD] += 4;
+      }
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << (i+8))) {
+	areg[i] = mem_read_l(areg[EA_R_FIELD]);
+	areg[EA_R_FIELD] += 4;
+      }
+  } else {
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << i)) {
+	dreg[i] = mem_read_l(mem_addr);
+	mem_addr += 4;
+      }
+    for (i = 0; i < 8; i++)
+      if (mask & (1 << (i+8))) {
+	areg[i] = mem_read_l(mem_addr);
+	mem_addr += 4;
+      }
+  }
 }
 
 static void insn_extb(void) {
