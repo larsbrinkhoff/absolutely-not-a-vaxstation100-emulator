@@ -2478,7 +2478,10 @@ int main(void) {
   status_init();
   fibre_connect("localhost", 54321);
 
-  SDL_CreateThread(cputhread, "VS100: Motorola 68000",  NULL);
+  if (0)
+    ddt ();
+  else
+    SDL_CreateThread(cputhread, "VS100: Motorola 68000",  NULL);
   sdl_loop();
 
   return 0;

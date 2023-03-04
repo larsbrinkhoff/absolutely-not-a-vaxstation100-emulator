@@ -3,7 +3,7 @@ LDLIBS=`sdl2-config --libs` -lSDL2_image
 LDLIBS+=-lSDL2_net
 LDLIBS+=-lGL
 
-OBJS=bba.o cpu.o fibre.o host.o irq.o lk201.o mouse.o network.o \
+OBJS=bba.o cpu.o ddt.o fibre.o host.o irq.o lk201.o mouse.o network.o \
      status.o tablet.o video.o
 COMMON=common/event.o common/sdl.o common/opengl.o
 
