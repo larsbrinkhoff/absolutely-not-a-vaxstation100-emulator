@@ -34,7 +34,7 @@ int net_read(void *data, int n) {
     m = SDLNet_TCP_Recv(sock, data, n);
     if (m <= 0)
       return -1;
-    data = (char *)data + n;
+    data = (char *)data + m;
     n -= m;
   }
   return 0;

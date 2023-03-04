@@ -849,12 +849,12 @@ DEFINSN_BWL(add_m)
 
 static void insn_addaw(void) {
   TRACE();
-  areg[REG_FIELD] += EXTW(size_w.read_ea());
+  areg[REG_FIELD] += EXTW(read_w_ea());
 }
 
 static void insn_addal(void) {
   TRACE();
-  areg[REG_FIELD] += size_l.read_ea();
+  areg[REG_FIELD] += read_l_ea();
 }
 
 #define CHECK_ALUI_EA(i1, i2)                             \
@@ -1116,8 +1116,8 @@ static void insn_bsr(void) {
     offset = EXTW(IR);
   } else
     offset = EXTB(offset);
-  push((PC - 2) >> 16);
   push(PC - 2);
+  push((PC - 2) >> 16);
   PC = a + offset;
   fetch();
 }
@@ -1439,8 +1439,8 @@ static void insn_jsr(void) {
   u32 x = PC - 2;
   PC = mem_addr;
   fetch();
-  push(x >> 16);
   push(x);
+  push(x >> 16);
 }
 
 static void insn_lea(void) {
@@ -1516,8 +1516,8 @@ static void insn_rte(void) {
 
 static void insn_rts(void) {
   TRACE();
-  PC = pop();
-  PC |= pop() << 16;
+  PC = pop() << 16;
+  PC |= pop();
   fetch();
 }
 
@@ -1580,8 +1580,7 @@ DEFINSN_WL(movea)
 
 static void insn_move_from_sr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  write_w_ea(SR);
 }
 
 static void insn_moveq(void) {
@@ -1661,14 +1660,14 @@ DEFINSN_BWL(or_m)
 
 static void insn_ori_ccr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  fetch();
+  SR |= IR & 0xFF;
 }
 
 static void insn_ori_sr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  fetch();
+  SR |= IR;
 }
 
 static void insn_shiftl_b(void) {
@@ -1864,13 +1863,13 @@ DEFINSN_BWL(sub)
 
 static void insn_subaw(void) {
   TRACE();
-  u32 src = EXTW(size_w.read_ea());
+  u32 src = EXTW(read_w_ea());
   areg[REG_FIELD] -= src;
 }
 
 static void insn_subal(void) {
   TRACE();
-  u32 src = size_l.read_ea();
+  u32 src = read_l_ea();
   areg[REG_FIELD] -= src;
 }
 
@@ -2211,11 +2210,15 @@ void reset(void) {
   fetch();
 }
 
-static void step(void) {
-  unsigned long long c0 = cycles;
+void execute(void) {
   IRD = IR;
   dispatch[IRD >> 6]();
   fetch();
+}
+
+static void step(void) {
+  unsigned long long c0 = cycles;
+  execute();
   //fprintf(stderr, "Cycles: %llu (%llu)\n", cycles - c0, cycles);
   SDL_LockMutex(event_mutex);
   events(cycles - c0);
