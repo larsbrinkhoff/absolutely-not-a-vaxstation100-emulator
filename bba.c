@@ -1,7 +1,7 @@
 #include "vs100.h"
 #include "common/event.h"
 
-static u8 scratchpad[512];
+static u16 scratchpad[256];
 
 static void callback(void);
 static EVENT(bba_event, callback);
@@ -18,6 +18,7 @@ static void callback(void) {
 
 static void bba_go(void) {
   SDL_LockMutex(event_mutex);
+  fprintf(stderr, "BBA: command %04X\n", scratchpad[0]);
   add_event (1000, &bba_event);
   SDL_UnlockMutex(event_mutex);
 }
@@ -41,22 +42,29 @@ SAME_WRITE_W(bba_control)
 
 u8 read_b_bba_scratchpad(u32 a) {
   a -= 0x300000;
-  fprintf(stderr, "BBA SCRATCHPAD: read byte %03X %02X\n", a, scratchpad[a]);
-  return scratchpad[a];
+  u16 x = scratchpad[a >> 1];
+  if (a & 1)
+    x &= 0xFF;
+  else
+    x >>= 8;
+  fprintf(stderr, "BBA SCRATCHPAD: read byte %03X %02X\n", a, x);
+  return x;
 }
 
 void write_b_bba_scratchpad(u32 a, u8 x) {
   a -= 0x300000;
   fprintf(stderr, "BBA SCRATCHPAD: write byte %03X %02X\n", a, x);
-  scratchpad[a] = x;
+  u16 xx = scratchpad[a >> 1];
+  if (a & 1)
+    xx = (xx & 0xFF00) | x;
+  else
+    xx = (xx & 0xFF) | (x << 8);
+  scratchpad[a] = xx;
 }
-
-//DEFAULT_READ_W(bba_scratchpad)
-//DEFAULT_WRITE_W(bba_scratchpad)
 
 u16 read_w_bba_scratchpad(u32 a) {
   a -= 0x300000;
-  u16 x = (((u16)scratchpad[a]) << 8) | scratchpad[a+1];
+  u16 x = scratchpad[a >> 1];
   fprintf(stderr, "BBA SCRATCHPAD: read word %03X %04X\n", a, x);
   return x;
 }
@@ -64,6 +72,5 @@ u16 read_w_bba_scratchpad(u32 a) {
 void write_w_bba_scratchpad(u32 a, u16 x) {
   a -= 0x300000;
   fprintf(stderr, "BBA SCRATCHPAD: write word %03X %04X\n", a, x);
-  scratchpad[a] = x >> 8;
-  scratchpad[a+1] = x & 0xFF;
+  scratchpad[a >> 1] = x;
 }
