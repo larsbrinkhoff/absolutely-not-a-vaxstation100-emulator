@@ -89,9 +89,9 @@ def send_copy_area(s):
     height = 4
     dstx = 5
     dsty = 6
-    clips = [(7, 8, 88, 99)]
+    clips = [] ;[(7, 8, 88, 99)]
     clipcount = len(clips)
-    func = 0
+    func = 3
 
     func = ssmap[func]
 
@@ -137,7 +137,7 @@ def send_copy_area(s):
         memory[30] = clips[0][1]
         memory[31] = clips[0][2]
         memory[32] = clips[0][3]
-    else:
+    elif clipcount > 1:
         memory[1] |= 2 << 4;  #clipping
         memory[29] = 0
         memory[30] = 0

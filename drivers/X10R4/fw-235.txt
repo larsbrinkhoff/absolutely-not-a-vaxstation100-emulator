@@ -146,11 +146,11 @@
 120a:	6100 25b6      	        bsrw 0x37c2 ;clear stuff
 120e:	2078 5f8c      	        moveal 0x5f8c,%a0 ;packet
 1212:	2038 5f90      	        movel 0x5f90,%d0 ;modifier
-1216:	6100 25ea      	        bsrw 0x3802
-121a:	6100 2752      	        bsrw 0x396e
-121e:	6100 27c4      	        bsrw 0x39e4
-1222:	6100 27de      	        bsrw 0x3a02
-1226:	6100 2876      	        bsrw 0x3a9e
+1216:	6100 25ea      	        bsrw 0x3802 ;source (7 words)
+121a:	6100 2752      	        bsrw 0x396e ;mask (9 words)
+121e:	6100 27c4      	        bsrw 0x39e4 ;destination (7 words)
+1222:	6100 27de      	        bsrw 0x3a02 ;map (2 words)
+1226:	6100 2876      	        bsrw 0x3a9e ;clipping (2 words)
 122a:	6100 248a      	        bsrw 0x36b6
 122e:	2078 603a      	        moveal 0x603a,%a0
 1232:	3038 603e      	        movew 0x603e,%d0
@@ -176,14 +176,14 @@
 ;draw curve
 12aa:	6100 2516      	        bsrw 0x37c2
 12ae:	2078 5f8c      	        moveal 0x5f8c,%a0
-12b2:	2038 5f90      	        movel 0x5f90,%d0
+12b2:	2038 5f90      	        movel 0x5f90,%d0 ;modifier
 12b6:	51f8 604e      	        sf 0x604e ;flag bba bit 7
 12ba:	51f8 605e      	        sf 0x605e
 12be:	51f8 605f      	        sf 0x605f
 12c2:	4238 5fd4      	        clrb 0x5fd4
 12c6:	4278 5fd6      	        clrw 0x5fd6
 12ca:	21fc 0000 18ee 126e     movel #6382,0x126e
-12d2:	6100 252e      	        bsrw 0x3802
+12d2:	6100 252e      	        bsrw 0x3802 ;process source
 12d6:	6100 2696      	        bsrw 0x396e
 12da:	6100 2708      	        bsrw 0x39e4
 12de:	6100 2722      	        bsrw 0x3a02
@@ -199,15 +199,15 @@
 1302:	6100 07be      	        bsrw 0x1ac2
 1306:	6100 23d0      	        bsrw 0x36d8
 130a:	51f8 1292      	        sf 0x1292
-130e:	31f8 6032 60d0 	        movew 0x6032,0x60d0
-1314:	31f8 6034 60d2 	        movew 0x6034,0x60d2
+130e:	31f8 6032 60d0 	        movew 0x6032,0x60d0 ;dst x
+1314:	31f8 6034 60d2 	        movew 0x6034,0x60d2 ;dst y
 131a:	4a38 605f      	        tstb 0x605f
 131e:	661e           	        bnes 0x133e
 1320:	4a78 5f96      	        tstw 0x5f96 ;bba command
 1324:	6618           	        bnes 0x133e
-1326:	0c78 0001 6024 	        cmpiw #1,0x6024
+1326:	0c78 0001 6024 	        cmpiw #1,0x6024 ;msk w
 132c:	6610           	        bnes 0x133e
-132e:	0c78 0001 6026 	        cmpiw #1,0x6026
+132e:	0c78 0001 6026 	        cmpiw #1,0x6026 ;msk h
 1334:	6608           	        bnes 0x133e
 1336:	50f8 1292      	        st 0x1292
 133a:	6100 01a8      	        bsrw 0x14e4
@@ -340,22 +340,22 @@
 14f6:	4a38 60e2      	        tstb 0x60e2
 14fa:	66fa           	        bnes 0x14f6
 14fc:	33f8 5f96 0030 0000     movew 0x5f96,0x300000 ;bba command
-1504:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e
+1504:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;map?
 150c:	33f8 6052 0030 0044     movew 0x6052,0x300044
 1514:	33f8 6050 0030 0046     movew 0x6050,0x300046
 151c:	33f8 6054 0030 0048     movew 0x6054,0x300048
 1524:	4e75           	        rts
 1526:	48e7 e000      	        moveml %d0-%d2,%sp@-
 152a:	3038 36b2      	        movew 0x36b2,%d0
-152e:	c1f8 6036      	        mulsw 0x6036,%d0
-1532:	d0b8 6028      	        addl 0x6028,%d0
+152e:	c1f8 6036      	        mulsw 0x6036,%d0 ;dst W
+1532:	d0b8 6028      	        addl 0x6028,%d0 ;dst address
 1536:	3238 36ac      	        movew 0x36ac,%d1
 153a:	9278 36a6      	        subw 0x36a6,%d1
 153e:	5241           	        addqw #1,%d1
 1540:	3438 36b4      	        movew 0x36b4,%d2
 1544:	9478 36b2      	        subw 0x36b2,%d2
 1548:	5242           	        addqw #1,%d2
-154a:	c5f8 6036      	        mulsw 0x6036,%d2
+154a:	c5f8 6036      	        mulsw 0x6036,%d2 ;dst W
 154e:	4a38 60e2      	        tstb 0x60e2
 1552:	66fa           	        bnes 0x154e
 1554:	33f8 36a6 0030 0038     movew 0x36a6,0x300038
@@ -504,7 +504,7 @@
 1780:	6008           	        bras 0x178a
 1782:	31fc ffff 1282 	        movew #-1,0x1282
 1788:	4442           	        negw %d2
-178a:	3038 6036      	        movew 0x6036,%d0
+178a:	3038 6036      	        movew 0x6036,%d0 ;dst W
 178e:	3638 127a      	        movew 0x127a,%d3
 1792:	9678 1276      	        subw 0x1276,%d3
 1796:	6900 0148      	        bvsw 0x18e0
@@ -536,10 +536,10 @@
 17fa:	207c 0030 0026 	        moveal #3145766,%a0
 1800:	3038 1274      	        movew 0x1274,%d0
 1804:	d078 60d0      	        addw 0x60d0,%d0
-1808:	2278 6028      	        moveal 0x6028,%a1
+1808:	2278 6028      	        moveal 0x6028,%a1 ;dst address
 180c:	3238 1276      	        movew 0x1276,%d1
 1810:	d278 60d2      	        addw 0x60d2,%d1
-1814:	c3f8 6036      	        mulsw 0x6036,%d1
+1814:	c3f8 6036      	        mulsw 0x6036,%d1 ;dst W
 1818:	d3c1           	        addal %d1,%a1
 181a:	4a38 60e2      	        tstb 0x60e2
 181e:	66fa           	        bnes 0x181a
@@ -624,8 +624,8 @@
 191c:	31c1 6058      	        movew %d1,0x6058
 1920:	4a02           	        tstb %d2
 1922:	670c           	        beqs 0x1930
-1924:	31c4 6032      	        movew %d4,0x6032
-1928:	31c5 6034      	        movew %d5,0x6034
+1924:	31c4 6032      	        movew %d4,0x6032 ;dst x
+1928:	31c5 6034      	        movew %d5,0x6034 ;dst y
 192c:	6100 220e      	        bsrw 0x3b3c
 1930:	4cdf 0007      	        moveml %sp@+,%d0-%d2
 1934:	4e75           	        rts
@@ -655,7 +655,7 @@
 197e:	32d8           	        movew %a0@+,%a1@+
 1980:	51c8 fffa      	        dbf %d0,0x197c
 1984:	51f8 1272      	        sf 0x1272
-1988:	6022           	        bras 0x19ac 
+1988:	6022           	        bras 0x19ac
 198a:	4a38 1272      	        tstb 0x1272
 198e:	661c           	        bnes 0x19ac
 1990:	303c 0007      	        movew #7,%d0
@@ -665,8 +665,8 @@
 19a2:	32d8           	        movew %a0@+,%a1@+
 19a4:	51c8 fffa      	        dbf %d0,0x19a0
 19a8:	50f8 1272      	        st 0x1272
-19ac:	31c4 6032      	        movew %d4,0x6032
-19b0:	31c5 6034      	        movew %d5,0x6034
+19ac:	31c4 6032      	        movew %d4,0x6032 ;dst x
+19b0:	31c5 6034      	        movew %d5,0x6034 ;dst y
 19b4:	6100 2186      	        bsrw 0x3b3c
 19b8:	4cdf 0307      	        moveml %sp@+,%d0-%d2/%a0-%a1
 19bc:	4e75           	        rts
@@ -816,9 +816,9 @@
 ;print text
 1bc2:	6100 1bfe      	        bsrw 0x37c2
 1bc6:	2078 5f8c      	        moveal 0x5f8c,%a0
-1bca:	2038 5f90      	        movel 0x5f90,%d0
-1bce:	6100 062a      	        bsrw 0x21fa
-1bd2:	6100 06dc      	        bsrw 0x22b0
+1bca:	2038 5f90      	        movel 0x5f90,%d0  ;modifier
+1bce:	6100 062a      	        bsrw 0x21fa ;process source
+1bd2:	6100 06dc      	        bsrw 0x22b0 ;process mask
 1bd6:	6100 0808      	        bsrw 0x23e0
 1bda:	6100 1e26      	        bsrw 0x3a02
 1bde:	6100 1ebe      	        bsrw 0x3a9e
@@ -830,8 +830,8 @@
 1bf6:	3038 603e      	        movew 0x603e,%d0
 1bfa:	6728           	        beqs 0x1c24
 1bfc:	5340           	        subqw #1,%d0
-1bfe:	31f8 60d0 6032 	        movew 0x60d0,0x6032
-1c04:	31f8 60d2 6034 	        movew 0x60d2,0x6034
+1bfe:	31f8 60d0 6032 	        movew 0x60d0,0x6032 ;dst x
+1c04:	31f8 60d2 6034 	        movew 0x60d2,0x6034 ;dst y
 1c0a:	31d8 6040      	        movew %a0@+,0x6040
 1c0e:	31d8 6042      	        movew %a0@+,0x6042
 1c12:	31d8 6044      	        movew %a0@+,0x6044
@@ -845,49 +845,49 @@
 1c2e:	4a38 6090      	        tstb 0x6090
 1c32:	670c           	        beqs 0x1c40
 1c34:	2078 608c      	        moveal 0x608c,%a0
-1c38:	30f8 6032      	        movew 0x6032,%a0@+
-1c3c:	30b8 6034      	        movew 0x6034,%a0@
+1c38:	30f8 6032      	        movew 0x6032,%a0@+ ;dst x
+1c3c:	30b8 6034      	        movew 0x6034,%a0@  ;dst y
 1c40:	31fc 0002 60d4 	        movew #2,0x60d4
 1c46:	6100 2bb2      	        bsrw 0x47fa
 1c4a:	4e75           	        rts
-1c4c:	4278 5fa8      	        clrw 0x5fa8
+1c4c:	4278 5fa8      	        clrw 0x5fa8         ;src y
 1c50:	21f8 5f9c 3b2a 	        movel 0x5f9c,0x3b2a
-1c56:	4278 6020      	        clrw 0x6020
-1c5a:	21f8 6014 3b2e 	        movel 0x6014,0x3b2e
-1c60:	31f8 6032 60d0 	        movew 0x6032,0x60d0
-1c66:	31f8 6034 60d2 	        movew 0x6034,0x60d2
+1c56:	4278 6020      	        clrw 0x6020         ;msk y
+1c5a:	21f8 6014 3b2e 	        movel 0x6014,0x3b2e ;msk address
+1c60:	31f8 6032 60d0 	        movew 0x6032,0x60d0 ;dst x
+1c66:	31f8 6034 60d2 	        movew 0x6034,0x60d2 ;dst y
 1c6c:	4a38 60e2      	        tstb 0x60e2
 1c70:	66fa           	        bnes 0x1c6c
 1c72:	33f8 5f96 0030 0000     movew 0x5f96,0x300000 ;bba command
-1c7a:	23f8 3b2a 0030 0002     movel 0x3b2a,0x300002
-1c82:	33f8 5faa 0030 0008     movew 0x5faa,0x300008
-1c8a:	23f8 3b2e 0030 000a     movel 0x3b2e,0x30000a
-1c92:	33f8 6022 0030 0010     movew 0x6022,0x300010
-1c9a:	33f8 6026 0030 001c     movew 0x6026,0x30001c
-1ca2:	33f8 6036 0030 0018     movew 0x6036,0x300018
-1caa:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e
+1c7a:	23f8 3b2a 0030 0002     movel 0x3b2a,0x300002 ;address
+1c82:	33f8 5faa 0030 0008     movew 0x5faa,0x300008 ;src W
+1c8a:	23f8 3b2e 0030 000a     movel 0x3b2e,0x30000a ;msk address
+1c92:	33f8 6022 0030 0010     movew 0x6022,0x300010 ;msk W
+1c9a:	33f8 6026 0030 001c     movew 0x6026,0x30001c ;msk h
+1ca2:	33f8 6036 0030 0018     movew 0x6036,0x300018 ;dst W
+1caa:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;map?
 1cb2:	23f8 5fb0 0030 0020     movel 0x5fb0,0x300020
 1cba:	4e75           	        rts
 1cbc:	4a38 60e2      	        tstb 0x60e2
 1cc0:	66fa           	        bnes 0x1cbc
-1cc2:	23f8 3b2a 0030 0002     movel 0x3b2a,0x300002
-1cca:	23f8 3b2e 0030 000a     movel 0x3b2e,0x30000a
-1cd2:	23f8 3b32 0030 0012     movel 0x3b32,0x300012
-1cda:	33f8 6026 0030 001c     movew 0x6026,0x30001c
-1ce2:	33f8 6034 0030 0024     movew 0x6034,0x300024
+1cc2:	23f8 3b2a 0030 0002     movel 0x3b2a,0x300002 ;src address
+1cca:	23f8 3b2e 0030 000a     movel 0x3b2e,0x30000a ;msk address
+1cd2:	23f8 3b32 0030 0012     movel 0x3b32,0x300012 ;dst address
+1cda:	33f8 6026 0030 001c     movew 0x6026,0x30001c ;msk h
+1ce2:	33f8 6034 0030 0024     movew 0x6034,0x300024 ;dst y
 1cea:	4e75           	        rts
 1cec:	48e7 e0e0      	        moveml %d0-%d2/%a0-%a2,%sp@-
 1cf0:	6100 1a4a      	        bsrw 0x373c
 1cf4:	6100 418c      	        bsrw 0x5e82
 1cf8:	5278 36ac      	        addqw #1,0x36ac
 1cfc:	5278 36b4      	        addqw #1,0x36b4
-1d00:	21f8 6028 3b32 	        movel 0x6028,0x3b32
-1d06:	3038 6034      	        movew 0x6034,%d0
-1d0a:	c1f8 6036      	        mulsw 0x6036,%d0
-1d0e:	d1b8 3b32      	        addl %d0,0x3b32
+1d00:	21f8 6028 3b32 	        movel 0x6028,0x3b32 ;dst address
+1d06:	3038 6034      	        movew 0x6034,%d0  ;dst y
+1d0a:	c1f8 6036      	        mulsw 0x6036,%d0  ;dst W
+1d0e:	d1b8 3b32      	        addl %d0,0x3b32 ;dst address
 1d12:	4a38 60e2      	        tstb 0x60e2
 1d16:	66fa           	        bnes 0x1d12
-1d18:	23f8 3b32 0030 0012     movel 0x3b32,0x300012
+1d18:	23f8 3b32 0030 0012     movel 0x3b32,0x300012 ;dst address
 1d20:	33f8 6034 0030 0024     movew 0x6034,0x300024
 1d28:	2078 6092      	        moveal 0x6092,%a0
 1d2c:	3238 6096      	        movew 0x6096,%d1
@@ -959,18 +959,18 @@
 1e06:	6100 29f2      	        bsrw 0x47fa
 1e0a:	6000 f258      	        braw 0x1064
 1e0e:	3019           	        movew %a1@+,%d0
-1e10:	d178 6032      	        addw %d0,0x6032
+1e10:	d178 6032      	        addw %d0,0x6032 ;dst x
 1e14:	3019           	        movew %a1@+,%d0
-1e16:	d178 6034      	        addw %d0,0x6034
+1e16:	d178 6034      	        addw %d0,0x6034 ;dst y
 1e1a:	5542           	        subqw #2,%d2
 1e1c:	6b24           	        bmis 0x1e42
 1e1e:	4a40           	        tstw %d0
 1e20:	671e           	        beqs 0x1e40
-1e22:	c1f8 6036      	        mulsw 0x6036,%d0
-1e26:	d1b8 3b32      	        addl %d0,0x3b32
+1e22:	c1f8 6036      	        mulsw 0x6036,%d0 ;dst W
+1e26:	d1b8 3b32      	        addl %d0,0x3b32 ;dst address
 1e2a:	4a38 60e2      	        tstb 0x60e2
 1e2e:	66fa           	        bnes 0x1e2a
-1e30:	23f8 3b32 0030 0012     movel 0x3b32,0x300012
+1e30:	23f8 3b32 0030 0012     movel 0x3b32,0x300012 ;dst address
 1e38:	33f8 6034 0030 0024     movew 0x6034,0x300024
 1e40:	4e75           	        rts
 1e42:	31fc 8050 60d4 	        movew #-32688,0x60d4
@@ -1011,8 +1011,8 @@
 1ea4:	4280           	        clrl %d0
 1ea6:	3638 6034      	        movew 0x6034,%d3
 1eaa:	3803           	        movew %d3,%d4
-1eac:	d878 6026      	        addw 0x6026,%d4
-1eb0:	3a38 6032      	        movew 0x6032,%d5
+1eac:	d878 6026      	        addw 0x6026,%d4 ;msk h
+1eb0:	3a38 6032      	        movew 0x6032,%d5 ;dst x
 1eb4:	3c05           	        movew %d5,%d6
 1eb6:	3001           	        movew %d1,%d0
 1eb8:	9078 6080      	        subw 0x6080,%d0
@@ -1043,12 +1043,12 @@
 1f04:	33c0 0030 0006 	        movew %d0,0x300006
 1f0a:	33c0 0030 000e 	        movew %d0,0x30000e
 1f10:	33c5 0030 0016 	        movew %d5,0x300016
-1f16:	33c2 0030 001a 	        movew %d2,0x30001a
+1f16:	33c2 0030 001a 	        movew %d2,0x30001a ;msk w
 1f1c:	50f8 60e2      	        st 0x60e2
 1f20:	13fc 0001 0028 0000     moveb #1,0x280000
 1f28:	6014           	        bras 0x1f3e
-1f2a:	31c0 5fa6      	        movew %d0,0x5fa6
-1f2e:	31c0 601e      	        movew %d0,0x601e
+1f2a:	31c0 5fa6      	        movew %d0,0x5fa6 ;src x
+1f2e:	31c0 601e      	        movew %d0,0x601e ;msk x
 1f32:	31c2 6024      	        movew %d2,0x6024
 1f36:	6100 011a      	        bsrw 0x2052
 1f3a:	6100 fd80      	        bsrw 0x1cbc
@@ -1058,7 +1058,7 @@
 1f48:	692c           	        bvss 0x1f76
 1f4a:	dc78 609e      	        addw 0x609e,%d6
 1f4e:	6926           	        bvss 0x1f76
-1f50:	31c6 6032      	        movew %d6,0x6032
+1f50:	31c6 6032      	        movew %d6,0x6032 ;dst x
 1f54:	4cdf 017f      	        moveml %sp@+,%d0-%d6/%a0
 1f58:	4e75           	        rts
 1f5a:	31fc 8054 60d4 	        movew #-32684,0x60d4
@@ -1072,7 +1072,7 @@
 1f80:	6000 f0e2      	        braw 0x1064
 1f84:	48e7 fc80      	        moveml %d0-%d5/%a0,%sp@-
 1f88:	3438 608a      	        movew 0x608a,%d2
-1f8c:	3638 6032      	        movew 0x6032,%d3
+1f8c:	3638 6032      	        movew 0x6032,%d3 ;dst x
 1f90:	3803           	        movew %d3,%d4
 1f92:	d842           	        addw %d2,%d4
 1f94:	6900 00ae      	        bvsw 0x2044
@@ -1091,7 +1091,7 @@
 1fba:	3a38 6034      	        movew 0x6034,%d5
 1fbe:	ba78 36b2      	        cmpw 0x36b2,%d5
 1fc2:	6d42           	        blts 0x2006
-1fc4:	da78 6026      	        addw 0x6026,%d5
+1fc4:	da78 6026      	        addw 0x6026,%d5 ;msk h
 1fc8:	ba78 36b4      	        cmpw 0x36b4,%d5
 1fcc:	6e38           	        bgts 0x2006
 1fce:	b678 36a6      	        cmpw 0x36a6,%d3
@@ -1103,12 +1103,12 @@
 1fe0:	33c0 0030 0006 	        movew %d0,0x300006
 1fe6:	33c0 0030 000e 	        movew %d0,0x30000e
 1fec:	33c3 0030 0016 	        movew %d3,0x300016
-1ff2:	33c2 0030 001a 	        movew %d2,0x30001a
+1ff2:	33c2 0030 001a 	        movew %d2,0x30001a ;msk w
 1ff8:	50f8 60e2      	        st 0x60e2
 1ffc:	13fc 0001 0028 0000     moveb #1,0x280000
 2004:	6014           	        bras 0x201a
-2006:	31c0 5fa6      	        movew %d0,0x5fa6
-200a:	31c0 601e      	        movew %d0,0x601e
+2006:	31c0 5fa6      	        movew %d0,0x5fa6 ;src x
+200a:	31c0 601e      	        movew %d0,0x601e ;msk x
 200e:	31c2 6024      	        movew %d2,0x6024
 2012:	6100 003e      	        bsrw 0x2052
 2016:	6100 fca4      	        bsrw 0x1cbc
@@ -1118,7 +1118,7 @@
 2024:	691e           	        bvss 0x2044
 2026:	d878 609e      	        addw 0x609e,%d4
 202a:	6918           	        bvss 0x2044
-202c:	31c4 6032      	        movew %d4,0x6032
+202c:	31c4 6032      	        movew %d4,0x6032 ;dst x
 2030:	4cdf 013f      	        moveml %sp@+,%d0-%d5/%a0
 2034:	4e75           	        rts
 2036:	31fc 8054 60d4 	        movew #-32684,0x60d4
@@ -1127,69 +1127,70 @@
 2044:	31fc 80ad 60d4 	        movew #-32595,0x60d4
 204a:	6100 27ae      	        bsrw 0x47fa
 204e:	6000 f014      	        braw 0x1064
+
 2052:	3f38 5f96      	        movew 0x5f96,%sp@- ;bba command
 2056:	2f38 3b2a      	        movel 0x3b2a,%sp@-
-205a:	3f38 5fa6      	        movew 0x5fa6,%sp@-
-205e:	3f38 5fa8      	        movew 0x5fa8,%sp@-
+205a:	3f38 5fa6      	        movew 0x5fa6,%sp@- ;src x
+205e:	3f38 5fa8      	        movew 0x5fa8,%sp@- ;src y
 2062:	2f38 3b2e      	        movel 0x3b2e,%sp@-
-2066:	3f38 601e      	        movew 0x601e,%sp@-
-206a:	3f38 6020      	        movew 0x6020,%sp@-
-206e:	2f38 3b32      	        movel 0x3b32,%sp@-
-2072:	3f38 6032      	        movew 0x6032,%sp@-
-2076:	3f38 6034      	        movew 0x6034,%sp@-
-207a:	51f8 3b3a      	        sf 0x3b3a
+2066:	3f38 601e      	        movew 0x601e,%sp@- ;msk x
+206a:	3f38 6020      	        movew 0x6020,%sp@- ;msk y
+206e:	2f38 3b32      	        movel 0x3b32,%sp@- ;dst address
+2072:	3f38 6032      	        movew 0x6032,%sp@- ;dst x
+2076:	3f38 6034      	        movew 0x6034,%sp@- ;dst y
+207a:	51f8 3b3a      	        sf 0x3b3a        ;flag
 207e:	6100 004e      	        bsrw 0x20ce
 2082:	4a38 3b3a      	        tstb 0x3b3a
-2086:	661c           	        bnes 0x20a4
-2088:	4a78 3b36      	        tstw 0x3b36
-208c:	6f16           	        bles 0x20a4
-208e:	4a78 3b38      	        tstw 0x3b38
-2092:	6f10           	        bles 0x20a4
+2086:	661c           	        bnes 0x20a4      ;skip all this?
+2088:	4a78 3b36      	        tstw 0x3b36      ;msk w
+208c:	6f16           	        bles 0x20a4      ;skip?
+208e:	4a78 3b38      	        tstw 0x3b38      ;msk h
+2092:	6f10           	        bles 0x20a4      ;skip?
 2094:	6100 3e36      	        bsrw 0x5ecc
 2098:	6100 1c80      	        bsrw 0x3d1a
 209c:	6100 1cdc      	        bsrw 0x3d7a
 20a0:	6100 1d18      	        bsrw 0x3dba
-20a4:	31df 6034      	        movew %sp@+,0x6034
-20a8:	31df 6032      	        movew %sp@+,0x6032
-20ac:	21df 3b32      	        movel %sp@+,0x3b32
-20b0:	31df 6020      	        movew %sp@+,0x6020
-20b4:	31df 601e      	        movew %sp@+,0x601e
+20a4:	31df 6034      	        movew %sp@+,0x6034 ;dst y
+20a8:	31df 6032      	        movew %sp@+,0x6032 ;dst x
+20ac:	21df 3b32      	        movel %sp@+,0x3b32 ;dst address
+20b0:	31df 6020      	        movew %sp@+,0x6020 ;msk y
+20b4:	31df 601e      	        movew %sp@+,0x601e ;msk x
 20b8:	21df 3b2e      	        movel %sp@+,0x3b2e
-20bc:	31df 5fa8      	        movew %sp@+,0x5fa8
-20c0:	31df 5fa6      	        movew %sp@+,0x5fa6
+20bc:	31df 5fa8      	        movew %sp@+,0x5fa8 ;src y
+20c0:	31df 5fa6      	        movew %sp@+,0x5fa6 ;src x
 20c4:	21df 3b2a      	        movel %sp@+,0x3b2a
 20c8:	31df 5f96      	        movew %sp@+,0x5f96 ;bba command
 20cc:	4e75           	        rts
 
 20ce:	48e7 7800      	        moveml %d1-%d4,%sp@-
-20d2:	3638 6024      	        movew 0x6024,%d3
-20d6:	3838 6026      	        movew 0x6026,%d4
-20da:	0838 0001 5f94 	        btst #1,0x5f94
+20d2:	3638 6024      	        movew 0x6024,%d3 ;msk w
+20d6:	3838 6026      	        movew 0x6026,%d4 ;msk h
+20da:	0838 0001 5f94 	        btst #1,0x5f94   ;src bitmap?
 20e0:	672a           	        beqs 0x210c
-20e2:	3238 5fa0      	        movew 0x5fa0,%d1
-20e6:	3438 5fa6      	        movew 0x5fa6,%d2
+20e2:	3238 5fa0      	        movew 0x5fa0,%d1 ;src w
+20e6:	3438 5fa6      	        movew 0x5fa6,%d2 ;src x
 20ea:	6718           	        beqs 0x2104
 20ec:	6e10           	        bgts 0x20fe
-20ee:	4278 5fa6      	        clrw 0x5fa6
-20f2:	9578 601e      	        subw %d2,0x601e
-20f6:	9578 6032      	        subw %d2,0x6032
-20fa:	d642           	        addw %d2,%d3
+20ee:	4278 5fa6      	        clrw 0x5fa6     ;src x
+20f2:	9578 601e      	        subw %d2,0x601e ;msk x
+20f6:	9578 6032      	        subw %d2,0x6032 ;dst x
+20fa:	d642           	        addw %d2,%d3    ;msk w
 20fc:	6006           	        bras 0x2104
-20fe:	9242           	        subw %d2,%d1
+20fe:	9242           	        subw %d2,%d1    ;src w
 2100:	6f00 00f2      	        blew 0x21f4
 2104:	b243           	        cmpw %d3,%d1
 2106:	6c34           	        bges 0x213c
 2108:	3601           	        movew %d1,%d3
 210a:	6030           	        bras 0x213c
-210c:	0838 0003 5f94 	        btst #3,0x5f94
+210c:	0838 0003 5f94 	        btst #3,0x5f94   ;msk bitmap?
 2112:	6728           	        beqs 0x213c
-2114:	3238 6018      	        movew 0x6018,%d1
-2118:	3438 601e      	        movew 0x601e,%d2
+2114:	3238 6018      	        movew 0x6018,%d1 ;msk w
+2118:	3438 601e      	        movew 0x601e,%d2 ;msk x
 211c:	671e           	        beqs 0x213c
 211e:	6e16           	        bgts 0x2136
-2120:	9578 5fa6      	        subw %d2,0x5fa6
-2124:	4278 601e      	        clrw 0x601e
-2128:	9578 6032      	        subw %d2,0x6032
+2120:	9578 5fa6      	        subw %d2,0x5fa6  ;src x
+2124:	4278 601e      	        clrw 0x601e      ;msk x
+2128:	9578 6032      	        subw %d2,0x6032  ;dst x
 212c:	d642           	        addw %d2,%d3
 212e:	600c           	        bras 0x213c
 2130:	9242           	        subw %d2,%d1
@@ -1197,13 +1198,13 @@
 2136:	b243           	        cmpw %d3,%d1
 2138:	6c02           	        bges 0x213c
 213a:	3601           	        movew %d1,%d3
-213c:	3238 602c      	        movew 0x602c,%d1
-2140:	3438 6032      	        movew 0x6032,%d2
+213c:	3238 602c      	        movew 0x602c,%d1 ;dst w
+2140:	3438 6032      	        movew 0x6032,%d2 ;dst x
 2144:	6718           	        beqs 0x215e
 2146:	6e10           	        bgts 0x2158
-2148:	9578 5fa6      	        subw %d2,0x5fa6
-214c:	9578 601e      	        subw %d2,0x601e
-2150:	4278 6032      	        clrw 0x6032
+2148:	9578 5fa6      	        subw %d2,0x5fa6 ;src x
+214c:	9578 601e      	        subw %d2,0x601e ;msk x
+2150:	4278 6032      	        clrw 0x6032 ;dst x
 2154:	d642           	        addw %d2,%d3
 2156:	6006           	        bras 0x215e
 2158:	9242           	        subw %d2,%d1
@@ -1211,12 +1212,12 @@
 215e:	b243           	        cmpw %d3,%d1
 2160:	6c02           	        bges 0x2164
 2162:	3601           	        movew %d1,%d3
-2164:	3238 602e      	        movew 0x602e,%d1
+2164:	3238 602e      	        movew 0x602e,%d1 ;dst h
 2168:	3438 6034      	        movew 0x6034,%d2
 216c:	6718           	        beqs 0x2186
 216e:	6e10           	        bgts 0x2180
-2170:	9578 5fa8      	        subw %d2,0x5fa8
-2174:	9578 6020      	        subw %d2,0x6020
+2170:	9578 5fa8      	        subw %d2,0x5fa8 ;src y
+2174:	9578 6020      	        subw %d2,0x6020 ;msk y
 2178:	4278 6034      	        clrw 0x6034
 217c:	d842           	        addw %d2,%d4
 217e:	6006           	        bras 0x2186
@@ -1229,12 +1230,12 @@
 2190:	6754           	        beqs 0x21e6
 2192:	3238 6044      	        movew 0x6044,%d1
 2196:	3438 6040      	        movew 0x6040,%d2
-219a:	9478 6032      	        subw 0x6032,%d2
+219a:	9478 6032      	        subw 0x6032,%d2 ;dst x
 219e:	6716           	        beqs 0x21b6
 21a0:	6d12           	        blts 0x21b4
-21a2:	d578 5fa6      	        addw %d2,0x5fa6
-21a6:	d578 601e      	        addw %d2,0x601e
-21aa:	31f8 6040 6032 	        movew 0x6040,0x6032
+21a2:	d578 5fa6      	        addw %d2,0x5fa6     ;src x
+21a6:	d578 601e      	        addw %d2,0x601e     ;msk x
+21aa:	31f8 6040 6032 	        movew 0x6040,0x6032 ;dst x
 21b0:	9642           	        subw %d2,%d3
 21b2:	6002           	        bras 0x21b6
 21b4:	d242           	        addw %d2,%d1
@@ -1246,8 +1247,8 @@
 21c4:	9478 6034      	        subw 0x6034,%d2
 21c8:	6716           	        beqs 0x21e0
 21ca:	6d12           	        blts 0x21de
-21cc:	d578 5fa8      	        addw %d2,0x5fa8
-21d0:	d578 6020      	        addw %d2,0x6020
+21cc:	d578 5fa8      	        addw %d2,0x5fa8 ;src y
+21d0:	d578 6020      	        addw %d2,0x6020 ;msk y
 21d4:	31f8 6042 6034 	        movew 0x6042,0x6034
 21da:	9842           	        subw %d2,%d4
 21dc:	6002           	        bras 0x21e0
@@ -1255,13 +1256,14 @@
 21e0:	b244           	        cmpw %d4,%d1
 21e2:	6c02           	        bges 0x21e6
 21e4:	3801           	        movew %d1,%d4
-21e6:	31c3 3b36      	        movew %d3,0x3b36
-21ea:	31c4 3b38      	        movew %d4,0x3b38
+21e6:	31c3 3b36      	        movew %d3,0x3b36 ;msk w
+21ea:	31c4 3b38      	        movew %d4,0x3b38 ;msk h
 21ee:	4cdf 001e      	        moveml %sp@+,%d1-%d4
 21f2:	4e75           	        rts
 21f4:	50f8 3b3a      	        st 0x3b3a
 21f8:	60ec           	        bras 0x21e6
 
+;print text - process source
 21fa:	2200           	        movel %d0,%d1
 21fc:	e688           	        lsrl #3,%d0
 21fe:	0241 0007      	        andiw #7,%d1
@@ -1280,7 +1282,8 @@
 222a:	0000 2232      	        orib #50,%d0
 222e:	0000 38e8      	        orib #-24,%d0
 
-2232:	08f8 0001 5f94 	        bset #1,0x5f94
+;print text - source 1, font
+2232:	08f8 0001 5f94 	        bset #1,0x5f94 ;flag src bitmap
 2238:	0078 0001 5f96 	        oriw #1,0x5f96 ;bba command
 223e:	2218           	        movel %a0@+,%d1
 2240:	4841           	        swap %d1
@@ -1294,15 +1297,15 @@
 2252:	21cb 5f9c      	        movel %a3,0x5f9c
 2256:	3219           	        movew %a1@+,%d1
 2258:	6f2c           	        bles 0x2286
-225a:	31c1 5fa0      	        movew %d1,0x5fa0 ;source address
+225a:	31c1 5fa0      	        movew %d1,0x5fa0 ;src w
 225e:	0641 000f      	        addiw #15,%d1
 2262:	e849           	        lsrw #4,%d1
 2264:	e349           	        lslw #1,%d1
-2266:	31c1 5faa      	        movew %d1,0x5faa
+2266:	31c1 5faa      	        movew %d1,0x5faa ;src W
 226a:	3219           	        movew %a1@+,%d1
 226c:	6f26           	        bles 0x2294
-226e:	31c1 5fa2      	        movew %d1,0x5fa2
-2272:	31c1 6026      	        movew %d1,0x6026
+226e:	31c1 5fa2      	        movew %d1,0x5fa2 ;src h
+2272:	31c1 6026      	        movew %d1,0x6026 ;msk h
 2276:	3219           	        movew %a1@+,%d1
 2278:	6f28           	        bles 0x22a2
 227a:	0c41 0001      	        cmpiw #1,%d1
@@ -1319,6 +1322,8 @@
 22a2:	31fc 8059 60d4 	        movew #-32679,0x60d4
 22a8:	6100 2550      	        bsrw 0x47fa
 22ac:	6000 edb6      	        braw 0x1064
+
+;print text - process mask
 22b0:	2200           	        movel %d0,%d1
 22b2:	e688           	        lsrl #3,%d0
 22b4:	0241 0007      	        andiw #7,%d1
@@ -1326,25 +1331,30 @@
 22ba:	0c41 0008      	        cmpiw #8,%d1
 22be:	640e           	        bccs 0x22ce
 22c0:	227c 0000 22dc 	        moveal #8924,%a1
-22c6:	2271 1000      	        moveal %a1@(0000000000000000,%d1:w),%a1
+22c6:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 22ca:	4e91           	        jsr %a1@
 22cc:	4e75           	        rts
 22ce:	31fc 8026 60d4 	        movew #-32730,0x60d4
 22d4:	6100 2524      	        bsrw 0x47fa
 22d8:	6000 ed8a      	        braw 0x1064
+
 22dc:	0000 22e4      	        orib #-28,%d0
 22e0:	0000 2300      	        orib #0,%d0
+
+;print text - mask 0
 22e4:	d0fc 0012      	        addaw #18,%a0
-22e8:	0838 0001 5f94 	        btst #1,0x5f94
+22e8:	0838 0001 5f94 	        btst #1,0x5f94 ;src bitmap?
 22ee:	6702           	        beqs 0x22f2
 22f0:	4e75           	        rts
 22f2:	31fc 8056 60d4 	        movew #-32682,0x60d4
 22f8:	6100 2500      	        bsrw 0x47fa
 22fc:	6000 ed66      	        braw 0x1064
-2300:	0838 0001 5f94 	        btst #1,0x5f94
+
+;print test - mask 1, bitmap
+2300:	0838 0001 5f94 	        btst #1,0x5f94 ;src bitmap?
 2306:	6600 0056      	        bnew 0x235e
-230a:	08f8 0003 5f94 	        bset #3,0x5f94
-2310:	0078 0002 5f96 	        oriw #2,0x5f96 ;bba command
+230a:	08f8 0003 5f94 	        bset #3,0x5f94 ;flag msk bitmap
+2310:	0078 0002 5f96 	        oriw #2,0x5f96 ;bba command, bitmap mask?
 2316:	2218           	        movel %a0@+,%d1
 2318:	4841           	        swap %d1
 231a:	2241           	        moveal %d1,%a1
@@ -1354,18 +1364,18 @@
 2324:	4841           	        swap %d1
 2326:	2641           	        moveal %d1,%a3
 2328:	d7ca           	        addal %a2,%a3
-232a:	21cb 6014      	        movel %a3,0x6014
+232a:	21cb 6014      	        movel %a3,0x6014 ;msk address
 232e:	3219           	        movew %a1@+,%d1
 2330:	6f3a           	        bles 0x236c
-2332:	31c1 6018      	        movew %d1,0x6018
+2332:	31c1 6018      	        movew %d1,0x6018 ;msk w
 2336:	0641 000f      	        addiw #15,%d1
 233a:	e849           	        lsrw #4,%d1
 233c:	e349           	        lslw #1,%d1
-233e:	31c1 6022      	        movew %d1,0x6022 ;bba 010
+233e:	31c1 6022      	        movew %d1,0x6022 ;msk W
 2342:	3219           	        movew %a1@+,%d1
 2344:	6f34           	        bles 0x237a
-2346:	31c1 601a      	        movew %d1,0x601a
-234a:	31c1 6026      	        movew %d1,0x6026
+2346:	31c1 601a      	        movew %d1,0x601a ;msk h
+234a:	31c1 6026      	        movew %d1,0x6026 ;
 234e:	3219           	        movew %a1@+,%d1
 2350:	6f36           	        bles 0x2388
 2352:	0c41 0001      	        cmpiw #1,%d1
@@ -1384,6 +1394,7 @@
 2388:	31fc 805c 60d4 	        movew #-32676,0x60d4
 238e:	6100 246a      	        bsrw 0x47fa
 2392:	6000 ecd0      	        braw 0x1064
+
 2396:	21fc 0000 1ea0 1bbe     movel #7840,0x1bbe
 239e:	3219           	        movew %a1@+,%d1
 23a0:	6b30           	        bmis 0x23d2
@@ -1409,15 +1420,15 @@
 
 23e0:	2218           	        movel %a0@+,%d1
 23e2:	4841           	        swap %d1
-23e4:	21c1 6028      	        movel %d1,0x6028
+23e4:	21c1 6028      	        movel %d1,0x6028 ;dst address
 23e8:	3218           	        movew %a0@+,%d1
 23ea:	6f3e           	        bles 0x242a
-23ec:	31c1 602c      	        movew %d1,0x602c
+23ec:	31c1 602c      	        movew %d1,0x602c ;dst w
 23f0:	0641 000f      	        addiw #15,%d1
 23f4:	e849           	        lsrw #4,%d1
 23f6:	e349           	        lslw #1,%d1
-23f8:	31c1 6036      	        movew %d1,0x6036
-23fc:	31d8 602e      	        movew %a0@+,0x602e
+23f8:	31c1 6036      	        movew %d1,0x6036   ;dst W
+23fc:	31d8 602e      	        movew %a0@+,0x602e ;dst h
 2400:	6f36           	        bles 0x2438
 2402:	3218           	        movew %a0@+,%d1
 2404:	6f40           	        bles 0x2446
@@ -1450,28 +1461,28 @@
 246a:	0000 2494      	        orib #-108,%d0
 246e:	0000 24a6      	        orib #-90,%d0
 2472:	51f8 6090      	        sf 0x6090
-2476:	31d8 6032      	        movew %a0@+,0x6032
-247a:	31d8 6034      	        movew %a0@+,0x6034
+2476:	31d8 6032      	        movew %a0@+,0x6032 ;dst x
+247a:	31d8 6034      	        movew %a0@+,0x6034 ;dst y
 247e:	4e75           	        rts
 2480:	51f8 6090      	        sf 0x6090
 2484:	2218           	        movel %a0@+,%d1
 2486:	4841           	        swap %d1
 2488:	2241           	        moveal %d1,%a1
-248a:	31d9 6032      	        movew %a1@+,0x6032
-248e:	31d1 6034      	        movew %a1@,0x6034
+248a:	31d9 6032      	        movew %a1@+,0x6032 ;dst x
+248e:	31d1 6034      	        movew %a1@,0x6034  ;dst y
 2492:	4e75           	        rts
 2494:	50f8 6090      	        st 0x6090
 2498:	21c8 608c      	        movel %a0,0x608c
-249c:	31d8 6032      	        movew %a0@+,0x6032
-24a0:	31d8 6034      	        movew %a0@+,0x6034
+249c:	31d8 6032      	        movew %a0@+,0x6032 ;dst x
+24a0:	31d8 6034      	        movew %a0@+,0x6034 ;dst y
 24a4:	4e75           	        rts
 24a6:	50f8 6090      	        st 0x6090
 24aa:	2218           	        movel %a0@+,%d1
 24ac:	4841           	        swap %d1
 24ae:	2241           	        moveal %d1,%a1
 24b0:	21c9 608c      	        movel %a1,0x608c
-24b4:	31d9 6032      	        movew %a1@+,0x6032
-24b8:	31d1 6034      	        movew %a1@,0x6034
+24b4:	31d9 6032      	        movew %a1@+,0x6032 ;dst x
+24b8:	31d1 6034      	        movew %a1@,0x6034  ;dst y
 24bc:	4e75           	        rts
 24be:	e288           	        lsrl #1,%d0
 24c0:	55f8 6091      	        scs 0x6091
@@ -1504,7 +1515,7 @@
 ;flood area
 2528:	6100 1298      	        bsrw 0x37c2
 252c:	2078 5f8c      	        moveal 0x5f8c,%a0
-2530:	2038 5f90      	        movel 0x5f90,%d0
+2530:	2038 5f90      	        movel 0x5f90,%d0  ;modifier
 2534:	6100 04ce      	        bsrw 0x2a04
 2538:	e688           	        lsrl #3,%d0
 253a:	6100 14a8      	        bsrw 0x39e4
@@ -1512,8 +1523,8 @@
 2540:	6100 0508      	        bsrw 0x2a4a
 2544:	6100 0552      	        bsrw 0x2a98
 2548:	6100 116c      	        bsrw 0x36b6
-254c:	31f8 6032 60a2 	        movew 0x6032,0x60a2
-2552:	31f8 6034 60a4 	        movew 0x6034,0x60a4
+254c:	31f8 6032 60a2 	        movew 0x6032,0x60a2 ;dst x
+2552:	31f8 6034 60a4 	        movew 0x6034,0x60a4 ;dst y
 2558:	3038 60a6      	        movew 0x60a6,%d0
 255c:	6728           	        beqs 0x2586
 255e:	0c40 0003      	        cmpiw #3,%d0
@@ -1522,9 +1533,9 @@
 2566:	e248           	        lsrw #1,%d0
 2568:	6404           	        bccs 0x256e
 256a:	323c ffff      	        movew #-1,%d1
-256e:	0838 0002 5f94 	        btst #2,0x5f94
+256e:	0838 0002 5f94 	        btst #2,0x5f94  ;src halftone?
 2574:	6606           	        bnes 0x257c
-2576:	b278 5f9a      	        cmpw 0x5f9a,%d1
+2576:	b278 5f9a      	        cmpw 0x5f9a,%d1 ;const
 257a:	670e           	        beqs 0x258a
 257c:	31c1 2524      	        movew %d1,0x2524
 2580:	6100 0014      	        bsrw 0x2596
@@ -1696,9 +1707,9 @@
 27a6:	e84e           	        lsrw #4,%d6
 27a8:	3606           	        movew %d6,%d3
 27aa:	e34e           	        lslw #1,%d6
-27ac:	2078 6028      	        moveal 0x6028,%a0
+27ac:	2078 6028      	        moveal 0x6028,%a0 ;dst address
 27b0:	d0c6           	        addaw %d6,%a0
-27b2:	3838 6036      	        movew 0x6036,%d4
+27b2:	3838 6036      	        movew 0x6036,%d4  ;dst W
 27b6:	c9c7           	        mulsw %d7,%d4
 27b8:	d1c4           	        addal %d4,%a0
 27ba:	4a58           	        tstw %a0@+
@@ -1756,9 +1767,9 @@
 2842:	e84e           	        lsrw #4,%d6
 2844:	3606           	        movew %d6,%d3
 2846:	e34e           	        lslw #1,%d6
-2848:	2078 6028      	        moveal 0x6028,%a0
+2848:	2078 6028      	        moveal 0x6028,%a0 ;dst address
 284c:	d0c6           	        addaw %d6,%a0
-284e:	3838 6036      	        movew 0x6036,%d4
+284e:	3838 6036      	        movew 0x6036,%d4  ;dst W
 2852:	c9c7           	        mulsw %d7,%d4
 2854:	d1c4           	        addal %d4,%a0
 2856:	383c 000f      	        movew #15,%d4
@@ -1821,24 +1832,25 @@
 28ee:	4678 2524      	        notw 0x2524
 28f2:	5242           	        addqw #1,%d2
 28f4:	4e75           	        rts
+
 28f6:	48e7 5f00      	        moveml %d1/%d3-%d7,%sp@-
 28fa:	3a38 2524      	        movew 0x2524,%d5
 28fe:	383c ffff      	        movew #-1,%d4
-2902:	0838 0002 5f94 	        btst #2,0x5f94
+2902:	0838 0002 5f94 	        btst #2,0x5f94 ;src halftone?
 2908:	6712           	        beqs 0x291c
 290a:	2078 5fb0      	        moveal 0x5fb0,%a0
 290e:	3407           	        movew %d7,%d2
 2910:	0242 000f      	        andiw #15,%d2
 2914:	e34a           	        lslw #1,%d2
-2916:	3830 2000      	        movew %a0@(0000000000000000,%d2:w),%d4
+2916:	3830 2000      	        movew %a0@(0,%d2:w),%d4
 291a:	bb44           	        eorw %d5,%d4
 291c:	3406           	        movew %d6,%d2
 291e:	e84e           	        lsrw #4,%d6
 2920:	3606           	        movew %d6,%d3
 2922:	e34e           	        lslw #1,%d6
-2924:	2078 6028      	        moveal 0x6028,%a0
+2924:	2078 6028      	        moveal 0x6028,%a0 ;dst address
 2928:	d0c6           	        addaw %d6,%a0
-292a:	3238 6036      	        movew 0x6036,%d1
+292a:	3238 6036      	        movew 0x6036,%d1  ;dst W
 292e:	c3c7           	        mulsw %d7,%d1
 2930:	d1c1           	        addal %d1,%a0
 2932:	3e3c 000f      	        movew #15,%d7
@@ -1915,9 +1927,10 @@
 29de:	5342           	        subqw #1,%d2
 29e0:	4cdf 00fa      	        moveml %sp@+,%d1/%d3-%d7
 29e4:	4e75           	        rts
-29e6:	31f8 602c 6024 	        movew 0x602c,0x6024
-29ec:	31f8 602e 6026 	        movew 0x602e,0x6026
-29f2:	31fc 0003 5f98 	        movew #3,0x5f98
+
+29e6:	31f8 602c 6024 	        movew 0x602c,0x6024 ;dst->mask w
+29ec:	31f8 602e 6026 	        movew 0x602e,0x6026 ;dst->mask h
+29f2:	31fc 0003 5f98 	        movew #3,0x5f98 ;map?
 29f8:	6100 1142      	        bsrw 0x3b3c
 29fc:	4a38 60e2      	        tstb 0x60e2
 2a00:	66fa           	        bnes 0x29fc
@@ -1979,36 +1992,36 @@
 ;load cursor
 2ab4:	6100 0d0c      	        bsrw 0x37c2
 2ab8:	2078 5f8c      	        moveal 0x5f8c,%a0
-2abc:	2038 5f90      	        movel 0x5f90,%d0
-2ac0:	6100 018e      	        bsrw 0x2c50
-2ac4:	6100 0ea8      	        bsrw 0x396e
-2ac8:	3238 6024      	        movew 0x6024,%d1
+2abc:	2038 5f90      	        movel 0x5f90,%d0 ;modifier
+2ac0:	6100 018e      	        bsrw 0x2c50 ;process source
+2ac4:	6100 0ea8      	        bsrw 0x396e ;process mask (9 words)
+2ac8:	3238 6024      	        movew 0x6024,%d1 ;msk w
 2acc:	0c41 0040      	        cmpiw #64,%d1
 2ad0:	6e00 00d2      	        bgtw 0x2ba4
-2ad4:	3238 6026      	        movew 0x6026,%d1
+2ad4:	3238 6026      	        movew 0x6026,%d1 ;msk w
 2ad8:	0c41 0040      	        cmpiw #64,%d1
 2adc:	6e00 00d4      	        bgtw 0x2bb2
 2ae0:	e688           	        lsrl #3,%d0
 2ae2:	6100 0f1e      	        bsrw 0x3a02
 2ae6:	6100 01ce      	        bsrw 0x2cb6
 2aea:	6100 0bca      	        bsrw 0x36b6
-2aee:	31f8 5f94 60aa 	        movew 0x5f94,0x60aa
+2aee:	31f8 5f94 60aa 	        movew 0x5f94,0x60aa ;flags
 2af4:	31f8 5f96 60ac 	        movew 0x5f96,0x60ac ;bba command
 2afa:	0078 0020 60ac 	        oriw #32,0x60ac
-2b00:	31f8 5f98 60ae 	        movew 0x5f98,0x60ae
+2b00:	31f8 5f98 60ae 	        movew 0x5f98,0x60ae ;map?
 2b06:	0838 0001 60aa 	        btst #1,0x60aa
 2b0c:	670c           	        beqs 0x2b1a
-2b0e:	21fc 0000 5536 6028     movel #21814,0x6028
+2b0e:	21fc 0000 5536 6028     movel #21814,0x6028 ;dst address
 2b16:	6100 00a8      	        bsrw 0x2bc0
 2b1a:	0838 0003 60aa 	        btst #3,0x60aa
 2b20:	6730           	        beqs 0x2b52
-2b22:	21fc 0000 5736 6028     movel #22326,0x6028
-2b2a:	21f8 6014 5f9c 	        movel 0x6014,0x5f9c
-2b30:	31f8 6018 5fa0 	        movew 0x6018,0x5fa0
-2b36:	31f8 6022 5faa 	        movew 0x6022,0x5faa ;bba 010
-2b3c:	31f8 601a 5fa2 	        movew 0x601a,0x5fa2
-2b42:	31f8 601e 5fa6 	        movew 0x601e,0x5fa6
-2b48:	31f8 6020 5fa8 	        movew 0x6020,0x5fa8
+2b22:	21fc 0000 5736 6028     movel #22326,0x6028 ;dst address
+2b2a:	21f8 6014 5f9c 	        movel 0x6014,0x5f9c ;msk address
+2b30:	31f8 6018 5fa0 	        movew 0x6018,0x5fa0 ;msk->src w
+2b36:	31f8 6022 5faa 	        movew 0x6022,0x5faa ;msk->src W
+2b3c:	31f8 601a 5fa2 	        movew 0x601a,0x5fa2 ;msk->src h
+2b42:	31f8 601e 5fa6 	        movew 0x601e,0x5fa6 ;msk->src x
+2b48:	31f8 6020 5fa8 	        movew 0x6020,0x5fa8 ;msk->src y
 2b4e:	6100 0070      	        bsrw 0x2bc0
 2b52:	6100 00a6      	        bsrw 0x2bfa
 2b56:	4a38 60e2      	        tstb 0x60e2
@@ -2033,21 +2046,22 @@
 2bbc:	6000 e4a6      	        braw 0x1064
 
 2bc0:	4238 5f94      	        clrb 0x5f94
-2bc4:	08f8 0001 5f94 	        bset #1,0x5f94
-2bca:	31fc 0001 5f96 	        movew #1,0x5f96 ;bba command
-2bd0:	31fc 0003 5f98 	        movew #3,0x5f98
-2bd6:	31fc 0040 602c 	        movew #64,0x602c
-2bdc:	31fc 0008 6036 	        movew #8,0x6036
-2be2:	31fc 0040 602e 	        movew #64,0x602e
-2be8:	4278 6032      	        clrw 0x6032
-2bec:	4278 6034      	        clrw 0x6034
+2bc4:	08f8 0001 5f94 	        bset #1,0x5f94   ;flag src bitmap
+2bca:	31fc 0001 5f96 	        movew #1,0x5f96  ;bba command
+2bd0:	31fc 0003 5f98 	        movew #3,0x5f98  ;map?
+2bd6:	31fc 0040 602c 	        movew #64,0x602c ;dst w
+2bdc:	31fc 0008 6036 	        movew #8,0x6036  ;dst W
+2be2:	31fc 0040 602e 	        movew #64,0x602e ;dst h
+2be8:	4278 6032      	        clrw 0x6032      ;dst x
+2bec:	4278 6034      	        clrw 0x6034      ;dst y
 2bf0:	4278 603e      	        clrw 0x603e
 2bf4:	6100 0f46      	        bsrw 0x3b3c
 2bf8:	4e75           	        rts
+
 2bfa:	48e7 e000      	        moveml %d0-%d2,%sp@-
-2bfe:	3038 6026      	        movew 0x6026,%d0
+2bfe:	3038 6026      	        movew 0x6026,%d0 ;msk h
 2c02:	31c0 552e      	        movew %d0,0x552e
-2c06:	3038 6024      	        movew 0x6024,%d0
+2c06:	3038 6024      	        movew 0x6024,%d0 ;msk w
 2c0a:	31c0 552c      	        movew %d0,0x552c
 2c0e:	4240           	        clrw %d0
 2c10:	323c 043f      	        movew #1087,%d1
@@ -2072,6 +2086,7 @@
 2c4a:	4cdf 0007      	        moveml %sp@+,%d0-%d2
 2c4e:	4e75           	        rts
 
+;load cursor - process source
 2c50:	2200           	        movel %d0,%d1
 2c52:	e688           	        lsrl #3,%d0
 2c54:	0241 0007      	        andiw #7,%d1
@@ -2090,7 +2105,8 @@
 2c80:	0000 3870
 2c84:	0000 2c88
 
-2c88:	08f8 0002 5f94 	        bset #2,0x5f94
+;source 3, halftone
+2c88:	08f8 0002 5f94 	        bset #2,0x5f94  ;flag src halftone
 2c8e:	0078 0010 5f96 	        oriw #16,0x5f96 ;bba command
 2c94:	227c 0000 2cb0 	        moveal #11440,%a1
 2c9a:	6100 0c88      	        bsrw 0x3924
@@ -2107,32 +2123,32 @@
 2cbc:	6620           	        bnes 0x2cde
 2cbe:	4278 6102      	        clrw 0x6102
 2cc2:	4278 6104      	        clrw 0x6104
-2cc6:	3238 6024      	        movew 0x6024,%d1
+2cc6:	3238 6024      	        movew 0x6024,%d1 ;msk w
 2cca:	5341           	        subqw #1,%d1
 2ccc:	31c1 6106      	        movew %d1,0x6106
-2cd0:	3238 6026      	        movew 0x6026,%d1
+2cd0:	3238 6026      	        movew 0x6026,%d1 ;msk h
 2cd4:	5341           	        subqw #1,%d1
 2cd6:	31c1 6108      	        movew %d1,0x6108
 2cda:	5048           	        addqw #8,%a0
 2cdc:	6038           	        bras 0x2d16
 2cde:	3218           	        movew %a0@+,%d1
 2ce0:	6b36           	        bmis 0x2d18
-2ce2:	b278 6024      	        cmpw 0x6024,%d1
+2ce2:	b278 6024      	        cmpw 0x6024,%d1 ;msk w
 2ce6:	6c30           	        bges 0x2d18
 2ce8:	31c1 6102      	        movew %d1,0x6102
 2cec:	3218           	        movew %a0@+,%d1
 2cee:	6b36           	        bmis 0x2d26
-2cf0:	b278 6026      	        cmpw 0x6026,%d1
+2cf0:	b278 6026      	        cmpw 0x6026,%d1 ;msk h
 2cf4:	6c30           	        bges 0x2d26
 2cf6:	31c1 6104      	        movew %d1,0x6104
 2cfa:	3218           	        movew %a0@+,%d1
 2cfc:	6b36           	        bmis 0x2d34
-2cfe:	b278 6024      	        cmpw 0x6024,%d1
+2cfe:	b278 6024      	        cmpw 0x6024,%d1 ;msk w
 2d02:	6c30           	        bges 0x2d34
 2d04:	31c1 6106      	        movew %d1,0x6106
 2d08:	3218           	        movew %a0@+,%d1
 2d0a:	6b36           	        bmis 0x2d42
-2d0c:	b278 6026      	        cmpw 0x6026,%d1
+2d0c:	b278 6026      	        cmpw 0x6026,%d1 ;msk h
 2d10:	6c30           	        bges 0x2d42
 2d12:	31c1 6108      	        movew %d1,0x6108
 2d16:	4e75           	        rts
@@ -2304,19 +2320,19 @@
 2f46:	6100 18b2      	        bsrw 0x47fa
 2f4a:	4e75           	        rts
 
-2f80:	0000 6100      	        orib #0,%d0
-2f84:	083e           	        .short 0x083e
+;fill area
+2f82:	6100      	        bsrw 0x37c2
 2f86:	2078 5f8c      	        moveal 0x5f8c,%a0
-2f8a:	2038 5f90      	        movel 0x5f90,%d0
-2f8e:	6100 0600      	        bsrw 0x3590
+2f8a:	2038 5f90      	        movel 0x5f90,%d0 ;modifier
+2f8e:	6100 0600      	        bsrw 0x3590 ;process source
 2f92:	e688           	        lsrl #3,%d0
-2f94:	6100 0a4e      	        bsrw 0x39e4
-2f98:	6100 0a68      	        bsrw 0x3a02
+2f94:	6100 0a4e      	        bsrw 0x39e4 ;process destination
+2f98:	6100 0a68      	        bsrw 0x3a02 ;process map
 2f9c:	6100 0638      	        bsrw 0x35d6
 2fa0:	6100 0b6a      	        bsrw 0x3b0c
 2fa4:	6100 0710      	        bsrw 0x36b6
-2fa8:	31f8 6032 60d0 	        movew 0x6032,0x60d0
-2fae:	31f8 6034 60d2 	        movew 0x6034,0x60d2
+2fa8:	31f8 6032 60d0 	        movew 0x6032,0x60d0 ;dst x
+2fae:	31f8 6034 60d2 	        movew 0x6034,0x60d2 ;dst y
 2fb4:	6100 0786      	        bsrw 0x373c
 2fb8:	6100 21d4      	        bsrw 0x518e
 2fbc:	6100 0198      	        bsrw 0x3156
@@ -2328,6 +2344,7 @@
 2fd2:	31fc 0002 60d4 	        movew #2,0x60d4
 2fd8:	6100 1820      	        bsrw 0x47fa
 2fdc:	4e75           	        rts
+
 2fde:	48e7 f8c0      	        moveml %d0-%d4/%a0-%a1,%sp@-
 2fe2:	2078 6048      	        moveal 0x6048,%a0
 2fe6:	2248           	        moveal %a0,%a1
@@ -2435,6 +2452,7 @@
 3148:	31fc 8073 60d4 	        movew #-32653,0x60d4
 314e:	6100 16aa      	        bsrw 0x47fa
 3152:	6000 df10      	        braw 0x1064
+
 3156:	4278 2f4c      	        clrw 0x2f4c
 315a:	4278 2f4e      	        clrw 0x2f4e
 315e:	4278 2f50      	        clrw 0x2f50
@@ -2664,7 +2682,7 @@
 3476:	48e7 0f80      	        moveml %d4-%a0,%sp@-
 347a:	207c 0011 cb00 	        moveal #1166080,%a0
 3480:	d0f8 36a8      	        addaw 0x36a8,%a0
-3484:	3838 6036      	        movew 0x6036,%d4
+3484:	3838 6036      	        movew 0x6036,%d4 ;dst W
 3488:	c9c1           	        mulsw %d1,%d4
 348a:	d1c4           	        addal %d4,%a0
 348c:	3c03           	        movew %d3,%d6
@@ -2704,40 +2722,43 @@
 34ec:	bb50           	        eorw %d5,%a0@
 34ee:	4cdf 01f0      	        moveml %sp@+,%d4-%a0
 34f2:	4e75           	        rts
+
 34f4:	3f00           	        movew %d0,%sp@-
-34f6:	08f8 0003 5f94 	        bset #3,0x5f94
+34f6:	08f8 0003 5f94 	        bset #3,0x5f94 ;flag mask bitmap
 34fc:	0078 0002 5f96 	        oriw #2,0x5f96 ;bba command
-3502:	21fc 0011 cb00 6014     movel #1166080,0x6014
-350a:	31f8 602c 6018 	        movew 0x602c,0x6018
-3510:	31f8 6036 6022 	        movew 0x6036,0x6022 ;bba 010
-3516:	31f8 602e 601a 	        movew 0x602e,0x601a
-351c:	31f8 36a6 601e 	        movew 0x36a6,0x601e
-3522:	31f8 36b2 6020 	        movew 0x36b2,0x6020
-3528:	31f8 36a6 6032 	        movew 0x36a6,0x6032
-352e:	31f8 36b2 6034 	        movew 0x36b2,0x6034
+3502:	21fc 0011 cb00 6014     movel #1166080,0x6014 ;msk address
+350a:	31f8 602c 6018 	        movew 0x602c,0x6018 ;dst->msk w
+3510:	31f8 6036 6022 	        movew 0x6036,0x6022 ;dst->msk W
+3516:	31f8 602e 601a 	        movew 0x602e,0x601a ;dst->msk h
+351c:	31f8 36a6 601e 	        movew 0x36a6,0x601e ;->msk x
+3522:	31f8 36b2 6020 	        movew 0x36b2,0x6020 ;->msk y
+3528:	31f8 36a6 6032 	        movew 0x36a6,0x6032 ;->dst x
+352e:	31f8 36b2 6034 	        movew 0x36b2,0x6034 ;->dst y
 3534:	3038 36ac      	        movew 0x36ac,%d0
 3538:	9078 36a6      	        subw 0x36a6,%d0
 353c:	5240           	        addqw #1,%d0
-353e:	31c0 3b36      	        movew %d0,0x3b36
+353e:	31c0 3b36      	        movew %d0,0x3b36    ;msk w
 3542:	3038 36b4      	        movew 0x36b4,%d0
 3546:	9078 36b2      	        subw 0x36b2,%d0
 354a:	5240           	        addqw #1,%d0
-354c:	31c0 3b38      	        movew %d0,0x3b38
+354c:	31c0 3b38      	        movew %d0,0x3b38    ;msk h
 3550:	6100 297a      	        bsrw 0x5ecc
 3554:	6100 0824      	        bsrw 0x3d7a
 3558:	6100 0860      	        bsrw 0x3dba
 355c:	301f           	        movew %sp@+,%d0
 355e:	4e75           	        rts
-3560:	2f38 6028      	        movel 0x6028,%sp@-
+
+3560:	2f38 6028      	        movel 0x6028,%sp@- ;dst address
 3564:	50f8 1292      	        st 0x1292
 3568:	4a38 60e2      	        tstb 0x60e2
 356c:	66fa           	        bnes 0x3568
 356e:	33fc 0040 0030 0000     movew #64,0x300000 ;bba command
 3576:	33fc 000f 0030 001e     movew #15,0x30001e
-357e:	21fc 0011 cb00 6028     movel #1166080,0x6028
+357e:	21fc 0011 cb00 6028     movel #1166080,0x6028 ;dst address
 3586:	6100 de18      	        bsrw 0x13a0
-358a:	21df 6028      	        movel %sp@+,0x6028
+358a:	21df 6028      	        movel %sp@+,0x6028 ;dst address
 358e:	4e75           	        rts
+
 3590:	2200           	        movel %d0,%d1
 3592:	e688           	        lsrl #3,%d0
 3594:	0241 0007      	        andiw #7,%d1
@@ -2751,12 +2772,17 @@
 35ae:	31fc 8020 60d4 	        movew #-32736,0x60d4
 35b4:	6100 1244      	        bsrw 0x47fa
 35b8:	6000 daaa      	        braw 0x1064
+
 35bc:	0000 383a      	        orib #58,%d0
 35c0:	0000 35c8      	        orib #-56,%d0
 35c4:	0000 38e8      	        orib #-24,%d0
+
+;fill area - src bitmap
 35c8:	31fc 8070 60d4 	        movew #-32656,0x60d4
 35ce:	6100 122a      	        bsrw 0x47fa
 35d2:	6000 da90      	        braw 0x1064
+
+;fill area - ?
 35d6:	2200           	        movel %d0,%d1
 35d8:	e688           	        lsrl #3,%d0
 35da:	0241 0007      	        andiw #7,%d1
@@ -2811,18 +2837,20 @@
 369a:	31fc 0002 60d4 	        movew #2,0x60d4
 36a0:	6100 1158      	        bsrw 0x47fa
 36a4:	4e75           	        rts
-    ...
+
+;
 36b6:	48e7 c000      	        moveml %d0-%d1,%sp@-
-36ba:	3038 6038      	        movew 0x6038,%d0
-36be:	0838 0000 5f94 	        btst #0,0x5f94
+36ba:	3038 6038      	        movew 0x6038,%d0 ;map?
+36be:	0838 0000 5f94 	        btst #0,0x5f94   ;src const?
 36c4:	6708           	        beqs 0x36ce
-36c6:	3238 5f9a      	        movew 0x5f9a,%d1
+36c6:	3238 5f9a      	        movew 0x5f9a,%d1 ;const
 36ca:	6100 002e      	        bsrw 0x36fa
-36ce:	31c0 5f98      	        movew %d0,0x5f98
+36ce:	31c0 5f98      	        movew %d0,0x5f98 ;map?
 36d2:	4cdf 0003      	        moveml %sp@+,%d0-%d1
 36d6:	4e75           	        rts
+
 36d8:	48e7 c000      	        moveml %d0-%d1,%sp@-
-36dc:	3038 6038      	        movew 0x6038,%d0
+36dc:	3038 6038      	        movew 0x6038,%d0 ;map?
 36e0:	0838 0000 5fd4 	        btst #0,0x5fd4
 36e6:	6708           	        beqs 0x36f0
 36e8:	3238 5fda      	        movew 0x5fda,%d1
@@ -2853,6 +2881,7 @@
 3734:	3a28 0004      	        movew %a0@(4),%d5
 3738:	205f           	        moveal %sp@+,%a0
 373a:	4e75           	        rts
+
 373c:	3f00           	        movew %d0,%sp@-
 373e:	4a78 603e      	        tstw 0x603e
 3742:	673e           	        beqs 0x3782
@@ -2861,24 +2890,24 @@
 374a:	4240           	        clrw %d0
 374c:	31c0 36a6      	        movew %d0,0x36a6
 3750:	d078 6044      	        addw 0x6044,%d0
-3754:	b078 602c      	        cmpw 0x602c,%d0
+3754:	b078 602c      	        cmpw 0x602c,%d0 ;dst w
 3758:	6f04           	        bles 0x375e
-375a:	3038 602c      	        movew 0x602c,%d0
+375a:	3038 602c      	        movew 0x602c,%d0 ;dst w
 375e:	31c0 36ac      	        movew %d0,0x36ac
 3762:	3038 6042      	        movew 0x6042,%d0
 3766:	6a02           	        bpls 0x376a
 3768:	4240           	        clrw %d0
 376a:	31c0 36b2      	        movew %d0,0x36b2
 376e:	d078 6046      	        addw 0x6046,%d0
-3772:	b078 602e      	        cmpw 0x602e,%d0
+3772:	b078 602e      	        cmpw 0x602e,%d0 ;dst h
 3776:	6f04           	        bles 0x377c
-3778:	3038 602e      	        movew 0x602e,%d0
+3778:	3038 602e      	        movew 0x602e,%d0 ;dst h
 377c:	31c0 36b4      	        movew %d0,0x36b4
 3780:	6014           	        bras 0x3796
 3782:	4278 36a6      	        clrw 0x36a6
-3786:	31f8 602c 36ac 	        movew 0x602c,0x36ac
+3786:	31f8 602c 36ac 	        movew 0x602c,0x36ac ;dst w
 378c:	4278 36b2      	        clrw 0x36b2
-3790:	31f8 602e 36b4 	        movew 0x602e,0x36b4
+3790:	31f8 602e 36b4 	        movew 0x602e,0x36b4 ;dst h
 3796:	5378 36ac      	        subqw #1,0x36ac
 379a:	5378 36b4      	        subqw #1,0x36b4
 379e:	3038 36a6      	        movew 0x36a6,%d0
@@ -2894,22 +2923,25 @@
 37be:	301f           	        movew %sp@+,%d0
 37c0:	4e75           	        rts
 
+;fill area - ?
 37c2:	31fc 7fff 60dc 	        movew #32767,0x60dc
-37c8:	4238 5f94      	        clrb 0x5f94
+37c8:	4238 5f94      	        clrb 0x5f94 ;clear flags
 37cc:	4278 5f96      	        clrw 0x5f96 ;bba command
 37d0:	21fc 0000 5ff4 5fb0     movel #24564,0x5fb0
-37d8:	4278 5fa6      	        clrw 0x5fa6
-37dc:	4278 5fa8      	        clrw 0x5fa8
-37e0:	4278 601e      	        clrw 0x601e
-37e4:	4278 6020      	        clrw 0x6020
-37e8:	4278 6024      	        clrw 0x6024
-37ec:	4278 6026      	        clrw 0x6026
+37d8:	4278 5fa6      	        clrw 0x5fa6 ;src x
+37dc:	4278 5fa8      	        clrw 0x5fa8 ;src y
+37e0:	4278 601e      	        clrw 0x601e ;msk x
+37e4:	4278 6020      	        clrw 0x6020 ;msk y
+37e8:	4278 6024      	        clrw 0x6024 ;msk w
+37ec:	4278 6026      	        clrw 0x6026 ;msk h
 37f0:	4278 6040      	        clrw 0x6040
 37f4:	4278 6042      	        clrw 0x6042
-37f8:	4278 6032      	        clrw 0x6032
-37fc:	4278 6034      	        clrw 0x6034
+37f8:	4278 6032      	        clrw 0x6032 ;dst x
+37fc:	4278 6034      	        clrw 0x6034 ;dst y
 3800:	4e75           	        rts
 
+;copy area modifier in d0
+;process source
 3802:	2200           	        movel %d0,%d1
 3804:	e688           	        lsrl #3,%d0
 3806:	0241 0007      	        andiw #7,%d1
@@ -2920,7 +2952,6 @@
 3818:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 381c:	4e91           	        jsr %a1@
 381e:	4e75           	        rts
-
 3820:	31fc 8020 60d4 	        movew #-32736,0x60d4
 3826:	6100 0fd2      	        bsrw 0x47fa
 382a:	6000 d838      	        braw 0x1064
@@ -2929,47 +2960,62 @@
 3832:	0000 3870
 3836:	0000 38e8
 
-383a:	08f8 0000 5f94 	        bset #0,0x5f94
+;source 0 - const
+383a:	08f8 0000 5f94 	        bset #0,0x5f94 ;flag src const
 3840:	3218           	        movew %a0@+,%d1
 3842:	6b1a           	        bmis 0x385e
 3844:	e349           	        lslw #1,%d1
 3846:	0c41 0004      	        cmpiw #4,%d1
 384a:	6412           	        bccs 0x385e
 384c:	227c 0000 386c 	        moveal #14444,%a1
-3852:	31f1 1000 5f9a 	        movew %a1@(0000000000000000,%d1:w),0x5f9a
+3852:	31f1 1000 5f9a 	        movew %a1@(0,%d1:w),0x5f9a ;const
 3858:	d0fc 000c      	        addaw #12,%a0
 385c:	4e75           	        rts
 385e:	31fc 8023 60d4 	        movew #-32733,0x60d4
 3864:	6100 0f94      	        bsrw 0x47fa
 3868:	6000 d7fa      	        braw 0x1064
-386c:	0000 ffff      	        orib #-1,%d0
-3870:	08f8 0001 5f94 	        bset #1,0x5f94
+
+386c:	0000
+386e:	ffff
+
+;source 1 - bitmap
+3870:	08f8 0001 5f94 	        bset #1,0x5f94 ;flag src bitmap
 3876:	0078 0001 5f96 	        oriw #1,0x5f96 ;bba command
 387c:	227c 0000 3892 	        moveal #14482,%a1
 3882:	6100 0014      	        bsrw 0x3898
-3886:	21ca 5f9c      	        movel %a2,0x5f9c
-388a:	48b8 007e 5fa0 	        movemw %d1-%d6,0x5fa0
+3886:	21ca 5f9c      	        movel %a2,0x5f9c      ;source address
+388a:	48b8 007e 5fa0 	        movemw %d1-%d6,0x5fa0 ;source whbxyW
 3890:	4e75           	        rts
+
 3892:	8021           	        orb %a1@-,%d0
 3894:	8022           	        orb %a2@-,%d0
 3896:	8024           	        orb %a4@-,%d0
-3898:	2218           	        movel %a0@+,%d1
+
+;process bitmap
+; a2 - address
+; d1 - width
+; d2 - height
+; d3 - bits per pixel
+; d4 - offset x
+; d5 - offset y
+; d6 - width in words
+3898:	2218           	        movel %a0@+,%d1  ;address
 389a:	4841           	        swap %d1
 389c:	2441           	        moveal %d1,%a2
-389e:	3218           	        movew %a0@+,%d1
+389e:	3218           	        movew %a0@+,%d1  ;width
 38a0:	6f1e           	        bles 0x38c0
 38a2:	3c01           	        movew %d1,%d6
 38a4:	0646 000f      	        addiw #15,%d6
 38a8:	e84e           	        lsrw #4,%d6
-38aa:	e34e           	        lslw #1,%d6
-38ac:	3418           	        movew %a0@+,%d2
+8aa:	e34e           	        lslw #1,%d6
+38ac:	3418           	        movew %a0@+,%d2  ;height
 38ae:	6f1c           	        bles 0x38cc
-38b0:	3618           	        movew %a0@+,%d3
+38b0:	3618           	        movew %a0@+,%d3  ;bits per pixel
 38b2:	6f26           	        bles 0x38da
-38b4:	0c43 0001      	        cmpiw #1,%d3   ;bits per pixel
+38b4:	0c43 0001      	        cmpiw #1,%d3
 38b8:	6e20           	        bgts 0x38da
-38ba:	3818           	        movew %a0@+,%d4
-38bc:	3a18           	        movew %a0@+,%d5
+38ba:	3818           	        movew %a0@+,%d4  ;offset x
+38bc:	3a18           	        movew %a0@+,%d5  ;offset y
 38be:	4e75           	        rts
 38c0:	31d1 60d4      	        movew %a1@,0x60d4
 38c4:	6100 0f34      	        bsrw 0x47fa
@@ -2981,7 +3027,8 @@
 38e0:	6100 0f18      	        bsrw 0x47fa
 38e4:	6000 d77e      	        braw 0x1064
 
-38e8:	08f8 0002 5f94 	        bset #2,0x5f94
+;source 2 - halftone
+38e8:	08f8 0002 5f94 	        bset #2,0x5f94  ;flag src halftone
 38ee:	0078 0010 5f96 	        oriw #16,0x5f96 ;bba command
 38f4:	227c 0000 391e 	        moveal #14622,%a1
 38fa:	6100 0028      	        bsrw 0x3924
@@ -3021,6 +3068,7 @@
 3966:	6100 0e92      	        bsrw 0x47fa
 396a:	6000 d6f8      	        braw 0x1064
 
+;process mask
 396e:	2200           	        movel %d0,%d1
 3970:	e688           	        lsrl #3,%d0
 3972:	0241 0007      	        andiw #7,%d1
@@ -3030,8 +3078,8 @@
 397e:	227c 0000 39a2 	        moveal #14754,%a1
 3984:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 3988:	4e91           	        jsr %a1@
-398a:	31d8 6024      	        movew %a0@+,0x6024
-398e:	31d8 6026      	        movew %a0@+,0x6026
+398a:	31d8 6024      	        movew %a0@+,0x6024 ;msk w
+398e:	31d8 6026      	        movew %a0@+,0x6026 ;msk h
 3992:	4e75           	        rts
 3994:	31fc 8026 60d4 	        movew #-32730,0x60d4
 399a:	6100 0e5e      	        bsrw 0x47fa
@@ -3040,49 +3088,63 @@
 39a2:	0000 39aa      	        orib #-86,%d0
 39a6:	0000 39b0      	        orib #-80,%d0
 
+;mask 0 - no mask
 39aa:	d0fc 000e      	        addaw #14,%a0
 39ae:	4e75           	        rts
 
-39b0:	08f8 0003 5f94 	        bset #3,0x5f94
+;mask 1 - bitmap
+39b0:	08f8 0003 5f94 	        bset #3,0x5f94 ;flag msk bitmap
 39b6:	08f8 0003 5fd4 	        bset #3,0x5fd4
 39bc:	0078 0002 5f96 	        oriw #2,0x5f96 ;bba command
 39c2:	0078 0002 5fd6 	        oriw #2,0x5fd6
 39c8:	227c 0000 39de 	        moveal #14814,%a1
-39ce:	6100 fec8      	        bsrw 0x3898
-39d2:	21ca 6014      	        movel %a2,0x6014
-39d6:	48b8 007e 6018 	        movemw %d1-%d6,0x6018
+39ce:	6100 fec8      	        bsrw 0x3898    ;process bitmap
+39d2:	21ca 6014      	        movel %a2,0x6014 ;addresss
+39d6:	48b8 007e 6018 	        movemw %d1-%d6,0x6018 ;whbxyW
 39dc:	4e75           	        rts
 39de:	8027           	        orb %sp@-,%d0
 39e0:	8028 8029      	        orb %a0@(-32727),%d0
+
+;process destination
 39e4:	e688           	        lsrl #3,%d0
 39e6:	227c 0000 39fc 	        moveal #14844,%a1
 39ec:	6100 feaa      	        bsrw 0x3898
-39f0:	21ca 6028      	        movel %a2,0x6028
-39f4:	48b8 007e 602c 	        movemw %d1-%d6,0x602c
+39f0:	21ca 6028      	        movel %a2,0x6028  ;address
+39f4:	48b8 007e 602c 	        movemw %d1-%d6,0x602c ;whbxyW
 39fa:	4e75           	        rts
-39fc:	802d 802e      	        orb %a5@(-32722),%d0
-3a00:	802f 2200      	        orb %sp@(8704),%d0
+
+39fc:	802d
+29fe:   802e
+3a00:	802f
+
+;process map
+3a02:   2200           	        movel %d0,%d1
 3a04:	e688           	        lsrl #3,%d0
 3a06:	0241 0007      	        andiw #7,%d1
 3a0a:	e549           	        lslw #2,%d1
 3a0c:	0c41 0014      	        cmpiw #20,%d1
 3a10:	6412           	        bccs 0x3a24
 3a12:	227c 0000 3a32 	        moveal #14898,%a1
-3a18:	2271 1000      	        moveal %a1@(0000000000000000,%d1:w),%a1
+3a18:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 3a1c:	4e91           	        jsr %a1@
-3a1e:	31c1 6038      	        movew %d1,0x6038
+3a1e:	31c1 6038      	        movew %d1,0x6038 ;map?
 3a22:	4e75           	        rts
 3a24:	31fc 8032 60d4 	        movew #-32718,0x60d4
 3a2a:	6100 0dce      	        bsrw 0x47fa
 3a2e:	6000 d634      	        braw 0x1064
+
 3a32:	0000 3a46      	        orib #70,%d0
 3a36:	0000 3a4e      	        orib #78,%d0
 3a3a:	0000 3a70      	        orib #112,%d0
 3a3e:	0000 3a86      	        orib #-122,%d0
 3a42:	0000 3a94      	        orib #-108,%d0
+
+; 0
 3a46:	323c 0003      	        movew #3,%d1
 3a4a:	5848           	        addqw #4,%a0
 3a4c:	4e75           	        rts
+
+; 1
 3a4e:	2218           	        movel %a0@+,%d1
 3a50:	4841           	        swap %d1
 3a52:	2241           	        moveal %d1,%a1
@@ -3090,28 +3152,37 @@
 3a56:	0241 0003      	        andiw #3,%d1
 3a5a:	e349           	        lslw #1,%d1
 3a5c:	227c 0000 3a68 	        moveal #14952,%a1
-3a62:	3231 1000      	        movew %a1@(0000000000000000,%d1:w),%d1
+3a62:	3231 1000      	        movew %a1@(0,%d1:w),%d1
 3a66:	4e75           	        rts
-3a68:	0000 0003      	        orib #3,%d0
-3a6c:	000c           	        .short 0x000c
-3a6e:	000f           	        .short 0x000f
+
+3a68:	0000
+3a66:   0003
+3a6c:	000c
+3a6e:	000f
+
+; 2
 3a70:	3218           	        movew %a0@+,%d1
 3a72:	5448           	        addqw #2,%a0
 3a74:	0241 0003      	        andiw #3,%d1
 3a78:	e349           	        lslw #1,%d1
 3a7a:	227c 0000 3a68 	        moveal #14952,%a1
-3a80:	3231 1000      	        movew %a1@(0000000000000000,%d1:w),%d1
+3a80:	3231 1000      	        movew %a1@(0,%d1:w),%d1
 3a84:	4e75           	        rts
+
+; 3
 3a86:	2218           	        movel %a0@+,%d1
 3a88:	4841           	        swap %d1
 3a8a:	2241           	        moveal %d1,%a1
 3a8c:	3211           	        movew %a1@,%d1
 3a8e:	0241 000f      	        andiw #15,%d1
 3a92:	4e75           	        rts
+
+; 4
 3a94:	3218           	        movew %a0@+,%d1
 3a96:	5448           	        addqw #2,%a0
 3a98:	0241 000f      	        andiw #15,%d1
 3a9c:	4e75           	        rts
+
 3a9e:	2200           	        movel %d0,%d1
 3aa0:	e688           	        lsrl #3,%d0
 3aa2:	0241 0007      	        andiw #7,%d1
@@ -3119,22 +3190,29 @@
 3aa8:	0c41 000c      	        cmpiw #12,%d1
 3aac:	640e           	        bccs 0x3abc
 3aae:	227c 0000 3aca 	        moveal #15050,%a1
-3ab4:	2271 1000      	        moveal %a1@(0000000000000000,%d1:w),%a1
+3ab4:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 3ab8:	4e91           	        jsr %a1@
 3aba:	4e75           	        rts
 3abc:	31fc 8036 60d4 	        movew #-32714,0x60d4
 3ac2:	6100 0d36      	        bsrw 0x47fa
 3ac6:	6000 d59c      	        braw 0x1064
+
 3aca:	0000 3ad6      	        orib #-42,%d0
 3ace:	0000 3ade      	        orib #-34,%d0
 3ad2:	0000 3aec      	        orib #-20,%d0
-3ad6:	4278 603e      	        clrw 0x603e
+
+;clipping 0
+3ad6:	4278 603e      	        clrw 0x603e  ;no clips
 3ada:	5048           	        addqw #8,%a0
 3adc:	4e75           	        rts
-3ade:	21c8 603a      	        movel %a0,0x603a
-3ae2:	31fc 0001 603e 	        movew #1,0x603e
+
+;clipping 1
+3ade:	21c8 603a      	        movel %a0,0x603a ;clip address
+3ae2:	31fc 0001 603e 	        movew #1,0x603e ;one clip
 3ae8:	5048           	        addqw #8,%a0
 3aea:	4e75           	        rts
+
+;clipping 2
 3aec:	2218           	        movel %a0@+,%d1
 3aee:	4841           	        swap %d1
 3af0:	21c1 603a      	        movel %d1,0x603a
@@ -3145,6 +3223,8 @@
 3afe:	31fc 8037 60d4 	        movew #-32713,0x60d4
 3b04:	6100 0cf4      	        bsrw 0x47fa
 3b08:	6000 d55a      	        braw 0x1064
+
+;
 3b0c:	2218           	        movel %a0@+,%d1
 3b0e:	4841           	        swap %d1
 3b10:	21c1 6048      	        movel %d1,0x6048
@@ -3158,47 +3238,48 @@
 3b2e:	0010 0000      	        orib #0,%a0@
 3b32:	0010 0000      	        orib #0,%a0@
 3b36:	0000 0000      	        orib #0,%d0
-3b3a:	0000 3f38      	        orib #56,%d0
-3b3e:	5f96           	        subql #7,%fp@
-3b40:	3f38 5fa6      	        movew 0x5fa6,%sp@-
-3b44:	3f38 5fa8      	        movew 0x5fa8,%sp@-
-3b48:	3f38 601e      	        movew 0x601e,%sp@-
-3b4c:	3f38 6020      	        movew 0x6020,%sp@-
-3b50:	3f38 6032      	        movew 0x6032,%sp@-
-3b54:	3f38 6034      	        movew 0x6034,%sp@-
-3b58:	51f8 3b3a      	        sf 0x3b3a
-3b5c:	6100 0042      	        bsrw 0x3ba0
+3b3a:	0000
+
+3b3c:	3f38 5f96           	movew 0x5f96,%sp@-
+3b40:	3f38 5fa6      	        movew 0x5fa6,%sp@- ;src x
+3b44:	3f38 5fa8      	        movew 0x5fa8,%sp@- ;src y
+3b48:	3f38 601e      	        movew 0x601e,%sp@- ;msk x
+3b4c:	3f38 6020      	        movew 0x6020,%sp@- ;msk y
+3b50:	3f38 6032      	        movew 0x6032,%sp@- ;dst x
+3b54:	3f38 6034      	        movew 0x6034,%sp@- ;dst y
+3b58:	51f8 3b3a      	        sf 0x3b3a        ;flag: negative something
+3b5c:	6100 0042      	        bsrw 0x3ba0      ;check stuff
 3b60:	4a38 3b3a      	        tstb 0x3b3a
-3b64:	661c           	        bnes 0x3b82
-3b66:	4a78 3b36      	        tstw 0x3b36
-3b6a:	6f16           	        bles 0x3b82
-3b6c:	4a78 3b38      	        tstw 0x3b38
-3b70:	6f10           	        bles 0x3b82
+3b64:	661c           	        bnes 0x3b82      ;skip all this?
+3b66:	4a78 3b36      	        tstw 0x3b36      ;msk w
+3b6a:	6f16           	        bles 0x3b82      ;skip?
+3b6c:	4a78 3b38      	        tstw 0x3b38      ;msk h
+3b70:	6f10           	        bles 0x3b82      ;skip?
 3b72:	6100 2358      	        bsrw 0x5ecc
 3b76:	6100 01a2      	        bsrw 0x3d1a
 3b7a:	6100 01fe      	        bsrw 0x3d7a
-3b7e:	6100 023a      	        bsrw 0x3dba
-3b82:	31df 6034      	        movew %sp@+,0x6034
-3b86:	31df 6032      	        movew %sp@+,0x6032
-3b8a:	31df 6020      	        movew %sp@+,0x6020
-3b8e:	31df 601e      	        movew %sp@+,0x601e
-3b92:	31df 5fa8      	        movew %sp@+,0x5fa8
-3b96:	31df 5fa6      	        movew %sp@+,0x5fa6
+3b7e:	6100 023a      	        bsrw 0x3dba  ;write to bba scratchpad
+3b82:	31df 6034      	        movew %sp@+,0x6034 ;dst y
+3b86:	31df 6032      	        movew %sp@+,0x6032 ;dst x
+3b8a:	31df 6020      	        movew %sp@+,0x6020 ;msk y
+3b8e:	31df 601e      	        movew %sp@+,0x601e ;msk x
+3b92:	31df 5fa8      	        movew %sp@+,0x5fa8 ;src y
+3b96:	31df 5fa6      	        movew %sp@+,0x5fa6 ;src x
 3b9a:	31df 5f96      	        movew %sp@+,0x5f96 ;bba command
 3b9e:	4e75           	        rts
 
 3ba0:	48e7 7800      	        moveml %d1-%d4,%sp@-
-3ba4:	3638 6024      	        movew 0x6024,%d3
-3ba8:	3838 6026      	        movew 0x6026,%d4
-3bac:	0838 0001 5f94 	        btst #1,0x5f94
+3ba4:	3638 6024      	        movew 0x6024,%d3 ;msk w
+3ba8:	3838 6026      	        movew 0x6026,%d4 ;msk h
+3bac:	0838 0001 5f94 	        btst #1,0x5f94   ;src bitmap?
 3bb2:	6750           	        beqs 0x3c04
-3bb4:	3238 5fa0      	        movew 0x5fa0,%d1
-3bb8:	3438 5fa6      	        movew 0x5fa6,%d2
+3bb4:	3238 5fa0      	        movew 0x5fa0,%d1 ;src w
+3bb8:	3438 5fa6      	        movew 0x5fa6,%d2 ;src x
 3bbc:	6718           	        beqs 0x3bd6
 3bbe:	6e10           	        bgts 0x3bd0
-3bc0:	4278 5fa6      	        clrw 0x5fa6
-3bc4:	9578 601e      	        subw %d2,0x601e
-3bc8:	9578 6032      	        subw %d2,0x6032
+3bc0:	4278 5fa6      	        clrw 0x5fa6 ;src x
+3bc4:	9578 601e      	        subw %d2,0x601e ;msk x
+3bc8:	9578 6032      	        subw %d2,0x6032 ;dst x
 3bcc:	d642           	        addw %d2,%d3
 3bce:	6006           	        bras 0x3bd6
 3bd0:	9242           	        subw %d2,%d1
@@ -3206,13 +3287,13 @@
 3bd6:	b243           	        cmpw %d3,%d1
 3bd8:	6c02           	        bges 0x3bdc
 3bda:	3601           	        movew %d1,%d3
-3bdc:	3238 5fa2      	        movew 0x5fa2,%d1
-3be0:	3438 5fa8      	        movew 0x5fa8,%d2
+3bdc:	3238 5fa2      	        movew 0x5fa2,%d1 ;src h
+3be0:	3438 5fa8      	        movew 0x5fa8,%d2 ;src y
 3be4:	6718           	        beqs 0x3bfe
 3be6:	6e10           	        bgts 0x3bf8
-3be8:	4278 5fa8      	        clrw 0x5fa8
-3bec:	9578 6020      	        subw %d2,0x6020
-3bf0:	9578 6034      	        subw %d2,0x6034
+3be8:	4278 5fa8      	        clrw 0x5fa8      ;src y
+3bec:	9578 6020      	        subw %d2,0x6020  ;msk y
+3bf0:	9578 6034      	        subw %d2,0x6034  ;dst y
 3bf4:	d842           	        addw %d2,%d4
 3bf6:	6006           	        bras 0x3bfe
 3bf8:	9242           	        subw %d2,%d1
@@ -3220,15 +3301,15 @@
 3bfe:	b244           	        cmpw %d4,%d1
 3c00:	6c02           	        bges 0x3c04
 3c02:	3801           	        movew %d1,%d4
-3c04:	0838 0003 5f94 	        btst #3,0x5f94
+3c04:	0838 0003 5f94 	        btst #3,0x5f94   ;msk bitmap?
 3c0a:	6750           	        beqs 0x3c5c
-3c0c:	3238 6018      	        movew 0x6018,%d1
-3c10:	3438 601e      	        movew 0x601e,%d2
+3c0c:	3238 6018      	        movew 0x6018,%d1 ;msk w
+3c10:	3438 601e      	        movew 0x601e,%d2 ;msk x
 3c14:	6718           	        beqs 0x3c2e
 3c16:	6e10           	        bgts 0x3c28
-3c18:	9578 5fa6      	        subw %d2,0x5fa6
-3c1c:	4278 601e      	        clrw 0x601e
-3c20:	9578 6032      	        subw %d2,0x6032
+3c18:	9578 5fa6      	        subw %d2,0x5fa6 ;src x
+3c1c:	4278 601e      	        clrw 0x601e     ;msk x
+3c20:	9578 6032      	        subw %d2,0x6032 ;dst x
 3c24:	d642           	        addw %d2,%d3
 3c26:	6006           	        bras 0x3c2e
 3c28:	9242           	        subw %d2,%d1
@@ -3236,13 +3317,13 @@
 3c2e:	b243           	        cmpw %d3,%d1
 3c30:	6c02           	        bges 0x3c34
 3c32:	3601           	        movew %d1,%d3
-3c34:	3238 601a      	        movew 0x601a,%d1
-3c38:	3438 6020      	        movew 0x6020,%d2
+3c34:	3238 601a      	        movew 0x601a,%d1 ;msk h
+3c38:	3438 6020      	        movew 0x6020,%d2 ;msk y
 3c3c:	6718           	        beqs 0x3c56
 3c3e:	6e10           	        bgts 0x3c50
-3c40:	9578 5fa8      	        subw %d2,0x5fa8
-3c44:	4278 6020      	        clrw 0x6020
-3c48:	9578 6034      	        subw %d2,0x6034
+3c40:	9578 5fa8      	        subw %d2,0x5fa8 ;src y
+3c44:	4278 6020      	        clrw 0x6020     ;msk y
+3c48:	9578 6034      	        subw %d2,0x6034 ;dst y
 3c4c:	d842           	        addw %d2,%d4
 3c4e:	6006           	        bras 0x3c56
 3c50:	9242           	        subw %d2,%d1
@@ -3250,13 +3331,13 @@
 3c56:	b244           	        cmpw %d4,%d1
 3c58:	6c02           	        bges 0x3c5c
 3c5a:	3801           	        movew %d1,%d4
-3c5c:	3238 602c      	        movew 0x602c,%d1
-3c60:	3438 6032      	        movew 0x6032,%d2
+3c5c:	3238 602c      	        movew 0x602c,%d1 ;dst w
+3c60:	3438 6032      	        movew 0x6032,%d2 ;dst x
 3c64:	6718           	        beqs 0x3c7e
 3c66:	6e10           	        bgts 0x3c78
-3c68:	9578 5fa6      	        subw %d2,0x5fa6
-3c6c:	9578 601e      	        subw %d2,0x601e
-3c70:	4278 6032      	        clrw 0x6032
+3c68:	9578 5fa6      	        subw %d2,0x5fa6 ;src x
+3c6c:	9578 601e      	        subw %d2,0x601e ;msk x
+3c70:	4278 6032      	        clrw 0x6032     ;dst x
 3c74:	d642           	        addw %d2,%d3
 3c76:	6006           	        bras 0x3c7e
 3c78:	9242           	        subw %d2,%d1
@@ -3264,13 +3345,13 @@
 3c7e:	b243           	        cmpw %d3,%d1
 3c80:	6c02           	        bges 0x3c84
 3c82:	3601           	        movew %d1,%d3
-3c84:	3238 602e      	        movew 0x602e,%d1
-3c88:	3438 6034      	        movew 0x6034,%d2
+3c84:	3238 602e      	        movew 0x602e,%d1 ;dst h
+3c88:	3438 6034      	        movew 0x6034,%d2 ;dst y
 3c8c:	6718           	        beqs 0x3ca6
 3c8e:	6e10           	        bgts 0x3ca0
-3c90:	9578 5fa8      	        subw %d2,0x5fa8
-3c94:	9578 6020      	        subw %d2,0x6020
-3c98:	4278 6034      	        clrw 0x6034
+3c90:	9578 5fa8      	        subw %d2,0x5fa8 ;src y
+3c94:	9578 6020      	        subw %d2,0x6020 ;msk y
+3c98:	4278 6034      	        clrw 0x6034     ;dst y
 3c9c:	d842           	        addw %d2,%d4
 3c9e:	6006           	        bras 0x3ca6
 3ca0:	9242           	        subw %d2,%d1
@@ -3282,12 +3363,12 @@
 3cb0:	6754           	        beqs 0x3d06
 3cb2:	3238 6044      	        movew 0x6044,%d1
 3cb6:	3438 6040      	        movew 0x6040,%d2
-3cba:	9478 6032      	        subw 0x6032,%d2
+3cba:	9478 6032      	        subw 0x6032,%d2 ;dst x
 3cbe:	6716           	        beqs 0x3cd6
 3cc0:	6d12           	        blts 0x3cd4
-3cc2:	d578 5fa6      	        addw %d2,0x5fa6
-3cc6:	d578 601e      	        addw %d2,0x601e
-3cca:	31f8 6040 6032 	        movew 0x6040,0x6032
+3cc2:	d578 5fa6      	        addw %d2,0x5fa6     ;src x
+3cc6:	d578 601e      	        addw %d2,0x601e     ;msk x
+3cca:	31f8 6040 6032 	        movew 0x6040,0x6032 ;dst x
 3cd0:	9642           	        subw %d2,%d3
 3cd2:	6002           	        bras 0x3cd6
 3cd4:	d242           	        addw %d2,%d1
@@ -3296,90 +3377,91 @@
 3cda:	3601           	        movew %d1,%d3
 3cdc:	3238 6046      	        movew 0x6046,%d1
 3ce0:	3438 6042      	        movew 0x6042,%d2
-3ce4:	9478 6034      	        subw 0x6034,%d2
+3ce4:	9478 6034      	        subw 0x6034,%d2 ;dst y
 3ce8:	6716           	        beqs 0x3d00
 3cea:	6d12           	        blts 0x3cfe
-3cec:	d578 5fa8      	        addw %d2,0x5fa8
-3cf0:	d578 6020      	        addw %d2,0x6020
-3cf4:	31f8 6042 6034 	        movew 0x6042,0x6034
+3cec:	d578 5fa8      	        addw %d2,0x5fa8 ;src y
+3cf0:	d578 6020      	        addw %d2,0x6020 ;msk y
+3cf4:	31f8 6042 6034 	        movew 0x6042,0x6034 ;dst y
 3cfa:	9842           	        subw %d2,%d4
 3cfc:	6002           	        bras 0x3d00
 3cfe:	d242           	        addw %d2,%d1
 3d00:	b244           	        cmpw %d4,%d1
 3d02:	6c02           	        bges 0x3d06
 3d04:	3801           	        movew %d1,%d4
-3d06:	31c3 3b36      	        movew %d3,0x3b36
-3d0a:	31c4 3b38      	        movew %d4,0x3b38
+3d06:	31c3 3b36      	        movew %d3,0x3b36 ;msk w
+3d0a:	31c4 3b38      	        movew %d4,0x3b38 ;msk h
 3d0e:	4cdf 001e      	        moveml %sp@+,%d1-%d4
 3d12:	4e75           	        rts
-3d14:	50f8 3b3a      	        st 0x3b3a
+3d14:	50f8 3b3a      	        st 0x3b3a   ;flag
 3d18:	60ec           	        bras 0x3d06
 
 3d1a:	2f00           	        movel %d0,%sp@-
-3d1c:	0838 0001 5f94 	        btst #1,0x5f94
+3d1c:	0838 0001 5f94 	        btst #1,0x5f94   ;src bitmap?
 3d22:	6752           	        beqs 0x3d76
-3d24:	2038 5f9c      	        movel 0x5f9c,%d0
-3d28:	b0b8 6028      	        cmpl 0x6028,%d0
+3d24:	2038 5f9c      	        movel 0x5f9c,%d0 ;address
+3d28:	b0b8 6028      	        cmpl 0x6028,%d0  ;dst address
 3d2c:	6648           	        bnes 0x3d76
-3d2e:	3038 6034      	        movew 0x6034,%d0
-3d32:	b078 5fa8      	        cmpw 0x5fa8,%d0
+3d2e:	3038 6034      	        movew 0x6034,%d0 ;dst y
+3d32:	b078 5fa8      	        cmpw 0x5fa8,%d0  ;src y
 3d36:	6d3e           	        blts 0x3d76
 3d38:	671a           	        beqs 0x3d54
-3d3a:	0078 0008 5f96 	        oriw #8,0x5f96 ;bba command
-3d40:	3038 3b38      	        movew 0x3b38,%d0
+3d3a:	0078 0008 5f96 	        oriw #8,0x5f96   ;bba command, rectangle mask?
+3d40:	3038 3b38      	        movew 0x3b38,%d0 ;msk h
 3d44:	5340           	        subqw #1,%d0
-3d46:	d178 5fa8      	        addw %d0,0x5fa8
-3d4a:	d178 6020      	        addw %d0,0x6020
-3d4e:	d178 6034      	        addw %d0,0x6034
+3d46:	d178 5fa8      	        addw %d0,0x5fa8  ;src y
+3d4a:	d178 6020      	        addw %d0,0x6020  ;msk y
+3d4e:	d178 6034      	        addw %d0,0x6034  ;dst y
 3d52:	6022           	        bras 0x3d76
-3d54:	3038 6032      	        movew 0x6032,%d0
-3d58:	b078 5fa6      	        cmpw 0x5fa6,%d0
+3d54:	3038 6032      	        movew 0x6032,%d0 ;dst x
+3d58:	b078 5fa6      	        cmpw 0x5fa6,%d0  ;src x
 3d5c:	6f18           	        bles 0x3d76
-3d5e:	0078 0004 5f96 	        oriw #4,0x5f96 ;bba command
-3d64:	3038 3b36      	        movew 0x3b36,%d0
+3d5e:	0078 0004 5f96 	        oriw #4,0x5f96   ;bba command
+3d64:	3038 3b36      	        movew 0x3b36,%d0 ;msk w
 3d68:	5340           	        subqw #1,%d0
-3d6a:	d178 5fa6      	        addw %d0,0x5fa6
-3d6e:	d178 601e      	        addw %d0,0x601e
-3d72:	d178 6032      	        addw %d0,0x6032
+3d6a:	d178 5fa6      	        addw %d0,0x5fa6 ;src x
+3d6e:	d178 601e      	        addw %d0,0x601e ;msk x
+3d72:	d178 6032      	        addw %d0,0x6032 ;dst x
 3d76:	201f           	        movel %sp@+,%d0
 3d78:	4e75           	        rts
 
 3d7a:	2f00           	        movel %d0,%sp@-
-3d7c:	21f8 5f9c 3b2a 	        movel 0x5f9c,0x3b2a
-3d82:	3038 5fa8      	        movew 0x5fa8,%d0
+3d7c:	21f8 5f9c 3b2a 	        movel 0x5f9c,0x3b2a ;address
+3d82:	3038 5fa8      	        movew 0x5fa8,%d0 ;src y
 3d86:	6708           	        beqs 0x3d90
-3d88:	c1f8 5faa      	        mulsw 0x5faa,%d0
+3d88:	c1f8 5faa      	        mulsw 0x5faa,%d0 ;src W
 3d8c:	d1b8 3b2a      	        addl %d0,0x3b2a
-3d90:	21f8 6014 3b2e 	        movel 0x6014,0x3b2e
-3d96:	3038 6020      	        movew 0x6020,%d0
+3d90:	21f8 6014 3b2e 	        movel 0x6014,0x3b2e ;msk address
+3d96:	3038 6020      	        movew 0x6020,%d0  ;msk y
 3d9a:	6708           	        beqs 0x3da4
-3d9c:	c1f8 6022      	        mulsw 0x6022,%d0 ;bba 010
+3d9c:	c1f8 6022      	        mulsw 0x6022,%d0  ;msk W
 3da0:	d1b8 3b2e      	        addl %d0,0x3b2e
-3da4:	21f8 6028 3b32 	        movel 0x6028,0x3b32
-3daa:	3038 6034      	        movew 0x6034,%d0
-3dae:	c1f8 6036      	        mulsw 0x6036,%d0
-3db2:	d1b8 3b32      	        addl %d0,0x3b32
+3da4:	21f8 6028 3b32 	        movel 0x6028,0x3b32 ;dst address
+3daa:	3038 6034      	        movew 0x6034,%d0 ;dst y
+3dae:	c1f8 6036      	        mulsw 0x6036,%d0 ;dst W
+3db2:	d1b8 3b32      	        addl %d0,0x3b32 ;dst address
 3db6:	201f           	        movel %sp@+,%d0
 3db8:	4e75           	        rts
+
 3dba:	2f08           	        movel %a0,%sp@-
 3dbc:	207c 0030 0000 	        moveal #3145728,%a0
 3dc2:	4a38 60e2      	        tstb 0x60e2
 3dc6:	66fa           	        bnes 0x3dc2
 3dc8:	30f8 5f96      	        movew 0x5f96,%a0@+ ;bba command
-3dcc:	20f8 3b2a      	        movel 0x3b2a,%a0@+
-3dd0:	30f8 5fa6      	        movew 0x5fa6,%a0@+
-3dd4:	30f8 5faa      	        movew 0x5faa,%a0@+
-3dd8:	20f8 3b2e      	        movel 0x3b2e,%a0@+
-3ddc:	30f8 601e      	        movew 0x601e,%a0@+
-3de0:	30f8 6022      	        movew 0x6022,%a0@+
-3de4:	20f8 3b32      	        movel 0x3b32,%a0@+
-3de8:	30f8 6032      	        movew 0x6032,%a0@+
-3dec:	30f8 6036      	        movew 0x6036,%a0@+
-3df0:	30f8 3b36      	        movew 0x3b36,%a0@+
-3df4:	30f8 3b38      	        movew 0x3b38,%a0@+
-3df8:	30f8 5f98      	        movew 0x5f98,%a0@+
+3dcc:	20f8 3b2a      	        movel 0x3b2a,%a0@+ ;src address
+3dd0:	30f8 5fa6      	        movew 0x5fa6,%a0@+ ;src x
+3dd4:	30f8 5faa      	        movew 0x5faa,%a0@+ ;src W
+3dd8:	20f8 3b2e      	        movel 0x3b2e,%a0@+ ;msk address
+3ddc:	30f8 601e      	        movew 0x601e,%a0@+ ;msk x
+3de0:	30f8 6022      	        movew 0x6022,%a0@+ ;msk W
+3de4:	20f8 3b32      	        movel 0x3b32,%a0@+ ;dst address
+3de8:	30f8 6032      	        movew 0x6032,%a0@+ ;dst x
+3dec:	30f8 6036      	        movew 0x6036,%a0@+ ;dst W
+3df0:	30f8 3b36      	        movew 0x3b36,%a0@+ ;msk w
+3df4:	30f8 3b38      	        movew 0x3b38,%a0@+ ;msk h
+3df8:	30f8 5f98      	        movew 0x5f98,%a0@+ ;map?
 3dfc:	20f8 5fb0      	        movel 0x5fb0,%a0@+
-3e00:	30b8 6034      	        movew 0x6034,%a0@
+3e00:	30b8 6034      	        movew 0x6034,%a0@  ;dst y
 3e04:	50f8 60e2      	        st 0x60e2
 3e08:	13fc 0001 0028 0000     moveb #1,0x280000
 3e10:	205f           	        moveal %sp@+,%a0
@@ -3588,6 +3670,7 @@
 47ee:	31fc 800e 60d4 	        movew #-32754,0x60d4
 47f4:	6100 0004      	        bsrw 0x47fa
 47f8:	60ea           	        bras 0x47e4
+
 47fa:	40e7           	        movew %sr,%sp@-
 47fc:	007c 0700      	        oriw #1792,%sr
 4800:	2f08           	        movel %a0,%sp@-
@@ -4227,6 +4310,7 @@
 5184:	6100 0056      	        bsrw 0x51dc
 5188:	4cdf 0103      	        moveml %sp@+,%d0-%d1/%a0
 518c:	4e75           	        rts
+
 518e:	48e7 c080      	        moveml %d0-%d1/%a0,%sp@-
 5192:	207c 0011 cb00 	        moveal #1166080,%a0
 5198:	4280           	        clrl %d0
@@ -4533,14 +4617,14 @@
 5c74:	48b8 0007 60ee 	        movemw %d0-%d2,0x60ee
 5c7a:	6100 00bc      	        bsrw 0x5d38
 5c7e:	6100 0116      	        bsrw 0x5d96
-5c82:	4a78 3b36      	        tstw 0x3b36
+5c82:	4a78 3b36      	        tstw 0x3b36 ;msk w
 5c86:	6f00 00aa      	        blew 0x5d32
-5c8a:	4a78 3b38      	        tstw 0x3b38
+5c8a:	4a78 3b38      	        tstw 0x3b38 ;msk h
 5c8e:	6f00 00a2      	        blew 0x5d32
 5c92:	6100 e0e6      	        bsrw 0x3d7a
 5c96:	6100 0150      	        bsrw 0x5de8
-5c9a:	3038 6032      	        movew 0x6032,%d0
-5c9e:	2078 3b32      	        moveal 0x3b32,%a0
+5c9a:	3038 6032      	        movew 0x6032,%d0 ;dst x
+5c9e:	2078 3b32      	        moveal 0x3b32,%a0 ;dst address
 5ca2:	e848           	        lsrw #4,%d0
 5ca4:	e348           	        lslw #1,%d0
 5ca6:	d0c0           	        addaw %d0,%a0
@@ -4560,81 +4644,82 @@
 5cd4:	51ca fff4      	        dbf %d2,0x5cca
 5cd8:	33f8 60ac 0030 0000     movew 0x60ac,0x300000 ;bba command
 5ce0:	23f8 3b2a 0030 004e     movel 0x3b2a,0x30004e
-5ce8:	33f8 5fa6 0030 0052     movew 0x5fa6,0x300052
+5ce8:	33f8 5fa6 0030 0052     movew 0x5fa6,0x300052 ;src x
 5cf0:	23f8 3b2e 0030 0056     movel 0x3b2e,0x300056
-5cf8:	33f8 601e 0030 005a     movew 0x601e,0x30005a
-5d00:	23f8 3b32 0030 005e     movel 0x3b32,0x30005e
-5d08:	33f8 6032 0030 0062     movew 0x6032,0x300062
-5d10:	33f8 3b36 0030 0066     movew 0x3b36,0x300066
-5d18:	33f8 3b38 0030 0068     movew 0x3b38,0x300068
+5cf8:	33f8 601e 0030 005a     movew 0x601e,0x30005a ;msk x
+5d00:	23f8 3b32 0030 005e     movel 0x3b32,0x30005e ;address
+5d08:	33f8 6032 0030 0062     movew 0x6032,0x300062 ;dst x
+5d10:	33f8 3b36 0030 0066     movew 0x3b36,0x300066 ;msk w
+5d18:	33f8 3b38 0030 0068     movew 0x3b38,0x300068 ;msk h
 5d20:	50f8 60e2      	        st 0x60e2
 5d24:	13fc 0001 0028 0000     moveb #1,0x280000
 5d2c:	08f8 0001 552a 	        bset #1,0x552a
 5d32:	4cdf 030f      	        moveml %sp@+,%d0-%d3/%a0-%a1
 5d36:	4e75           	        rts
-5d38:	31f8 60aa 5f94 	        movew 0x60aa,0x5f94
+
+5d38:	31f8 60aa 5f94 	        movew 0x60aa,0x5f94   ;flags
 5d3e:	21fc 0000 5536 5f9c     movel #21814,0x5f9c
-5d46:	31fc 0008 5faa 	        movew #8,0x5faa
-5d4c:	4278 5fa6      	        clrw 0x5fa6
-5d50:	4278 5fa8      	        clrw 0x5fa8
-5d54:	21fc 0000 5736 6014     movel #22326,0x6014
-5d5c:	31fc 0008 6022 	        movew #8,0x6022
-5d62:	4278 601e      	        clrw 0x601e
-5d66:	4278 6020      	        clrw 0x6020
-5d6a:	31f8 552c 3b36 	        movew 0x552c,0x3b36
+5d46:	31fc 0008 5faa 	        movew #8,0x5faa       ;src W
+5d4c:	4278 5fa6      	        clrw 0x5fa6           ;src x
+5d50:	4278 5fa8      	        clrw 0x5fa8           ;src y
+5d54:	21fc 0000 5736 6014     movel #22326,0x6014   ;msk address
+5d5c:	31fc 0008 6022 	        movew #8,0x6022       ;msk W
+5d62:	4278 601e      	        clrw 0x601e           ;msk x
+5d66:	4278 6020      	        clrw 0x6020           ;msk y
+5d6a:	31f8 552c 3b36 	        movew 0x552c,0x3b36   ;msk w
 5d70:	31f8 552e 3b38 	        movew 0x552e,0x3b38
-5d76:	21fc 0010 0000 6028     movel #1048576,0x6028
-5d7e:	31fc 0088 6036 	        movew #136,0x6036
+5d76:	21fc 0010 0000 6028     movel #1048576,0x6028 ;dst address
+5d7e:	31fc 0088 6036 	        movew #136,0x6036 ;dst W
 5d84:	9278 6102      	        subw 0x6102,%d1
 5d88:	9478 6104      	        subw 0x6104,%d2
-5d8c:	31c1 6032      	        movew %d1,0x6032
-5d90:	31c2 6034      	        movew %d2,0x6034
+5d8c:	31c1 6032      	        movew %d1,0x6032 ;dst x
+5d90:	31c2 6034      	        movew %d2,0x6034 ;dst y
 5d94:	4e75           	        rts
 5d96:	3f00           	        movew %d0,%sp@-
-5d98:	3038 6032      	        movew 0x6032,%d0
+5d98:	3038 6032      	        movew 0x6032,%d0 ;dst x
 5d9c:	6a12           	        bpls 0x5db0
-5d9e:	9178 5fa6      	        subw %d0,0x5fa6
-5da2:	9178 601e      	        subw %d0,0x601e
-5da6:	4278 6032      	        clrw 0x6032
-5daa:	d178 3b36      	        addw %d0,0x3b36
+5d9e:	9178 5fa6      	        subw %d0,0x5fa6 ;src x
+5da2:	9178 601e      	        subw %d0,0x601e ;msk x
+5da6:	4278 6032      	        clrw 0x6032     ;dst x
+5daa:	d178 3b36      	        addw %d0,0x3b36 ;msk w
 5dae:	600e           	        bras 0x5dbe
-5db0:	d078 3b36      	        addw 0x3b36,%d0
+5db0:	d078 3b36      	        addw 0x3b36,%d0 ;msk w
 5db4:	0440 0440      	        subiw #1088,%d0
 5db8:	6f04           	        bles 0x5dbe
-5dba:	9178 3b36      	        subw %d0,0x3b36
-5dbe:	3038 6034      	        movew 0x6034,%d0
+5dba:	9178 3b36      	        subw %d0,0x3b36 ;msk w
+5dbe:	3038 6034      	        movew 0x6034,%d0 ;dst y
 5dc2:	6a12           	        bpls 0x5dd6
-5dc4:	9178 5fa8      	        subw %d0,0x5fa8
-5dc8:	9178 6020      	        subw %d0,0x6020
-5dcc:	4278 6034      	        clrw 0x6034
-5dd0:	d178 3b38      	        addw %d0,0x3b38
+5dc4:	9178 5fa8      	        subw %d0,0x5fa8 ;src y
+5dc8:	9178 6020      	        subw %d0,0x6020 ;msk y
+5dcc:	4278 6034      	        clrw 0x6034     ;dst y
+5dd0:	d178 3b38      	        addw %d0,0x3b38 ;msk h
 5dd4:	600e           	        bras 0x5de4
-5dd6:	d078 3b38      	        addw 0x3b38,%d0
+5dd6:	d078 3b38      	        addw 0x3b38,%d0 ;msk h
 5dda:	0440 0360      	        subiw #864,%d0
 5dde:	6f04           	        bles 0x5de4
 5de0:	9178 3b38      	        subw %d0,0x3b38
 5de4:	301f           	        movew %sp@+,%d0
 5de6:	4e75           	        rts
 5de8:	48e7 c000      	        moveml %d0-%d1,%sp@-
-5dec:	3038 6032      	        movew 0x6032,%d0
+5dec:	3038 6032      	        movew 0x6032,%d0 ;dst x
 5df0:	3200           	        movew %d0,%d1
 5df2:	0240 fff0      	        andiw #-16,%d0
 5df6:	31c0 5bc2      	        movew %d0,0x5bc2
-5dfa:	d278 3b36      	        addw 0x3b36,%d1
+5dfa:	d278 3b36      	        addw 0x3b36,%d1 ;msk w
 5dfe:	0641 000f      	        addiw #15,%d1
 5e02:	0041 000f      	        oriw #15,%d1
 5e06:	31c1 5bc4      	        movew %d1,0x5bc4
-5e0a:	3038 6034      	        movew 0x6034,%d0
+5e0a:	3038 6034      	        movew 0x6034,%d0 ;dst y
 5e0e:	31c0 5bc6      	        movew %d0,0x5bc6
-5e12:	d078 3b38      	        addw 0x3b38,%d0
+5e12:	d078 3b38      	        addw 0x3b38,%d0 ;msk h
 5e16:	31c0 5bc8      	        movew %d0,0x5bc8
-5e1a:	3038 3b36      	        movew 0x3b36,%d0
+5e1a:	3038 3b36      	        movew 0x3b36,%d0 ;msk w
 5e1e:	0640 000f      	        addiw #15,%d0
 5e22:	e848           	        lsrw #4,%d0
 5e24:	31c0 5532      	        movew %d0,0x5532
 5e28:	e348           	        lslw #1,%d0
 5e2a:	31c0 5530      	        movew %d0,0x5530
-5e2e:	31f8 3b38 5534 	        movew 0x3b38,0x5534
+5e2e:	31f8 3b38 5534 	        movew 0x3b38,0x5534 ;msk h
 5e34:	4cdf 0003      	        moveml %sp@+,%d0-%d1
 5e38:	4e75           	        rts
 5e3a:	48e7 f0c0      	        moveml %d0-%d3/%a0-%a1,%sp@-
@@ -4660,7 +4745,7 @@
 5e82:	3f00           	        movew %d0,%sp@-
 5e84:	0838 0001 552a 	        btst #1,0x552a
 5e8a:	673c           	        beqs 0x5ec8
-5e8c:	0cb8 0010 0000 6028     cmpil #1048576,0x6028
+5e8c:	0cb8 0010 0000 6028     cmpil #1048576,0x6028 ;dst address
 5e94:	6632           	        bnes 0x5ec8
 5e96:	3038 5bc6      	        movew 0x5bc6,%d0
 5e9a:	b078 36b4      	        cmpw 0x36b4,%d0
@@ -4678,6 +4763,7 @@
 5ec4:	6100 ff74      	        bsrw 0x5e3a
 5ec8:	301f           	        movew %sp@+,%d0
 5eca:	4e75           	        rts
+
 5ecc:	48e7 f800      	        moveml %d0-%d4,%sp@-
 5ed0:	0838 0001 552a 	        btst #1,0x552a
 5ed6:	6700 00aa      	        beqw 0x5f82
@@ -4685,50 +4771,50 @@
 5ede:	3238 5bc4      	        movew 0x5bc4,%d1
 5ee2:	3438 5bc6      	        movew 0x5bc6,%d2
 5ee6:	3638 5bc8      	        movew 0x5bc8,%d3
-5eea:	0838 0001 5f94 	        btst #1,0x5f94
+5eea:	0838 0001 5f94 	        btst #1,0x5f94    ;src bitmap?
 5ef0:	672a           	        beqs 0x5f1c
-5ef2:	0cb8 0010 0000 5f9c     cmpil #1048576,0x5f9c
+5ef2:	0cb8 0010 0000 5f9c     cmpil #1048576,0x5f9c ;address
 5efa:	6620           	        bnes 0x5f1c
-5efc:	3838 5fa8      	        movew 0x5fa8,%d4
+5efc:	3838 5fa8      	        movew 0x5fa8,%d4 ;src y
 5f00:	b843           	        cmpw %d3,%d4
 5f02:	6e18           	        bgts 0x5f1c
 5f04:	d878 3b38      	        addw 0x3b38,%d4
 5f08:	b842           	        cmpw %d2,%d4
 5f0a:	6f10           	        bles 0x5f1c
-5f0c:	3838 5fa6      	        movew 0x5fa6,%d4
+5f0c:	3838 5fa6      	        movew 0x5fa6,%d4 ;src x
 5f10:	b841           	        cmpw %d1,%d4
 5f12:	6e08           	        bgts 0x5f1c
-5f14:	d878 3b36      	        addw 0x3b36,%d4
+5f14:	d878 3b36      	        addw 0x3b36,%d4 ;msk w
 5f18:	b840           	        cmpw %d0,%d4
 5f1a:	6e5c           	        bgts 0x5f78
-5f1c:	0838 0003 5f94 	        btst #3,0x5f94
+5f1c:	0838 0003 5f94 	        btst #3,0x5f94  ;msk bitmap?
 5f22:	672a           	        beqs 0x5f4e
-5f24:	0cb8 0010 0000 6014     cmpil #1048576,0x6014
+5f24:	0cb8 0010 0000 6014     cmpil #1048576,0x6014 ;msk address
 5f2c:	6620           	        bnes 0x5f4e
-5f2e:	3838 6020      	        movew 0x6020,%d4
+5f2e:	3838 6020      	        movew 0x6020,%d4 ;msk y
 5f32:	b843           	        cmpw %d3,%d4
 5f34:	6e18           	        bgts 0x5f4e
-5f36:	d878 3b38      	        addw 0x3b38,%d4
+5f36:	d878 3b38      	        addw 0x3b38,%d4 ;msk h
 5f3a:	b842           	        cmpw %d2,%d4
 5f3c:	6f10           	        bles 0x5f4e
-5f3e:	3838 601e      	        movew 0x601e,%d4
+5f3e:	3838 601e      	        movew 0x601e,%d4 ;msk x
 5f42:	b841           	        cmpw %d1,%d4
 5f44:	6e08           	        bgts 0x5f4e
-5f46:	d878 3b36      	        addw 0x3b36,%d4
+5f46:	d878 3b36      	        addw 0x3b36,%d4  ;msk w
 5f4a:	b840           	        cmpw %d0,%d4
 5f4c:	6e2a           	        bgts 0x5f78
-5f4e:	0cb8 0010 0000 6028     cmpil #1048576,0x6028
+5f4e:	0cb8 0010 0000 6028     cmpil #1048576,0x6028 ;dst address
 5f56:	662a           	        bnes 0x5f82
-5f58:	3838 6034      	        movew 0x6034,%d4
+5f58:	3838 6034      	        movew 0x6034,%d4 ;dst y
 5f5c:	b843           	        cmpw %d3,%d4
 5f5e:	6e22           	        bgts 0x5f82
-5f60:	d878 3b38      	        addw 0x3b38,%d4
+5f60:	d878 3b38      	        addw 0x3b38,%d4 ;msk h
 5f64:	b842           	        cmpw %d2,%d4
 5f66:	6f1a           	        bles 0x5f82
-5f68:	3838 6032      	        movew 0x6032,%d4
+5f68:	3838 6032      	        movew 0x6032,%d4 ;dst x
 5f6c:	b841           	        cmpw %d1,%d4
 5f6e:	6e12           	        bgts 0x5f82
-5f70:	d878 3b36      	        addw 0x3b36,%d4
+5f70:	d878 3b36      	        addw 0x3b36,%d4 ;msk w
 5f74:	b840           	        cmpw %d0,%d4
 5f76:	6f0a           	        bles 0x5f82
 5f78:	08f8 0000 552a 	        bset #0,0x552a
@@ -4738,17 +4824,17 @@
 
 5f88:	0008 0000 ;parameter address from host
 5f8c:   0008 5f8e ;address of packet (header + 8)
-5f90:	0000 0000 ;first longword in packet << 8
-5f94:   0000
+5f90:	0000 0000 ;modifier
+5f94:   0000      ;flags
 
 ;packet from host
 5f96:   0000   ;bba command
-5f98:	0003
-5f9a:	0000
-5f9c:	0010 0000      	        orib #0,%a0@
-5fa0:	0440 0360      	        subiw #864,%d0
-5fa4:	0001 0000      	        orib #0,%d1
-5fa8:	0000 0088      	        orib #-120,%d0
+5f98:	0003   ;map?
+5f9a:	0000   ;const
+5f9c:	0010 0000      	        orib #0,%a0@    ;src address
+5fa0:	0440 0360      	        subiw #864,%d0  ;src wh
+5fa4:	0001 0000      	        orib #0,%d1     ;src bx
+5fa8:	0000 0088      	        orib #-120,%d0  ;src yW
 5fac:	0000 0000      	        orib #0,%d0
 5fb0:	0000 5ff4      	        orib #-12,%d0
 5fb4:	0000 0000      	        orib #0,%d0
@@ -4768,19 +4854,24 @@
 5fec:	0000 0000      	        orib #0,%d0
 5ff0:	0000 6060      	        orib #96,%d0
 
-6014:	0010 0000      	        orib #0,%a0@
-6018:	0440 0360      	        subiw #864,%d0
-601c:	0001 0000      	        orib #0,%d1
-6020:	0000 0088      	        orib #-120,%d0
-6024:	0000 0000      	        orib #0,%d0
-6028:	0010 0000      	        orib #0,%a0@
-602c:	0440 0360      	        subiw #864,%d0
-6030:	0001 0000      	        orib #0,%d1
-6034:	0000 0088      	        orib #-120,%d0
-6038:	0003 0008      	        orib #8,%d3
-
+6014:	0010 0000      	        ;msk address
+6018:	0440 0360      	        ;msk wh
+601c:	0001 0000      	        ;msk bx
+6020:	0000 0088      	        ;msk yW
+6024:	0000 0000      	        
+6028:	0010 0000      	        ;dst address
+602c:	0440 0360      	        ;dst wh
+6030:	0001 0000      	        ;dst bx
+6034:	0000 0088      	        ;dst yW
+6038:	0003 0008      	        
+        0000 0000
+	0000 0000
+        0000 0000
+	0000 0000
 6048:	0008           	        .short 0x0008
-
+        0000 0000 0000 0000
+        0000 0000 0000 0000
+	0000
 605a:	0008           	        .short 0x0008
 605c:	0000 0000      	        orib #0,%d0
 

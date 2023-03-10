@@ -1323,22 +1323,30 @@ static void insn_movemw_rm(void) {
     for (i = 7; i >= 0; i--)
       if (mask & (1 << (i+8))) {
 	areg[EA_R_FIELD] -= 2;
-	mem_write_l(areg[EA_R_FIELD], areg[i]);
+	mem_addr = areg[EA_R_FIELD];
+	mem_data = areg[i];
+	mem_write_w();
       }
     for (i = 7; i >= 0; i--)
       if (mask & (1 << i)) {
 	areg[EA_R_FIELD] -= 2;
-	mem_write_l(areg[EA_R_FIELD], dreg[i]);
+	mem_addr = areg[EA_R_FIELD];
+	mem_data = dreg[i];
+	mem_write_w();
       }
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
-	mem_write_l(mem_addr, dreg[i]);
+	fprintf(stderr, "MOVEM: write D%d<%08X> to %06X\n", i, dreg[i], mem_addr);
+	mem_data = dreg[i];
+	mem_write_w();
 	mem_addr += 2;
       }
     for (i = 0; i < 8; i++)
       if (mask & (1 << (i+8))) {
-	mem_write_l(mem_addr, areg[i]);
+	fprintf(stderr, "MOVEM: write A%d to %06X\n", areg[i], mem_addr);
+	mem_data = areg[i];
+	mem_write_w();
 	mem_addr += 2;
       }
   }
@@ -1939,6 +1947,8 @@ static void insn_shiftr_m(void) {
 static void insn_sub(const struct s *size) {
   int r = REG_FIELD;
   u32 src, dst;
+  if (PC == 0x3bf8+4)
+    fprintf(stderr, "sub %x,%x\n", dreg[2], dreg[1]);
   if (IRD & 0400) {
     src = dreg[r];
     dst = size->read_ea();
@@ -2303,10 +2313,19 @@ void reset(void) {
   fetch();
 }
 
+static u16 read_w_ram(u32 a);
+
 void execute(void) {
+  if (PC-4 == 0x116c)
+    trace_p = 1;
+  u16 old_5fa2 = read_w_ram(0x5fa2);
   IRD = IR;
   dispatch[IRD >> 6]();
   fetch();
+  u16 new_5fa2 = read_w_ram(0x5fa2);
+  if (old_5fa2 != new_5fa2)
+    fprintf(stderr, "RAM: 005FA2 changed from %04X to %04X\n",
+	    old_5fa2, new_5fa2);
 }
 
 static void step(void) {
