@@ -2,6 +2,7 @@
 
 import sys
 import socket
+import subprocess
 
 csr = [0x0040, 0, 0, 0, 0, 0, 0, 0]
 memory = [0] * 262144
@@ -41,6 +42,11 @@ SET_TABLET_CHARACTERISTICS = 16
 
 def noop(s):
     yield
+
+def end(s):
+    global vs100
+    vs100.kill()
+    sys.exit(0)
 
 next = noop
 
@@ -83,13 +89,13 @@ def send_start(s):
 
 def send_copy_area(s):
     global next
-    srcx = 1
-    srcy = 2
-    width = 3
-    height = 4
-    dstx = 5
-    dsty = 6
-    clips = [] ;[(7, 8, 88, 99)]
+    srcx = 0
+    srcy = 0
+    width = 16
+    height = 16
+    dstx = 64
+    dsty = 32
+    clips = []
     clipcount = len(clips)
     func = 3
 
@@ -143,7 +149,7 @@ def send_copy_area(s):
         memory[30] = 0
         memory[31] = clipcount
 
-    next = noop
+    next = end
     send_command(s, 2, 0x080000)
 
 def send_firmware(s):
@@ -221,7 +227,6 @@ def recv_csr(s):
 
 def recv_read16(s):
     data = s.recv(4)
-    print("read")
     a = data[0] << 24
     a |= data[1] << 16
     a |= data[2] << 8
@@ -230,7 +235,6 @@ def recv_read16(s):
 
 def recv_write16(s):
     data = s.recv(6)
-    print("write")
 
 dispatch = {
     1: recv_xmit_on,
@@ -248,10 +252,13 @@ def fibre_recv(s):
     dispatch[data[0]](s)
 
 if __name__ == '__main__':
+    global vs100
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("localhost", 54321))
     sock.listen(1)
+    f = open(sys.argv[1], "w")
+    vs100 = subprocess.Popen(["./vs100"], stdout=f, stderr=f)
     s, a = sock.accept()
     send_xmit_on(s)
     while True:

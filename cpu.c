@@ -540,11 +540,12 @@ static u32 alub(int op, u32 src, u32 dst) {
     break;
   }
   SET_C(result & 0x100);
+  result &= 0xFF;
   //V
-  SET_Z((result & 0xFF) == 0);
+  SET_Z(result == 0);
   SET_N(result & 0x80);
   //X
-  return result & 0xFF;
+  return result;
 }
 
 static u32 aluw(int op, u32 src, u32 dst) {
@@ -554,10 +555,8 @@ static u32 aluw(int op, u32 src, u32 dst) {
   switch (op) {
   case ADD:
     result = dst + src;
-#if 1
     SET_V((!(src & 0x8000) && !(dst & 0x8000) && (result & 0x8000)) ||
 	  ((src & 0x8000) && (dst & 0x8000) && !(result & 0x8000)));
-#endif
     break;
   case ADC:
     result = dst + src + !!FLAG_C;
@@ -577,10 +576,13 @@ static u32 aluw(int op, u32 src, u32 dst) {
     break;
   }
   SET_C(result & 0x10000);
-  SET_Z((result & 0xFFFF) == 0);
+  result &= 0xFFFF;
+  SET_Z(result == 0);
   SET_N(result & 0x8000);
   //X
-  return result & 0xFFFF;
+  if (trace_p)
+    fprintf (stderr, "ALU: %04X # %04X -> %04X\n", src, dst, result);
+  return result;
 }
 
 static u32 alul(int op, u32 src, u32 dst) {
@@ -1337,14 +1339,16 @@ static void insn_movemw_rm(void) {
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
-	fprintf(stderr, "MOVEM: write D%d<%08X> to %06X\n", i, dreg[i], mem_addr);
+	if (trace_p)
+	  fprintf(stderr, "MOVEM: write D%d<%08X> to %06X\n", i, dreg[i], mem_addr);
 	mem_data = dreg[i];
 	mem_write_w();
 	mem_addr += 2;
       }
     for (i = 0; i < 8; i++)
       if (mask & (1 << (i+8))) {
-	fprintf(stderr, "MOVEM: write A%d to %06X\n", areg[i], mem_addr);
+	if (trace_p)
+	  fprintf(stderr, "MOVEM: write A%d to %06X\n", areg[i], mem_addr);
 	mem_data = areg[i];
 	mem_write_w();
 	mem_addr += 2;
@@ -1661,8 +1665,11 @@ static void insn_misc(void) {
 
 static void insn_move(const struct s *size) {
   u32 x = size->read_ea();
+  u32 old_addr = mem_addr;
   IRD = ((IRD & 0700) >> 3) | ((IRD & 07000) >> 9);
   size->write_ea(x);
+  if (trace_p)
+    fprintf (stderr, "MOVE: %06X -> %06X : %X\n", old_addr, mem_addr, x);
   SET_C(0);
   SET_V(0);
   SET_Z((mem_data & size->mask) == 0);
