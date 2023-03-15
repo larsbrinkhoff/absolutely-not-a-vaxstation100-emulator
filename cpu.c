@@ -64,6 +64,10 @@ static int trace_p = 0;
 	      PC-4, IRD, IRD, __func__);		\
   } while(0)
 
+#define UNIMPLEMENTED()				\
+  printf("Unimplemented: %s.\n", __func__);	\
+  exit(1)
+
 #define DEFINSN_BW(INSN)			\
   static void insn_##INSN##b(void) {		\
     TRACE();					\
@@ -950,14 +954,12 @@ DEFINSN_BWL(and_m)
 
 static void insn_andi_ccr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_andi_sr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_andi(const struct s *size) {
@@ -1020,20 +1022,17 @@ static void insn_bcc(void) {
 
 static void insn_bchg(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_bchgi(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_bclr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_bclri(void) {
@@ -1133,8 +1132,7 @@ static void insn_bsr(void) {
 
 static void insn_btst(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_btsti(void) {
@@ -1155,8 +1153,7 @@ static void insn_btsti(void) {
 
 static void insn_chk(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_clr(const struct s *size) {
@@ -1196,8 +1193,7 @@ DEFINSN_BWL(cmpi)
 
 static void insn_cmpm(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_eor(const struct s *size) {
@@ -1271,20 +1267,17 @@ static void insn_divs(void) {
 
 static void insn_divu(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_eori_ccr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_eori_sr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_eori(const struct s *size) {
@@ -1495,14 +1488,12 @@ static void insn_extw(void) {
 
 static void insn_illegal(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_illegal_or_tas(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_jmp(void) {
@@ -1548,8 +1539,7 @@ static void insn_jsr(void) {
 
 static void insn_lea(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
   //Check ea.
   //compute_ea(0);
   //areg[REG_FIELD] = mem_addr;
@@ -1557,38 +1547,32 @@ static void insn_lea(void) {
 
 static void insn_linea(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_linef(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_trap(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_link(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_unlk(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_move_usp(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_reset(void) {
@@ -1605,8 +1589,7 @@ static void insn_nop(void) {
 
 static void insn_stop(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_rte(void) {
@@ -1626,14 +1609,12 @@ static void insn_rts(void) {
 
 static void insn_trapv(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_rtr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_misc(void) {
@@ -1696,8 +1677,7 @@ static void insn_moveq(void) {
 
 static void insn_move_to_ccr(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_move_to_sr(void) {
@@ -1716,14 +1696,12 @@ static void insn_muls(void) {
 
 static void insn_mulu(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_nbcd(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_neg(const struct s *size) {
@@ -1736,8 +1714,7 @@ DEFINSN_BWL(neg)
 
 static void insn_negx(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_not(const struct s *size) {
@@ -1778,8 +1755,7 @@ static void insn_ori_sr(void) {
 
 static void insn_shiftl_b(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_shiftl_w(void) {
@@ -1800,8 +1776,7 @@ static void insn_shiftl_w(void) {
       x <<= 1;
     break;
   case 020: //roxl
-    printf("Unimplemented.\n");
-    exit(1);
+    UNIMPLEMENTED();
   case 030: //rol
     for (i = 0; i < n; i++)
       x = (x << 1) | (x >> 15);
@@ -1828,8 +1803,7 @@ static void insn_shiftl_l(void) {
       x <<= 1;
     break;
   case 020: //roxl
-    printf("Unimplemented.\n");
-    exit(1);
+    UNIMPLEMENTED();
   case 030: //rol
     for (i = 0; i < n; i++)
       x = (x << 1) | (x >> 31);
@@ -1840,8 +1814,7 @@ static void insn_shiftl_l(void) {
 
 static void insn_shiftl_m(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_shiftr_b(void) {
@@ -1866,8 +1839,7 @@ static void insn_shiftr_b(void) {
       x >>= 1;
     break;
   case 020: //roxr
-    printf("Unimplemented.\n");
-    exit(1);
+    UNIMPLEMENTED();
   case 030: //ror
     for (i = 0; i < n; i++)
       x = (x >> 1) | (x << 7);
@@ -1900,8 +1872,7 @@ static void insn_shiftr_w(void) {
       x >>= 1;
     break;
   case 020: //roxr
-    printf("Unimplemented.\n");
-    exit(1);
+    UNIMPLEMENTED();
   case 030: //ror
     for (i = 0; i < n; i++)
       x = (x >> 1) | (x << 15);
@@ -1933,8 +1904,7 @@ static void insn_shiftr_l(void) {
       x >>= 1;
     break;
   case 020: //roxr
-    printf("Unimplemented.\n");
-    exit(1);
+    UNIMPLEMENTED();
   case 030: //ror
     for (i = 0; i < n; i++)
       x = (x >> 1) | (x << 31);
@@ -1947,8 +1917,7 @@ static void insn_shiftr_l(void) {
 
 static void insn_shiftr_m(void) {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_sub(const struct s *size) {
@@ -2013,8 +1982,7 @@ static void insn_swap() {
 
 static void insn_pea() {
   TRACE();
-  printf("Unimplemented.\n");
-  exit(1);
+  UNIMPLEMENTED();
 }
 
 static void insn_swap_or_pea(void) {

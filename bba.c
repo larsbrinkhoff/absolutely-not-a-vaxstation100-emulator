@@ -69,6 +69,7 @@ static void mem_write(u32 a, u16 x) {
     write_w_rom(a, x); break;
   default:
     //NXM
+    ;
   }
 }
 

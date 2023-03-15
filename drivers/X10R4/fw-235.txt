@@ -153,7 +153,7 @@
 1226:	6100 2876      	        bsrw 0x3a9e ;clipping (2 words)
 122a:	6100 248a      	        bsrw 0x36b6 ;const/tile/function
 122e:	2078 603a      	        moveal 0x603a,%a0
-1232:	3038 603e      	        movew 0x603e,%d0
+1232:	3038 603e      	        movew 0x603e,%d0   ;clip count
 1236:	6720           	        beqs 0x1258
 1238:	5340           	        subqw #1,%d0
 123a:	31d8 6040      	        movew %a0@+,0x6040 ;clip x
@@ -184,19 +184,19 @@
 12c6:	4278 5fd6      	        clrw 0x5fd6
 12ca:	21fc 0000 18ee 126e     movel #6382,0x126e
 12d2:	6100 252e      	        bsrw 0x3802 ;process source
-12d6:	6100 2696      	        bsrw 0x396e
-12da:	6100 2708      	        bsrw 0x39e4
-12de:	6100 2722      	        bsrw 0x3a02
-12e2:	6100 27ba      	        bsrw 0x3a9e
-12e6:	6100 2824      	        bsrw 0x3b0c
-12ea:	6100 06d2      	        bsrw 0x19be
-12ee:	6100 23c6      	        bsrw 0x36b6
+12d6:	6100 2696      	        bsrw 0x396e ;process mask
+12da:	6100 2708      	        bsrw 0x39e4 ;process destination
+12de:	6100 2722      	        bsrw 0x3a02 ;process map
+12e2:	6100 27ba      	        bsrw 0x3a9e ;process clipping
+12e6:	6100 2824      	        bsrw 0x3b0c ;process segment list
+12ea:	6100 06d2      	        bsrw 0x19be ;process draw mode
+12ee:	6100 23c6      	        bsrw 0x36b6 ;const/tile/function
 12f2:	4a38 604e      	        tstb 0x604e ;flag bba bit 7
 12f6:	6712           	        beqs 0x130a
-12f8:	6100 06cc      	        bsrw 0x19c6
+12f8:	6100 06cc      	        bsrw 0x19c6 ;pattern string, state
 12fc:	4a38 604e      	        tstb 0x604e ;flag bba bit 7
 1300:	6708           	        beqs 0x130a
-1302:	6100 07be      	        bsrw 0x1ac2
+1302:	6100 07be      	        bsrw 0x1ac2 ;pattern mode
 1306:	6100 23d0      	        bsrw 0x36d8
 130a:	51f8 1292      	        sf 0x1292
 130e:	31f8 6032 60d0 	        movew 0x6032,0x60d0 ;dst x
@@ -212,32 +212,33 @@
 1336:	50f8 1292      	        st 0x1292
 133a:	6100 01a8      	        bsrw 0x14e4
 133e:	2078 603a      	        moveal 0x603a,%a0
-1342:	3038 603e      	        movew 0x603e,%d0
+1342:	3038 603e      	        movew 0x603e,%d0   ;clip count
 1346:	671c           	        beqs 0x1364
 1348:	5340           	        subqw #1,%d0
 134a:	31d8 6040      	        movew %a0@+,0x6040 ;clip x
 134e:	31d8 6042      	        movew %a0@+,0x6042 ;clip y
 1352:	31d8 6044      	        movew %a0@+,0x6044 ;clip w
 1356:	31d8 6046      	        movew %a0@+,0x6046 ;clip h
-135a:	6100 0044      	        bsrw 0x13a0
+135a:	6100 0044      	        bsrw 0x13a0        ;do one clip
 135e:	51c8 ffea      	        dbf %d0,0x134a
 1362:	6004           	        bras 0x1368
-1364:	6100 003a      	        bsrw 0x13a0
+1364:	6100 003a      	        bsrw 0x13a0        ;do one clip
 1368:	4a38 60e2      	        tstb 0x60e2
 136c:	66fa           	        bnes 0x1368
 136e:	4a38 605e      	        tstb 0x605e
 1372:	6720           	        beqs 0x1394
-1374:	2078 605a      	        moveal 0x605a,%a0
+1374:	2078 605a      	        moveal 0x605a,%a0 ;pattern state address
 1378:	4a38 1292      	        tstb 0x1292
 137c:	670e           	        beqs 0x138c
 137e:	30f9 0030 004a 	        movew 0x30004a,%a0@+
 1384:	30b9 0030 004c 	        movew 0x30004c,%a0@
 138a:	6008           	        bras 0x1394
-138c:	30f8 6056      	        movew 0x6056,%a0@+
-1390:	30b8 6058      	        movew 0x6058,%a0@
+138c:	30f8 6056      	        movew 0x6056,%a0@+ ;pattern state position
+1390:	30b8 6058      	        movew 0x6058,%a0@ ;pattern state count
 1394:	31fc 0002 60d4 	        movew #2,0x60d4
 139a:	6100 345e      	        bsrw 0x47fa
 139e:	4e75           	        rts
+
 13a0:	48e7 f8c0      	        moveml %d0-%d4/%a0-%a1,%sp@-
 13a4:	4a38 1292      	        tstb 0x1292
 13a8:	670c           	        beqs 0x13b6
@@ -245,7 +246,7 @@
 13ae:	6100 4ad2      	        bsrw 0x5e82
 13b2:	6100 0172      	        bsrw 0x1526
 13b6:	6100 01cc      	        bsrw 0x1584
-13ba:	2078 6048      	        moveal 0x6048,%a0
+13ba:	2078 6048      	        moveal 0x6048,%a0 ;segment list address
 13be:	2248           	        moveal %a0,%a1
 13c0:	51c4           	        sf %d4
 13c2:	31f8 1296 1294 	        movew 0x1296,0x1294
@@ -341,31 +342,33 @@
 14fa:	66fa           	        bnes 0x14f6
 14fc:	33f8 5f96 0030 0000     movew 0x5f96,0x300000 ;bba command
 1504:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;function
-150c:	33f8 6052 0030 0044     movew 0x6052,0x300044
-1514:	33f8 6050 0030 0046     movew 0x6050,0x300046
-151c:	33f8 6054 0030 0048     movew 0x6054,0x300048
+150c:	33f8 6052 0030 0044     movew 0x6052,0x300044 ;pattern string pattern
+1514:	33f8 6050 0030 0046     movew 0x6050,0x300046 ;pattern string length
+151c:	33f8 6054 0030 0048     movew 0x6054,0x300048 ;pattern string mult
 1524:	4e75           	        rts
+
 1526:	48e7 e000      	        moveml %d0-%d2,%sp@-
-152a:	3038 36b2      	        movew 0x36b2,%d0
+152a:	3038 36b2      	        movew 0x36b2,%d0 ;y
 152e:	c1f8 6036      	        mulsw 0x6036,%d0 ;dst W
-1532:	d0b8 6028      	        addl 0x6028,%d0 ;dst address
+1532:	d0b8 6028      	        addl 0x6028,%d0  ;dst address
 1536:	3238 36ac      	        movew 0x36ac,%d1
-153a:	9278 36a6      	        subw 0x36a6,%d1
+153a:	9278 36a6      	        subw 0x36a6,%d1  ;x
 153e:	5241           	        addqw #1,%d1
 1540:	3438 36b4      	        movew 0x36b4,%d2
-1544:	9478 36b2      	        subw 0x36b2,%d2
+1544:	9478 36b2      	        subw 0x36b2,%d2  ;y
 1548:	5242           	        addqw #1,%d2
 154a:	c5f8 6036      	        mulsw 0x6036,%d2 ;dst W
 154e:	4a38 60e2      	        tstb 0x60e2
 1552:	66fa           	        bnes 0x154e
-1554:	33f8 36a6 0030 0038     movew 0x36a6,0x300038
-155c:	23c0 0030 003a 	        movel %d0,0x30003a
-1562:	33c1 0030 003e 	        movew %d1,0x30003e
-1568:	23c2 0030 0040 	        movel %d2,0x300040
-156e:	33f8 6056 0030 004a     movew 0x6056,0x30004a
-1576:	33f8 6058 0030 004c     movew 0x6058,0x30004c
+1554:	33f8 36a6 0030 0038     movew 0x36a6,0x300038 ;x
+155c:	23c0 0030 003a 	        movel %d0,0x30003a    ;a
+1562:	33c1 0030 003e 	        movew %d1,0x30003e    ;
+1568:	23c2 0030 0040 	        movel %d2,0x300040    ;
+156e:	33f8 6056 0030 004a     movew 0x6056,0x30004a ;pattern state position
+1576:	33f8 6058 0030 004c     movew 0x6058,0x30004c ;pattern state count
 157e:	4cdf 0007      	        moveml %sp@+,%d0-%d2
 1582:	4e75           	        rts
+
 1584:	48e7 80c0      	        moveml %d0/%a0-%a1,%sp@-
 1588:	4278 1274      	        clrw 0x1274
 158c:	4278 1276      	        clrw 0x1276
@@ -394,7 +397,7 @@
 15e8:	4278 12a2      	        clrw 0x12a2
 15ec:	4278 12a4      	        clrw 0x12a4
 15f0:	4278 12a6      	        clrw 0x12a6
-15f4:	31f8 604c 12a8 	        movew 0x604c,0x12a8
+15f4:	31f8 604c 12a8 	        movew 0x604c,0x12a8 ;segment list count
 15fa:	4a38 605f      	        tstb 0x605f
 15fe:	671c           	        beqs 0x161c
 1600:	303c 0007      	        movew #7,%d0
@@ -406,6 +409,7 @@
 1618:	4238 1272      	        clrb 0x1272
 161c:	4cdf 0301      	        moveml %sp@+,%d0/%a0-%a1
 1620:	4e75           	        rts
+
 1622:	31f8 1296 1274 	        movew 0x1296,0x1274
 1628:	31f8 129e 1276 	        movew 0x129e,0x1276
 162e:	31f8 1298 1278 	        movew 0x1298,0x1278
@@ -543,7 +547,7 @@
 1818:	d3c1           	        addal %d1,%a1
 181a:	4a38 60e2      	        tstb 0x60e2
 181e:	66fa           	        bnes 0x181a
-1820:	33c0 0030 0016 	        movew %d0,0x300016
+1820:	33c0 0030 0016 	        movew %d0,0x300016 ;dst x
 1826:	20c9           	        movel %a1,%a0@+    ;026
 1828:	30c6           	        movew %d6,%a0@+    ;02a
 182a:	30f8 128a      	        movew 0x128a,%a0@+ ;02c
@@ -560,7 +564,7 @@
 1858:	d878 60d0      	        addw 0x60d0,%d4
 185c:	3a38 1276      	        movew 0x1276,%d5
 1860:	da78 60d2      	        addw 0x60d2,%d5
-1864:	3638 6052      	        movew 0x6052,%d3
+1864:	3638 6052      	        movew 0x6052,%d3 ;pattern string pattern
 1868:	4e91           	        jsr %a1@
 186a:	5346           	        subqw #1,%d6
 186c:	5346           	        subqw #1,%d6
@@ -608,20 +612,20 @@
 18ee:	48e7 e000      	        moveml %d0-%d2,%sp@-
 18f2:	4a38 604e      	        tstb 0x604e  ;flag bba bit 7
 18f6:	672c           	        beqs 0x1924
-18f8:	3038 6056      	        movew 0x6056,%d0
-18fc:	3238 6058      	        movew 0x6058,%d1
+18f8:	3038 6056      	        movew 0x6056,%d0 ;pattern state position
+18fc:	3238 6058      	        movew 0x6058,%d1 ;pattern state count
 1900:	0103           	        btst %d0,%d3
 1902:	56c2           	        sne %d2
 1904:	5241           	        addqw #1,%d1
-1906:	b278 6054      	        cmpw 0x6054,%d1
+1906:	b278 6054      	        cmpw 0x6054,%d1 ;pattern string multiplier
 190a:	6d0c           	        blts 0x1918
 190c:	4241           	        clrw %d1
 190e:	5240           	        addqw #1,%d0
-1910:	b078 6050      	        cmpw 0x6050,%d0
+1910:	b078 6050      	        cmpw 0x6050,%d0  ;pattern string length
 1914:	6d02           	        blts 0x1918
 1916:	4240           	        clrw %d0
-1918:	31c0 6056      	        movew %d0,0x6056
-191c:	31c1 6058      	        movew %d1,0x6058
+1918:	31c0 6056      	        movew %d0,0x6056 ;pattern state position
+191c:	31c1 6058      	        movew %d1,0x6058 ;pattern state count
 1920:	4a02           	        tstb %d2
 1922:	670c           	        beqs 0x1930
 1924:	31c4 6032      	        movew %d4,0x6032 ;dst x
@@ -630,20 +634,20 @@
 1930:	4cdf 0007      	        moveml %sp@+,%d0-%d2
 1934:	4e75           	        rts
 1936:	48e7 e0c0      	        moveml %d0-%d2/%a0-%a1,%sp@-
-193a:	3038 6056      	        movew 0x6056,%d0
-193e:	3238 6058      	        movew 0x6058,%d1
+193a:	3038 6056      	        movew 0x6056,%d0 ;pattern state position
+193e:	3238 6058      	        movew 0x6058,%d1 ;pattern state count
 1942:	0103           	        btst %d0,%d3
 1944:	56c2           	        sne %d2
 1946:	5241           	        addqw #1,%d1
-1948:	b278 6054      	        cmpw 0x6054,%d1
+1948:	b278 6054      	        cmpw 0x6054,%d1 ;pattern string multiplier
 194c:	6d0c           	        blts 0x195a
 194e:	4241           	        clrw %d1
 1950:	5240           	        addqw #1,%d0
-1952:	b078 6050      	        cmpw 0x6050,%d0
+1952:	b078 6050      	        cmpw 0x6050,%d0 ;pattern string length
 1956:	6d02           	        blts 0x195a
 1958:	4240           	        clrw %d0
-195a:	31c0 6056      	        movew %d0,0x6056
-195e:	31c1 6058      	        movew %d1,0x6058
+195a:	31c0 6056      	        movew %d0,0x6056 ;pattern state position
+195e:	31c1 6058      	        movew %d1,0x6058 ;pattern state count
 1962:	4a02           	        tstb %d2
 1964:	6724           	        beqs 0x198a
 1966:	4a38 1272      	        tstb 0x1272
@@ -670,27 +674,31 @@
 19b4:	6100 2186      	        bsrw 0x3b3c	 ;do one clip
 19b8:	4cdf 0307      	        moveml %sp@+,%d0-%d2/%a0-%a1
 19bc:	4e75           	        rts
-19be:	e288           	        lsrl #1,%d0
+
+;process draw mode
+19be:	e288           	        lsrl #1,%d0 ;solid or pattern
 19c0:	55f8 604e      	        scs 0x604e  ;flag bba bit 7
 19c4:	4e75           	        rts
-19c6:	3218           	        movew %a0@+,%d1
+
+;process pattern string, state
+19c6:	3218           	        movew %a0@+,%d1 ;pattern string length
 19c8:	56f8 604e      	        sne 0x604e ;flag bba bit 7
 19cc:	6b34           	        bmis 0x1a02
 19ce:	0c41 0010      	        cmpiw #16,%d1
 19d2:	6e2e           	        bgts 0x1a02
-19d4:	31c1 6050      	        movew %d1,0x6050
-19d8:	31d8 6052      	        movew %a0@+,0x6052
-19dc:	3418           	        movew %a0@+,%d2
+19d4:	31c1 6050      	        movew %d1,0x6050 ;pattern string length
+19d8:	31d8 6052      	        movew %a0@+,0x6052 ;pattern string pattern
+19dc:	3418           	        movew %a0@+,%d2 ;pattern string multiplier
 19de:	6f30           	        bles 0x1a10
 19e0:	31c2 6054      	        movew %d2,0x6054
 19e4:	2600           	        movel %d0,%d3
 19e6:	e488           	        lsrl #2,%d0
-19e8:	0243 0003      	        andiw #3,%d3
+19e8:	0243 0003      	        andiw #3,%d3 ;pattern state
 19ec:	e54b           	        lslw #2,%d3
 19ee:	0c43 0010      	        cmpiw #16,%d3
 19f2:	642a           	        bccs 0x1a1e
 19f4:	227c 0000 1a2c 	        moveal #6700,%a1
-19fa:	2271 3000      	        moveal %a1@(0000000000000000,%d3:w),%a1
+19fa:	2271 3000      	        moveal %a1@(0,%d3:w),%a1
 19fe:	4e91           	        jsr %a1@
 1a00:	4e75           	        rts
 1a02:	31fc 8041 60d4 	        movew #-32703,0x60d4
@@ -702,19 +710,22 @@
 1a1e:	31fc 8045 60d4 	        movew #-32699,0x60d4
 1a24:	6100 2dd4      	        bsrw 0x47fa
 1a28:	6000 f63a      	        braw 0x1064
-1a2c:	0000 1a3c      	        orib #60,%d0
-1a30:	0000 1a72      	        orib #114,%d0
-1a34:	0000 1aae      	        orib #-82,%d0
-1a38:	0000 1ab8      	        orib #-72,%d0
+
+1a2c:	0000 1a3c
+1a30:	0000 1a72
+1a34:	0000 1aae
+1a38:	0000 1ab8
+
+;pattern state 0
 1a3c:	21c8 605a      	        movel %a0,0x605a
-1a40:	3618           	        movew %a0@+,%d3
+1a40:	3618           	        movew %a0@+,%d3 ;pattern state position
 1a42:	b641           	        cmpw %d1,%d3
 1a44:	6410           	        bccs 0x1a56
 1a46:	31c3 6056      	        movew %d3,0x6056
-1a4a:	3618           	        movew %a0@+,%d3
+1a4a:	3618           	        movew %a0@+,%d3 ;pattern state count
 1a4c:	b642           	        cmpw %d2,%d3
 1a4e:	6214           	        bhis 0x1a64
-1a50:	31c3 6058      	        movew %d3,0x6058
+1a50:	31c3 6058      	        movew %d3,0x6058 ;pattern state count
 1a54:	4e75           	        rts
 1a56:	31fc 8044 60d4 	        movew #-32700,0x60d4
 1a5c:	6100 2d9c      	        bsrw 0x47fa
@@ -722,6 +733,8 @@
 1a64:	31fc 8047 60d4 	        movew #-32697,0x60d4
 1a6a:	6100 2d8e      	        bsrw 0x47fa
 1a6e:	6000 f5f4      	        braw 0x1064
+
+;pattern state 1
 1a72:	2618           	        movel %a0@+,%d3
 1a74:	4843           	        swap %d3
 1a76:	2243           	        moveal %d3,%a1
@@ -733,7 +746,7 @@
 1a86:	3619           	        movew %a1@+,%d3
 1a88:	b642           	        cmpw %d2,%d3
 1a8a:	6214           	        bhis 0x1aa0
-1a8c:	31c3 6058      	        movew %d3,0x6058
+1a8c:	31c3 6058      	        movew %d3,0x6058 ;pattern state count
 1a90:	4e75           	        rts
 1a92:	31fc 8044 60d4 	        movew #-32700,0x60d4
 1a98:	6100 2d60      	        bsrw 0x47fa
@@ -741,15 +754,20 @@
 1aa0:	31fc 8047 60d4 	        movew #-32697,0x60d4
 1aa6:	6100 2d52      	        bsrw 0x47fa
 1aaa:	6000 f5b8      	        braw 0x1064
+
+;pattern state 2
 1aae:	50f8 605e      	        st 0x605e
 1ab2:	6100 ff88      	        bsrw 0x1a3c
 1ab6:	4e75           	        rts
+
+;pattern state 3
 1ab8:	50f8 605e      	        st 0x605e
 1abc:	6100 ffb4      	        bsrw 0x1a72
 1ac0:	4e75           	        rts
+
 1ac2:	2200           	        movel %d0,%d1
 1ac4:	e488           	        lsrl #2,%d0
-1ac6:	0241 0003      	        andiw #3,%d1
+1ac6:	0241 0003      	        andiw #3,%d1 ;pattern mode
 1aca:	e549           	        lslw #2,%d1
 1acc:	0c41 0010      	        cmpiw #16,%d1
 1ad0:	640e           	        bccs 0x1ae0
@@ -760,12 +778,17 @@
 1ae0:	31fc 8046 60d4 	        movew #-32698,0x60d4
 1ae6:	6100 2d12      	        bsrw 0x47fa
 1aea:	6000 f578      	        braw 0x1064
+
 1aee:	0000 1afe      	        orib #-2,%d0
 1af2:	0000 1b04      	        orib #4,%d0
 1af6:	0000 1b42      	        orib #66,%d0
 1afa:	0000 1b76      	        orib #118,%d0
+
+;pattern mode 0
 1afe:	d0fc 000e      	        addaw #14,%a0
 1b02:	4e75           	        rts
+
+;pattern mode 1
 1b04:	50f8 605f      	        st 0x605f
 1b08:	08f8 0000 5fd4 	        bset #0,0x5fd4
 1b0e:	21fc 0000 1936 126e     movel #6454,0x126e
@@ -781,6 +804,8 @@
 1b34:	31fc 804b 60d4 	        movew #-32693,0x60d4
 1b3a:	6100 2cbe      	        bsrw 0x47fa
 1b3e:	6000 f524      	        braw 0x1064
+
+;pattern mode 2
 1b42:	50f8 605f      	        st 0x605f
 1b46:	08f8 0001 5fd4 	        bset #1,0x5fd4
 1b4c:	0078 0001 5fd6 	        oriw #1,0x5fd6
@@ -790,9 +815,12 @@
 1b64:	21ca 5fdc      	        movel %a2,0x5fdc
 1b68:	48b8 007e 5fe0 	        movemw %d1-%d6,0x5fe0
 1b6e:	4e75           	        rts
+
 1b70:	8048           	        .short 0x8048
 1b72:	8049           	        .short 0x8049
 1b74:	804a           	        .short 0x804a
+
+;pattern mode 3
 1b76:	50f8 605f      	        st 0x605f
 1b7a:	08f8 0002 5fd4 	        bset #2,0x5fd4
 1b80:	0078 0010 5fd6 	        oriw #16,0x5fd6
@@ -808,6 +836,7 @@
 1bb0:	32c3           	        movew %d3,%a1@+
 1bb2:	51c9 fffa      	        dbf %d1,0x1bae
 1bb6:	4e75           	        rts
+
 1bb8:	80a4           	        orl %a4@-,%d0
 1bba:	80a5           	        orl %a5@-,%d0
 1bbc:	80a6           	        orl %fp@-,%d0
@@ -821,14 +850,14 @@
 1bce:	6100 062a      	        bsrw 0x21fa ;process source
 1bd2:	6100 06dc      	        bsrw 0x22b0 ;process mask
 1bd6:	6100 0808      	        bsrw 0x23e0 ;process destination
-1bda:	6100 1e26      	        bsrw 0x3a02 ;process function
+1bda:	6100 1e26      	        bsrw 0x3a02 ;process map
 1bde:	6100 1ebe      	        bsrw 0x3a9e ;process clipping
 1be2:	6100 08da      	        bsrw 0x24be ;process text size
 1be6:	6100 08fa      	        bsrw 0x24e2 ;process control string
 1bea:	6100 1aca      	        bsrw 0x36b6 ;const/tile/function
 1bee:	6100 005c      	        bsrw 0x1c4c
 1bf2:	2078 603a      	        moveal 0x603a,%a0
-1bf6:	3038 603e      	        movew 0x603e,%d0
+1bf6:	3038 603e      	        movew 0x603e,%d0   ;clip count
 1bfa:	6728           	        beqs 0x1c24
 1bfc:	5340           	        subqw #1,%d0
 1bfe:	31f8 60d0 6032 	        movew 0x60d0,0x6032 ;dst x
@@ -1239,7 +1268,7 @@
 2186:	b244           	        cmpw %d4,%d1
 2188:	6c02           	        bges 0x218c
 218a:	3801           	        movew %d1,%d4
-218c:	4a78 603e      	        tstw 0x603e
+218c:	4a78 603e      	        tstw 0x603e      ;clip count
 2190:	6754           	        beqs 0x21e6
 2192:	3238 6044      	        movew 0x6044,%d1 ;clip w
 2196:	3438 6040      	        movew 0x6040,%d2 ;clip x
@@ -1739,7 +1768,7 @@
 27b6:	c9c7           	        mulsw %d7,%d4
 27b8:	d1c4           	        addal %d4,%a0
 27ba:	4a58           	        tstw %a0@+
-27bc:	3838 36a6      	        movew 0x36a6,%d4
+27bc:	3838 36a6      	        movew 0x36a6,%d4  ;x
 27c0:	0244 000f      	        andiw #15,%d4
 27c4:	323c 000f      	        movew #15,%d1
 27c8:	3c02           	        movew %d2,%d6
@@ -1989,7 +2018,7 @@
 2a5a:	227c 0000 2a90 	        moveal #10896,%a1
 2a60:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 2a64:	4e91           	        jsr %a1@
-2a66:	4a78 603e      	        tstw 0x603e
+2a66:	4a78 603e      	        tstw 0x603e        ;clip count
 2a6a:	6714           	        beqs 0x2a80
 2a6c:	2278 603a      	        moveal 0x603a,%a1
 2a70:	31d9 6040      	        movew %a1@+,0x6040 ;clip x
@@ -2030,12 +2059,12 @@
 2ad8:	0c41 0040      	        cmpiw #64,%d1
 2adc:	6e00 00d4      	        bgtw 0x2bb2
 2ae0:	e688           	        lsrl #3,%d0
-2ae2:	6100 0f1e      	        bsrw 0x3a02 ;process function
+2ae2:	6100 0f1e      	        bsrw 0x3a02 ;process map
 2ae6:	6100 01ce      	        bsrw 0x2cb6 ;process blink/tip/center
 2aea:	6100 0bca      	        bsrw 0x36b6 ;const/tile/function
 2aee:	31f8 5f94 60aa 	        movew 0x5f94,0x60aa ;flags
 2af4:	31f8 5f96 60ac 	        movew 0x5f96,0x60ac ;bba command
-2afa:	0078 0020 60ac 	        oriw #32,0x60ac
+2afa:	0078 0020 60ac 	        oriw #32,0x60ac     ;load cursor
 2b00:	31f8 5f98 60ae 	        movew 0x5f98,0x60ae ;function
 2b06:	0838 0001 60aa 	        btst #1,0x60aa
 2b0c:	670c           	        beqs 0x2b1a
@@ -2082,7 +2111,7 @@
 2be2:	31fc 0040 602e 	        movew #64,0x602e ;dst h
 2be8:	4278 6032      	        clrw 0x6032      ;dst x
 2bec:	4278 6034      	        clrw 0x6034      ;dst y
-2bf0:	4278 603e      	        clrw 0x603e
+2bf0:	4278 603e      	        clrw 0x603e      ;clip count
 2bf4:	6100 0f46      	        bsrw 0x3b3c	 ;do one clip
 2bf8:	4e75           	        rts
 
@@ -2363,7 +2392,7 @@
 2f8e:	6100 0600      	        bsrw 0x3590 ;process source
 2f92:	e688           	        lsrl #3,%d0
 2f94:	6100 0a4e      	        bsrw 0x39e4 ;process destination
-2f98:	6100 0a68      	        bsrw 0x3a02 ;process function
+2f98:	6100 0a68      	        bsrw 0x3a02 ;process map
 2f9c:	6100 0638      	        bsrw 0x35d6
 2fa0:	6100 0b6a      	        bsrw 0x3b0c
 2fa4:	6100 0710      	        bsrw 0x36b6
@@ -2382,7 +2411,7 @@
 2fdc:	4e75           	        rts
 
 2fde:	48e7 f8c0      	        moveml %d0-%d4/%a0-%a1,%sp@-
-2fe2:	2078 6048      	        moveal 0x6048,%a0
+2fe2:	2078 6048      	        moveal 0x6048,%a0 ;segment list address
 2fe6:	2248           	        moveal %a0,%a1
 2fe8:	51c4           	        sf %d4
 2fea:	31f8 2f66 2f64 	        movew 0x2f66,0x2f64
@@ -2517,7 +2546,7 @@
 31ba:	4278 2f7a      	        clrw 0x2f7a
 31be:	4278 2f7c      	        clrw 0x2f7c
 31c2:	4278 2f7e      	        clrw 0x2f7e
-31c6:	31f8 604c 2f80 	        movew 0x604c,0x2f80
+31c6:	31f8 604c 2f80 	        movew 0x604c,0x2f80 ;segment list count
 31cc:	4e75           	        rts
 31ce:	31f8 2f66 2f4c 	        movew 0x2f66,0x2f4c
 31d4:	31f8 2f6e 2f4e 	        movew 0x2f6e,0x2f4e
@@ -2722,7 +2751,7 @@
 3488:	c9c1           	        mulsw %d1,%d4
 348a:	d1c4           	        addal %d4,%a0
 348c:	3c03           	        movew %d3,%d6
-348e:	3838 36a6      	        movew 0x36a6,%d4
+348e:	3838 36a6      	        movew 0x36a6,%d4 ;x
 3492:	0244 000f      	        andiw #15,%d4
 3496:	672c           	        beqs 0x34c4
 3498:	3a3c ffff      	        movew #-1,%d5
@@ -2789,9 +2818,9 @@
 3568:	4a38 60e2      	        tstb 0x60e2
 356c:	66fa           	        bnes 0x3568
 356e:	33fc 0040 0030 0000     movew #64,0x300000 ;bba command
-3576:	33fc 000f 0030 001e     movew #15,0x30001e
+3576:	33fc 000f 0030 001e     movew #15,0x30001e ;function: 1
 357e:	21fc 0011 cb00 6028     movel #1166080,0x6028 ;dst address
-3586:	6100 de18      	        bsrw 0x13a0
+3586:	6100 de18      	        bsrw 0x13a0        ;do one clip
 358a:	21df 6028      	        movel %sp@+,0x6028 ;dst address
 358e:	4e75           	        rts
 
@@ -2826,9 +2855,9 @@
 35e0:	0c41 0008      	        cmpiw #8,%d1
 35e4:	6428           	        bccs 0x360e
 35e6:	227c 0000 361c 	        moveal #13852,%a1
-35ec:	2271 1000      	        moveal %a1@(0000000000000000,%d1:w),%a1
+35ec:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 35f0:	4e91           	        jsr %a1@
-35f2:	4a78 603e      	        tstw 0x603e
+35f2:	4a78 603e      	        tstw 0x603e        ;clip count
 35f6:	6714           	        beqs 0x360c
 35f8:	2278 603a      	        moveal 0x603a,%a1
 35fc:	31d9 6040      	        movew %a1@+,0x6040 ;clip x
@@ -2926,7 +2955,7 @@
 373a:	4e75           	        rts
 
 373c:	3f00           	        movew %d0,%sp@-
-373e:	4a78 603e      	        tstw 0x603e
+373e:	4a78 603e      	        tstw 0x603e      ;clip count
 3742:	673e           	        beqs 0x3782
 3744:	3038 6040      	        movew 0x6040,%d0 ;clip x
 3748:	6a02           	        bpls 0x374c
@@ -2984,7 +3013,6 @@
 3800:	4e75           	        rts
 
 ;copy area - process source
-;modifier in d0
 3802:	2200           	        movel %d0,%d1
 3804:	e688           	        lsrl #3,%d0
 3806:	0241 0007      	        andiw #7,%d1
@@ -3162,7 +3190,7 @@
 29fe:   802e
 3a00:	802f
 
-;process function
+;process map
 3a02:   2200           	        movel %d0,%d1
 3a04:	e688           	        lsrl #3,%d0
 3a06:	0241 0007      	        andiw #7,%d1
@@ -3262,7 +3290,7 @@
 3aec:	2218           	        movel %a0@+,%d1
 3aee:	4841           	        swap %d1
 3af0:	21c1 603a      	        movel %d1,0x603a
-3af4:	31d8 603e      	        movew %a0@+,0x603e
+3af4:	31d8 603e      	        movew %a0@+,0x603e ;clip count
 3af8:	6f04           	        bles 0x3afe
 3afa:	5448           	        addqw #2,%a0
 3afc:	4e75           	        rts
@@ -3270,16 +3298,17 @@
 3b04:	6100 0cf4      	        bsrw 0x47fa
 3b08:	6000 d55a      	        braw 0x1064
 
-;
+;process segment list
 3b0c:	2218           	        movel %a0@+,%d1
 3b0e:	4841           	        swap %d1
-3b10:	21c1 6048      	        movel %d1,0x6048
-3b14:	31d8 604c      	        movew %a0@+,0x604c
+3b10:	21c1 6048      	        movel %d1,0x6048    ;segment list address
+3b14:	31d8 604c      	        movew %a0@+,0x604c  ;segment list count
 3b18:	6f02           	        bles 0x3b1c
 3b1a:	4e75           	        rts
 3b1c:	31fc 803f 60d4 	        movew #-32705,0x60d4
 3b22:	6100 0cd6      	        bsrw 0x47fa
 3b26:	6000 d53c      	        braw 0x1064
+
 3b2a:	0010 0000      	        orib #0,%a0@
 3b2e:	0010 0000      	        orib #0,%a0@
 3b32:	0010 0000      	        orib #0,%a0@
@@ -3406,7 +3435,7 @@
 3ca6:	b244           	        cmpw %d4,%d1
 3ca8:	6c02           	        bges 0x3cac
 3caa:	3801           	        movew %d1,%d4
-3cac:	4a78 603e      	        tstw 0x603e
+3cac:	4a78 603e      	        tstw 0x603e      ;clip count
 3cb0:	6754           	        beqs 0x3d06
 3cb2:	3238 6044      	        movew 0x6044,%d1 ;clip w
 3cb6:	3438 6040      	        movew 0x6040,%d2 ;clip x
@@ -4025,12 +4054,12 @@
 4ca4:	604c           	        bras 0x4cf2
 4ca6:	207c 0000 4afe 	        moveal #19198,%a0
 4cac:	e648           	        lsrw #3,%d0
-4cae:	0330 0000      	        btst %d1,%a0@(0000000000000000,%d0:w)
+4cae:	0330 0000      	        btst %d1,%a0@(0,%d0:w)
 4cb2:	6606           	        bnes 0x4cba
 4cb4:	31c1 4b3e      	        movew %d1,0x4b3e
 4cb8:	600c           	        bras 0x4cc6
 4cba:	207c 0000 4b1e 	        moveal #19230,%a0
-4cc0:	0370 0000      	        bchg %d1,%a0@(0000000000000000,%d0:w)
+4cc0:	0370 0000      	        bchg %d1,%a0@(0,%d0:w)
 4cc4:	6604           	        bnes 0x4cca
 4cc6:	08c1 0008      	        bset #8,%d1
 4cca:	0838 0001 60ec 	        btst #1,0x60ec
