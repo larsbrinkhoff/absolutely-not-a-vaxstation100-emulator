@@ -14,13 +14,25 @@
 #define MSK_H      (0x01C>>1)
 #define FUNC       (0x01E>>1)
 #define TILE_A     (0x020>>1)
+#define C_SRC_A    (0x04E>>1)
+#define C_SRC_X    (0x052>>1)
+#define C_SRC_STR  (0x054>>1)
+#define C_MSK_A    (0x056>>1)
+#define C_MSK_X    (0x05A>>1)
+#define C_MSK_STR  (0x05C>>1)
+#define C_DST_A    (0x05E>>1)
+#define C_DST_X    (0x062>>1)
+#define C_DST_STR  (0x064>>1)
+#define C_MSK_W    (0x066>>1)
+#define C_MSK_H    (0x068>>1)
+#define C_FUNC     (0x06A>>1)
 
 #define COMMAND_SOURCE    0x0001
 #define COMMAND_MASK      0x0002
 #define COMMAND_LEFT      0x0004
 #define COMMAND_UP        0x0008
 #define COMMAND_TILE      0x0010
-#define COMMAND_UNKNOWN   0x0020
+#define COMMAND_CURSOR    0x0020
 
 static u16 scratchpad[256];
 
@@ -67,13 +79,6 @@ static u32 address(int x, u16 offset) {
   return a;
 }
 
-static void add(int x, u32 a) {
-  u32 sum = scratchpad[x] << 16;
-  sum += scratchpad[x+1] + a;
-  scratchpad[x] = sum >> 16;
-  scratchpad[x+1] = sum & 0xFFFF;
-}
-
 #if 0
 #define FUNC(N, F)  static u16 func_##N(u16 src, u16 dst) { return F; }
 FUNC(0000, 0)
@@ -105,45 +110,43 @@ static u16 function(u16 src, u16 dst) {
   return (scratchpad[FUNC] >> (src + dst)) & 1;
 }
 
-static void copy_line(u32 src_a) {
+static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
   u32 sign = (scratchpad[0] & COMMAND_LEFT) ? -1 : 1;
-  u16 src_x = scratchpad[SRC_X];
-  u16 dst_x = scratchpad[DST_X];
-  u16 msk_x = scratchpad[MSK_X];
-  u16 msk_w = scratchpad[MSK_W];
-  do {
-    u16 offset = src_x;
-    u16 src = mem_read(src_a + ((offset / 8) & ~1U));
+  u16 src_x = scratchpad[SRC_X + reg];
+  u16 msk_x = scratchpad[MSK_X + reg];
+  u16 dst_x = scratchpad[DST_X + reg];
+  u16 msk_w = scratchpad[MSK_W + reg];
+  while(msk_w != 0) {
+    u16 offset;
+    u16 src = 0;
     u16 msk = 1;
-    //fprintf(stderr, "BBA: src %04X\n", src);
-    src >>= offset % 16;
-    //fprintf(stderr, "BBA: src shifted %04X\n", src);
+    if (scratchpad[0] & (COMMAND_SOURCE|COMMAND_TILE)) {
+      offset = src_x;
+      src = mem_read(src_a + ((offset / 8) & ~1U));
+      src >>= offset % 16;
+      src_x += sign;
+      if (scratchpad[0] & COMMAND_TILE)
+        src_x %= 16;
+    }
     if (scratchpad[0] & COMMAND_MASK) {
       offset = msk_x;
-      msk = mem_read(address(MSK_A, offset));
-      //fprintf(stderr, "BBA: msk, a %06X %06X, o %d\n", address(MSK_A, 0), address(MSK_A, offset), offset);
-      //fprintf(stderr, "BBA: msk %04X\n", msk);
+      msk = mem_read(msk_a + ((offset / 8) & ~1U));
       msk >>= offset % 16;
-      //fprintf(stderr, "BBA: msk shifted %04X\n", msk);
       msk_x += sign;
+      if (scratchpad[0] & COMMAND_TILE)
+        msk_x %= 16;
     }
     offset = dst_x;
-    u16 dst = mem_read(address(DST_A, offset));
-    //fprintf(stderr, "BBA: dst %04X\n", dst);
+    u16 dst = mem_read(dst_a + ((offset / 8) & ~1U));
     if (msk & 1) {
       msk = 1 << (offset % 16);
-      //fprintf(stderr, "BBA: dst shifted %04X\n", dst >> (offset % 16));
-      //fprintf(stderr, "BBA: out msk %04X\n", msk);
       dst = (dst & ~msk) | (function (src, dst >> (offset % 16)) << (offset % 16));
     }
-    fprintf(stderr, "BBA: out %04X @ %06X\n", dst, address(DST_A, offset));
-    mem_write(address(DST_A, offset), dst);
-    src_x += sign;
-    if (scratchpad[0] & COMMAND_TILE)
-      src_x %= 16;
+    fprintf(stderr, "BBA: out %04X @ %06X\n", dst, dst_a + ((offset / 8) & ~1U));
+    mem_write(dst_a + ((offset / 8) & ~1U), dst);
     dst_x += sign;
     msk_w--;
-  } while(msk_w != 0);
+  }
 }
 
 static void copy_bitmap(void) {
@@ -152,13 +155,16 @@ static void copy_bitmap(void) {
   u32 dst_stride = sign * scratchpad[DST_STR];
   u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[MSK_STR] : 0;
   u32 src_a = address(SRC_A, 0);
-  do {
-    copy_line(src_a);
+  u32 msk_a = address(MSK_A, 0);
+  u32 dst_a = address(DST_A, 0);
+  u16 msk_h = scratchpad[MSK_H];
+  while (msk_h != 0) {
+    copy_line(src_a, msk_a, dst_a, 0);
     src_a += src_stride;
-    add(DST_A, dst_stride);
-    add(MSK_A, msk_stride);
-    scratchpad[MSK_H]--;
-  } while (scratchpad[MSK_H] != 0);
+    msk_a += msk_stride;
+    dst_a += dst_stride;
+    msk_h--;
+  }
 }
 
 static void copy_tile(void) {
@@ -166,19 +172,40 @@ static void copy_tile(void) {
   u32 dst_stride = scratchpad[DST_STR];
   u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[MSK_STR] : 0;
   u32 src_a = address(TILE_A, 0);
+  u32 msk_a = address(MSK_A, 0);
+  u32 dst_a = address(DST_A, 0);
+  u16 msk_h = scratchpad[MSK_H];
   u32 i = 0;
-  do {
-    copy_line(src_a + i);
+  while (msk_h != 0) {
+    copy_line(src_a + i, msk_a, dst_a, 0);
     i = (i + 2) % 32;
-    add(DST_A, dst_stride);
-    add(MSK_A, msk_stride);
-    scratchpad[MSK_H]--;
-  } while (scratchpad[MSK_H] != 0);
+    msk_a += msk_stride;
+    dst_a += dst_stride;
+    msk_h--;
+  }
+}
+
+static void copy_cursor(void) {
+  u32 sign = (scratchpad[0] & COMMAND_UP) ? -1 : 1;
+  u32 src_stride = sign * scratchpad[C_SRC_STR];
+  u32 dst_stride = sign * scratchpad[C_DST_STR];
+  u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[C_MSK_STR] : 0;
+  u32 src_a = address(C_SRC_A, 0);
+  u32 msk_a = address(C_MSK_A, 0);
+  u32 dst_a = address(C_DST_A, 0);
+  u16 msk_h = scratchpad[C_MSK_H];
+  while (msk_h != 0) {
+    copy_line(src_a, msk_a, dst_a, 0x04C>>1);
+    src_a += src_stride;
+    msk_a += msk_stride;
+    dst_a += dst_stride;
+    msk_h--;
+  }
 }
 
 static void callback(void) {
-  if (scratchpad[0] & 0x0020)
-    ;
+  if (scratchpad[0] & COMMAND_CURSOR)
+    copy_cursor();
   else if (scratchpad[0] & COMMAND_TILE)
     copy_tile();
   else if (scratchpad[0] & COMMAND_SOURCE)

@@ -29,8 +29,8 @@
 107a:	6100 38ba      	        bsrw 0x4936
 107e:	0838 0000 552a 	        btst #0,0x552a
 1084:	6708           	        beqs 0x108e
-1086:	6100 4db2      	        bsrw 0x5e3a
-108a:	6100 4bb0      	        bsrw 0x5c3c
+1086:	6100 4db2      	        bsrw 0x5e3a ;restore fb under cursor
+108a:	6100 4bb0      	        bsrw 0x5c3c ;draw cursor
 108e:	0839 0004 0080 00c1     btst #4,0x8000c1
 1096:	67cc           	        beqs 0x1064
 1098:	08f8 0001 60ea 	        bset #1,0x60ea
@@ -69,17 +69,17 @@
 1118:	0000 1150      	        orib #80,%d0
 111c:	0000 1150      	        orib #80,%d0
 1120:	0000 1150      	        orib #80,%d0
-1124:	0000 535e      	        orib #94,%d0  ;9
-1128:	0000 53b8      	        orib #-72,%d0 ;10
-112c:	0000 5220      	        orib #32,%d0  ;11
+1124:	0000 535e      	        orib #94,%d0  ;9 abort
+1128:	0000 53b8      	        orib #-72,%d0 ;10 status
+112c:	0000 5220      	        orib #32,%d0  ;11 save screen
 1130:	0000 1150      	        orib #80,%d0
 1134:	0000 1150      	        orib #80,%d0
 1138:	0000 1150      	        orib #80,%d0
 113c:	0000 1150      	        orib #80,%d0
 1140:	0000 1150      	        orib #80,%d0
 1144:	0000 1150      	        orib #80,%d0
-1148:	0000 50a8      	        orib #-88,%d0 ;18
-114c:	0000 50ba      	        orib #-70,%d0 ;19
+1148:	0000 50a8      	        orib #-88,%d0 ;18 infinite retries
+114c:	0000 50ba      	        orib #-70,%d0 ;19 finite retries
 
 1150:	31fc 8001 60d4 	        movew #-32767,0x60d4
 1156:	6100 36a2      	        bsrw 0x47fa
@@ -149,9 +149,9 @@
 1216:	6100 25ea      	        bsrw 0x3802 ;source (7 words)
 121a:	6100 2752      	        bsrw 0x396e ;mask (9 words)
 121e:	6100 27c4      	        bsrw 0x39e4 ;destination (7 words)
-1222:	6100 27de      	        bsrw 0x3a02 ;map (2 words)
+1222:	6100 27de      	        bsrw 0x3a02 ;function (2 words)
 1226:	6100 2876      	        bsrw 0x3a9e ;clipping (2 words)
-122a:	6100 248a      	        bsrw 0x36b6 ;const/tile/map
+122a:	6100 248a      	        bsrw 0x36b6 ;const/tile/function
 122e:	2078 603a      	        moveal 0x603a,%a0
 1232:	3038 603e      	        movew 0x603e,%d0
 1236:	6720           	        beqs 0x1258
@@ -340,7 +340,7 @@
 14f6:	4a38 60e2      	        tstb 0x60e2
 14fa:	66fa           	        bnes 0x14f6
 14fc:	33f8 5f96 0030 0000     movew 0x5f96,0x300000 ;bba command
-1504:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;map?
+1504:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;function
 150c:	33f8 6052 0030 0044     movew 0x6052,0x300044
 1514:	33f8 6050 0030 0046     movew 0x6050,0x300046
 151c:	33f8 6054 0030 0048     movew 0x6054,0x300048
@@ -820,12 +820,12 @@
 1bca:	2038 5f90      	        movel 0x5f90,%d0  ;modifier
 1bce:	6100 062a      	        bsrw 0x21fa ;process source
 1bd2:	6100 06dc      	        bsrw 0x22b0 ;process mask
-1bd6:	6100 0808      	        bsrw 0x23e0
-1bda:	6100 1e26      	        bsrw 0x3a02
-1bde:	6100 1ebe      	        bsrw 0x3a9e
-1be2:	6100 08da      	        bsrw 0x24be
-1be6:	6100 08fa      	        bsrw 0x24e2
-1bea:	6100 1aca      	        bsrw 0x36b6
+1bd6:	6100 0808      	        bsrw 0x23e0 ;process destination
+1bda:	6100 1e26      	        bsrw 0x3a02 ;process function
+1bde:	6100 1ebe      	        bsrw 0x3a9e ;process clipping
+1be2:	6100 08da      	        bsrw 0x24be ;process text size
+1be6:	6100 08fa      	        bsrw 0x24e2 ;process control string
+1bea:	6100 1aca      	        bsrw 0x36b6 ;const/tile/function
 1bee:	6100 005c      	        bsrw 0x1c4c
 1bf2:	2078 603a      	        moveal 0x603a,%a0
 1bf6:	3038 603e      	        movew 0x603e,%d0
@@ -837,10 +837,10 @@
 1c0e:	31d8 6042      	        movew %a0@+,0x6042 ;clip y
 1c12:	31d8 6044      	        movew %a0@+,0x6044 ;clip w
 1c16:	31d8 6046      	        movew %a0@+,0x6046 ;clip h
-1c1a:	6100 00d0      	        bsrw 0x1cec
+1c1a:	6100 00d0      	        bsrw 0x1cec     ;process one clip
 1c1e:	51c8 ffde      	        dbf %d0,0x1bfe
 1c22:	6004           	        bras 0x1c28
-1c24:	6100 00c6      	        bsrw 0x1cec
+1c24:	6100 00c6      	        bsrw 0x1cec     ;process one clip
 1c28:	4a38 60e2      	        tstb 0x60e2
 1c2c:	66fa           	        bnes 0x1c28
 1c2e:	4a38 6090      	        tstb 0x6090
@@ -867,7 +867,7 @@
 1c92:	33f8 6022 0030 0010     movew 0x6022,0x300010 ;msk W
 1c9a:	33f8 6026 0030 001c     movew 0x6026,0x30001c ;msk h
 1ca2:	33f8 6036 0030 0018     movew 0x6036,0x300018 ;dst W
-1caa:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;map?
+1caa:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;function
 1cb2:	23f8 5fb0 0030 0020     movel 0x5fb0,0x300020 ;tile a
 1cba:	4e75           	        rts
 
@@ -880,6 +880,7 @@
 1ce2:	33f8 6034 0030 0024     movew 0x6034,0x300024 ;dst y
 1cea:	4e75           	        rts
 
+;print text - process one clip
 1cec:	48e7 e0e0      	        moveml %d0-%d2/%a0-%a2,%sp@-
 1cf0:	6100 1a4a      	        bsrw 0x373c
 1cf4:	6100 418c      	        bsrw 0x5e82
@@ -904,12 +905,12 @@
 1d40:	0c40 0010      	        cmpiw #16,%d0
 1d44:	641e           	        bccs 0x1d64
 1d46:	247c 0000 1d72 	        moveal #7538,%a2
-1d4c:	2472 0000      	        moveal %a2@(0000000000000000,%d0:w),%a2
+1d4c:	2472 0000      	        moveal %a2@(0,%d0:w),%a2
 1d50:	4e92           	        jsr %a2@
 1d52:	51ca ffe8      	        dbf %d2,0x1d3c
 1d56:	6006           	        bras 0x1d5e
 1d58:	3001           	        movew %d1,%d0
-1d5a:	6100 00f4      	        bsrw 0x1e50
+1d5a:	6100 00f4      	        bsrw 0x1e50 ;
 1d5e:	4cdf 0707      	        moveml %sp@+,%d0-%d2/%a0-%a2
 1d62:	4e75           	        rts
 1d64:	31fc 8051 60d4 	        movew #-32687,0x60d4
@@ -925,7 +926,7 @@
 1d84:	6b10           	        bmis 0x1d96
 1d86:	b240           	        cmpw %d0,%d1
 1d88:	6d1a           	        blts 0x1da4
-1d8a:	6100 00c4      	        bsrw 0x1e50
+1d8a:	6100 00c4      	        bsrw 0x1e50 ;
 1d8e:	9240           	        subw %d0,%d1
 1d90:	5342           	        subqw #1,%d2
 1d92:	6b24           	        bmis 0x1db8
@@ -934,7 +935,7 @@
 1d9c:	6100 2a5c      	        bsrw 0x47fa
 1da0:	6000 f2c2      	        braw 0x1064
 1da4:	3001           	        movew %d1,%d0
-1da6:	6100 00a8      	        bsrw 0x1e50
+1da6:	6100 00a8      	        bsrw 0x1e50 ;
 1daa:	31fc 8055 60d4 	        movew #-32683,0x60d4
 1db0:	6100 2a48      	        bsrw 0x47fa
 1db4:	6000 f2ae      	        braw 0x1064
@@ -944,7 +945,7 @@
 
 1dc6:	3001           	        movew %d1,%d0
 1dc8:	6f06           	        bles 0x1dd0
-1dca:	6100 0084      	        bsrw 0x1e50
+1dca:	6100 0084      	        bsrw 0x1e50 ;
 1dce:	4241           	        clrw %d1
 1dd0:	4e75           	        rts
 
@@ -980,7 +981,7 @@
 1e2a:	4a38 60e2      	        tstb 0x60e2
 1e2e:	66fa           	        bnes 0x1e2a
 1e30:	23f8 3b32 0030 0012     movel 0x3b32,0x300012 ;dst address
-1e38:	33f8 6034 0030 0024     movew 0x6034,0x300024
+1e38:	33f8 6034 0030 0024     movew 0x6034,0x300024 ;dst y
 1e40:	4e75           	        rts
 1e42:	31fc 8050 60d4 	        movew #-32688,0x60d4
 1e48:	6100 29b0      	        bsrw 0x47fa
@@ -1112,9 +1113,9 @@
 1fd8:	6e2c           	        bgts 0x2006
 1fda:	4a38 60e2      	        tstb 0x60e2
 1fde:	66fa           	        bnes 0x1fda
-1fe0:	33c0 0030 0006 	        movew %d0,0x300006
-1fe6:	33c0 0030 000e 	        movew %d0,0x30000e
-1fec:	33c3 0030 0016 	        movew %d3,0x300016
+1fe0:	33c0 0030 0006 	        movew %d0,0x300006 ;src x
+1fe6:	33c0 0030 000e 	        movew %d0,0x30000e ;msk x
+1fec:	33c3 0030 0016 	        movew %d3,0x300016 ;dst x
 1ff2:	33c2 0030 001a 	        movew %d2,0x30001a ;msk w
 1ff8:	50f8 60e2      	        st 0x60e2
 1ffc:	13fc 0001 0028 0000     moveb #1,0x280000
@@ -1141,10 +1142,10 @@
 204e:	6000 f014      	        braw 0x1064
 
 2052:	3f38 5f96      	        movew 0x5f96,%sp@- ;bba command
-2056:	2f38 3b2a      	        movel 0x3b2a,%sp@-
+2056:	2f38 3b2a      	        movel 0x3b2a,%sp@- ;address
 205a:	3f38 5fa6      	        movew 0x5fa6,%sp@- ;src x
 205e:	3f38 5fa8      	        movew 0x5fa8,%sp@- ;src y
-2062:	2f38 3b2e      	        movel 0x3b2e,%sp@-
+2062:	2f38 3b2e      	        movel 0x3b2e,%sp@- ;msk address
 2066:	3f38 601e      	        movew 0x601e,%sp@- ;msk x
 206a:	3f38 6020      	        movew 0x6020,%sp@- ;msk y
 206e:	2f38 3b32      	        movel 0x3b32,%sp@- ;dst address
@@ -1167,10 +1168,10 @@
 20ac:	21df 3b32      	        movel %sp@+,0x3b32 ;dst address
 20b0:	31df 6020      	        movew %sp@+,0x6020 ;msk y
 20b4:	31df 601e      	        movew %sp@+,0x601e ;msk x
-20b8:	21df 3b2e      	        movel %sp@+,0x3b2e
+20b8:	21df 3b2e      	        movel %sp@+,0x3b2e ;msk a
 20bc:	31df 5fa8      	        movew %sp@+,0x5fa8 ;src y
 20c0:	31df 5fa6      	        movew %sp@+,0x5fa6 ;src x
-20c4:	21df 3b2a      	        movel %sp@+,0x3b2a
+20c4:	21df 3b2a      	        movel %sp@+,0x3b2a ;address
 20c8:	31df 5f96      	        movew %sp@+,0x5f96 ;bba command
 20cc:	4e75           	        rts
 
@@ -1474,11 +1475,13 @@
 246a:	0000 2494      	        orib #-108,%d0
 246e:	0000 24a6      	        orib #-90,%d0
 
+;0
 2472:	51f8 6090      	        sf 0x6090
 2476:	31d8 6032      	        movew %a0@+,0x6032 ;dst x
 247a:	31d8 6034      	        movew %a0@+,0x6034 ;dst y
 247e:	4e75           	        rts
 
+;1
 2480:	51f8 6090      	        sf 0x6090
 2484:	2218           	        movel %a0@+,%d1
 2486:	4841           	        swap %d1
@@ -1487,12 +1490,14 @@
 248e:	31d1 6034      	        movew %a1@,0x6034  ;dst y
 2492:	4e75           	        rts
 
+;2
 2494:	50f8 6090      	        st 0x6090
 2498:	21c8 608c      	        movel %a0,0x608c
 249c:	31d8 6032      	        movew %a0@+,0x6032 ;dst x
 24a0:	31d8 6034      	        movew %a0@+,0x6034 ;dst y
 24a4:	4e75           	        rts
 
+;3
 24a6:	50f8 6090      	        st 0x6090
 24aa:	2218           	        movel %a0@+,%d1
 24ac:	4841           	        swap %d1
@@ -1502,6 +1507,7 @@
 24b8:	31d1 6034      	        movew %a1@,0x6034  ;dst y
 24bc:	4e75           	        rts
 
+;print text - process text size
 24be:	e288           	        lsrl #1,%d0
 24c0:	55f8 6091      	        scs 0x6091
 24c4:	2218           	        movel %a0@+,%d1
@@ -1514,6 +1520,7 @@
 24da:	6100 231e      	        bsrw 0x47fa
 24de:	6000 eb84      	        braw 0x1064
 
+;print text - process control string
 24e2:	e288           	        lsrl #1,%d0
 24e4:	6508           	        bcss 0x24ee
 24e6:	4278 609c      	        clrw 0x609c
@@ -1949,7 +1956,7 @@
 
 29e6:	31f8 602c 6024 	        movew 0x602c,0x6024 ;dst->mask w
 29ec:	31f8 602e 6026 	        movew 0x602e,0x6026 ;dst->mask h
-29f2:	31fc 0003 5f98 	        movew #3,0x5f98 ;map?
+29f2:	31fc 0003 5f98 	        movew #3,0x5f98 ;function
 29f8:	6100 1142      	        bsrw 0x3b3c	 ;do one clip
 29fc:	4a38 60e2      	        tstb 0x60e2
 2a00:	66fa           	        bnes 0x29fc
@@ -2023,13 +2030,13 @@
 2ad8:	0c41 0040      	        cmpiw #64,%d1
 2adc:	6e00 00d4      	        bgtw 0x2bb2
 2ae0:	e688           	        lsrl #3,%d0
-2ae2:	6100 0f1e      	        bsrw 0x3a02
-2ae6:	6100 01ce      	        bsrw 0x2cb6
-2aea:	6100 0bca      	        bsrw 0x36b6
+2ae2:	6100 0f1e      	        bsrw 0x3a02 ;process function
+2ae6:	6100 01ce      	        bsrw 0x2cb6 ;process blink/tip/center
+2aea:	6100 0bca      	        bsrw 0x36b6 ;const/tile/function
 2aee:	31f8 5f94 60aa 	        movew 0x5f94,0x60aa ;flags
 2af4:	31f8 5f96 60ac 	        movew 0x5f96,0x60ac ;bba command
 2afa:	0078 0020 60ac 	        oriw #32,0x60ac
-2b00:	31f8 5f98 60ae 	        movew 0x5f98,0x60ae ;map?
+2b00:	31f8 5f98 60ae 	        movew 0x5f98,0x60ae ;function
 2b06:	0838 0001 60aa 	        btst #1,0x60aa
 2b0c:	670c           	        beqs 0x2b1a
 2b0e:	21fc 0000 5536 6028     movel #21814,0x6028 ;dst address
@@ -2043,17 +2050,17 @@
 2b3c:	31f8 601a 5fa2 	        movew 0x601a,0x5fa2 ;msk->src h
 2b42:	31f8 601e 5fa6 	        movew 0x601e,0x5fa6 ;msk->src x
 2b48:	31f8 6020 5fa8 	        movew 0x6020,0x5fa8 ;msk->src y
-2b4e:	6100 0070      	        bsrw 0x2bc0
+2b4e:	6100 0070      	        bsrw 0x2bc0  ;copy data
 2b52:	6100 00a6      	        bsrw 0x2bfa
 2b56:	4a38 60e2      	        tstb 0x60e2
 2b5a:	66fa           	        bnes 0x2b56
-2b5c:	33fc 0008 0030 0054     movew #8,0x300054
-2b64:	33fc 0008 0030 005c     movew #8,0x30005c
-2b6c:	33fc 0088 0030 0064     movew #136,0x300064
-2b74:	33f8 60ae 0030 006a     movew 0x60ae,0x30006a
-2b7c:	23fc 0000 60b0 	        movel #24752,0x30006c
+2b5c:	33fc 0008 0030 0054     movew #8,0x300054     ;cursor src W
+2b64:	33fc 0008 0030 005c     movew #8,0x30005c     ;cursor msk W
+2b6c:	33fc 0088 0030 0064     movew #136,0x300064   ;cursor dst W
+2b74:	33f8 60ae 0030 006a     movew 0x60ae,0x30006a ;cursor function
+2b7c:	23fc 0000 60b0 	        movel #24752,0x30006c ;cursor data
 2b82:	0030 006c 
-2b86:	4279 0030 0024 	        clrw 0x300024
+2b86:	4279 0030 0024 	        clrw 0x300024         ;dst y
 2b8c:	08f8 0000 552a 	        bset #0,0x552a
 2b92:	08f8 0002 552a 	        bset #2,0x552a
 2b98:	31fc 0002 60d4 	        movew #2,0x60d4
@@ -2069,7 +2076,7 @@
 2bc0:	4238 5f94      	        clrb 0x5f94
 2bc4:	08f8 0001 5f94 	        bset #1,0x5f94   ;flag src bitmap
 2bca:	31fc 0001 5f96 	        movew #1,0x5f96  ;bba command
-2bd0:	31fc 0003 5f98 	        movew #3,0x5f98  ;map?
+2bd0:	31fc 0003 5f98 	        movew #3,0x5f98  ;function
 2bd6:	31fc 0040 602c 	        movew #64,0x602c ;dst w
 2bdc:	31fc 0008 6036 	        movew #8,0x6036  ;dst W
 2be2:	31fc 0040 602e 	        movew #64,0x602e ;dst h
@@ -2086,8 +2093,8 @@
 2c0a:	31c0 552c      	        movew %d0,0x552c
 2c0e:	4240           	        clrw %d0
 2c10:	323c 043f      	        movew #1087,%d1
-2c14:	3438 6102      	        movew 0x6102,%d2
-2c18:	9478 6106      	        subw 0x6106,%d2
+2c14:	3438 6102      	        movew 0x6102,%d2 ;tip x
+2c18:	9478 6106      	        subw 0x6106,%d2  ;center x
 2c1c:	6f04           	        bles 0x2c22
 2c1e:	d042           	        addw %d2,%d0
 2c20:	6002           	        bras 0x2c24
@@ -2096,8 +2103,8 @@
 2c28:	31c1 5bb8      	        movew %d1,0x5bb8
 2c2c:	4240           	        clrw %d0
 2c2e:	323c 035f      	        movew #863,%d1
-2c32:	3438 6104      	        movew 0x6104,%d2
-2c36:	9478 6108      	        subw 0x6108,%d2
+2c32:	3438 6104      	        movew 0x6104,%d2 ;tip y
+2c36:	9478 6108      	        subw 0x6108,%d2  ;center y
 2c3a:	6f04           	        bles 0x2c40
 2c3c:	d042           	        addw %d2,%d0
 2c3e:	6002           	        bras 0x2c42
@@ -2126,53 +2133,57 @@
 2c80:	0000 3870
 2c84:	0000 2c88
 
-;source 3, tile
+;cursor source 2, tile
 2c88:	08f8 0002 5f94 	        bset #2,0x5f94  ;flag src tile
 2c8e:	0078 0010 5f96 	        oriw #16,0x5f96 ;bba command
 2c94:	227c 0000 2cb0 	        moveal #11440,%a1
 2c9a:	6100 0c88      	        bsrw 0x3924
-2c9e:	227c 0000 60b0 	        moveal #24752,%a1
+2c9e:	227c 0000 60b0 	        moveal #24752,%a1 ;copy to RAM
 2ca4:	323c 000f      	        movew #15,%d1
 2ca8:	32da           	        movew %a2@+,%a1@+
 2caa:	51c9 fffc      	        dbf %d1,0x2ca8
 2cae:	4e75           	        rts
+
 2cb0:	80a1           	        orl %a1@-,%d0
 2cb2:	80a2           	        orl %a2@-,%d0
 2cb4:	80a3           	        orl %a3@-,%d0
-2cb6:	3218           	        movew %a0@+,%d1
+
+;process blink/tip/center
+2cb6:	3218           	        movew %a0@+,%d1  ;blink
 2cb8:	0801 0001      	        btst #1,%d1
 2cbc:	6620           	        bnes 0x2cde
-2cbe:	4278 6102      	        clrw 0x6102
-2cc2:	4278 6104      	        clrw 0x6104
+2cbe:	4278 6102      	        clrw 0x6102      ;tip x
+2cc2:	4278 6104      	        clrw 0x6104      ;tip y
 2cc6:	3238 6024      	        movew 0x6024,%d1 ;msk w
 2cca:	5341           	        subqw #1,%d1
-2ccc:	31c1 6106      	        movew %d1,0x6106
+2ccc:	31c1 6106      	        movew %d1,0x6106 ;center x
 2cd0:	3238 6026      	        movew 0x6026,%d1 ;msk h
 2cd4:	5341           	        subqw #1,%d1
-2cd6:	31c1 6108      	        movew %d1,0x6108
+2cd6:	31c1 6108      	        movew %d1,0x6108 ;center y
 2cda:	5048           	        addqw #8,%a0
 2cdc:	6038           	        bras 0x2d16
-2cde:	3218           	        movew %a0@+,%d1
+2cde:	3218           	        movew %a0@+,%d1 ;tip x
 2ce0:	6b36           	        bmis 0x2d18
 2ce2:	b278 6024      	        cmpw 0x6024,%d1 ;msk w
 2ce6:	6c30           	        bges 0x2d18
 2ce8:	31c1 6102      	        movew %d1,0x6102
-2cec:	3218           	        movew %a0@+,%d1
+2cec:	3218           	        movew %a0@+,%d1 ;tip y
 2cee:	6b36           	        bmis 0x2d26
 2cf0:	b278 6026      	        cmpw 0x6026,%d1 ;msk h
 2cf4:	6c30           	        bges 0x2d26
 2cf6:	31c1 6104      	        movew %d1,0x6104
-2cfa:	3218           	        movew %a0@+,%d1
+2cfa:	3218           	        movew %a0@+,%d1 ;center x
 2cfc:	6b36           	        bmis 0x2d34
 2cfe:	b278 6024      	        cmpw 0x6024,%d1 ;msk w
 2d02:	6c30           	        bges 0x2d34
 2d04:	31c1 6106      	        movew %d1,0x6106
-2d08:	3218           	        movew %a0@+,%d1
+2d08:	3218           	        movew %a0@+,%d1 ;center y
 2d0a:	6b36           	        bmis 0x2d42
 2d0c:	b278 6026      	        cmpw 0x6026,%d1 ;msk h
 2d10:	6c30           	        bges 0x2d42
 2d12:	31c1 6108      	        movew %d1,0x6108
 2d16:	4e75           	        rts
+
 2d18:	31fc 80a7 60d4 	        movew #-32601,0x60d4
 2d1e:	6100 1ada      	        bsrw 0x47fa
 2d22:	6000 e340      	        braw 0x1064
@@ -2185,21 +2196,25 @@
 2d42:	31fc 80aa 60d4 	        movew #-32598,0x60d4
 2d48:	6100 1ab0      	        bsrw 0x47fa
 2d4c:	6000 e316      	        braw 0x1064
+
+;set cursor position
 2d50:	2078 5f8c      	        moveal 0x5f8c,%a0
-2d54:	0c78 0001 60e4 	        cmpiw #1,0x60e4
+2d54:	0c78 0001 60e4 	        cmpiw #1,0x60e4       ;cursor device
 2d5a:	661a           	        bnes 0x2d76
-2d5c:	3018           	        movew %a0@+,%d0
-2d5e:	3218           	        movew %a0@+,%d1
-2d60:	48b8 0003 60f4 	        movemw %d0-%d1,0x60f4
+2d5c:	3018           	        movew %a0@+,%d0       ;x
+2d5e:	3218           	        movew %a0@+,%d1       ;y
+2d60:	48b8 0003 60f4 	        movemw %d0-%d1,0x60f4 ;cursor position
 2d66:	6100 2794      	        bsrw 0x54fc
-2d6a:	31fc 0002 60d4 	        movew #2,0x60d4
-2d70:	6100 1a88      	        bsrw 0x47fa
+2d6a:	31fc 0002 60d4 	        movew #2,0x60d4       ;reason
+2d70:	6100 1a88      	        bsrw 0x47fa           ;reply result
 2d74:	4e75           	        rts
 2d76:	31fc 803a 60d4 	        movew #-32710,0x60d4
 2d7c:	6100 1a7c      	        bsrw 0x47fa
 2d80:	6000 e2e2      	        braw 0x1064
+
+;attach cursor
 2d84:	2078 5f8c      	        moveal 0x5f8c,%a0
-2d88:	3018           	        movew %a0@+,%d0
+2d88:	3018           	        movew %a0@+,%d0   ;device
 2d8a:	31c0 60e4      	        movew %d0,0x60e4
 2d8e:	670c           	        beqs 0x2d9c
 2d90:	0c40 0001      	        cmpiw #1,%d0
@@ -2348,7 +2363,7 @@
 2f8e:	6100 0600      	        bsrw 0x3590 ;process source
 2f92:	e688           	        lsrl #3,%d0
 2f94:	6100 0a4e      	        bsrw 0x39e4 ;process destination
-2f98:	6100 0a68      	        bsrw 0x3a02 ;process map
+2f98:	6100 0a68      	        bsrw 0x3a02 ;process function
 2f9c:	6100 0638      	        bsrw 0x35d6
 2fa0:	6100 0b6a      	        bsrw 0x3b0c
 2fa4:	6100 0710      	        bsrw 0x36b6
@@ -2859,20 +2874,20 @@
 36a0:	6100 1158      	        bsrw 0x47fa
 36a4:	4e75           	        rts
 
-;const/tile/map
+;const/tile/function
 36b6:	48e7 c000      	        moveml %d0-%d1,%sp@-
-36ba:	3038 6038      	        movew 0x6038,%d0 ;map?
+36ba:	3038 6038      	        movew 0x6038,%d0 ;function
 36be:	0838 0000 5f94 	        btst #0,0x5f94   ;src const?
 36c4:	6708           	        beqs 0x36ce
 36c6:	3238 5f9a      	        movew 0x5f9a,%d1 ;const 0000/FFFF
 36ca:	6100 002e      	        bsrw 0x36fa
-36ce:	31c0 5f98      	        movew %d0,0x5f98 ;map?
+36ce:	31c0 5f98      	        movew %d0,0x5f98 ;function
 36d2:	4cdf 0003      	        moveml %sp@+,%d0-%d1
 36d6:	4e75           	        rts
 
 ;
 36d8:	48e7 c000      	        moveml %d0-%d1,%sp@-
-36dc:	3038 6038      	        movew 0x6038,%d0 ;map?
+36dc:	3038 6038      	        movew 0x6038,%d0 ;function
 36e0:	0838 0000 5fd4 	        btst #0,0x5fd4
 36e6:	6708           	        beqs 0x36f0
 36e8:	3238 5fda      	        movew 0x5fda,%d1
@@ -2881,8 +2896,8 @@
 36f4:	4cdf 0003      	        moveml %sp@+,%d0-%d1
 36f8:	4e75           	        rts
 
-;const->map
-;d0 map, d1 const
+;const->function
+;d0 function, d1 const
 36fa:	2f08           	        movel %a0,%sp@-
 36fc:	4a41           	        tstw %d1
 36fe:	6602           	        bnes 0x3702
@@ -2894,10 +2909,10 @@
 3712:	205f           	        moveal %sp@+,%a0
 3714:	4e75           	        rts
 
-3716:	0000  ;map 0000
-3718:	0005  ;map 0101
-371a:	000a  ;map 1010
-371c:	000f  ;map 1111
+3716:	0000  ;function 0000
+3718:	0005  ;function 0101
+371a:	000a  ;function 1010
+371c:	000f  ;function 1111
 
 371e:	2f08           	        movel %a0,%sp@-
 3720:	207c 0000 6116 	        moveal #24854,%a0
@@ -3147,7 +3162,7 @@
 29fe:   802e
 3a00:	802f
 
-;process map
+;process function
 3a02:   2200           	        movel %d0,%d1
 3a04:	e688           	        lsrl #3,%d0
 3a06:	0241 0007      	        andiw #7,%d1
@@ -3157,7 +3172,7 @@
 3a12:	227c 0000 3a32 	        moveal #14898,%a1
 3a18:	2271 1000      	        moveal %a1@(0,%d1:w),%a1
 3a1c:	4e91           	        jsr %a1@
-3a1e:	31c1 6038      	        movew %d1,0x6038 ;map?
+3a1e:	31c1 6038      	        movew %d1,0x6038 ;function
 3a22:	4e75           	        rts
 3a24:	31fc 8032 60d4 	        movew #-32718,0x60d4
 3a2a:	6100 0dce      	        bsrw 0x47fa
@@ -3493,7 +3508,7 @@
 3dec:	30f8 6036      	        movew 0x6036,%a0@+ ;dst W
 3df0:	30f8 3b36      	        movew 0x3b36,%a0@+ ;msk w
 3df4:	30f8 3b38      	        movew 0x3b38,%a0@+ ;msk h
-3df8:	30f8 5f98      	        movew 0x5f98,%a0@+ ;map?
+3df8:	30f8 5f98      	        movew 0x5f98,%a0@+ ;function
 3dfc:	20f8 5fb0      	        movel 0x5fb0,%a0@+ ;tile a
 3e00:	30b8 6034      	        movew 0x6034,%a0@  ;dst y
 3e04:	50f8 60e2      	        st 0x60e2
@@ -3627,6 +3642,7 @@
 46d6:	51c8 fffc      	        dbf %d0,0x46d4
 46da:	4cdf 0101      	        moveml %sp@+,%d0/%a0
 46de:	4e75           	        rts
+
 46e0:	2f08           	        movel %a0,%sp@-
 46e2:	0c78 0040 3f5a 	        cmpiw #64,0x3f5a
 46e8:	6224           	        bhis 0x470e
@@ -3643,6 +3659,7 @@
 470e:	31fc 800c 60d4 	        movew #-32756,0x60d4
 4714:	6100 00e4      	        bsrw 0x47fa
 4718:	60f0           	        bras 0x470a
+
 471a:	2f08           	        movel %a0,%sp@-
 471c:	08f8 0000 4310 	        bset #0,0x4310
 4722:	0c78 0100 4306 	        cmpiw #256,0x4306
@@ -3712,9 +3729,9 @@
 4808:	6228           	        bhis 0x4832
 480a:	5278 40f0      	        addqw #1,0x40f0
 480e:	2078 40f6      	        moveal 0x40f6,%a0
-4812:	30f8 60d4      	        movew 0x60d4,%a0@+
-4816:	30f8 60d6      	        movew 0x60d6,%a0@+
-481a:	30f8 60d8      	        movew 0x60d8,%a0@+
+4812:	30f8 60d4      	        movew 0x60d4,%a0@+ ;reason
+4816:	30f8 60d6      	        movew 0x60d6,%a0@+ ;param
+481a:	30f8 60d8      	        movew 0x60d8,%a0@+ ;param
 481e:	b1fc 0000 40e4 	        cmpal #16612,%a0
 4824:	6306           	        blss 0x482c
 4826:	207c 0000 3f64 	        moveal #16228,%a0
@@ -3723,6 +3740,7 @@
 4832:	205f           	        moveal %sp@+,%a0
 4834:	46df           	        movew %sp@+,%sr
 4836:	4e75           	        rts
+
 4838:	2f08           	        movel %a0,%sp@-
 483a:	2078 3f5c      	        moveal 0x3f5c,%a0
 483e:	4a10           	        tstb %a0@
@@ -3950,7 +3968,7 @@
 4bda:	323c 0005      	        movew #5,%d1
 4bde:	3400           	        movew %d0,%d2
 4be0:	e64a           	        lsrw #3,%d2
-4be2:	01f0 2000      	        bset %d0,%a0@(0000000000000000,%d2:w)
+4be2:	01f0 2000      	        bset %d0,%a0@(0,%d2:w)
 4be6:	5240           	        addqw #1,%d0
 4be8:	51c9 fff4      	        dbf %d1,0x4bde
 4bec:	207c 0000 4c10 	        moveal #19472,%a0
@@ -4388,9 +4406,9 @@
 521a:	4cdf 010f      	        moveml %sp@+,%d0-%d3/%a0
 521e:	4e75           	        rts
 
-;11
+;save screen
 5220:	48e7 80c0      	        moveml %d0/%a0-%a1,%sp@-
-5224:	6100 0c14      	        bsrw 0x5e3a
+5224:	6100 0c14      	        bsrw 0x5e3a ;restore fb under cursor
 5228:	207c 0010 0000 	        moveal #1048576,%a0
 522e:	227c 0011 cb00 	        moveal #1166080,%a1
 5234:	303c 1caf      	        movew #7343,%d0
@@ -4419,7 +4437,7 @@
 5284:	20d9           	        movel %a1@+,%a0@+
 5286:	51c8 fff6      	        dbf %d0,0x527e
 528a:	08b8 0001 60ec 	        bclr #1,0x60ec
-5290:	6100 09aa      	        bsrw 0x5c3c
+5290:	6100 09aa      	        bsrw 0x5c3c       ;draw cursor
 5294:	4cdf 0301      	        moveml %sp@+,%d0/%a0-%a1
 5298:	4e75           	        rts
 529a:	0000 0839      	        orib #57,%d0
@@ -4470,7 +4488,7 @@
 5356:	08f8 0002 60ea 	        bset #2,0x60ea
 535c:	4e75           	        rts
 
-;9
+;abort
 535e:	08b8 0000 60ec 	        bclr #0,0x60ec
 5364:	6100 ff7a      	        bsrw 0x52e0
 5368:	4e75           	        rts
@@ -4494,7 +4512,7 @@
 53b0:	31fc 7fff 60dc 	        movew #32767,0x60dc
 53b6:	4e75           	        rts
 
-;10
+;status
 53b8:	08b8 0000 60ec 	        bclr #0,0x60ec
 53be:	6100 ffaa      	        bsrw 0x536a
 53c2:	4e75           	        rts
@@ -4518,7 +4536,7 @@
 540a:	0000 0700      	        orib #0,%d0
 540e:	4278 540a      	        clrw 0x540a
 5412:	42b8 60f0      	        clrl 0x60f0
-5416:	42b8 60f4      	        clrl 0x60f4
+5416:	42b8 60f4      	        clrl 0x60f4  ;cursor position
 541a:	42b8 5402      	        clrl 0x5402
 541e:	31fc 0004 5406 	        movew #4,0x5406
 5424:	31fc 0003 5408 	        movew #3,0x5408
@@ -4577,7 +4595,7 @@
 54d4:	6f08           	        bles 0x54de
 54d6:	c1f8 5406      	        mulsw 0x5406,%d0
 54da:	c3f8 5406      	        mulsw 0x5406,%d1
-54de:	4cb8 000c 60f4 	        movemw 0x60f4,%d2-%d3
+54de:	4cb8 000c 60f4 	        movemw 0x60f4,%d2-%d3 ;cursor position
 54e4:	d440           	        addw %d0,%d2
 54e6:	9641           	        subw %d1,%d3
 54e8:	48b8 000c 60f4 	        movemw %d2-%d3,0x60f4
@@ -4585,9 +4603,11 @@
 54f0:	08f8 0002 60ec 	        bset #2,0x60ec
 54f6:	4cdf 000f      	        moveml %sp@+,%d0-%d3
 54fa:	4e75           	        rts
+
+;update cursor on screen?
 54fc:	48e7 e000      	        moveml %d0-%d2,%sp@-
-5500:	4cb8 0006 60f4 	        movemw 0x60f4,%d1-%d2
-5506:	0c78 0001 60e4 	        cmpiw #1,0x60e4
+5500:	4cb8 0006 60f4 	        movemw 0x60f4,%d1-%d2 ;cursor position
+5506:	0c78 0001 60e4 	        cmpiw #1,0x60e4       ;cursor device
 550c:	660c           	        bnes 0x551a
 550e:	6100 06dc      	        bsrw 0x5bec
 5512:	48b8 0006 60f4 	        movemw %d1-%d2,0x60f4
@@ -4596,23 +4616,25 @@
 551e:	48b8 0007 60ee 	        movemw %d0-%d2,0x60ee
 5524:	4cdf 0007      	        moveml %sp@+,%d0-%d2
 5528:	4e75           	        rts
+
 552a:	0000 0040      	        orib #64,%d0
 552e:	0040 0008      	        oriw #8,%d0
 5532:	0004 0040      	        orib #64,%d4
-
 5bb6:	0000 0440      	        orib #64,%d0
 5bba:	0000 0360      	        orib #96,%d0
-5bbe:	0010 0000      	        orib #0,%a0@
+5bbe:	0010 0000      	        orib #0,%a0@  ;fb address under cursor
 
 5bca:	4238 552a      	        clrb 0x552a
 5bce:	4278 60e0      	        clrw 0x60e0
-5bd2:	4278 60e4      	        clrw 0x60e4
+5bd2:	4278 60e4      	        clrw 0x60e4 ;cursor device
 5bd6:	42b8 60fe      	        clrl 0x60fe
-5bda:	42b8 6102      	        clrl 0x6102
-5bde:	42b8 6106      	        clrl 0x6106
+5bda:	42b8 6102      	        clrl 0x6102 ;tip x
+5bde:	42b8 6106      	        clrl 0x6106 ;center x
 5be2:	42b8 610a      	        clrl 0x610a
 5be6:	4238 60aa      	        clrb 0x60aa
 5bea:	4e75           	        rts
+
+;check cursor position
 5bec:	48e7 1800      	        moveml %d3-%d4,%sp@-
 5bf0:	4cb8 0018 60fe 	        movemw 0x60fe,%d3-%d4
 5bf6:	b278 5bb6      	        cmpw 0x5bb6,%d1
@@ -4637,19 +4659,21 @@
 5c30:	08f8 0000 552a 	        bset #0,0x552a
 5c36:	4cdf 0018      	        moveml %sp@+,%d3-%d4
 5c3a:	4e75           	        rts
+
+;draw cursor
 5c3c:	48e7 f0c0      	        moveml %d0-%d3/%a0-%a1,%sp@-
 5c40:	08b8 0000 552a 	        bclr #0,0x552a
 5c46:	0838 0002 552a 	        btst #2,0x552a
 5c4c:	6700 00e4      	        beqw 0x5d32
-5c50:	0c78 0001 60e4 	        cmpiw #1,0x60e4
+5c50:	0c78 0001 60e4 	        cmpiw #1,0x60e4  ;cursor device
 5c56:	6600 00da      	        bnew 0x5d32
 5c5a:	0838 0001 552a 	        btst #1,0x552a
 5c60:	6600 00d0      	        bnew 0x5d32
-5c64:	4cb8 0006 60fe 	        movemw 0x60fe,%d1-%d2
+5c64:	4cb8 0006 60fe 	        movemw 0x60fe,%d1-%d2 ;cursor position
 5c6a:	48b8 0006 610a 	        movemw %d1-%d2,0x610a
 5c70:	303c 0010      	        movew #16,%d0
-5c74:	48b8 0007 60ee 	        movemw %d0-%d2,0x60ee
-5c7a:	6100 00bc      	        bsrw 0x5d38
+5c74:	48b8 0007 60ee 	        movemw %d0-%d2,0x60ee ;cursor position
+5c7a:	6100 00bc      	        bsrw 0x5d38 ;draw cursor?
 5c7e:	6100 0116      	        bsrw 0x5d96
 5c82:	4a78 3b36      	        tstw 0x3b36 ;msk w
 5c86:	6f00 00aa      	        blew 0x5d32
@@ -4657,13 +4681,13 @@
 5c8e:	6f00 00a2      	        blew 0x5d32
 5c92:	6100 e0e6      	        bsrw 0x3d7a
 5c96:	6100 0150      	        bsrw 0x5de8
-5c9a:	3038 6032      	        movew 0x6032,%d0 ;dst x
+5c9a:	3038 6032      	        movew 0x6032,%d0  ;dst x
 5c9e:	2078 3b32      	        moveal 0x3b32,%a0 ;dst address
 5ca2:	e848           	        lsrw #4,%d0
 5ca4:	e348           	        lslw #1,%d0
 5ca6:	d0c0           	        addaw %d0,%a0
-5ca8:	21c8 5bbe      	        movel %a0,0x5bbe
-5cac:	227c 0000 5936 	        moveal #22838,%a1
+5ca8:	21c8 5bbe      	        movel %a0,0x5bbe  ;fb address under cursor
+5cac:	227c 0000 5936 	        moveal #22838,%a1 ;saved fb under cursor
 5cb2:	303c 0086      	        movew #134,%d0
 5cb6:	9078 5530      	        subw 0x5530,%d0
 5cba:	3238 5532      	        movew 0x5532,%d1
@@ -4677,20 +4701,21 @@
 5cd2:	d0c0           	        addaw %d0,%a0
 5cd4:	51ca fff4      	        dbf %d2,0x5cca
 5cd8:	33f8 60ac 0030 0000     movew 0x60ac,0x300000 ;bba command
-5ce0:	23f8 3b2a 0030 004e     movel 0x3b2a,0x30004e
-5ce8:	33f8 5fa6 0030 0052     movew 0x5fa6,0x300052 ;src x
-5cf0:	23f8 3b2e 0030 0056     movel 0x3b2e,0x300056
-5cf8:	33f8 601e 0030 005a     movew 0x601e,0x30005a ;msk x
-5d00:	23f8 3b32 0030 005e     movel 0x3b32,0x30005e ;address
-5d08:	33f8 6032 0030 0062     movew 0x6032,0x300062 ;dst x
-5d10:	33f8 3b36 0030 0066     movew 0x3b36,0x300066 ;msk w
-5d18:	33f8 3b38 0030 0068     movew 0x3b38,0x300068 ;msk h
+5ce0:	23f8 3b2a 0030 004e     movel 0x3b2a,0x30004e ;cursor src address
+5ce8:	33f8 5fa6 0030 0052     movew 0x5fa6,0x300052 ;cursor src x
+5cf0:	23f8 3b2e 0030 0056     movel 0x3b2e,0x300056 ;cursor msk a
+5cf8:	33f8 601e 0030 005a     movew 0x601e,0x30005a ;cursor msk x
+5d00:	23f8 3b32 0030 005e     movel 0x3b32,0x30005e ;cursor dst a
+5d08:	33f8 6032 0030 0062     movew 0x6032,0x300062 ;cursor dst x
+5d10:	33f8 3b36 0030 0066     movew 0x3b36,0x300066 ;cursor msk w
+5d18:	33f8 3b38 0030 0068     movew 0x3b38,0x300068 ;cursor msk h
 5d20:	50f8 60e2      	        st 0x60e2
 5d24:	13fc 0001 0028 0000     moveb #1,0x280000
 5d2c:	08f8 0001 552a 	        bset #1,0x552a
 5d32:	4cdf 030f      	        moveml %sp@+,%d0-%d3/%a0-%a1
 5d36:	4e75           	        rts
 
+;draw cursor?
 5d38:	31f8 60aa 5f94 	        movew 0x60aa,0x5f94   ;flags
 5d3e:	21fc 0000 5536 5f9c     movel #21814,0x5f9c   ;src address
 5d46:	31fc 0008 5faa 	        movew #8,0x5faa       ;src W
@@ -4704,11 +4729,12 @@
 5d70:	31f8 552e 3b38 	        movew 0x552e,0x3b38
 5d76:	21fc 0010 0000 6028     movel #1048576,0x6028 ;dst address
 5d7e:	31fc 0088 6036 	        movew #136,0x6036 ;dst W
-5d84:	9278 6102      	        subw 0x6102,%d1
-5d88:	9478 6104      	        subw 0x6104,%d2
+5d84:	9278 6102      	        subw 0x6102,%d1  ;tip x
+5d88:	9478 6104      	        subw 0x6104,%d2  ;tip y
 5d8c:	31c1 6032      	        movew %d1,0x6032 ;dst x
 5d90:	31c2 6034      	        movew %d2,0x6034 ;dst y
 5d94:	4e75           	        rts
+
 5d96:	3f00           	        movew %d0,%sp@-
 5d98:	3038 6032      	        movew 0x6032,%d0 ;dst x
 5d9c:	6a12           	        bpls 0x5db0
@@ -4734,6 +4760,7 @@
 5de0:	9178 3b38      	        subw %d0,0x3b38
 5de4:	301f           	        movew %sp@+,%d0
 5de6:	4e75           	        rts
+
 5de8:	48e7 c000      	        moveml %d0-%d1,%sp@-
 5dec:	3038 6032      	        movew 0x6032,%d0 ;dst x
 5df0:	3200           	        movew %d0,%d1
@@ -4756,11 +4783,13 @@
 5e2e:	31f8 3b38 5534 	        movew 0x3b38,0x5534 ;msk h
 5e34:	4cdf 0003      	        moveml %sp@+,%d0-%d1
 5e38:	4e75           	        rts
+
+;restore fb under cursor
 5e3a:	48e7 f0c0      	        moveml %d0-%d3/%a0-%a1,%sp@-
 5e3e:	0838 0001 552a 	        btst #1,0x552a
 5e44:	6736           	        beqs 0x5e7c
-5e46:	207c 0000 5936 	        moveal #22838,%a0
-5e4c:	2278 5bbe      	        moveal 0x5bbe,%a1
+5e46:	207c 0000 5936 	        moveal #22838,%a0 ;saved fb under cursor
+5e4c:	2278 5bbe      	        moveal 0x5bbe,%a1 ;fb address under cursor
 5e50:	303c 0086      	        movew #134,%d0
 5e54:	9078 5530      	        subw 0x5530,%d0
 5e58:	3238 5532      	        movew 0x5532,%d1
@@ -4776,6 +4805,7 @@
 5e76:	08b8 0001 552a 	        bclr #1,0x552a
 5e7c:	4cdf 030f      	        moveml %sp@+,%d0-%d3/%a0-%a1
 5e80:	4e75           	        rts
+
 5e82:	3f00           	        movew %d0,%sp@-
 5e84:	0838 0001 552a 	        btst #1,0x552a
 5e8a:	673c           	        beqs 0x5ec8
@@ -4794,7 +4824,7 @@
 5eb8:	b078 36a6      	        cmpw 0x36a6,%d0
 5ebc:	6d0a           	        blts 0x5ec8
 5ebe:	08f8 0000 552a 	        bset #0,0x552a
-5ec4:	6100 ff74      	        bsrw 0x5e3a
+5ec4:	6100 ff74      	        bsrw 0x5e3a       ;restore fb under cursor
 5ec8:	301f           	        movew %sp@+,%d0
 5eca:	4e75           	        rts
 
@@ -4818,17 +4848,17 @@
 5f0c:	3838 5fa6      	        movew 0x5fa6,%d4 ;src x
 5f10:	b841           	        cmpw %d1,%d4
 5f12:	6e08           	        bgts 0x5f1c
-5f14:	d878 3b36      	        addw 0x3b36,%d4 ;msk w
+5f14:	d878 3b36      	        addw 0x3b36,%d4  ;msk w
 5f18:	b840           	        cmpw %d0,%d4
 5f1a:	6e5c           	        bgts 0x5f78
-5f1c:	0838 0003 5f94 	        btst #3,0x5f94  ;msk bitmap?
+5f1c:	0838 0003 5f94 	        btst #3,0x5f94   ;msk bitmap?
 5f22:	672a           	        beqs 0x5f4e
 5f24:	0cb8 0010 0000 6014     cmpil #1048576,0x6014 ;msk address
 5f2c:	6620           	        bnes 0x5f4e
 5f2e:	3838 6020      	        movew 0x6020,%d4 ;msk y
 5f32:	b843           	        cmpw %d3,%d4
 5f34:	6e18           	        bgts 0x5f4e
-5f36:	d878 3b38      	        addw 0x3b38,%d4 ;msk h
+5f36:	d878 3b38      	        addw 0x3b38,%d4  ;msk h
 5f3a:	b842           	        cmpw %d2,%d4
 5f3c:	6f10           	        bles 0x5f4e
 5f3e:	3838 601e      	        movew 0x601e,%d4 ;msk x
@@ -4852,7 +4882,7 @@
 5f74:	b840           	        cmpw %d0,%d4
 5f76:	6f0a           	        bles 0x5f82
 5f78:	08f8 0000 552a 	        bset #0,0x552a
-5f7e:	6100 feba      	        bsrw 0x5e3a
+5f7e:	6100 feba      	        bsrw 0x5e3a     ;restore fb under cursor
 5f82:	4cdf 001f      	        moveml %sp@+,%d0-%d4
 5f86:	4e75           	        rts
 
@@ -4863,7 +4893,7 @@
 
 ;packet from host
 5f96:   0000   ;bba command
-5f98:	0003   ;map?
+5f98:	0003   ;function
 5f9a:	0000   ;const
 5f9c:	0010 0000      	        orib #0,%a0@    ;src address
 5fa0:	0440 0360      	        subiw #864,%d0  ;src wh
