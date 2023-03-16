@@ -239,6 +239,7 @@
 139a:	6100 345e      	        bsrw 0x47fa
 139e:	4e75           	        rts
 
+;draw curve - do one clip
 13a0:	48e7 f8c0      	        moveml %d0-%d4/%a0-%a1,%sp@-
 13a4:	4a38 1292      	        tstb 0x1292
 13a8:	670c           	        beqs 0x13b6
@@ -420,6 +421,7 @@
 1644:	5278 1288      	        addqw #1,0x1288
 1648:	6100 011e      	        bsrw 0x1768
 164c:	4e75           	        rts
+
 164e:	48e7 fc80      	        moveml %d0-%d5/%a0,%sp@-
 1652:	3038 1298      	        movew 0x1298,%d0
 1656:	9078 1296      	        subw 0x1296,%d0
@@ -499,6 +501,7 @@
 175a:	31fc 804e 60d4 	        movew #-32690,0x60d4
 1760:	6100 3098      	        bsrw 0x47fa
 1764:	6000 f8fe      	        braw 0x1064
+
 1768:	48e7 fec0      	        moveml %d0-%d6/%a0-%a1,%sp@-
 176c:	3438 1278      	        movew 0x1278,%d2
 1770:	9478 1274      	        subw 0x1274,%d2
@@ -547,15 +550,15 @@
 1818:	d3c1           	        addal %d1,%a1
 181a:	4a38 60e2      	        tstb 0x60e2
 181e:	66fa           	        bnes 0x181a
-1820:	33c0 0030 0016 	        movew %d0,0x300016 ;dst x
-1826:	20c9           	        movel %a1,%a0@+    ;026
-1828:	30c6           	        movew %d6,%a0@+    ;02a
-182a:	30f8 128a      	        movew 0x128a,%a0@+ ;02c
-182e:	30f8 128c      	        movew 0x128c,%a0@+ ;030
-1832:	30f8 1282      	        movew 0x1282,%a0@+ ;032
-1836:	30f8 1286      	        movew 0x1286,%a0@+ ;034
-183a:	30f8 127c      	        movew 0x127c,%a0@+ ;036
-183e:	30b8 1280      	        movew 0x1280,%a0@  ;038
+1820:	33c0 0030 0016 	        movew %d0,0x300016 ;    line start y
+1826:	20c9           	        movel %a1,%a0@+    ;026 line a
+1828:	30c6           	        movew %d6,%a0@+    ;02a line delta y
+182a:	30f8 128a      	        movew 0x128a,%a0@+ ;02c line height
+182e:	30f8 128c      	        movew 0x128c,%a0@+ ;02e line delta x
+1832:	30f8 1282      	        movew 0x1282,%a0@+ ;030
+1836:	30f8 1286      	        movew 0x1286,%a0@+ ;032
+183a:	30f8 127c      	        movew 0x127c,%a0@+ ;033
+183e:	30b8 1280      	        movew 0x1280,%a0@  ;036
 1842:	50f8 60e2      	        st 0x60e2
 1846:	13fc 0001 0028 0000     moveb #1,0x280000
 184e:	6078           	        bras 0x18c8
@@ -609,6 +612,7 @@
 18e0:	31fc 804e 60d4 	        movew #-32690,0x60d4
 18e6:	6100 2f12      	        bsrw 0x47fa
 18ea:	6000 f778      	        braw 0x1064
+
 18ee:	48e7 e000      	        moveml %d0-%d2,%sp@-
 18f2:	4a38 604e      	        tstb 0x604e  ;flag bba bit 7
 18f6:	672c           	        beqs 0x1924
@@ -2402,7 +2406,7 @@
 2fb8:	6100 21d4      	        bsrw 0x518e
 2fbc:	6100 0198      	        bsrw 0x3156
 2fc0:	6100 001c      	        bsrw 0x2fde
-2fc4:	6100 059a      	        bsrw 0x3560
+2fc4:	6100 059a      	        bsrw 0x3560 ;do one clip
 2fc8:	6100 052a      	        bsrw 0x34f4
 2fcc:	4a38 60e2      	        tstb 0x60e2
 2fd0:	66fa           	        bnes 0x2fcc
@@ -2813,6 +2817,7 @@
 355c:	301f           	        movew %sp@+,%d0
 355e:	4e75           	        rts
 
+;fill area - do one clip
 3560:	2f38 6028      	        movel 0x6028,%sp@- ;dst address
 3564:	50f8 1292      	        st 0x1292
 3568:	4a38 60e2      	        tstb 0x60e2
@@ -4100,10 +4105,10 @@
 4d48:	3200           	        movew %d0,%d1
 4d4a:	207c 0000 4afe 	        moveal #19198,%a0
 4d50:	e649           	        lsrw #3,%d1
-4d52:	0130 1000      	        btst %d0,%a0@(0000000000000000,%d1:w)
+4d52:	0130 1000      	        btst %d0,%a0@(0,%d1:w)
 4d56:	670c           	        beqs 0x4d64
 4d58:	207c 0000 4b1e 	        moveal #19230,%a0
-4d5e:	0130 1000      	        btst %d0,%a0@(0000000000000000,%d1:w)
+4d5e:	0130 1000      	        btst %d0,%a0@(0,%d1:w)
 4d62:	670e           	        beqs 0x4d72
 4d64:	6100 fddc      	        bsrw 0x4b42
 4d68:	0878 0002 4b40 	        bchg #2,0x4b40
@@ -4116,7 +4121,7 @@
 4d84:	3200           	        movew %d0,%d1
 4d86:	3600           	        movew %d0,%d3
 4d88:	e648           	        lsrw #3,%d0
-4d8a:	03b0 0000      	        bclr %d1,%a0@(0000000000000000,%d0:w)
+4d8a:	03b0 0000      	        bclr %d1,%a0@(0,%d0:w)
 4d8e:	6704           	        beqs 0x4d94
 4d90:	6100 f988      	        bsrw 0x471a
 4d94:	3003           	        movew %d3,%d0
@@ -5002,7 +5007,7 @@
 614e:	0014 0030      	        orib #48,%a4@
 6152:	03a5           	        bclr %d1,%a5@-
 6154:	0018 0028      	        orib #40,%a0@+
-6158:	05b3 001e      	        bclr %d2,%a3@(000000000000001e,%d0:w)
+6158:	05b3 001e      	        bclr %d2,%a3@(0x1e,%d0:w)
 615c:	0020 0a22      	        orib #34,%a0@-
 6160:	0028 0018 16cb 	        orib #24,%a0@(5835)
 6166:	003c 0010      	        orib #16,%ccr

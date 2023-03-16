@@ -64,8 +64,8 @@ static int trace_p = 0;
 	      PC-4, IRD, IRD, __func__);		\
   } while(0)
 
-#define UNIMPLEMENTED()				\
-  printf("Unimplemented: %s.\n", __func__);	\
+#define UNIMPLEMENTED()						\
+  printf("Unimplemented: %s @ %06X.\n", __func__, PC-4);	\
   exit(1)
 
 #define DEFINSN_BW(INSN)			\
@@ -1032,7 +1032,24 @@ static void insn_bchgi(void) {
 
 static void insn_bclr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  TRACE();
+  u32 dst, src = DREG;
+  u32 x = 1;
+  if (EA_M_FIELD == 0) {
+    dst = dreg[EA_R_FIELD];
+    if (src < 16)
+      add_cycles(2);
+    else
+      add_cycles(4);
+    x <<= src % 32;
+    dreg[EA_R_FIELD] = dst & ~x;
+    SET_Z((dst & x) == 0);
+  } else {
+    dst = read_b_ea();
+    x <<= src % 8;
+    modify_b_ea(alub(AND, dst, ~x));
+    alub(AND, dst, x);
+  }
 }
 
 static void insn_bclri(void) {
@@ -1132,13 +1149,22 @@ static void insn_bsr(void) {
 
 static void insn_btst(void) {
   TRACE();
-  UNIMPLEMENTED();
+  u32 dst, src = DREG;
+  u32 x = 1;
+  if (EA_M_FIELD == 0) {
+    add_cycles(2);
+    dst = dreg[EA_R_FIELD];
+    src %= 32;
+  } else {
+    dst = read_b_ea();
+    src %= 8;
+  }
+  SET_Z((dst & (x << src)) == 0);
 }
 
 static void insn_btsti(void) {
   TRACE();
-  u32 src = read_b_imm();
-  u32 dst;
+  u32 dst, src = read_b_imm();
   u32 x = 1;
   if (EA_M_FIELD == 0) {
     add_cycles(2);
@@ -1768,21 +1794,28 @@ static void insn_shiftl_w(void) {
   else if (n == 0)
     n = 8;
   add_cycles(2*n + 4);
-  u16 x = dreg[r];
+  u16 x = dreg[r], carry;
   switch (IRD & 030) {
   case 000: //asl
   case 010: //lsl
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 0x8000;
       x <<= 1;
+    }
     break;
   case 020: //roxl
     UNIMPLEMENTED();
   case 030: //rol
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 0x8000;
       x = (x << 1) | (x >> 15);
+    }
     break;
   }
   dreg[r] = (dreg[r] & 0xFFFF0000) | x;
+  SET_C(carry);
+  SET_Z(x == 0);
+  SET_N(x & 0x8000);
 }
 
 static void insn_shiftl_l(void) {
@@ -1795,21 +1828,28 @@ static void insn_shiftl_l(void) {
   else if (n == 0)
     n = 8;
   add_cycles(2*n + 4);
-  u32 x = dreg[r];
+  u32 x = dreg[r], carry;
   switch (IRD & 030) {
   case 000: //asl
   case 010: //lsl
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 0x80000000;
       x <<= 1;
+    }
     break;
   case 020: //roxl
     UNIMPLEMENTED();
   case 030: //rol
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 0x80000000;
       x = (x << 1) | (x >> 31);
+    }
     break;
   }
   dreg[r] = x;
+  SET_C(carry);
+  SET_Z(x == 0);
+  SET_N(x & 0x8000);
 }
 
 static void insn_shiftl_m(void) {
@@ -1822,7 +1862,7 @@ static void insn_shiftr_b(void) {
   int r = EA_R_FIELD;
   int n = REG_FIELD;
   int i;
-  u8 x;
+  u8 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
@@ -1831,21 +1871,28 @@ static void insn_shiftr_b(void) {
   add_cycles(2*n + 2);
   switch (IRD & 030) {
   case 000: //asr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x & 0x80);
+    }
     break;
   case 010: //lsr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x >>= 1;
+    }
     break;
   case 020: //roxr
     UNIMPLEMENTED();
   case 030: //ror
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x << 7);
+    }
     break;
   }
   dreg[r] = (dreg[r] & 0xFFFFFF00) | x;
+  SET_C(carry);
   SET_Z(x == 0);
   SET_N(x & 0x80);
 }
@@ -1855,7 +1902,7 @@ static void insn_shiftr_w(void) {
   int r = EA_R_FIELD;
   int n = REG_FIELD;
   int i;
-  u16 x;
+  u16 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
@@ -1864,21 +1911,28 @@ static void insn_shiftr_w(void) {
   x = dreg[r] & 0xFFFF;
   switch (IRD & 030) {
   case 000: //asr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x & 0x8000);
+    }
     break;
   case 010: //lsr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x >>= 1;
+    }
     break;
   case 020: //roxr
     UNIMPLEMENTED();
   case 030: //ror
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x << 15);
+    }
     break;
   }
   dreg[r] = (dreg[r] & 0xFFFF0000) | x;
+  SET_C(carry);
   SET_Z(x == 0);
   SET_N(x & 0x8000);
 }
@@ -1893,24 +1947,31 @@ static void insn_shiftr_l(void) {
   else if (n == 0)
     n = 8;
   add_cycles(2*n + 4);
-  u32 x = dreg[r];
+  u32 x = dreg[r], carry;
   switch (IRD & 030) {
   case 000: //asr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x & 0x80000000);
+    }
     break;
   case 010: //lsr
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x >>= 1;
+    }
     break;
   case 020: //roxr
     UNIMPLEMENTED();
   case 030: //ror
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
+      carry = x & 1;
       x = (x >> 1) | (x << 31);
+    }
     break;
   }
   dreg[r] = x;
+  SET_C(carry);
   SET_Z(x == 0);
   SET_N(x & 0x80000000);
 }

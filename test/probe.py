@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
+import time
 import socket
 import subprocess
 
@@ -40,11 +41,20 @@ GET_TABLET_POSITION = 14
 SET_POINTING_DEVICE_REPORTING = 15
 SET_TABLET_CHARACTERISTICS = 16
 
+# Vertex flags for DRAW_CURVE.
+VERT_RELATIVE = 0x0001
+VERT_DONTDRAW = 0x0002
+VERT_CURVED = 0x0004
+VERT_STARTCLOSED = 0x0008
+VERT_ENDCLOSED = 0x0010
+VERT_DRAWLASTPOINT = 0x0020
+
 def noop(s):
     yield
 
 def end(s):
     global vs100
+    time.sleep(3)
     vs100.kill()
     sys.exit(0)
 
@@ -84,7 +94,8 @@ def nothing_done(s):
 
 def send_start(s):
     global next
-    next = send_copy_area
+    #next = send_copy_area
+    next = send_draw_curve
     send_command(s, 3, 0x1000)
 
 def send_copy_area(s):
@@ -159,6 +170,97 @@ def send_copy_area(s):
         memory[29] = 0
         memory[30] = 0
         memory[31] = clipcount
+
+    next = end
+    send_command(s, 2, 0x080000)
+
+def send_draw_curve(s):
+    global next
+    srcx = 0
+    srcy = 0
+    brushw = 1
+    brushh = 1
+    dstx = 0x234
+    dsty = 0x123
+    clips = []
+    clipcount = len(clips)
+    func = 3
+    mska = 0
+    mskx = 0
+    msky = 0
+    segments = [(0x42, 0x56, VERT_DRAWLASTPOINT),
+                (0x78, 0x89, VERT_DRAWLASTPOINT)]
+
+    func = ssmap[func]
+
+    x = DRAW_CURVE            #opcode
+    x |= 0 << 8               #source = const
+    if (mska != 0):
+        x |= 1 << 11          #mask
+    x |= (func >> 4) << 17    #map
+    x |= 0 << 20              #clipping
+    x |= 0 << 24              #draw mode
+    x |= 0 << 25              #pattern state
+    x |= 0 << 28              #pattern mode
+    memory[0] = x & 0xFFFF
+    memory[1] = x >> 16
+
+    memory[2] = 0             #next
+    memory[3] = 0
+
+    memory[4] = 1             #source const, 0 or 1
+
+    memory[18] = brushw       #msk width
+    memory[19] = brushh       #msk height
+
+    x = 0x100000
+    memory[20] = x & 0xFFFF   #destination address
+    memory[21] = x >> 16
+    memory[22] = 1088         #destination width
+    memory[23] = 864          #destination height
+    memory[24] = 1            #destination bits per pixel
+    memory[25] = dstx         #destination offset x
+    memory[26] = dsty         #destination offset y
+
+    memory[27] = func & 0xF
+    memory[28] = 0
+
+    if clipcount == 1:
+        memory[1] |= 1 << 4;  #clipping
+        memory[29] = clips[0][0]
+        memory[30] = clips[0][1]
+        memory[31] = clips[0][2]
+        memory[32] = clips[0][3]
+    elif clipcount > 1:
+        memory[1] |= 2 << 4;  #clipping
+        memory[29] = 0
+        memory[30] = 0
+        memory[31] = clipcount
+
+    #segment list
+    ptr = 100
+    x = 0x080000 + 2*ptr
+    memory[33] = x & 0xFFFF    #pointer
+    memory[34] = x >> 16
+    memory[35] = len(segments) #count
+
+    #pattern string
+    memory[36] = 0       #length
+    memory[37] = 0       #pattern
+    memory[38] = 1       #multiplier
+
+    #pattern state
+    memory[39] = 0       #position
+    memory[40] = 0       #count
+
+    #second source
+    memory[41] = 0       #const
+
+    for x in segments:
+        memory[ptr+0] = x[0]
+        memory[ptr+1] = x[1]
+        memory[ptr+2] = x[2]
+        ptr += 3
 
     next = end
     send_command(s, 2, 0x080000)

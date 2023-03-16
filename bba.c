@@ -14,6 +14,10 @@
 #define MSK_H      (0x01C>>1)
 #define FUNC       (0x01E>>1)
 #define TILE_A     (0x020>>1)
+#define LINE_A     (0x026>>1)
+#define LINE_Y     (0x02C>>1)
+#define LINE_X     (0x02E>>1)
+#define LINE_STR   (0x032>>1)
 #define C_SRC_A    (0x04E>>1)
 #define C_SRC_X    (0x052>>1)
 #define C_SRC_STR  (0x054>>1)
@@ -33,6 +37,7 @@
 #define COMMAND_UP        0x0008
 #define COMMAND_TILE      0x0010
 #define COMMAND_CURSOR    0x0020
+#define COMMAND_LINE    0x0040
 
 static u16 scratchpad[256];
 
@@ -204,11 +209,79 @@ static void copy_cursor(void) {
   }
 }
 
+static void point(int x, int y) {
+  u32 a = address(LINE_A, 0);
+  a += y * scratchpad[LINE_STR];
+  u16 dst = mem_read(a + ((x / 8) & ~1U));
+  dst |= 1 << (x % 16);
+  mem_write(a + ((x / 8) & ~1U), dst);
+}
+
+#define ABS(_X) ((_X) >= 0 ? (_X) : -(_X))
+#define SIGN(_X) ((_X) >= 0 ? 1 : -1)
+
+static void xline(int x, int y, int x2, int dx, int dy) {
+  int ix = SIGN(dx);
+  int iy = SIGN(dy);
+  int ay;
+  dx = ABS(dx);
+  dy = ABS(dy);
+  ay = dy/2;
+  for (;;) {
+    point(x, y);
+    if (x == x2)
+      break;
+    if (ay > 0) {
+      y += iy;
+      ay -= dx;
+    }
+    ay += dy;
+    x += ix;
+  }
+}
+  
+static void yline(int x, int y, int y2, int dx, int dy) {
+  int ix = SIGN(dx);
+  int iy = SIGN(dy);
+  int ax;
+  dx = ABS(dx);
+  dy = ABS(dy);
+  ax = dx/2;
+  for (;;) {
+    point(x, y);
+    if (y == y2)
+      break;
+    if (ax > 0) {
+      x += ix;
+      ax -= dy;
+    }
+    ax += dx;
+    y += iy;
+  }
+}
+
+static void draw_line(void)
+{
+  u16 x1 = scratchpad[DST_X];
+  u16 x2 = x1 + scratchpad[LINE_X];
+  u16 y1 = 0;
+  u16 y2 = scratchpad[LINE_Y];
+  int dx = (int)x2 - (int)x1;
+  int dy = (int)y2 - (int)y1;
+  if (ABS(dx) > ABS(dy))
+    xline(x1, y1, x2, dx, dy);
+  else
+    yline(x1, y1, y2, dx, dy);
+}
+
+
 static void callback(void) {
   if (scratchpad[0] & COMMAND_CURSOR)
     copy_cursor();
   else if (scratchpad[0] & COMMAND_TILE)
     copy_tile();
+  else if (scratchpad[0] & COMMAND_LINE)
+    draw_line();
   else if (scratchpad[0] & COMMAND_SOURCE)
     copy_bitmap();
   irq_set(4, 1);
