@@ -244,21 +244,21 @@
 13a4:	4a38 1292      	        tstb 0x1292
 13a8:	670c           	        beqs 0x13b6
 13aa:	6100 2390      	        bsrw 0x373c
-13ae:	6100 4ad2      	        bsrw 0x5e82
-13b2:	6100 0172      	        bsrw 0x1526
-13b6:	6100 01cc      	        bsrw 0x1584
+13ae:	6100 4ad2      	        bsrw 0x5e82       ;restore fb under cursor
+13b2:	6100 0172      	        bsrw 0x1526       ;line mask and pattern
+13b6:	6100 01cc      	        bsrw 0x1584       ;clear stuff
 13ba:	2078 6048      	        moveal 0x6048,%a0 ;segment list address
 13be:	2248           	        moveal %a0,%a1
 13c0:	51c4           	        sf %d4
-13c2:	31f8 1296 1294 	        movew 0x1296,0x1294
+13c2:	31f8 1296 1294 	        movew 0x1296,0x1294  ;segment loop starts here
 13c8:	31f8 129e 129c 	        movew 0x129e,0x129c
 13ce:	31f8 1298 1296 	        movew 0x1298,0x1296
 13d4:	31f8 12a0 129e 	        movew 0x12a0,0x129e
-13da:	3018           	        movew %a0@+,%d0
-13dc:	3218           	        movew %a0@+,%d1
-13de:	3418           	        movew %a0@+,%d2
+13da:	3018           	        movew %a0@+,%d0   ;segment x
+13dc:	3218           	        movew %a0@+,%d1   ;segment y
+13de:	3418           	        movew %a0@+,%d2   ;segment flags
 13e0:	0802 0000      	        btst #0,%d2
-13e4:	6708           	        beqs 0x13ee
+13e4:	6708           	        beqs 0x13ee       ;relative vertex?
 13e6:	d078 1296      	        addw 0x1296,%d0
 13ea:	d278 129e      	        addw 0x129e,%d1
 13ee:	31c0 1298      	        movew %d0,0x1298
@@ -269,16 +269,16 @@
 1400:	6700 00d4      	        beqw 0x14d6
 1404:	c149           	        exg %a0,%a1
 1406:	0802 0001      	        btst #1,%d2
-140a:	6652           	        bnes 0x145e
-140c:	4a38 128e      	        tstb 0x128e
+140a:	6652           	        bnes 0x145e       ;draw segment?
+140c:	4a38 128e      	        tstb 0x128e       ;no
 1410:	664c           	        bnes 0x145e
-1412:	0802 0005      	        btst #5,%d2
+1412:	0802 0005      	        btst #5,%d2       ;draw last point?
 1416:	56f8 1291      	        sne 0x1291
 141a:	0802 0002      	        btst #2,%d2
-141e:	6606           	        bnes 0x1426
-1420:	6100 0200      	        bsrw 0x1622
+141e:	6606           	        bnes 0x1426       ;curved segment?
+1420:	6100 0200      	        bsrw 0x1622       ;no, it's straight
 1424:	6038           	        bras 0x145e
-1426:	4a04           	        tstb %d4
+1426:	4a04           	        tstb %d4          ;curved segment
 1428:	6610           	        bnes 0x143a
 142a:	3038 1298      	        movew 0x1298,%d0
 142e:	3238 12a0      	        movew 0x12a0,%d1
@@ -294,8 +294,8 @@
 1452:	31c0 129a      	        movew %d0,0x129a
 1456:	31c1 12a2      	        movew %d1,0x12a2
 145a:	6100 01f2      	        bsrw 0x164e
-145e:	0802 0003      	        btst #3,%d2
-1462:	6720           	        beqs 0x1484
+145e:	0802 0003      	        btst #3,%d2       ;draw segment
+1462:	6720           	        beqs 0x1484       ;start closed?
 1464:	4a38 128f      	        tstb 0x128f
 1468:	666c           	        bnes 0x14d6
 146a:	50c4           	        st %d4
@@ -325,7 +325,7 @@
 14bc:	51f8 128f      	        sf 0x128f
 14c0:	c149           	        exg %a0,%a1
 14c2:	5378 12a8      	        subqw #1,0x12a8
-14c6:	6e00 fefa      	        bgtw 0x13c2
+14c6:	6e00 fefa      	        bgtw 0x13c2   ;loop back for more segments
 14ca:	4a38 128f      	        tstb 0x128f
 14ce:	6606           	        bnes 0x14d6
 14d0:	4cdf 031f      	        moveml %sp@+,%d0-%d4/%a0-%a1
@@ -361,10 +361,10 @@
 154a:	c5f8 6036      	        mulsw 0x6036,%d2 ;dst W
 154e:	4a38 60e2      	        tstb 0x60e2
 1552:	66fa           	        bnes 0x154e
-1554:	33f8 36a6 0030 0038     movew 0x36a6,0x300038 ;x
-155c:	23c0 0030 003a 	        movel %d0,0x30003a    ;a
-1562:	33c1 0030 003e 	        movew %d1,0x30003e    ;
-1568:	23c2 0030 0040 	        movel %d2,0x300040    ;
+1554:	33f8 36a6 0030 0038     movew 0x36a6,0x300038 ;line msk x
+155c:	23c0 0030 003a 	        movel %d0,0x30003a    ;line msk a
+1562:	33c1 0030 003e 	        movew %d1,0x30003e    ;line msk W
+1568:	23c2 0030 0040 	        movel %d2,0x300040    ;line msk y*W
 156e:	33f8 6056 0030 004a     movew 0x6056,0x30004a ;pattern state position
 1576:	33f8 6058 0030 004c     movew 0x6058,0x30004c ;pattern state count
 157e:	4cdf 0007      	        moveml %sp@+,%d0-%d2
@@ -375,19 +375,19 @@
 158c:	4278 1276      	        clrw 0x1276
 1590:	4278 1278      	        clrw 0x1278
 1594:	4278 127a      	        clrw 0x127a
-1598:	4278 127c      	        clrw 0x127c
+1598:	4278 127c      	        clrw 0x127c ;clear line dx2
 159c:	4278 127e      	        clrw 0x127e
-15a0:	4278 1280      	        clrw 0x1280
-15a4:	4278 1282      	        clrw 0x1282
+15a0:	4278 1280      	        clrw 0x1280 ;clear line dy2
+15a4:	4278 1282      	        clrw 0x1282 ;clear line dx1
 15a8:	4278 1284      	        clrw 0x1284
-15ac:	4278 1286      	        clrw 0x1286
-15b0:	4278 1288      	        clrw 0x1288
-15b4:	4278 128a      	        clrw 0x128a
-15b8:	4278 128c      	        clrw 0x128c
+15ac:	4278 1286      	        clrw 0x1286 ;clear line dy1
+15b0:	4278 1288      	        clrw 0x1288 ;line steps
+15b4:	4278 128a      	        clrw 0x128a ;clear line major
+15b8:	4278 128c      	        clrw 0x128c ;clear line minor
 15bc:	51f8 128e      	        sf 0x128e
 15c0:	51f8 128f      	        sf 0x128f
 15c4:	51f8 1290      	        sf 0x1290
-15c8:	51f8 1291      	        sf 0x1291
+15c8:	51f8 1291      	        sf 0x1291   ;draw last point?
 15cc:	4278 1294      	        clrw 0x1294
 15d0:	4278 1296      	        clrw 0x1296
 15d4:	4278 1298      	        clrw 0x1298
@@ -411,17 +411,19 @@
 161c:	4cdf 0301      	        moveml %sp@+,%d0/%a0-%a1
 1620:	4e75           	        rts
 
+;straight segment
 1622:	31f8 1296 1274 	        movew 0x1296,0x1274
 1628:	31f8 129e 1276 	        movew 0x129e,0x1276
 162e:	31f8 1298 1278 	        movew 0x1298,0x1278
 1634:	31f8 12a0 127a 	        movew 0x12a0,0x127a
-163a:	4278 1288      	        clrw 0x1288
+163a:	4278 1288      	        clrw 0x1288      ;line steps
 163e:	4a38 1291      	        tstb 0x1291
-1642:	6704           	        beqs 0x1648
-1644:	5278 1288      	        addqw #1,0x1288
-1648:	6100 011e      	        bsrw 0x1768
+1642:	6704           	        beqs 0x1648      ;draw last point?
+1644:	5278 1288      	        addqw #1,0x1288  ;line steps
+1648:	6100 011e      	        bsrw 0x1768      ;compute dx,dy
 164c:	4e75           	        rts
 
+;curved segment
 164e:	48e7 fc80      	        moveml %d0-%d5/%a0,%sp@-
 1652:	3038 1298      	        movew 0x1298,%d0
 1656:	9078 1296      	        subw 0x1296,%d0
@@ -480,19 +482,19 @@
 1702:	0681 0000 8000 	        addil #32768,%d1
 1708:	4841           	        swap %d1
 170a:	31c1 127a      	        movew %d1,0x127a
-170e:	4278 1288      	        clrw 0x1288
-1712:	6100 0054      	        bsrw 0x1768
+170e:	4278 1288      	        clrw 0x1288         ;line steps
+1712:	6100 0054      	        bsrw 0x1768         ;compute dx,dy
 1716:	d0c5           	        addaw %d5,%a0
 1718:	51cc ff86      	        dbf %d4,0x16a0
-171c:	4278 1288      	        clrw 0x1288
-1720:	4a38 1291      	        tstb 0x1291
+171c:	4278 1288      	        clrw 0x1288         ;line steps
+1720:	4a38 1291      	        tstb 0x1291         ;draw last point?
 1724:	6704           	        beqs 0x172a
-1726:	5278 1288      	        addqw #1,0x1288
+1726:	5278 1288      	        addqw #1,0x1288     ;line steps
 172a:	31f8 1278 1274 	        movew 0x1278,0x1274
 1730:	31f8 127a 1276 	        movew 0x127a,0x1276
 1736:	31f8 1298 1278 	        movew 0x1298,0x1278
 173c:	31f8 12a0 127a 	        movew 0x12a0,0x127a
-1742:	6100 0024      	        bsrw 0x1768
+1742:	6100 0024      	        bsrw 0x1768 ;compute dx,dy
 1746:	4cdf 013f      	        moveml %sp@+,%d0-%d5/%a0
 174a:	4e75           	        rts
 174c:	31fc 804d 60d4 	        movew #-32691,0x60d4
@@ -502,18 +504,19 @@
 1760:	6100 3098      	        bsrw 0x47fa
 1764:	6000 f8fe      	        braw 0x1064
 
+;compute dx,dy
 1768:	48e7 fec0      	        moveml %d0-%d6/%a0-%a1,%sp@-
 176c:	3438 1278      	        movew 0x1278,%d2
-1770:	9478 1274      	        subw 0x1274,%d2
+1770:	9478 1274      	        subw 0x1274,%d2     ;delta x
 1774:	6900 015c      	        bvsw 0x18d2
 1778:	6b08           	        bmis 0x1782
-177a:	31fc 0001 1282 	        movew #1,0x1282
+177a:	31fc 0001 1282 	        movew #1,0x1282     ;line dx1
 1780:	6008           	        bras 0x178a
-1782:	31fc ffff 1282 	        movew #-1,0x1282
+1782:	31fc ffff 1282 	        movew #-1,0x1282    ;line dx1
 1788:	4442           	        negw %d2
-178a:	3038 6036      	        movew 0x6036,%d0 ;dst W
+178a:	3038 6036      	        movew 0x6036,%d0    ;dst W
 178e:	3638 127a      	        movew 0x127a,%d3
-1792:	9678 1276      	        subw 0x1276,%d3
+1792:	9678 1276      	        subw 0x1276,%d3     ;delta y
 1796:	6900 0148      	        bvsw 0x18e0
 179a:	6b08           	        bmis 0x17a4
 179c:	31fc 0001 1284 	        movew #1,0x1284
@@ -521,22 +524,25 @@
 17a4:	31fc ffff 1284 	        movew #-1,0x1284
 17aa:	4443           	        negw %d3
 17ac:	4440           	        negw %d0
-17ae:	31c0 1286      	        movew %d0,0x1286
-17b2:	b443           	        cmpw %d3,%d2
+17ae:	31c0 1286      	        movew %d0,0x1286    ;line dy1
+17b2:	b443           	        cmpw %d3,%d2        ;delta x > delta y?
 17b4:	6d18           	        blts 0x17ce
-17b6:	31c2 128a      	        movew %d2,0x128a
-17ba:	31c3 128c      	        movew %d3,0x128c
-17be:	31f8 1282 127c 	        movew 0x1282,0x127c
+
+17b6:	31c2 128a      	        movew %d2,0x128a    ;line major
+17ba:	31c3 128c      	        movew %d3,0x128c    ;line minor
+17be:	31f8 1282 127c 	        movew 0x1282,0x127c ;line dx1 -> dx2
 17c4:	4278 127e      	        clrw 0x127e
-17c8:	4278 1280      	        clrw 0x1280
+17c8:	4278 1280      	        clrw 0x1280         ;line dy2
 17cc:	6018           	        bras 0x17e6
-17ce:	31c2 128c      	        movew %d2,0x128c
-17d2:	31c3 128a      	        movew %d3,0x128a
-17d6:	4278 127c      	        clrw 0x127c
+
+17ce:	31c2 128c      	        movew %d2,0x128c    ;line minor
+17d2:	31c3 128a      	        movew %d3,0x128a    ;line major
+17d6:	4278 127c      	        clrw 0x127c         ;line dx2
 17da:	31f8 1284 127e 	        movew 0x1284,0x127e
-17e0:	31f8 1286 1280 	        movew 0x1286,0x1280
-17e6:	3c38 1288      	        movew 0x1288,%d6
-17ea:	dc78 128a      	        addw 0x128a,%d6
+17e0:	31f8 1286 1280 	        movew 0x1286,0x1280 ;line dy1 -> dy2
+
+17e6:	3c38 1288      	        movew 0x1288,%d6    ;line steps
+17ea:	dc78 128a      	        addw 0x128a,%d6     ;line major
 17ee:	6700 00d8      	        beqw 0x18c8
 17f2:	4a38 1292      	        tstb 0x1292
 17f6:	6700 0058      	        beqw 0x1850
@@ -550,15 +556,15 @@
 1818:	d3c1           	        addal %d1,%a1
 181a:	4a38 60e2      	        tstb 0x60e2
 181e:	66fa           	        bnes 0x181a
-1820:	33c0 0030 0016 	        movew %d0,0x300016 ;    line start y
-1826:	20c9           	        movel %a1,%a0@+    ;026 line a
-1828:	30c6           	        movew %d6,%a0@+    ;02a line delta y
-182a:	30f8 128a      	        movew 0x128a,%a0@+ ;02c line height
-182e:	30f8 128c      	        movew 0x128c,%a0@+ ;02e line delta x
-1832:	30f8 1282      	        movew 0x1282,%a0@+ ;030
-1836:	30f8 1286      	        movew 0x1286,%a0@+ ;032
-183a:	30f8 127c      	        movew 0x127c,%a0@+ ;033
-183e:	30b8 1280      	        movew 0x1280,%a0@  ;036
+1820:	33c0 0030 0016 	        movew %d0,0x300016 ;    line dst x
+1826:	20c9           	        movel %a1,%a0@+    ;026 line dst a
+1828:	30c6           	        movew %d6,%a0@+    ;02a line steps
+182a:	30f8 128a      	        movew 0x128a,%a0@+ ;02c line major
+182e:	30f8 128c      	        movew 0x128c,%a0@+ ;02e line minor
+1832:	30f8 1282      	        movew 0x1282,%a0@+ ;030 line dx1
+1836:	30f8 1286      	        movew 0x1286,%a0@+ ;032 line dy1
+183a:	30f8 127c      	        movew 0x127c,%a0@+ ;033 line dx2
+183e:	30b8 1280      	        movew 0x1280,%a0@  ;036 line dy2
 1842:	50f8 60e2      	        st 0x60e2
 1846:	13fc 0001 0028 0000     moveb #1,0x280000
 184e:	6078           	        bras 0x18c8
@@ -572,34 +578,34 @@
 186a:	5346           	        subqw #1,%d6
 186c:	5346           	        subqw #1,%d6
 186e:	6d58           	        blts 0x18c8
-1870:	3438 128a      	        movew 0x128a,%d2
+1870:	3438 128a      	        movew 0x128a,%d2   ;line major
 1874:	4442           	        negw %d2
 1876:	48c2           	        extl %d2
 1878:	4280           	        clrl %d0
 187a:	4281           	        clrl %d1
-187c:	3038 128a      	        movew 0x128a,%d0
-1880:	3238 128c      	        movew 0x128c,%d1
+187c:	3038 128a      	        movew 0x128a,%d0   ;line major
+1880:	3238 128c      	        movew 0x128c,%d1   ;line minor
 1884:	e388           	        lsll #1,%d0
 1886:	e389           	        lsll #1,%d1
 1888:	d481           	        addl %d1,%d2
-188a:	4a78 1282      	        tstw 0x1282
+188a:	4a78 1282      	        tstw 0x1282   ;line dx1
 188e:	6d1a           	        blts 0x18aa
 1890:	4a82           	        tstl %d2
 1892:	6a0a           	        bpls 0x189e
-1894:	d878 127c      	        addw 0x127c,%d4
+1894:	d878 127c      	        addw 0x127c,%d4   ;line dx2
 1898:	da78 127e      	        addw 0x127e,%d5
 189c:	6024           	        bras 0x18c2
 189e:	9480           	        subl %d0,%d2
-18a0:	d878 1282      	        addw 0x1282,%d4
+18a0:	d878 1282      	        addw 0x1282,%d4   ;line dx1
 18a4:	da78 1284      	        addw 0x1284,%d5
 18a8:	6018           	        bras 0x18c2
 18aa:	4a82           	        tstl %d2
 18ac:	6e0a           	        bgts 0x18b8
-18ae:	d878 127c      	        addw 0x127c,%d4
+18ae:	d878 127c      	        addw 0x127c,%d4   ;line dx2
 18b2:	da78 127e      	        addw 0x127e,%d5
 18b6:	600a           	        bras 0x18c2
 18b8:	9480           	        subl %d0,%d2
-18ba:	d878 1282      	        addw 0x1282,%d4
+18ba:	d878 1282      	        addw 0x1282,%d4   ;line dx1
 18be:	da78 1284      	        addw 0x1284,%d5
 18c2:	4e91           	        jsr %a1@
 18c4:	51ce ffc2      	        dbf %d6,0x1888
@@ -895,9 +901,9 @@
 1c70:	66fa           	        bnes 0x1c6c
 1c72:	33f8 5f96 0030 0000     movew 0x5f96,0x300000 ;bba command
 1c7a:	23f8 3b2a 0030 0002     movel 0x3b2a,0x300002 ;address
-1c82:	33f8 5faa 0030 0008     movew 0x5faa,0x300008 ;src W
+1c82:	33f8 5faa 0030 0008     movew 0x5faa,0x300008 ;src w
 1c8a:	23f8 3b2e 0030 000a     movel 0x3b2e,0x30000a ;msk address
-1c92:	33f8 6022 0030 0010     movew 0x6022,0x300010 ;msk W
+1c92:	33f8 6022 0030 0010     movew 0x6022,0x300010 ;msk w
 1c9a:	33f8 6026 0030 001c     movew 0x6026,0x30001c ;msk h
 1ca2:	33f8 6036 0030 0018     movew 0x6036,0x300018 ;dst W
 1caa:	33f8 5f98 0030 001e     movew 0x5f98,0x30001e ;function
@@ -1347,7 +1353,7 @@
 225e:	0641 000f      	        addiw #15,%d1
 2262:	e849           	        lsrw #4,%d1
 2264:	e349           	        lslw #1,%d1
-2266:	31c1 5faa      	        movew %d1,0x5faa ;src W
+2266:	31c1 5faa      	        movew %d1,0x5faa ;src w
 226a:	3219           	        movew %a1@+,%d1
 226c:	6f26           	        bles 0x2294
 226e:	31c1 5fa2      	        movew %d1,0x5fa2 ;src h
@@ -1417,7 +1423,7 @@
 2336:	0641 000f      	        addiw #15,%d1
 233a:	e849           	        lsrw #4,%d1
 233c:	e349           	        lslw #1,%d1
-233e:	31c1 6022      	        movew %d1,0x6022 ;msk W
+233e:	31c1 6022      	        movew %d1,0x6022 ;msk w
 2342:	3219           	        movew %a1@+,%d1
 2344:	6f34           	        bles 0x237a
 2346:	31c1 601a      	        movew %d1,0x601a ;msk h
@@ -2079,7 +2085,7 @@
 2b22:	21fc 0000 5736 6028     movel #22326,0x6028 ;dst address
 2b2a:	21f8 6014 5f9c 	        movel 0x6014,0x5f9c ;msk->src address
 2b30:	31f8 6018 5fa0 	        movew 0x6018,0x5fa0 ;msk->src w
-2b36:	31f8 6022 5faa 	        movew 0x6022,0x5faa ;msk->src W
+2b36:	31f8 6022 5faa 	        movew 0x6022,0x5faa ;msk->src w
 2b3c:	31f8 601a 5fa2 	        movew 0x601a,0x5fa2 ;msk->src h
 2b42:	31f8 601e 5fa6 	        movew 0x601e,0x5fa6 ;msk->src x
 2b48:	31f8 6020 5fa8 	        movew 0x6020,0x5fa8 ;msk->src y
@@ -2087,9 +2093,9 @@
 2b52:	6100 00a6      	        bsrw 0x2bfa
 2b56:	4a38 60e2      	        tstb 0x60e2
 2b5a:	66fa           	        bnes 0x2b56
-2b5c:	33fc 0008 0030 0054     movew #8,0x300054     ;cursor src W
-2b64:	33fc 0008 0030 005c     movew #8,0x30005c     ;cursor msk W
-2b6c:	33fc 0088 0030 0064     movew #136,0x300064   ;cursor dst W
+2b5c:	33fc 0008 0030 0054     movew #8,0x300054     ;cursor src w
+2b64:	33fc 0008 0030 005c     movew #8,0x30005c     ;cursor msk w
+2b6c:	33fc 0088 0030 0064     movew #136,0x300064   ;cursor dst w
 2b74:	33f8 60ae 0030 006a     movew 0x60ae,0x30006a ;cursor function
 2b7c:	23fc 0000 60b0 	        movel #24752,0x30006c ;cursor data
 2b82:	0030 006c 
@@ -2171,7 +2177,7 @@
 2c8e:	0078 0010 5f96 	        oriw #16,0x5f96 ;bba command
 2c94:	227c 0000 2cb0 	        moveal #11440,%a1
 2c9a:	6100 0c88      	        bsrw 0x3924
-2c9e:	227c 0000 60b0 	        moveal #24752,%a1 ;copy to RAM
+2c9e:	227c 0000 60b0 	        moveal #24752,%a1 ;copy to ram
 2ca4:	323c 000f      	        movew #15,%d1
 2ca8:	32da           	        movew %a2@+,%a1@+
 2caa:	51c9 fffc      	        dbf %d1,0x2ca8
@@ -2356,7 +2362,7 @@
 2ed8:	6100 1920      	        bsrw 0x47fa
 2edc:	6000 e186      	        braw 0x1064
 
-;10 REPORT_STATUS
+;10 report_status
 2ee0:	2078 5f8c      	        moveal 0x5f8c,%a0
 2ee4:	223c 0000 0100 	        movel #256,%d1
 2eea:	4841           	        swap %d1
@@ -2422,46 +2428,46 @@
 2ff0:	31f8 2f6e 2f6c 	        movew 0x2f6e,0x2f6c
 2ff6:	31f8 2f68 2f66 	        movew 0x2f68,0x2f66
 2ffc:	31f8 2f70 2f6e 	        movew 0x2f70,0x2f6e
-3002:	3018           	        movew %a0@+,%d0
-3004:	3218           	        movew %a0@+,%d1
-3006:	3418           	        movew %a0@+,%d2
+3002:	3018           	        movew %a0@+,%d0   ;vertex x
+3004:	3218           	        movew %a0@+,%d1   ;vertex y
+3006:	3418           	        movew %a0@+,%d2   ;vertex flags
 3008:	0802 0000      	        btst #0,%d2
-300c:	6708           	        beqs 0x3016
+300c:	6708           	        beqs 0x3016       ;relative vertex?
 300e:	d078 2f66      	        addw 0x2f66,%d0
 3012:	d278 2f6e      	        addw 0x2f6e,%d1
 3016:	31c0 2f68      	        movew %d0,0x2f68
 301a:	31c1 2f70      	        movew %d1,0x2f70
 301e:	0802 0004      	        btst #4,%d2
-3022:	670a           	        beqs 0x302e
+3022:	670a           	        beqs 0x302e       ;vertex end closed?
 3024:	4a38 2f61      	        tstb 0x2f61
 3028:	6700 011e      	        beqw 0x3148
 302c:	c149           	        exg %a0,%a1
 302e:	0802 0001      	        btst #1,%d2
-3032:	664c           	        bnes 0x3080
+3032:	664c           	        bnes 0x3080       ;draw?
 3034:	4a38 2f60      	        tstb 0x2f60
 3038:	6646           	        bnes 0x3080
-303a:	0802 0002      	        btst #2,%d2
+303a:	0802 0002      	        btst #2,%d2       ;curved segment?
 303e:	6608           	        bnes 0x3048
-3040:	6100 018c      	        bsrw 0x31ce
+3040:	6100 018c      	        bsrw 0x31ce       ;straight
 3044:	6000 003a      	        braw 0x3080
-3048:	4a04           	        tstb %d4
+3048:	4a04           	        tstb %d4          ;curved segment
 304a:	6610           	        bnes 0x305c
 304c:	3038 2f68      	        movew 0x2f68,%d0
 3050:	3238 2f70      	        movew 0x2f70,%d1
-3054:	0c78 0001 2f80 	        cmpiw #1,0x2f80
-305a:	6718           	        beqs 0x3074
-305c:	3010           	        movew %a0@,%d0
+3054:	0c78 0001 2f80 	        cmpiw #1,0x2f80   ;segment list count
+305a:	6718           	        beqs 0x3074       ;just one vertex?
+305c:	3010           	        movew %a0@,%d0    ;get next vertex
 305e:	3228 0002      	        movew %a0@(2),%d1
 3062:	3628 0004      	        movew %a0@(4),%d3
 3066:	0803 0000      	        btst #0,%d3
 306a:	6708           	        beqs 0x3074
 306c:	d078 2f68      	        addw 0x2f68,%d0
 3070:	d278 2f70      	        addw 0x2f70,%d1
-3074:	31c0 2f6a      	        movew %d0,0x2f6a
+3074:	31c0 2f6a      	        movew %d0,0x2f6a  ;last vertex
 3078:	31c1 2f72      	        movew %d1,0x2f72
 307c:	6100 016e      	        bsrw 0x31ec
 3080:	0802 0003      	        btst #3,%d2
-3084:	6722           	        beqs 0x30a8
+3084:	6722           	        beqs 0x30a8       ;start closed?
 3086:	4a38 2f61      	        tstb 0x2f61
 308a:	6600 00bc      	        bnew 0x3148
 308e:	50c4           	        st %d4
@@ -2477,7 +2483,7 @@
 30b2:	4278 2f7c      	        clrw 0x2f7c
 30b6:	4278 2f7e      	        clrw 0x2f7e
 30ba:	51f8 2f60      	        sf 0x2f60
-30be:	0802 0004      	        btst #4,%d2
+30be:	0802 0004      	        btst #4,%d2       ;end closed?
 30c2:	6726           	        beqs 0x30ea
 30c4:	4a38 2f61      	        tstb 0x2f61
 30c8:	6700 007e      	        beqw 0x3148
@@ -2488,7 +2494,7 @@
 30da:	3238 2f76      	        movew 0x2f76,%d1
 30de:	b278 2f70      	        cmpw 0x2f70,%d1
 30e2:	6664           	        bnes 0x3148
-30e4:	5278 2f80      	        addqw #1,0x2f80
+30e4:	5278 2f80      	        addqw #1,0x2f80   ;increment segment count
 30e8:	604a           	        bras 0x3134
 30ea:	4a38 2f62      	        tstb 0x2f62
 30ee:	6744           	        beqs 0x3134
@@ -2512,9 +2518,9 @@
 312a:	b478 2f7c      	        cmpw 0x2f7c,%d2
 312e:	6704           	        beqs 0x3134
 3130:	6100 031e      	        bsrw 0x3450
-3134:	5378 2f80      	        subqw #1,0x2f80
+3134:	5378 2f80      	        subqw #1,0x2f80   ;decrement segment count
 3138:	6e00 feb0      	        bgtw 0x2fea
-313c:	4a38 2f61      	        tstb 0x2f61
+313c:	4a38 2f61      	        tstb 0x2f61       ;no more segments
 3140:	6606           	        bnes 0x3148
 3142:	4cdf 031f      	        moveml %sp@+,%d0-%d4/%a0-%a1
 3146:	4e75           	        rts
@@ -2552,12 +2558,16 @@
 31c2:	4278 2f7e      	        clrw 0x2f7e
 31c6:	31f8 604c 2f80 	        movew 0x604c,0x2f80 ;segment list count
 31cc:	4e75           	        rts
+
+;draw curved line
 31ce:	31f8 2f66 2f4c 	        movew 0x2f66,0x2f4c
 31d4:	31f8 2f6e 2f4e 	        movew 0x2f6e,0x2f4e
 31da:	31f8 2f68 2f50 	        movew 0x2f68,0x2f50
 31e0:	31f8 2f70 2f52 	        movew 0x2f70,0x2f52
 31e6:	6100 010c      	        bsrw 0x32f4
 31ea:	4e75           	        rts
+
+;draw last vertex
 31ec:	48e7 fc80      	        moveml %d0-%d5/%a0,%sp@-
 31f0:	3038 2f68      	        movew 0x2f68,%d0
 31f4:	9078 2f66      	        subw 0x2f66,%d0
@@ -2632,6 +2642,8 @@
 32e6:	31fc 8075 60d4 	        movew #-32651,0x60d4
 32ec:	6100 150c      	        bsrw 0x47fa
 32f0:	6000 dd72      	        braw 0x1064
+
+;draw curved line
 32f4:	48e7 fe00      	        moveml %d0-%d6,%sp@-
 32f8:	3038 2f50      	        movew 0x2f50,%d0
 32fc:	9078 2f4c      	        subw 0x2f4c,%d0

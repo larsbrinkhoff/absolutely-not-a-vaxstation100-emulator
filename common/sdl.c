@@ -113,8 +113,31 @@ void sdl_present (struct draw *data)
   SDL_PushEvent (&ev);
 }
 
+static void stretch(SDL_Renderer *renderer, int width, int height, SDL_Rect *r)
+{
+  /* Return in r a rectangle with the same aspect ratio as the video
+     buffer but scaled to fit precisely in the output window.
+     Normally, the buffer and the window have the same sizes, but if
+     the window is resized, or fullscreen is in effect, they are
+     not. */
+  int w, h;
+  SDL_GetRendererOutputSize(renderer, &w, &h);
+  if ((double)h / height < (double)w / width) {
+    r->w = width * h / height;
+    r->h = h;
+    r->x = (w - r->w) / 2;
+    r->y = 0;
+  } else {
+    r->w = w;
+    r->h = height * w / width;
+    r->x = 0;
+    r->y = (h - r->h) / 2;
+  }
+}
+
 static void draw_present (struct draw *data)
 {
+  SDL_Rect dst;
   void *pixels;
   uint8_t *rgb, *source;
   int pitch;
@@ -137,7 +160,8 @@ static void draw_present (struct draw *data)
   free (data);
 
 #if 1
-  SDL_RenderCopy (renderer, screentex, NULL, NULL);
+  stretch (renderer, 1088, 864, &dst);
+  SDL_RenderCopy (renderer, screentex, NULL, &dst);
   SDL_RenderPresent (renderer);
 #else
   {
@@ -213,6 +237,11 @@ static void toggle_fullscreen (void)
     SDL_ShowCursor (SDL_DISABLE);
   else
     SDL_ShowCursor (SDL_ENABLE);
+  SDL_RenderClear (renderer);
+  {
+    extern int updated;
+    updated = 1;
+  }
 }
 
 void sdl_capslock (uint8_t code)

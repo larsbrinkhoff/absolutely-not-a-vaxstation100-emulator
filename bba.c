@@ -18,6 +18,12 @@
 #define LINE_Y     (0x02C>>1)
 #define LINE_X     (0x02E>>1)
 #define LINE_STR   (0x032>>1)
+#define L_MSK_X    (0x038>>1)
+#define L_MSK_A    (0x03A>>1)
+#define L_MSK_W    (0x03E>>1)
+#define L_MSK_SIZE (0x040>>1)
+#define L_PAT_P    (0x04A>>1)
+#define L_PAT_C    (0x04C>>1)
 #define C_SRC_A    (0x04E>>1)
 #define C_SRC_X    (0x052>>1)
 #define C_SRC_STR  (0x054>>1)
@@ -37,7 +43,9 @@
 #define COMMAND_UP        0x0008
 #define COMMAND_TILE      0x0010
 #define COMMAND_CURSOR    0x0020
-#define COMMAND_LINE    0x0040
+#define COMMAND_LINE      0x0040
+
+#define EXTW(X) ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
 
 static u16 scratchpad[256];
 
@@ -78,11 +86,20 @@ static void mem_write(u32 a, u16 x) {
   }
 }
 
-static u32 address(int x, u16 offset) {
+static u32 address(int x) {
   u32 a = scratchpad[x] << 16;
   a |= scratchpad[x+1];
-  a += (offset / 8) & ~1U;
   return a;
+}
+
+static u32 stride(u32 a, int i, int n) {
+  int x = EXTW(scratchpad[i]);
+  x *= n;
+  return a + x;
+}
+
+static u32 offset(u32 a, u16 x) {
+  return a + ((x / 8) & ~1U);
 }
 
 #if 0
@@ -123,33 +140,30 @@ static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
   u16 dst_x = scratchpad[DST_X + reg];
   u16 msk_w = scratchpad[MSK_W + reg];
   while(msk_w != 0) {
-    u16 offset;
     u16 src = 0;
     u16 msk = 1;
     if (scratchpad[0] & (COMMAND_SOURCE|COMMAND_TILE)) {
-      offset = src_x;
-      src = mem_read(src_a + ((offset / 8) & ~1U));
-      src >>= offset % 16;
+      src = mem_read(offset(src_a, src_x));
+      src >>= src_x % 16;
       src_x += sign;
       if (scratchpad[0] & COMMAND_TILE)
         src_x %= 16;
     }
     if (scratchpad[0] & COMMAND_MASK) {
-      offset = msk_x;
-      msk = mem_read(msk_a + ((offset / 8) & ~1U));
-      msk >>= offset % 16;
+      msk = mem_read(offset(msk_a, msk_x));
+      msk >>= msk_x % 16;
       msk_x += sign;
       if (scratchpad[0] & COMMAND_TILE)
         msk_x %= 16;
     }
-    offset = dst_x;
-    u16 dst = mem_read(dst_a + ((offset / 8) & ~1U));
+    u32 a = offset(dst_a, dst_x);
+    u16 dst = mem_read(a);
     if (msk & 1) {
-      msk = 1 << (offset % 16);
-      dst = (dst & ~msk) | (function (src, dst >> (offset % 16)) << (offset % 16));
+      msk = 1 << (dst_x % 16);
+      dst = (dst & ~msk) | (function (src, dst >> (dst_x % 16)) << (dst_x % 16));
     }
-    fprintf(stderr, "BBA: out %04X @ %06X\n", dst, dst_a + ((offset / 8) & ~1U));
-    mem_write(dst_a + ((offset / 8) & ~1U), dst);
+    fprintf(stderr, "BBA: out %04X @ %06X\n", dst, a);
+    mem_write(a, dst);
     dst_x += sign;
     msk_w--;
   }
@@ -157,18 +171,15 @@ static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
 
 static void copy_bitmap(void) {
   u32 sign = (scratchpad[0] & COMMAND_UP) ? -1 : 1;
-  u32 src_stride = sign * scratchpad[SRC_STR];
-  u32 dst_stride = sign * scratchpad[DST_STR];
-  u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[MSK_STR] : 0;
-  u32 src_a = address(SRC_A, 0);
-  u32 msk_a = address(MSK_A, 0);
-  u32 dst_a = address(DST_A, 0);
+  u32 src_a = address(SRC_A);
+  u32 msk_a = address(MSK_A);
+  u32 dst_a = address(DST_A);
   u16 msk_h = scratchpad[MSK_H];
   while (msk_h != 0) {
     copy_line(src_a, msk_a, dst_a, 0);
-    src_a += src_stride;
-    msk_a += msk_stride;
-    dst_a += dst_stride;
+    src_a = stride(src_a, SRC_STR, sign);
+    msk_a = stride(msk_a, MSK_STR, scratchpad[0] & COMMAND_MASK ? sign : 0);
+    dst_a = stride(dst_a, DST_STR, sign);
     msk_h--;
   }
 }
@@ -177,9 +188,9 @@ static void copy_tile(void) {
   u32 sign = (scratchpad[0] & COMMAND_UP) ? -1 : 1;
   u32 dst_stride = scratchpad[DST_STR];
   u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[MSK_STR] : 0;
-  u32 src_a = address(TILE_A, 0);
-  u32 msk_a = address(MSK_A, 0);
-  u32 dst_a = address(DST_A, 0);
+  u32 src_a = address(TILE_A);
+  u32 msk_a = address(MSK_A);
+  u32 dst_a = address(DST_A);
   u16 msk_h = scratchpad[MSK_H];
   u32 i = 0;
   while (msk_h != 0) {
@@ -196,9 +207,9 @@ static void copy_cursor(void) {
   u32 src_stride = sign * scratchpad[C_SRC_STR];
   u32 dst_stride = sign * scratchpad[C_DST_STR];
   u32 msk_stride = (scratchpad[0] & COMMAND_MASK) ? sign * scratchpad[C_MSK_STR] : 0;
-  u32 src_a = address(C_SRC_A, 0);
-  u32 msk_a = address(C_MSK_A, 0);
-  u32 dst_a = address(C_DST_A, 0);
+  u32 src_a = address(C_SRC_A);
+  u32 msk_a = address(C_MSK_A);
+  u32 dst_a = address(C_DST_A);
   u16 msk_h = scratchpad[C_MSK_H];
   while (msk_h != 0) {
     copy_line(src_a, msk_a, dst_a, 0x04C>>1);
@@ -209,12 +220,27 @@ static void copy_cursor(void) {
   }
 }
 
+/* The meanings of the flag bits.  If the bit is 1 the predicate is true */
+
+#define VertexRelative		0x0001		/* else absolute */
+#define VertexDontDraw		0x0002		/* else draw */
+#define VertexCurved		0x0004		/* else straight */
+#define VertexStartClosed	0x0008		/* else not */
+#define VertexEndClosed		0x0010		/* else not */
+#define VertexDrawLastPoint	0x0020		/* else don't */
+
 static void point(int x, int y) {
-  u32 a = address(LINE_A, 0);
-  a += y * scratchpad[LINE_STR];
-  u16 dst = mem_read(a + ((x / 8) & ~1U));
+  u32 a = address(LINE_A);
+  a = stride(a, LINE_STR, y);
+  fprintf(stderr, "POINT: %d,%d\n", x, (a-0x100000)/136);
+  a = offset(a, x);
+  u16 dst = mem_read(a);
   dst |= 1 << (x % 16);
-  mem_write(a + ((x / 8) & ~1U), dst);
+  mem_write(a, dst);
+  {
+    extern void refresh (void);
+    refresh();
+  }
 }
 
 #define ABS(_X) ((_X) >= 0 ? (_X) : -(_X))
@@ -268,6 +294,10 @@ static void draw_line(void)
   u16 y2 = scratchpad[LINE_Y];
   int dx = (int)x2 - (int)x1;
   int dy = (int)y2 - (int)y1;
+  fprintf(stderr, "LINE: %06X / (%d,%d+%d) - (%d,%d+%d)\n",
+          address(LINE_A),
+          x1, (address(LINE_A)-0x100000)/136, y1,
+          x2, (address(LINE_A)-0x100000)/136, y2);
   if (ABS(dx) > ABS(dy))
     xline(x1, y1, x2, dx, dy);
   else
@@ -282,7 +312,7 @@ static void callback(void) {
     copy_tile();
   else if (scratchpad[0] & COMMAND_LINE)
     draw_line();
-  else if (scratchpad[0] & COMMAND_SOURCE)
+  else
     copy_bitmap();
   irq_set(4, 1);
 }
