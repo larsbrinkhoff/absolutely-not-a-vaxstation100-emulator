@@ -180,16 +180,15 @@ def send_draw_curve(s):
     srcy = 0
     brushw = 1
     brushh = 1
-    dstx = 0x234
-    dsty = 0x123
+    dstx = 0
+    dsty = 0
     clips = []
     clipcount = len(clips)
     func = 3
     mska = 0
     mskx = 0
     msky = 0
-    segments = [(0x42, 0x56, VERT_DRAWLASTPOINT),
-                (0x78, 0x89, VERT_DRAWLASTPOINT)]
+    segments = [(0, 10, VERT_DRAWLASTPOINT)]
 
     func = ssmap[func]
 

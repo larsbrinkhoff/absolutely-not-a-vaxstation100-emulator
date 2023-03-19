@@ -45,7 +45,7 @@
 #define COMMAND_CURSOR    0x0020
 #define COMMAND_LINE      0x0040
 
-#define EXTW(X) ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
+#define EXTW(X)  ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
 
 static u16 scratchpad[256];
 
@@ -229,79 +229,37 @@ static void copy_cursor(void) {
 #define VertexEndClosed		0x0010		/* else not */
 #define VertexDrawLastPoint	0x0020		/* else don't */
 
-static void point(int x, int y) {
-  u32 a = address(LINE_A);
-  a = stride(a, LINE_STR, y);
-  fprintf(stderr, "POINT: %d,%d\n", x, (a-0x100000)/136);
+static void plot(u16 x, u32 a) {
+  //fprintf(stderr, "POINT: %d,%d\n", x, (a-0x100000)/136);
   a = offset(a, x);
   u16 dst = mem_read(a);
   dst |= 1 << (x % 16);
   mem_write(a, dst);
+#if 0
   {
     extern void refresh (void);
     refresh();
   }
+#endif
 }
 
-#define ABS(_X) ((_X) >= 0 ? (_X) : -(_X))
-#define SIGN(_X) ((_X) >= 0 ? 1 : -1)
-
-static void xline(int x, int y, int x2, int dx, int dy) {
-  int ix = SIGN(dx);
-  int iy = SIGN(dy);
-  int ay;
-  dx = ABS(dx);
-  dy = ABS(dy);
-  ay = dy/2;
-  for (;;) {
-    point(x, y);
-    if (x == x2)
-      break;
-    if (ay > 0) {
-      y += iy;
-      ay -= dx;
+static void draw_line(void) {
+  int dst_x = scratchpad[DST_X];
+  int dst_a = address(LINE_A);
+  int a = scratchpad[0x02E>>1]/2;
+  int i;
+  for (i = 0; i < scratchpad[0x02A>>1]; i++) {
+    plot(dst_x, dst_a);
+    if (a > 0) {
+      dst_x += scratchpad[0x030>>1];
+      dst_a += EXTW(scratchpad[0x032>>1]);
+      a -= scratchpad[0x02C>>1];
+    } else {
+      dst_x += scratchpad[0x034>>1];
+      dst_a += EXTW(scratchpad[0x036>>1]);
     }
-    ay += dy;
-    x += ix;
+    a += scratchpad[0x02E>>1];
   }
-}
-  
-static void yline(int x, int y, int y2, int dx, int dy) {
-  int ix = SIGN(dx);
-  int iy = SIGN(dy);
-  int ax;
-  dx = ABS(dx);
-  dy = ABS(dy);
-  ax = dx/2;
-  for (;;) {
-    point(x, y);
-    if (y == y2)
-      break;
-    if (ax > 0) {
-      x += ix;
-      ax -= dy;
-    }
-    ax += dx;
-    y += iy;
-  }
-}
-
-static void draw_line(void)
-{
-  u16 x1 = scratchpad[DST_X];
-  u16 x2 = x1 + scratchpad[LINE_X];
-  u16 y1 = 0;
-  u16 y2 = scratchpad[LINE_Y];
-  int dx = (int)x2 - (int)x1;
-  int dy = (int)y2 - (int)y1;
-  fprintf(stderr, "LINE: %06X / (%d,%d+%d) - (%d,%d+%d)\n",
-          address(LINE_A),
-          x1, (address(LINE_A)-0x100000)/136, y1,
-          x2, (address(LINE_A)-0x100000)/136, y2);
-  if (ABS(dx) > ABS(dy))
-    xline(x1, y1, x2, dx, dy);
-  else
-    yline(x1, y1, y2, dx, dy);
 }
 
 
