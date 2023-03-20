@@ -47,7 +47,18 @@
 
 #define EXTW(X)  ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
 
+#define INVALID 0xFF000000
+
+typedef struct {
+  u32 address;
+  u16 data;
+} cache_t;
+
 static u16 scratchpad[256];
+
+static cache_t src_cache = { INVALID, 0 };
+static cache_t msk_cache = { INVALID, 0 };
+static cache_t dst_cache = { INVALID, 0 };
 
 static void callback(void);
 static EVENT(bba_event, callback);
@@ -84,6 +95,55 @@ static void mem_write(u32 a, u16 x) {
     //NXM
     ;
   }
+}
+
+static void flush_cache(cache_t *cache) {
+  if (cache->address == INVALID)
+    return;
+  mem_write(cache->address, cache->data);
+  cache->address = INVALID;
+}
+
+static u16 mem_readonly_cached(cache_t *cache, u32 a) {
+  if (cache->address == a)
+    return cache->data;
+  if (dst_cache.address == a)
+    flush_cache(&dst_cache);
+  u16 x = mem_read(a);
+  cache->address = a;
+  cache->data = x;
+  return x;
+}
+
+static void invalidate_cache(cache_t *cache, u32 a) {
+  if (cache->address == a)
+    cache->address = INVALID;
+}
+
+static u16 mem_read_cached(cache_t *cache, u32 a) {
+  if (cache->address == a)
+    return cache->data;
+
+  invalidate_cache(&src_cache, a);
+  invalidate_cache(&msk_cache, a);
+  flush_cache(cache);
+  u16 x = mem_read(a);
+  cache->address = a;
+  cache->data = x;
+  return x;
+}
+
+static void mem_write_cached(cache_t *cache, u32 a, u16 x) {
+  if (cache->address == a) {
+    cache->data = x;
+    return;
+  }
+  
+  invalidate_cache(&src_cache, a);
+  invalidate_cache(&msk_cache, a);
+  flush_cache(cache);
+  cache->address = a;
+  cache->data = x;
 }
 
 static u32 address(int x) {
@@ -133,6 +193,18 @@ static u16 function(u16 src, u16 dst) {
   return (scratchpad[FUNC] >> (src + dst)) & 1;
 }
 
+static u16 alu(u16 src, u16 msk, u16 dst) {
+  if (msk & 1) {
+    src &= 1;
+    dst &= 1;
+    src = 2 - 2*src;
+    dst = 1 - 1*dst;
+    return (scratchpad[FUNC] >> (src + dst)) & 1;
+  } else {
+    return dst;
+  }
+}
+
 static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
   u32 sign = (scratchpad[0] & COMMAND_LEFT) ? -1 : 1;
   u16 src_x = scratchpad[SRC_X + reg];
@@ -143,27 +215,29 @@ static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
     u16 src = 0;
     u16 msk = 1;
     if (scratchpad[0] & (COMMAND_SOURCE|COMMAND_TILE)) {
-      src = mem_read(offset(src_a, src_x));
+      src = mem_readonly_cached(&src_cache, offset(src_a, src_x));
       src >>= src_x % 16;
       src_x += sign;
       if (scratchpad[0] & COMMAND_TILE)
         src_x %= 16;
     }
     if (scratchpad[0] & COMMAND_MASK) {
-      msk = mem_read(offset(msk_a, msk_x));
+      msk = mem_readonly_cached(&msk_cache, offset(msk_a, msk_x));
       msk >>= msk_x % 16;
       msk_x += sign;
       if (scratchpad[0] & COMMAND_TILE)
         msk_x %= 16;
     }
     u32 a = offset(dst_a, dst_x);
-    u16 dst = mem_read(a);
+    u16 dst = mem_read_cached(&dst_cache, a);
+    //src <<= dst_x % 16;
+    //msk &= 1 << (dst_x % 16);
+    //dst = alu(src, msk, dst);
     if (msk & 1) {
       msk = 1 << (dst_x % 16);
       dst = (dst & ~msk) | (function (src, dst >> (dst_x % 16)) << (dst_x % 16));
     }
-    fprintf(stderr, "BBA: out %04X @ %06X\n", dst, a);
-    mem_write(a, dst);
+    mem_write_cached(&dst_cache, a, dst);
     dst_x += sign;
     msk_w--;
   }
@@ -233,7 +307,13 @@ static void plot(u16 x, u32 a) {
   //fprintf(stderr, "POINT: %d,%d\n", x, (a-0x100000)/136);
   a = offset(a, x);
   u16 dst = mem_read(a);
-  dst |= 1 << (x % 16);
+#if 0
+  u16 msk = 1 << (x % 16);
+  u16 src = 1;
+  dst = (dst & ~msk) | (function (src, dst >> (x % 16)) << (x % 16));
+#else
+  dst &= ~(1 << (x % 16));
+#endif
   mem_write(a, dst);
 #if 0
   {
@@ -272,6 +352,9 @@ static void callback(void) {
     draw_line();
   else
     copy_bitmap();
+  invalidate_cache(&src_cache, src_cache.address);
+  invalidate_cache(&msk_cache, msk_cache.address);
+  flush_cache(&dst_cache);
   irq_set(4, 1);
 }
 
