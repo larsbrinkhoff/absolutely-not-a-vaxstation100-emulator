@@ -162,47 +162,38 @@ static u32 offset(u32 a, u16 x) {
   return a + ((x / 8) & ~1U);
 }
 
-#if 0
-#define FUNC(N, F)  static u16 func_##N(u16 src, u16 dst) { return F; }
-FUNC(0000, 0)
-FUNC(0001, src & dst)
-FUNC(0010, src & ~dst)
-FUNC(0011, src)
-FUNC(0100, ~src & dst)
-FUNC(0101, dst)
-FUNC(0110, src ^ dst)
-FUNC(0111, src | dst)
-FUNC(1000, ~(src | dst))
-FUNC(1001, ~(src ^ dst))
-FUNC(1010, ~dst)
-FUNC(1011, src | ~dst)
-FUNC(1100, ~src)
-FUNC(1101, ~src | dst)
-FUNC(1110, ~(src & dst))
-FUNC(1111, ~0U)
+#define DEFUN(N, F)  static u16 alu_##N(u16 src, u16 dst) { return F; }
+DEFUN(0000, 0)
+DEFUN(0001, src & dst)
+DEFUN(0010, src & ~dst)
+DEFUN(0011, src)
+DEFUN(0100, ~src & dst)
+DEFUN(0101, dst)
+DEFUN(0110, src ^ dst)
+DEFUN(0111, src | dst)
+DEFUN(1000, ~(src | dst))
+DEFUN(1001, ~(src ^ dst))
+DEFUN(1010, ~dst)
+DEFUN(1011, src | ~dst)
+DEFUN(1100, ~src)
+DEFUN(1101, ~src | dst)
+DEFUN(1110, ~(src & dst))
+DEFUN(1111, 0xFFFF)
 
-src = (src & msk) | (dst & ~msk);
-dst = func(src, dst);
-#endif
+typedef u16 (*fn_t)(u16, u16);
+static fn_t fn[] = {
+  alu_0000, alu_0001, alu_0010, alu_0011,
+  alu_0100, alu_0101, alu_0110, alu_0111,
+  alu_1000, alu_1001, alu_1010, alu_1011,
+  alu_1100, alu_1101, alu_1110, alu_1111
+};
 
-static u16 function(u16 src, u16 dst) {
-  src &= 1;
-  dst &= 1;
-  src = 2 - 2*src;
-  dst = 1 - 1*dst;
-  return (scratchpad[FUNC] >> (src + dst)) & 1;
-}
+static fn_t alu_fn;
 
 static u16 alu(u16 src, u16 msk, u16 dst) {
-  if (msk & 1) {
-    src &= 1;
-    dst &= 1;
-    src = 2 - 2*src;
-    dst = 1 - 1*dst;
-    return (scratchpad[FUNC] >> (src + dst)) & 1;
-  } else {
-    return dst;
-  }
+  dst &= ~msk;
+  dst |= msk & alu_fn(src, dst);
+  return dst;
 }
 
 static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
@@ -230,14 +221,9 @@ static void copy_line(u32 src_a, u32 msk_a, u32 dst_a, int reg) {
     }
     u32 a = offset(dst_a, dst_x);
     u16 dst = mem_read_cached(&dst_cache, a);
-    //src <<= dst_x % 16;
-    //msk &= 1 << (dst_x % 16);
-    //dst = alu(src, msk, dst);
-    if (msk & 1) {
-      msk = 1 << (dst_x % 16);
-      dst = (dst & ~msk) | (function (src, dst >> (dst_x % 16)) << (dst_x % 16));
-    }
-    mem_write_cached(&dst_cache, a, dst);
+    src = (src & 1) << (dst_x % 16);
+    msk = (msk & 1) << (dst_x % 16);
+    mem_write_cached(&dst_cache, a, alu(src, msk, dst));
     dst_x += sign;
     msk_w--;
   }
@@ -249,6 +235,7 @@ static void copy_bitmap(void) {
   u32 msk_a = address(MSK_A);
   u32 dst_a = address(DST_A);
   u16 msk_h = scratchpad[MSK_H];
+  alu_fn = fn[scratchpad[FUNC] & 0xF];
   while (msk_h != 0) {
     copy_line(src_a, msk_a, dst_a, 0);
     src_a = stride(src_a, SRC_STR, sign);
@@ -267,6 +254,7 @@ static void copy_tile(void) {
   u32 dst_a = address(DST_A);
   u16 msk_h = scratchpad[MSK_H];
   u32 i = 0;
+  alu_fn = fn[scratchpad[FUNC] & 0xF];
   while (msk_h != 0) {
     copy_line(src_a + i, msk_a, dst_a, 0);
     i = (i + 2) % 32;
@@ -285,6 +273,7 @@ static void copy_cursor(void) {
   u32 msk_a = address(C_MSK_A);
   u32 dst_a = address(C_DST_A);
   u16 msk_h = scratchpad[C_MSK_H];
+  alu_fn = fn[scratchpad[C_FUNC] & 0xF];
   while (msk_h != 0) {
     copy_line(src_a, msk_a, dst_a, 0x04C>>1);
     src_a += src_stride;
