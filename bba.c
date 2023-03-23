@@ -298,8 +298,8 @@ static void plot(u16 x, u32 a) {
   u16 dst = mem_read(a);
 #if 0
   u16 msk = 1 << (x % 16);
-  u16 src = 1;
-  dst = (dst & ~msk) | (function (src, dst >> (x % 16)) << (x % 16));
+  u16 src = 1 << (x % 16);
+  mem_write(a, alu(src, msk, dst));
 #else
   dst &= ~(1 << (x % 16));
 #endif

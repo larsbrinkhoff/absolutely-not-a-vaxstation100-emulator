@@ -79,8 +79,6 @@ void fibre_csr(int n, u16 data) {
 }
 
 u16 fibre_read(u32 address, u8 type) {
-  fprintf(stderr, "FIBRE: Send read%s %06X\n",
-          type == FIBRE_READ8 ? "8" : "16", address);
   u8 x[5];
   u16 data;
   x[0] = type;
@@ -102,6 +100,8 @@ u16 fibre_read(u32 address, u8 type) {
     break;
   }
   SDL_UnlockMutex(mutex);
+  fprintf(stderr, "FIBRE: Read%s %06X -> %04X\n",
+          type == FIBRE_READ8 ? "8" : "16", address, data);
   return data;
 }
 
@@ -114,7 +114,7 @@ u16 fibre_read_w(u32 address) {
 }
 
 void fibre_write_b(u32 address, u8 data) {
-  fprintf(stderr, "FIBRE: Send write8 %06X %02X\n", address, data);
+  //fprintf(stderr, "FIBRE: Send write8 %06X %02X\n", address, data);
   u8 x[6];
   x[0] = FIBRE_WRITE8;
   x[1] = (address >> 24) & 0xFF;
@@ -126,7 +126,7 @@ void fibre_write_b(u32 address, u8 data) {
 }
 
 void fibre_write_w(u32 address, u16 data) {
-  fprintf(stderr, "FIBRE: Send write16 %06X %02X\n", address, data);
+  //fprintf(stderr, "FIBRE: Send write16 %06X %02X\n", address, data);
   u8 x[7];
   x[0] = FIBRE_WRITE16;
   x[1] = (address >> 24) & 0xFF;
@@ -169,7 +169,7 @@ static void fibre_receive(void) {
     mem_data = message[0] << 8;
     mem_data |= message[1];
     mem_flag = MEM_DATA;
-    fprintf(stderr, "FIBRE: Receive data %04X\n", mem_data);
+    //fprintf(stderr, "FIBRE: Receive data %04X\n", mem_data);
     SDL_CondSignal(cond);
     SDL_UnlockMutex(mutex);
     break;
