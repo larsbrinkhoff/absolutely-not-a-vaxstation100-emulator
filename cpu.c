@@ -1020,18 +1020,36 @@ static void insn_bcc(void) {
   }
 }
 
+static void bchg(u32 src) {
+  u32 dst;
+  u32 x = 1;
+  if (EA_M_FIELD == 0) {
+    dst = dreg[EA_R_FIELD];
+    if (src < 16)
+      add_cycles(2);
+    else
+      add_cycles(4);
+    x <<= src % 32;
+    dreg[EA_R_FIELD] = dst ^ x;
+  } else {
+    dst = read_b_ea();
+    x <<= src % 8;
+    modify_b_ea(dst ^ x);
+  }
+  SET_Z((dst & x) == 0);
+}
+
 static void insn_bchg(void) {
   TRACE();
-  UNIMPLEMENTED();
+  bchg(DREG);
 }
 
 static void insn_bchgi(void) {
   TRACE();
-  UNIMPLEMENTED();
+  bchg(read_b_imm());
 }
 
 static void insn_bclr(void) {
-  TRACE();
   TRACE();
   u32 dst, src = DREG;
   u32 x = 1;
