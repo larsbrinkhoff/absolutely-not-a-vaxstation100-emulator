@@ -1631,7 +1631,7 @@ ram_ok:
 181260:	08c1 0002      	          bset #2,%d1
 181264:	1141 0006      	          moveb %d1,%a0@(6)
 181268:	4239 0001 fffb 	          clrb 0x1fffb
-18126e:	4239 0001 fff9 	          clrb 0x1fff9
+18126e:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 181274:	4239 0001 fff6 	          clrb 0x1fff6
 18127a:	23fc 0001 ffd6 0001 ffc0  movel #131030,0x1ffc0
 181284:	23fc 0001 ffd6 0001 ffc4  movel #131030,0x1ffc4
@@ -1761,7 +1761,7 @@ ram_ok:
 181450:	6722           	          beqs 0x181474
 181452:	33fc 012c 0001 ffd4       movew #300,0x1ffd4 ;five second timeout
 18145a:	0242 00ff      	          andiw #255,%d2
-18145e:	0642 0200      	          addiw #512,%d2
+18145e:	0642 0200      	          addiw #512,%d2  ;device number: mouse
 181462:	323c 0008      	          movew #8,%d1
 181466:	6100 098e      	          bsrw 0x181df6 ;send 0008/buttons to host
 18146a:	601c           	          bras 0x181488
@@ -3875,6 +3875,8 @@ trap1_handler:
 182cbc:	6100 005a      	          bsrw 0x182d18 ;print character
 182cc0:	363c 0001      	          movew #1,%d3
 182cc4:	6010           	          bras 0x182cd6
+
+;print hex number in d2
 182cc6:	4842           	          swap %d2
 182cc8:	e19a           	          roll #8,%d2
 182cca:	363c 0001      	          movew #1,%d3
@@ -4013,9 +4015,9 @@ trap1_handler:
 182e9c:	13fc 000f 0080 0081       moveb #15,0x800081 ;LED ....G
 182ea4:	6100 d1e2      	          bsrw 0x180088
 182ea8:	08c0 0016      	          bset #22,%d0
-182eac:	4239 0001 fff9 	          clrb 0x1fff9
+182eac:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 182eb2:	6100 00fa      	          bsrw 0x182fae ;Maintenance main menu
-182eb6:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;key
+182eb6:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 182ebc:	67f8           	          beqs 0x182eb6
 182ebe:	227c 0018 2daa 	          moveal #0x182daa,%a1
 182ec4:	323c 0009      	          movew #9,%d1
@@ -4024,7 +4026,7 @@ trap1_handler:
 
 ;select menu item
 ;key in d0, table address in a1, length in d1
-182ece:	4239 0001 fff9 	          clrb 0x1fff9
+182ece:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 182ed4:	0240 00ff      	          andiw #255,%d0
 182ed8:	0440 0092      	          subiw #146,%d0 ;Keypad 0
 182edc:	6d00 00a8      	          bltw 0x182f86
@@ -4041,7 +4043,7 @@ trap1_handler:
 182f00:	2271 0000      	          moveal %a1@(%d0:w),%a1
 182f04:	4240           	          clrw %d0
 182f06:	4e91           	          jsr %a1@
-182f08:	4239 0001 fff9 	          clrb 0x1fff9
+182f08:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 182f0e:	13fc 0004 0080 0007       moveb #4,0x800007
 182f16:	13fc 0004 0080 0027       moveb #4,0x800027
 182f1e:	46fc 2000      	          movew #0x2000,%sr
@@ -4091,7 +4093,7 @@ trap1_handler:
 182fb6:	6000 fce0      	          braw 0x182c98 ;print string
 
 182fba:	6100 001a      	          bsrw 0x182fd6
-182fbe:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+182fbe:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 182fc4:	67f8           	          beqs 0x182fbe
 182fc6:	227c 0018 2dd2 	          moveal #1584594,%a1
 182fcc:	323c 0007      	          movew #7,%d1
@@ -4103,7 +4105,7 @@ trap1_handler:
 182fe0:	6000 fcb6      	          braw 0x182c98 ;print string
 
 182fe4:	6100 001a      	          bsrw 0x183000
-182fe8:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+182fe8:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 182fee:	67f8           	          beqs 0x182fe8
 182ff0:	227c 0018 2df2 	          moveal #1584626,%a1
 182ff6:	323c 0006      	          movew #6,%d1
@@ -4117,9 +4119,9 @@ trap1_handler:
 18300e:	6100 ff7e      	          bsrw 0x182f8e
 183012:	207c 0018 2702 	          moveal #1582850,%a0 ;"Keboard Button Test"
 183018:	6100 fc7e      	          bsrw 0x182c98 ;print string
-18301c:	1439 0001 fff9 	          moveb 0x1fff9,%d2
+18301c:	1439 0001 fff9 	          moveb 0x1fff9,%d2 ;keypress
 183022:	67f8           	          beqs 0x18301c
-183024:	4239 0001 fff9 	          clrb 0x1fff9
+183024:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 18302a:	0c02 0094      	          cmpib #-108,%d2 ;Keypad .
 18302e:	6606           	          bnes 0x183036
 183030:	4a9f           	          tstl %sp@+
@@ -4148,15 +4150,16 @@ trap1_handler:
 18309c:	4279 0000 00c8 	          clrw 0xc8
 1830a2:	4279 0000 00ca 	          clrw 0xca
 1830a8:	6100 d1c6      	          bsrw 0x180270
-1830ac:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+1830ac:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 1830b2:	670e           	          beqs 0x1830c2
-1830b4:	4239 0001 fff9 	          clrb 0x1fff9
+1830b4:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 1830ba:	0c00 0094      	          cmpib #0x94,%d0 ;Keypad .
 1830be:	6700 fdd2      	          beqw 0x182e92 ;enter maint menu
-1830c2:	1439 0001 fff8 	          moveb 0x1fff8,%d2
-1830c8:	6100 fc2a      	          bsrw 0x182cf4
-1830cc:	6100 d112      	          bsrw 0x1801e0 ;mouse
+1830c2:	1439 0001 fff8 	          moveb 0x1fff8,%d2 ;mouse buttons
+1830c8:	6100 fc2a      	          bsrw 0x182cf4 ;print buttons
+1830cc:	6100 d112      	          bsrw 0x1801e0 ;move mouse
 1830d0:	60da           	          bras 0x1830ac
+
 1830d2:	48e7 7000      	          moveml %d1-%d3,%sp@-
 1830d6:	4241           	          clrw %d1
 1830d8:	343c 0003      	          movew #3,%d2
@@ -4179,7 +4182,7 @@ trap1_handler:
 183114:	4e75           	          rts
 
 183116:	6100 001a      	          bsrw 0x183132
-18311a:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+18311a:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 183120:	67f8           	          beqs 0x18311a
 183122:	227c 0018 2e0e 	          moveal #1584654,%a1
 183128:	323c 000a      	          movew #10,%d1
@@ -4404,7 +4407,7 @@ trap1_handler:
 1833f2:	4e75           	          rts
 
 1833f4:	6100 001a      	          bsrw 0x183410
-1833f8:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+1833f8:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 1833fe:	67f8           	          beqs 0x1833f8
 183400:	227c 0018 2e3a 	          moveal #1584698,%a1
 183406:	323c 0007      	          movew #7,%d1
@@ -4419,9 +4422,9 @@ trap1_handler:
 183422:	207c 0018 2980 	          moveal #1583488,%a0 ;"Data Pad Button T"
 183428:	6100 f86e      	          bsrw 0x182c98 ;print string
 18342c:	51f9 0001 fffa 	          sf 0x1fffa
-183432:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+183432:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 183438:	6712           	          beqs 0x18344c
-18343a:	4239 0001 fff9 	          clrb 0x1fff9
+18343a:	4239 0001 fff9 	          clrb 0x1fff9 ;keypress
 183440:	0c00 0094      	          cmpib #-108,%d0 ;Keypad .
 183444:	6606           	          bnes 0x18344c
 183446:	4a9f           	          tstl %sp@+
@@ -4433,7 +4436,7 @@ trap1_handler:
 18345a:	4239 0001 fffa 	          clrb 0x1fffa
 183460:	60d0           	          bras 0x183432
 183462:	6100 001a      	          bsrw 0x18347e
-183466:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+183466:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 18346c:	67f8           	          beqs 0x183466
 18346e:	227c 0018 2e5a 	          moveal #1584730,%a1
 183474:	323c 0007      	          movew #7,%d1
@@ -4445,7 +4448,7 @@ trap1_handler:
 183488:	6000 f80e      	          braw 0x182c98 ;print string
 
 18348c:	6100 001c      	          bsrw 0x1834aa
-183490:	1039 0001 fff9 	          moveb 0x1fff9,%d0
+183490:	1039 0001 fff9 	          moveb 0x1fff9,%d0 ;keypress
 183496:	67f8           	          beqs 0x183490
 183498:	227c 0018 2e7a 	          moveal #1584762,%a1
 18349e:	323c 0005      	          movew #5,%d1
