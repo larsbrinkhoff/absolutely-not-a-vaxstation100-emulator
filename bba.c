@@ -304,12 +304,6 @@ static void plot(u16 x, u32 a) {
   dst &= ~(1 << (x % 16));
 #endif
   mem_write(a, dst);
-#if 0
-  {
-    extern void refresh (void);
-    refresh();
-  }
-#endif
 }
 
 static void draw_line(void) {
