@@ -858,12 +858,12 @@ DEFINSN_BWL(add_m)
 
 static void insn_addaw(void) {
   TRACE();
-  areg[REG_FIELD] += EXTW(read_w_ea());
+  AREG += EXTW(read_w_ea());
 }
 
 static void insn_addal(void) {
   TRACE();
-  areg[REG_FIELD] += read_l_ea();
+  AREG += read_l_ea();
 }
 
 #define CHECK_ALUI_EA(i1, i2)                             \
@@ -1219,9 +1219,17 @@ static void insn_cmp(const struct s *size) {
 DEFINSN_BWL(cmp)
 
 static void insn_cmpa(const struct s *size) {
+#if 0
+  u32 src = size->read_ea();
+  u32 dst = AREG;
+  if (size == &size_w)
+    src = EXTW(src);
+  alul(SUB, src, dst);
+#else
   u32 src = areg[REG_FIELD];
   u32 dst = size->read_ea();
   alul(SUB, src, dst);
+#endif
 }
 
 DEFINSN_WL(cmpa)
@@ -1586,7 +1594,7 @@ static void insn_lea(void) {
   UNIMPLEMENTED();
   //Check ea.
   //compute_ea(0);
-  //areg[REG_FIELD] = mem_addr;
+  //AREG = mem_addr;
 }
 
 static void insn_linea(void) {
@@ -1704,7 +1712,7 @@ static void insn_move(const struct s *size) {
 DEFINSN_BWL(move)
 
 static void insn_movea(const struct s *size) {
-  areg[REG_FIELD] = size->read_ea();
+  AREG = size->read_ea();
 }
 
 DEFINSN_WL(movea)
@@ -2019,12 +2027,12 @@ DEFINSN_BWL(sub)
 
 static void insn_subaw(void) {
   TRACE();
-  areg[REG_FIELD] -= EXTW(read_w_ea());
+  AREG -= EXTW(read_w_ea());
 }
 
 static void insn_subal(void) {
   TRACE();
-  areg[REG_FIELD] -= read_l_ea();
+  AREG -= read_l_ea();
 }
 
 static void insn_subi(const struct s *size) {
