@@ -1221,33 +1221,18 @@ DEFINSN_BWL(cmp)
 static void insn_cmpa(const struct s *size) {
   u32 src, dst;
   switch(PC-4) {
-  case 0x002e28:
-  case 0x0046f6:
-  case 0x004738:
-  case 0x004784:
-  case 0x0047d0:
-//case 0x00481e:
-  case 0x004848:
-//case 0x004882:
-  case 0x0048b2:
-  case 0x0048e4:
-  case 0x004916:
-  case 0x004960:
-  case 0x004c16:
-  case 0x1800ea:
-  case 0x180120:
-  case 0x180362:
-  case 0x180442:
-  case 0x181046:
-  case 0x181074:
-  case 0x181c94:
+  default:
     src = size->read_ea();
     dst = AREG;
     if (size == &size_w)
       src = EXTW(src);
     break;
-  default:
-    src = areg[REG_FIELD];
+  case 0x004784:
+  case 0x0047d0:
+  case 0x00481e:
+  case 0x004882:
+  case 0x0048e4:
+    src = AREG;
     dst = size->read_ea();
     break;
   }

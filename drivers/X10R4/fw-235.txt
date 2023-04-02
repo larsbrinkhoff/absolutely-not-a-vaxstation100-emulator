@@ -3659,7 +3659,7 @@
 4662:	51c8 fffc      	        dbf %d0,0x4660
 4666:	4278 60d4      	        clrw 0x60d4
 466a:	4278 40f0      	        clrw 0x40f0
-466e:	207c 0000 3f64 	        moveal #16228,%a0
+466e:	207c 0000 3f64 	        moveal #0x3f64,%a0
 4674:	21c8 40f6      	        movel %a0,0x40f6
 4678:	21c8 40f2      	        movel %a0,0x40f2
 467c:	303c 00bf      	        movew #191,%d0
@@ -3735,7 +3735,7 @@
 477e:	30c1           	        movew %d1,%a0@+
 4780:	30c2           	        movew %d2,%a0@+
 4782:	30c3           	        movew %d3,%a0@+
-4784:	b1fc 0000 462a 	        cmpal #17962,%a0
+4784:	b1fc 0000 462a 	        cmpal #17962,%a0 ;XXX?
 478a:	6306           	        blss 0x4792
 478c:	207c 0000 44aa 	        moveal #17578,%a0
 4792:	4250           	        clrw %a0@
@@ -3756,7 +3756,7 @@
 47ca:	30c1           	        movew %d1,%a0@+
 47cc:	30c2           	        movew %d2,%a0@+
 47ce:	30c3           	        movew %d3,%a0@+
-47d0:	b1fc 0000 4492 	        cmpal #17554,%a0
+47d0:	b1fc 0000 4492 	        cmpal #17554,%a0 ;XXX?
 47d6:	6306           	        blss 0x47de
 47d8:	207c 0000 4312 	        moveal #17170,%a0
 47de:	4250           	        clrw %a0@
@@ -3779,7 +3779,7 @@
 4812:	30f8 60d4      	        movew 0x60d4,%a0@+ ;reason
 4816:	30f8 60d6      	        movew 0x60d6,%a0@+ ;param
 481a:	30f8 60d8      	        movew 0x60d8,%a0@+ ;param
-481e:	b1fc 0000 40e4 	        cmpal #0x40e4,%a0 ;XXX?
+481e:	b1fc 0000 40e4 	        cmpal #0x40e4,%a0  ;XXX?
 4824:	6306           	        blss 0x482c
 4826:	207c 0000 3f64 	        moveal #0x3f64,%a0
 482c:	4250           	        clrw %a0@
@@ -3791,7 +3791,7 @@
 4838:	2f08           	        movel %a0,%sp@-
 483a:	2078 3f5c      	        moveal 0x3f5c,%a0
 483e:	4a10           	        tstb %a0@
-4840:	671e           	        beqs 0x4860
+4840:	671e           	        beqs 0x4860o
 4842:	13d8 0080 0001 	        moveb %a0@+,0x800001
 4848:	b1fc 0000 3f58 	        cmpal #16216,%a0
 484e:	6306           	        blss 0x4856
@@ -3834,6 +3834,7 @@
 48c4:	5378 4306      	        subqw #1,0x4306
 48c8:	205f           	        moveal %sp@+,%a0
 48ca:	4e75           	        rts
+
 48cc:	2f08           	        movel %a0,%sp@-
 48ce:	4242           	        clrw %d2
 48d0:	0838 0000 44a8 	        btst #0,0x44a8
@@ -3843,7 +3844,7 @@
 48de:	671a           	        beqs 0x48fa
 48e0:	3618           	        movew %a0@+,%d3
 48e2:	3818           	        movew %a0@+,%d4
-48e4:	b1fc 0000 4492 	        cmpal #17554,%a0
+48e4:	b1fc 0000 4492 	        cmpal #17554,%a0 ;XXX?
 48ea:	6306           	        blss 0x48f2
 48ec:	207c 0000 4312 	        moveal #17170,%a0
 48f2:	21c8 44a0      	        movel %a0,0x44a0
@@ -3912,20 +3913,21 @@
 49d0:	6100 fecc      	        bsrw 0x489e
 49d4:	4a42           	        tstw %d2
 49d6:	671a           	        beqs 0x49f2
-49d8:	33fc 0008 0048 0002     movew #8,0x480002
-49e0:	33c2 0048 0004 	        movew %d2,0x480004
+49d8:	33fc 0008 0048 0002     movew #8,0x480002   ;key event
+49e0:	33c2 0048 0004 	        movew %d2,0x480004  ;key data
 49e6:	4a79 004c 0000 	        tstw 0x4c0000
 49ec:	08f8 0000 4934 	        bset #0,0x4934
 49f2:	341f           	        movew %sp@+,%d2
 49f4:	4e75           	        rts
+
 49f6:	48e7 3e00      	        moveml %d2-%d6,%sp@-
 49fa:	6100 fed0      	        bsrw 0x48cc
 49fe:	4a42           	        tstw %d2
 4a00:	6728           	        beqs 0x4a2a
-4a02:	33fc 0008 0048 0002     movew #8,0x480002
-4a0a:	33c2 0048 0004 	        movew %d2,0x480004
-4a10:	33c3 0048 000a 	        movew %d3,0x48000a
-4a16:	33c4 0048 000c 	        movew %d4,0x48000c
+4a02:	33fc 0008 0048 0002     movew #8,0x480002  ;button event
+4a0a:	33c2 0048 0004 	        movew %d2,0x480004 ;button data
+4a10:	33c3 0048 000a 	        movew %d3,0x48000a ;mouse x
+4a16:	33c4 0048 000c 	        movew %d4,0x48000c ;mouse y
 4a1c:	4a79 004c 0000 	        tstw 0x4c0000
 4a22:	08f8 0000 4934 	        bset #0,0x4934
 4a28:	604a           	        bras 0x4a74
@@ -4591,7 +4593,7 @@
 5430:	4e75           	        rts
 5432:	48e7 fc00      	        moveml %d0-%d5,%sp@-
 5436:	1039 0080 00c1 	        moveb 0x8000c1,%d0
-543c:	ea08           	        lsrb #5,%d0
+543c:	ea08           	        lsrb #5,%d0       ;mouse buttons
 543e:	1a38 540c      	        moveb 0x540c,%d5
 5442:	b105           	        eorb %d0,%d5
 5444:	6738           	        beqs 0x547e
