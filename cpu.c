@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include "common/event.h"
 #include "common/xsdl.h"
 #include "common/opengl.h"
@@ -113,12 +114,14 @@ static u32 mem_addr;
 static u16 mem_data;
 static int ipl;
 static int vec;
+static jmp_buf ex;
 
 static mem_read_b_fn read_b[1024];
 static mem_write_b_fn write_b[1024];
 static mem_read_w_fn read_w[1024];
 static mem_write_w_fn write_w[1024];
-static u8 ram[128*1024];
+//static u8 ram[128*1024];
+static u8 ram[16*1024*1024];
 static u8 rom[16*1024];
 static u32 retry_finite_counter = 0;
 static u32 retry_infinite_counter = 0;
@@ -162,20 +165,32 @@ static void mem_region(u32 address, u32 size,
 }
 
 static void mem_read_b(void) {
+  mem_addr &= 0xFFFFFF;
   mem_data = read_b[mem_addr >> 14](mem_addr);
   add_cycles(4);
 }
 
 static void mem_write_b(void) {
+  mem_addr &= 0xFFFFFF;
   write_b[mem_addr >> 14](mem_addr, mem_data);
   add_cycles(4);
 }
 
+static u32 mem_read_l(u32 a);
+static int test_n;
+
 static void mem_read_w(void) {
   if (mem_addr & 1) {
-    printf("Address error: %06X\n", mem_addr);
-    exit(1);
+    //printf("Address error: %06X\n", mem_addr);
+    u32 saved = mem_addr;
+    PC = mem_read_l(0x00000C);
+    mem_addr = saved;
+    mem_data = 0;
+    areg[7] -= 14;
+    longjmp(ex, 1);
+    //exit(1);
   }
+  mem_addr &= 0xFFFFFF;
   mem_data = read_w[mem_addr >> 14](mem_addr);
   add_cycles(4);
 }
@@ -185,6 +200,7 @@ static void mem_write_w(void) {
     printf("Address error: %06X\n", mem_addr);
     exit(1);
   }
+  mem_addr &= 0xFFFFFF;
   write_w[mem_addr >> 14](mem_addr, mem_data);
   add_cycles(4);
 }
@@ -2645,7 +2661,62 @@ static int cputhread(void *arg) {
   return 0;
 }
 
+static void check_insn(int n) {
+  extern u32 initial[][18];
+  extern u32 final[][18];
+  extern u32 iram[][100];
+  extern u32 fram[][100];
+  extern u16 prefetch[][2];
+  int i;
+
+  fprintf(stderr, "Test %d\n", n);
+
+  for (i = 0; i < 8; i++) {
+    dreg[i] = initial[n][i];
+    areg[i] = initial[n][i+8];
+  }
+  SR = initial[n][16];
+  PC = initial[n][17];
+  IR = prefetch[n][0];
+  IRC = prefetch[n][1];
+  for (i = 1; i < 1 + 2*iram[n][0];) {
+    u32 a = iram[n][i++];
+    u8 x = iram[n][i++];
+    ram[a] = x;
+  }
+
+  if (setjmp(ex) == 0) {
+    PC += 4;
+    execute();
+    PC -= 4;
+  }
+
+  for (i = 0; i < 8; i++) {
+    if (dreg[i] != final[n][i])
+      fprintf(stderr, "D%i is %08X, not %08X\n", i, dreg[i], final[n][i]);
+    if (areg[i] != final[n][i+8])
+      fprintf(stderr, "A%i is %08X, not %08X\n", i, areg[i], final[n][i+8]);
+  }
+  if (SR != final[n][16])
+    fprintf(stderr, "SR is %04X, not %04X\n", SR, final[n][16]);
+  if (PC != final[n][17])
+    fprintf(stderr, "PC is %06X, not %06X\n", PC, final[n][17]);
+}
+
+static void check(void) {
+  extern int tests;
+  int i;
+  mem_region(0, 16*1024*1024,
+	     read_b_ram, write_b_ram,
+	     read_w_ram, write_w_ram);
+  for (i = 0; i < tests; i++)
+    check_insn(test_n = i);
+}
+
 int main(void) {
+  check();
+  return 0;
+
   sdl_init("VAXstation 100", 1, 0);
   //init_opengl();
 

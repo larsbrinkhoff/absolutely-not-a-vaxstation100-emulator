@@ -9,7 +9,7 @@ COMMON=common/event.o common/sdl.o common/opengl.o
 
 all: vs100 font-to-pbm icon-to-pbm
 
-vs100: $(OBJS) $(COMMON)
+vs100: $(OBJS) $(COMMON) check.o
 	$(CC) -o $@ $^ $(LDLIBS)
 
 font-to-pbm: font-to-pbm.c
