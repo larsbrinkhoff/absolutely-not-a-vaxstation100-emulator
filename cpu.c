@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include "common/event.h"
 #include "common/xsdl.h"
 #include "common/opengl.h"
 #include "vs100.h"
+#include "check.h"
 
 #define ROM_ADDR 0x180000
 
@@ -19,6 +21,7 @@
 #define LSR 011
 #define ASR 012
 #define ROR 013
+#define EXT 014
 
 #define SR_C      0x0001
 #define SR_V      0x0002
@@ -26,17 +29,22 @@
 #define SR_N      0x0008
 #define SR_X      0x0010
 #define SR_S      0x2000
-#define SR_T      0x4000
+#define SR_T      0x8000
+#define CCR_FLAGS (SR_X | SR_N | SR_Z | SR_V | SR_C)
+#define SR_FLAGS  (SR_T | SR_S | 0x0700 | CCR_FLAGS)
 #define FLAG_C    (SR & SR_C)
 #define FLAG_V    (SR & SR_V)
 #define FLAG_Z    (SR & SR_Z)
 #define FLAG_N    (SR & SR_N)
 #define FLAG_X    (SR & SR_X)
-#define SET_C(F)  if(F) SR |= SR_C; else SR &= ~SR_C
-#define SET_V(F)  if(F) SR |= SR_V; else SR &= ~SR_V
-#define SET_Z(F)  if(F) SR |= SR_Z; else SR &= ~SR_Z
-#define SET_N(F)  if(F) SR |= SR_N; else SR &= ~SR_N
-#define SET_X(F)  if(F) SR |= SR_X; else SR &= ~SR_X
+#define FLAG_S    (SR & SR_S)
+#define FLAG_T    (SR & SR_T)
+#define SET_C(F)  do { if(F) SR |= SR_C; else SR &= ~SR_C; } while(0)
+#define SET_V(F)  do { if(F) SR |= SR_V; else SR &= ~SR_V; } while(0)
+#define SET_Z(F)  do { if(F) SR |= SR_Z; else SR &= ~SR_Z; } while(0)
+#define SET_N(F)  do { if(F) SR |= SR_N; else SR &= ~SR_N; } while(0)
+#define SET_X(F)  do { if(F) SR |= SR_X; else SR &= ~SR_X; } while(0)
+#define UPDATE_X_FROM_C SET_X(FLAG_C)
 
 #define EXTB(X) ((((u32)(X & 0xFF)) ^ 0x80) - 0x80)
 #define EXTW(X) ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
@@ -96,10 +104,6 @@ static int trace_p = 0;
   DEFINSN_WL(INSN)
 
 typedef void (*insn_fn)(void);
-typedef u8 (*mem_read_b_fn)(u32);
-typedef void (*mem_write_b_fn)(u32, u8);
-typedef u16 (*mem_read_w_fn)(u32);
-typedef void (*mem_write_w_fn)(u32, u16);
 
 static unsigned long long cycles = 0;
 
@@ -107,12 +111,15 @@ static u32 PC;
 #define SP areg[7]
 static u16 IRC, IR, IRD;
 static u16 SR;
+static u32 USP, SSP;
 static u32 dreg[8];
 static u32 areg[8];
 static u32 mem_addr;
 static u16 mem_data;
 static int ipl;
 static int vec;
+static int FC = 5;
+static jmp_buf ex;
 
 static mem_read_b_fn read_b[1024];
 static mem_write_b_fn write_b[1024];
@@ -146,9 +153,9 @@ static void add_cycles(int n) {
   cycles += n;
 }
 
-static void mem_region(u32 address, u32 size,
-		       mem_read_b_fn rb, mem_write_b_fn wb,
-		       mem_read_w_fn rw, mem_write_w_fn ww) {
+void mem_region(u32 address, u32 size,
+		mem_read_b_fn rb, mem_write_b_fn wb,
+		mem_read_w_fn rw, mem_write_w_fn ww) {
   int i;
   address >>= 14;
   size += (1 << 14) - 1;
@@ -162,30 +169,82 @@ static void mem_region(u32 address, u32 size,
 }
 
 static void mem_read_b(void) {
-  mem_data = read_b[mem_addr >> 14](mem_addr);
+  u32 a = mem_addr & 0xFFFFFF;
+  mem_data = read_b[a >> 14](a);
   add_cycles(4);
 }
 
 static void mem_write_b(void) {
-  write_b[mem_addr >> 14](mem_addr, mem_data);
+  u32 a = mem_addr & 0xFFFFFF;
+  write_b[a >> 14](a, mem_data);
   add_cycles(4);
 }
 
-static void mem_read_w(void) {
-  if (mem_addr & 1) {
-    printf("Address error: %06X\n", mem_addr);
-    exit(1);
+static u32 mem_read_l(u32 a);
+static void fetch(void);
+
+static void enter_super(void) {
+  SR &= ~SR_T;
+  if (!FLAG_S) {
+    USP = areg[7];
+    areg[7] = SSP;
+    SR |= SR_S;
   }
-  mem_data = read_w[mem_addr >> 14](mem_addr);
+}
+
+static void enter_user(void) {
+  SSP = areg[7];
+  areg[7] = USP;
+}
+
+static void raise(int n, int f);
+
+static void check_super(void) {
+  if (!FLAG_S)
+    raise(4, 0);
+}
+
+static void push(u16 x);
+static void mem_read_w(void);
+
+static void raise(int vector, int fault) {
+  u16 sr = SR;
+  u32 a = mem_addr;
+  enter_super();
+  PC -= 4;
+  push(PC & 0xFFFF);
+  push(PC >> 16);
+  push(sr);
+  if (fault) {
+    push(IR);
+    push(a & 0xFFFF);
+    push(a >> 16);
+    push(0);
+  }
+  mem_addr = vector << 2;
+  mem_read_w();
+  PC = mem_data << 16;
+  mem_addr += 2;
+  mem_read_w();
+  PC |= mem_data;
+  fetch();
+  fetch();
+  longjmp(ex, 1);
+}
+
+static void mem_read_w(void) {
+  if (mem_addr & 1)
+    raise(3, 1);
+  u32 a = mem_addr & 0xFFFFFF;
+  mem_data = read_w[a >> 14](a);
   add_cycles(4);
 }
 
 static void mem_write_w(void) {
-  if (mem_addr & 1) {
-    printf("Address error: %06X\n", mem_addr);
-    exit(1);
-  }
-  write_w[mem_addr >> 14](mem_addr, mem_data);
+  if (mem_addr & 1)
+    raise(3, 1);
+  u32 a = mem_addr & 0xFFFFFF;
+  write_w[a >> 14](a, mem_data);
   add_cycles(4);
 }
 
@@ -226,18 +285,18 @@ static u16 pop(void) {
 }
 
 static void fetch(void) {
+  FC = 6;
   IR = IRC;
   mem_addr = PC;
   mem_read_w();
+  FC = 5;
   IRC = mem_data;
   PC += 2;
 }
 
 static void exception(int vector, u16 sr) {
-  SR &= ~SR_T;
-  SR |= SR_S;
+  enter_super();
   PC -= 4;
-  //fprintf(stderr, "Exception %d, push %04X %08X\n", vector, sr, PC);
   push(PC & 0xFFFF);
   push(PC >> 16);
   push(sr);
@@ -309,8 +368,8 @@ static void compute_ea(int size) {
   case 3: fetch();
           mem_addr = PC - 4 + EXTB(IR);
 	  int r = (IR >> 12) & 7;
-	  u32 i = (IR & 0x8000) ? dreg[r] : areg[r];
-	  if (IR & 0x800) i = EXTW(i);
+	  u32 i = (IR & 0x8000) ? areg[r] : dreg[r];
+	  if ((IR & 0x800) == 0) i = EXTW(i);
 	  mem_addr += i;
           return;
   case 4: return;
@@ -526,29 +585,36 @@ static u32 alub(int op, u32 src, u32 dst) {
   switch (op) {
   case ADD:
     result = dst + src;
+    SET_V((!(src & 0x80) && !(dst & 0x80) && (result & 0x80)) ||
+	  ((src & 0x80) && (dst & 0x80) && !(result & 0x80)));
     break;
   case ADC:
     result = dst + src + !!FLAG_C;
+    SET_V((!(src & 0x80) && !(dst & 0x80) && (result & 0x80)) ||
+	  ((src & 0x80) && (dst & 0x80) && !(result & 0x80)));
     break;
   case SUB:
     result = dst - src;
+    SET_V((!(src & 0x80) && (dst & 0x80) && !(result & 0x80)) ||
+	  ((src & 0x80) && !(dst & 0x80) && (result & 0x80)));
     break;
   case IOR:
     result = dst | src;
+    SET_V(0);
     break;
   case AND:
     result = dst & src;
+    SET_V(0);
     break;
   case EOR:
     result = dst ^ src;
+    SET_V(0);
     break;
   }
   SET_C(result & 0x100);
   result &= 0xFF;
-  //V
   SET_Z(result == 0);
   SET_N(result & 0x80);
-  //X
   return result;
 }
 
@@ -564,26 +630,35 @@ static u32 aluw(int op, u32 src, u32 dst) {
     break;
   case ADC:
     result = dst + src + !!FLAG_C;
+    SET_V((!(src & 0x8000) && !(dst & 0x8000) && (result & 0x8000)) ||
+	  ((src & 0x8000) && (dst & 0x8000) && !(result & 0x8000)));
     break;
   case SUB:
     result = dst - src;
-    SET_V((((src^dst) & (result^dst)) >> 15) & 1);
+    SET_V((!(src & 0x8000) && (dst & 0x8000) && !(result & 0x8000)) ||
+	  ((src & 0x8000) && !(dst & 0x8000) && (result & 0x8000)));
     break;
   case IOR:
     result = dst | src;
+    SET_V(0);
     break;
   case AND:
     result = dst & src;
+    SET_V(0);
     break;
   case EOR:
     result = dst ^ src;
+    SET_V(0);
+    break;
+  case EXT:
+    result = EXTB(dst) & 0xFFFF;
+    SET_V(0);
     break;
   }
   SET_C(result & 0x10000);
   result &= 0xFFFF;
   SET_Z(result == 0);
   SET_N(result & 0x8000);
-  //X
   if (trace_p)
     fprintf (stderr, "ALU: %04X # %04X -> %04X\n", src, dst, result);
   return result;
@@ -599,9 +674,12 @@ static u32 alul(int op, u32 src, u32 dst) {
     sr = SR;
     result |= aluw(ADC, src >> 16, dst >> 16) << 16;
     SR &= sr | ~SR_Z;
+    SET_V((!(src & 0x80000000) && !(dst & 0x80000000) && (result & 0x80000000)) ||
+	  ((src & 0x80000000) && (dst & 0x80000000) && !(result & 0x80000000)));
     break;
   case SUB:
     result = alul(ADD, -src, dst);
+    SR ^= SR_C;
     break;
   case IOR:
     result = aluw(IOR, src, dst);
@@ -621,44 +699,103 @@ static u32 alul(int op, u32 src, u32 dst) {
     result |= aluw(EOR, src >> 16, dst >> 16) << 16;
     SR &= sr | ~SR_Z;
     break;
+  case EXT:
+    result = EXTW(dst);
+    SET_C(0);
+    SET_V(0);
+    SET_Z(result == 0);
+    SET_N(result & 0x80000000);
+    break;
   }
   return result;
 }
 
-static u32 alue(int op, u32 op1, u32 op2) {
-  u32 mask = 0xFF; // or 0xFFFF or 0xFFFFFFFF;
-  //u32 sign = 0x80; // or 0x8000 or 0x80000000;
-  int n = 7; // or 15 or 31;
-  u32 result;
+static u32 alue(int n, u32 dst, int bits) {
   int i;
-  switch (op) {
-  case LSL:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result & mask) << 1;
+  u32 carry = 0;
+  u32 sign = 1 << bits;
+  u32 mask = 0xFFFFFFFF >> (31 - bits);
+  SET_V(0);
+  dst &= mask;
+  switch (IRD & 03400) {
+  case 00000: //asr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (dst & sign);
+      add_cycles(2);
+    }
+    if (n != 0)
+      SET_X(carry);
     break;
-  case ROL:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = ((result & mask) << 1) | ((result >> n) & 1);
+  case 01000: //lsr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst >>= 1;
+      add_cycles(2);
+    }
+    if (n != 0)
+      SET_X(carry);
     break;
-  case LSR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = result >> 1;
+  case 00400: //asl
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst <<= 1;
+      if (((dst ^ carry) & sign) != 0)
+	SET_V(1);
+      add_cycles(2);
+    }
+    if (n != 0)
+      SET_X(carry);
     break;
-  case ASR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result >> 1) | (result & 0x80000000);
+  case 01400: //lsl
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst <<= 1;
+      add_cycles(2);
+    }
+    if (n != 0)
+      SET_X(carry);
     break;
-  case ROR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result >> 1) | ((result & 1) << n);
+  case 02000: //roxr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (FLAG_X ? sign : 0);
+      SET_X(carry);
+      add_cycles(2);
+    }
+    if (n == 0)
+      carry = FLAG_X;
+    break;
+  case 02400: //roxl
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst = (dst << 1) | (FLAG_X ? 1 : 0);
+      SET_X(carry);
+      add_cycles(2);
+    }
+    if (n == 0)
+      carry = FLAG_X;
+    break;
+  case 03000: //ror
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (dst << bits);
+      add_cycles(2);
+    }
+    break;
+  case 03400: //rol
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst = (dst << 1) | (dst >> bits);
+      add_cycles(2);
+    }
     break;
   }
-  return result;
+  dst &= mask;
+  SET_C(carry);
+  SET_Z(dst == 0);
+  SET_N(dst & sign);
+  return dst;
 }
 
 static const struct s size_b = {
@@ -844,6 +981,7 @@ static void insn_add_r(const struct s *size) {
   u32 dst = dreg[r];
   IRD = r;
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 static void insn_add_m(const struct s *size) {
@@ -851,6 +989,7 @@ static void insn_add_m(const struct s *size) {
   u32 src = dreg[r];
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(add_r)
@@ -884,20 +1023,22 @@ static void insn_addi(const struct s *size) {
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
   
 DEFINSN_BWL(addi)
 
 static void insn_addq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst;
-  if ((IRD & 070) == 010)
-    dst = areg[EA_R_FIELD];
-  else
-    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size_l.alu(ADD, src, dst));
+  if ((IRD & 070) == 010) {
+    areg[EA_R_FIELD] += src;
+  } else {
+    u32 dst = size->read_ea();
+    size->modify_ea(size->alu(ADD, src, dst));
+    UPDATE_X_FROM_C;
+  }
 }
 
 DEFINSN_BWL(addq)
@@ -954,12 +1095,18 @@ DEFINSN_BWL(and_m)
 
 static void insn_andi_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  fetch();
+  IR |= 0xFF00;
+  SR &= IR;
 }
 
 static void insn_andi_sr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  check_super();
+  fetch();
+  SR &= IR;
+  if (!FLAG_S)
+    enter_user();
 }
 
 static void insn_andi(const struct s *size) {
@@ -1049,9 +1196,8 @@ static void insn_bchgi(void) {
   bchg(read_b_imm());
 }
 
-static void insn_bclr(void) {
-  TRACE();
-  u32 dst, src = DREG;
+static void bclr(u32 src) {
+  u32 dst;
   u32 x = 1;
   if (EA_M_FIELD == 0) {
     dst = dreg[EA_R_FIELD];
@@ -1061,35 +1207,22 @@ static void insn_bclr(void) {
       add_cycles(4);
     x <<= src % 32;
     dreg[EA_R_FIELD] = dst & ~x;
-    SET_Z((dst & x) == 0);
   } else {
     dst = read_b_ea();
     x <<= src % 8;
-    modify_b_ea(alub(AND, dst, ~x));
-    alub(AND, dst, x);
+    modify_b_ea(dst & ~x);
   }
+  SET_Z((dst & x) == 0);
+}
+
+static void insn_bclr(void) {
+  TRACE();
+  bclr(DREG);
 }
 
 static void insn_bclri(void) {
   TRACE();
-  u32 src = read_b_imm();
-  u32 dst;
-  u32 x = 1;
-  if ((IRD & 070) == 0) {
-    if (src < 16)
-      add_cycles(4);
-    else
-      add_cycles(6);
-    dst = dreg[EA_R_FIELD];
-    x <<= src % 32;
-    dreg[EA_R_FIELD] = dst & ~x;
-    SET_Z((dst & x) == 0);
-  } else {
-    dst = read_b_ea();
-    x <<= src % 8;
-    modify_b_ea(alub(AND, dst, ~x));
-    alub(AND, dst, x);
-  }
+  bclr(read_b_imm());
 }
 
 static void insn_bra(void) {
@@ -1106,30 +1239,7 @@ static void insn_bra(void) {
   fetch();
 }
 
-static void insn_bset(void) {
-  TRACE();
-  u32 dst, src = DREG;
-  u32 x = 1;
-  if (EA_M_FIELD == 0) {
-    dst = dreg[EA_R_FIELD];
-    if (src < 16)
-      add_cycles(2);
-    else
-      add_cycles(4);
-    x <<= src % 32;
-    dreg[EA_R_FIELD] = dst | x;
-    SET_Z((dst & x) == 0);
-  } else {
-    dst = read_b_ea();
-    x <<= src % 8;
-    modify_b_ea(alub(IOR, dst, x));
-    alub(AND, dst, x);
-  }
-}
-
-static void insn_bseti(void) {
-  TRACE();
-  u32 src = read_b_imm();
+static void bset(u32 src) {
   u32 dst;
   u32 x = 1;
   if (EA_M_FIELD == 0) {
@@ -1140,13 +1250,22 @@ static void insn_bseti(void) {
       add_cycles(4);
     x <<= src % 32;
     dreg[EA_R_FIELD] = dst | x;
-    SET_Z((dst & x) == 0);
   } else {
     dst = read_b_ea();
     x <<= src % 8;
-    modify_b_ea(alub(IOR, dst, x));
-    alub(AND, dst, x);
+    modify_b_ea(dst | x);
   }
+  SET_Z((dst & x) == 0);
+}
+
+static void insn_bset(void) {
+  TRACE();
+  bset(DREG);
+}
+
+static void insn_bseti(void) {
+  TRACE();
+  bset(read_b_imm());
 }
 
 static void insn_bsr(void) {
@@ -1219,23 +1338,10 @@ static void insn_cmp(const struct s *size) {
 DEFINSN_BWL(cmp)
 
 static void insn_cmpa(const struct s *size) {
-  u32 src, dst;
-  switch(PC-4) {
-  default:
-    src = size->read_ea();
-    dst = AREG;
-    if (size == &size_w)
-      src = EXTW(src);
-    break;
-  case 0x004784:
-  case 0x0047d0:
-  case 0x00481e:
-  case 0x004882:
-  case 0x0048e4:
-    src = AREG;
-    dst = size->read_ea();
-    break;
-  }
+  u32 src = size->read_ea();
+  u32 dst = AREG;
+  if (size == &size_w)
+    src = EXTW(src);
   alul(SUB, src, dst);
 }
 
@@ -1250,9 +1356,49 @@ static void insn_cmpi(const struct s *size) {
 
 DEFINSN_BWL(cmpi)
 
-static void insn_cmpm(void) {
+static void insn_cmpmb(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  mem_addr = areg[r];
+  mem_read_b();
+  u32 src = mem_data;
+  areg[r] += 1;
+  if (r == 7)
+    areg[r] += 1;
+  r = REG_FIELD;
+  mem_addr = areg[r];
+  mem_read_b();
+  u32 dst = mem_data;
+  areg[r] += 1;
+  if (r == 7)
+    areg[r] += 1;
+  alub(SUB, src, dst);
+}
+
+static void insn_cmpmw(void) {
+  TRACE();
+  int r = EA_R_FIELD;
+  mem_addr = areg[r];
+  mem_read_w();
+  u32 src = mem_data;
+  areg[r] += 2;
+  r = REG_FIELD;
+  mem_addr = areg[r];
+  mem_read_w();
+  u32 dst = mem_data;
+  areg[r] += 2;
+  aluw(SUB, src, dst);
+}
+
+static void insn_cmpml(void) {
+  TRACE();
+  int r = EA_R_FIELD;
+  u32 src = mem_read_l(areg[r]);
+  areg[r] += 4;
+  r = REG_FIELD;
+  u32 dst = mem_read_l(areg[r]);
+  areg[r] += 4;
+  alul(SUB, src, dst);
 }
 
 static void insn_eor(const struct s *size) {
@@ -1265,8 +1411,14 @@ DEFINSN_BWL(eor)
 
 static void insn_cmpm_or_eor(void) {
   switch (IRD & 0370) {
-  case 0010: case 0110: case 0210:
-    insn_cmpm();
+  case 0010:
+    insn_cmpmb();
+    return;
+  case 0110:
+    insn_cmpmw();
+    return;
+  case 0210:
+    insn_cmpml();
     return;
   }
   switch (IRD & 0300) {
@@ -1331,12 +1483,17 @@ static void insn_divu(void) {
 
 static void insn_eori_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  fetch();
+  SR ^= IR & CCR_FLAGS;
 }
 
 static void insn_eori_sr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  check_super();
+  fetch();
+  SR ^= IR & SR_FLAGS;
+  if (!FLAG_S)
+    enter_user();
 }
 
 static void insn_eori(const struct s *size) {
@@ -1376,18 +1533,17 @@ static void insn_movemw_rm(void) {
     mask = reverse(mask);
     for (i = 7; i >= 0; i--)
       if (mask & (1 << (i+8))) {
-	areg[EA_R_FIELD] -= 2;
-	mem_addr = areg[EA_R_FIELD];
+	mem_addr -= 2;
 	mem_data = areg[i];
 	mem_write_w();
       }
     for (i = 7; i >= 0; i--)
       if (mask & (1 << i)) {
-	areg[EA_R_FIELD] -= 2;
-	mem_addr = areg[EA_R_FIELD];
+	mem_addr -= 2;
 	mem_data = dreg[i];
 	mem_write_w();
       }
+    areg[EA_R_FIELD] = mem_addr;
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
@@ -1427,14 +1583,15 @@ static void insn_moveml_rm(void) {
     mask = reverse(mask);
     for (i = 7; i >= 0; i--)
       if (mask & (1 << (i+8))) {
-	areg[EA_R_FIELD] -= 4;
-	mem_write_l(areg[EA_R_FIELD], areg[i]);
+	mem_addr -= 4;
+	mem_write_l(mem_addr, areg[i]);
       }
     for (i = 7; i >= 0; i--)
       if (mask & (1 << i)) {
-	areg[EA_R_FIELD] -= 4;
-	mem_write_l(areg[EA_R_FIELD], dreg[i]);
+	mem_addr -= 4;
+	mem_write_l(mem_addr, dreg[i]);
       }
+    areg[EA_R_FIELD] = mem_addr;
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
@@ -1459,35 +1616,20 @@ static void insn_movemw_mr(void) {
   fetch();
   u16 mask = IR;
   compute_ea(0);
-  if ((IRD & 070) == 030) {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	mem_addr = areg[EA_R_FIELD];
-	mem_read_w();
-	dreg[i] = mem_data;
-	areg[EA_R_FIELD] += 2;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	mem_addr = areg[EA_R_FIELD];
-	mem_read_w();
-	areg[i] = mem_data;
-	areg[EA_R_FIELD] += 2;
-      }
-  } else {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	mem_read_w();
-	dreg[i] = mem_data;
-	mem_addr += 2;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	mem_read_w();
-	areg[i] = mem_data;
-	mem_addr += 2;
-      }
-  }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << i)) {
+      mem_read_w();
+      dreg[i] = EXTW(mem_data);
+      mem_addr += 2;
+    }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << (i+8))) {
+      mem_read_w();
+      areg[i] = EXTW(mem_data);
+      mem_addr += 2;
+    }
+  if ((IRD & 070) == 030)
+    areg[EA_R_FIELD] = mem_addr;
 }
 
 static void insn_moveml_mr(void) {
@@ -1500,29 +1642,18 @@ static void insn_moveml_mr(void) {
   fetch();
   u16 mask = IR;
   compute_ea(0);
-  if ((IRD & 070) == 030) {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	dreg[i] = mem_read_l(areg[EA_R_FIELD]);
-	areg[EA_R_FIELD] += 4;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	areg[i] = mem_read_l(areg[EA_R_FIELD]);
-	areg[EA_R_FIELD] += 4;
-      }
-  } else {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	dreg[i] = mem_read_l(mem_addr);
-	mem_addr += 4;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	areg[i] = mem_read_l(mem_addr);
-	mem_addr += 4;
-      }
-  }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << i)) {
+      dreg[i] = mem_read_l(mem_addr);
+      mem_addr += 4;
+    }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << (i+8))) {
+      areg[i] = mem_read_l(mem_addr);
+      mem_addr += 4;
+    }
+  if ((IRD & 070) == 030)
+    areg[EA_R_FIELD] = mem_addr;
 }
 
 static void insn_extb(void) {
@@ -1530,9 +1661,8 @@ static void insn_extb(void) {
     insn_movemw_rm();
     return;
   }
-
   int r = EA_R_FIELD;
-  dreg[r] = (dreg[r] & 0xFFFF0000) | (EXTB(dreg[r]) & 0xFFFF);
+  dreg[r] = (dreg[r] & 0xFFFF0000) | aluw(EXT, 0, dreg[r]);
 }
 
 static void insn_extw(void) {
@@ -1540,19 +1670,44 @@ static void insn_extw(void) {
     insn_moveml_rm();
     return;
   }
-
   int r = EA_R_FIELD;
-  dreg[r] = EXTW(dreg[r]);
+  dreg[r] = alul(EXT, 0, dreg[r]);
 }
 
 static void insn_illegal(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(4, 0);
+}
+
+static void insn_tas(void) {
+  TRACE();
+  u32 dst = size_b.read_ea();
+  size_b.alu(SUB, 0, dst);
+  SET_C(0);
+  SET_V(0);
+  size_b.modify_ea(dst | 0x80);
 }
 
 static void insn_illegal_or_tas(void) {
-  TRACE();
-  UNIMPLEMENTED();
+  switch (EA_M_FIELD) {
+  case 1:
+    insn_illegal();
+    break;
+  case 7:
+    switch (EA_R_FIELD) {
+    case 0:
+    case 1:
+      insn_tas();
+      break;
+    default:
+      insn_illegal();
+      break;
+    }
+    break;
+  default:
+    insn_tas();
+    break;
+  }
 }
 
 static void insn_jmp(void) {
@@ -1598,35 +1753,43 @@ static void insn_jsr(void) {
 
 static void insn_lea(void) {
   TRACE();
-  UNIMPLEMENTED();
-  //Check ea.
-  //compute_ea(0);
-  //AREG = mem_addr;
+  compute_ea(0);
+  AREG = mem_addr;
 }
 
 static void insn_linea(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(10, 0);
 }
 
 static void insn_linef(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(11, 0);
 }
 
 static void insn_trap(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(32 + (IR & 0xF), 0);
 }
 
 static void insn_link(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  u32 x = areg[r];
+  push(x & 0xFFFF);
+  push(x >> 16);
+  areg[r] = areg[7];
+  fetch();
+  areg[7] += EXTW(IR);
 }
 
 static void insn_unlk(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  areg[7] = areg[r];
+  u32 x = pop() << 16;
+  x |= pop();
+  areg[r] = x;
 }
 
 static void insn_move_usp(void) {
@@ -1653,9 +1816,12 @@ static void insn_stop(void) {
 
 static void insn_rte(void) {
   TRACE();
-  SR = pop();
+  check_super();
+  SR = pop() & SR_FLAGS;
   PC = pop() << 16;
   PC |= pop();
+  if (!FLAG_S)
+    enter_user();
   fetch();
 }
 
@@ -1668,12 +1834,17 @@ static void insn_rts(void) {
 
 static void insn_trapv(void) {
   TRACE();
-  UNIMPLEMENTED();
+  if (FLAG_V)
+    raise(7, 0);
 }
 
 static void insn_rtr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  SR &= 0xFF00;
+  SR |= pop() & CCR_FLAGS;
+  PC = pop() << 16;
+  PC |= pop();
+  fetch();
 }
 
 static void insn_misc(void) {
@@ -1712,17 +1883,19 @@ static void insn_move(const struct s *size) {
     fprintf (stderr, "MOVE: %06X -> %06X : %X\n", old_addr, mem_addr, x);
   SET_C(0);
   SET_V(0);
-  SET_Z((mem_data & size->mask) == 0);
-  SET_N(mem_data & size->sign);
+  SET_Z((x & size->mask) == 0);
+  SET_N(x & size->sign);
 }
 
 DEFINSN_BWL(move)
 
-static void insn_movea(const struct s *size) {
-  AREG = size->read_ea();
+static void insn_moveaw(void) {
+  AREG = EXTW(size_w.read_ea());
 }
 
-DEFINSN_WL(movea)
+static void insn_moveal(void) {
+  AREG = size_l.read_ea();
+}
 
 static void insn_move_from_sr(void) {
   TRACE();
@@ -1732,17 +1905,26 @@ static void insn_move_from_sr(void) {
 static void insn_moveq(void) {
   TRACE();
   DREG = EXTB(IRD);
+  SET_C(0);
+  SET_V(0);
+  SET_Z(DREG == 0);
+  SET_N(DREG & 0x80000000);
 }
 
 static void insn_move_to_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  u16 x = read_w_ea();
+  SR &= 0xFF00;
+  SR |= x & CCR_FLAGS;
 }
 
 static void insn_move_to_sr(void) {
   TRACE();
-  SR = read_w_ea();
+  check_super();
+  SR = read_w_ea() & SR_FLAGS;
   add_cycles(4);
+  if (!FLAG_S)
+    enter_user();
 }
 
 static void insn_muls(void) {
@@ -1765,8 +1947,13 @@ static void insn_nbcd(void) {
 
 static void insn_neg(const struct s *size) {
   u32 dst = size->read_ea();
-  u32 result = size->alu(SUB, dst, 0);
+  u32 result = -dst;
   size->modify_ea(result);
+  SET_V(dst == size->sign);
+  SET_Z((result & size->mask) == 0);
+  SET_N(result & size->sign);
+  SET_C(!FLAG_Z);
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(neg)
@@ -1803,222 +1990,118 @@ DEFINSN_BWL(or_m)
 static void insn_ori_ccr(void) {
   TRACE();
   fetch();
-  SR |= IR & 0xFF;
+  SR |= IR & CCR_FLAGS;
 }
 
 static void insn_ori_sr(void) {
   TRACE();
   fetch();
-  SR |= IR;
+  SR |= IR & SR_FLAGS;
+}
+
+static void insn_shiftl_m(void) {
+  TRACE();
+  u16 dst = size_w.read_ea();
+  size_w.modify_ea(alue(1, dst, 15));
 }
 
 static void insn_shiftl_b(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  int n = REG_FIELD;
+  if (IRD & 040)
+    n = dreg[n] % 64;
+  else if (n == 0)
+    n = 8;
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFFFF00;
+  dreg[r] |= alue(n, dst, 7);
 }
 
 static void insn_shiftl_w(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u16 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asl
-  case 010: //lsl
-    for (i = 0; i < n; i++) {
-      carry = x & 0x8000;
-      x <<= 1;
-    }
-    break;
-  case 020: //roxl
-    UNIMPLEMENTED();
-  case 030: //rol
-    for (i = 0; i < n; i++) {
-      carry = x & 0x8000;
-      x = (x << 1) | (x >> 15);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFF0000) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFF0000;
+  dreg[r] |= alue(n, dst, 15);
 }
 
 static void insn_shiftl_l(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u32 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asl
-  case 010: //lsl
-    for (i = 0; i < n; i++) {
-      carry = x & 0x80000000;
-      x <<= 1;
-    }
-    break;
-  case 020: //roxl
-    UNIMPLEMENTED();
-  case 030: //rol
-    for (i = 0; i < n; i++) {
-      carry = x & 0x80000000;
-      x = (x << 1) | (x >> 31);
-    }
-    break;
-  }
-  dreg[r] = x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] = alue(n, dst, 31);
 }
 
-static void insn_shiftl_m(void) {
+static void insn_shiftr_m(void) {
   TRACE();
-  UNIMPLEMENTED();
+  u16 dst = size_w.read_ea();
+  size_w.modify_ea(alue(1, dst, 15));
 }
 
 static void insn_shiftr_b(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
-  u8 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  x = dreg[r] & 0xFF;
-  add_cycles(2*n + 2);
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x80);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 7);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFFFF00) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x80);
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFFFF00;
+  dreg[r] |= alue(n, dst, 7);
 }
 
 static void insn_shiftr_w(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
-  u16 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 2);
-  x = dreg[r] & 0xFFFF;
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x8000);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 15);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFF0000) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFF0000;
+  dreg[r] |= alue(n, dst, 15);
 }
 
 static void insn_shiftr_l(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u32 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x80000000);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 31);
-    }
-    break;
-  }
-  dreg[r] = x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x80000000);
-}
-
-static void insn_shiftr_m(void) {
-  TRACE();
-  UNIMPLEMENTED();
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] = alue(n, dst, 31);
 }
 
 static void insn_sub(const struct s *size) {
   int r = REG_FIELD;
   u32 src, dst;
-  if (PC == 0x3bf8+4)
-    fprintf(stderr, "sub %x,%x\n", dreg[2], dreg[1]);
   if (IRD & 0400) {
     src = dreg[r];
     dst = size->read_ea();
@@ -2028,6 +2111,7 @@ static void insn_sub(const struct s *size) {
     IRD = r;
   }
   size->modify_ea(size->alu(SUB, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(sub)
@@ -2047,20 +2131,22 @@ static void insn_subi(const struct s *size) {
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(SUB, src, dst));
+  UPDATE_X_FROM_C;
 }
   
 DEFINSN_BWL(subi)
 
 static void insn_subq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst;
-  if ((IRD & 070) == 010)
-    dst = areg[EA_R_FIELD];
-  else
-    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size_l.alu(SUB, src, dst));
+  if ((IRD & 070) == 010) {
+    areg[EA_R_FIELD] -= src;
+  } else {
+    u32 dst = size->read_ea();
+    size->modify_ea(size->alu(SUB, src, dst));
+    UPDATE_X_FROM_C;
+ }
 }
 
 DEFINSN_BWL(subq)
@@ -2071,12 +2157,14 @@ static void insn_swap() {
   SET_C(0);
   SET_V(0);
   SET_Z(dreg[r] == 0);
-  SET_Z(dreg[r] & 0x80000000);
+  SET_N(dreg[r] & 0x80000000);
 }
 
 static void insn_pea() {
   TRACE();
-  UNIMPLEMENTED();
+  compute_ea(0);
+  push(mem_addr);
+  push(mem_addr >> 16);
 }
 
 static void insn_swap_or_pea(void) {
@@ -2089,6 +2177,8 @@ static void insn_swap_or_pea(void) {
 static void insn_tst(const struct s *size) {
   u32 dst = size->read_ea();
   size->alu(SUB, 0, dst);
+  SET_C(0);
+  SET_V(0);
 }
 
 DEFINSN_BWL(tst)
@@ -2383,10 +2473,7 @@ void reset(void) {
 }
 
 void execute(void) {
-#if 0
-  if (PC-4 == 0x116c)
-    trace_p = 1;
-#endif
+  FC = 5;
   IRD = IR;
   dispatch[IRD >> 6]();
   fetch();
@@ -2394,6 +2481,7 @@ void execute(void) {
 
 static void step(void) {
   unsigned long long c0 = cycles;
+  //if (FLAG_T) raise(9, 0);
   execute();
   //fprintf(stderr, "Cycles: %llu (%llu)\n", cycles - c0, cycles);
   SDL_LockMutex(event_mutex);
@@ -2419,6 +2507,7 @@ static u8 read_b_bus_error(u32 a) {
   printf("Bus error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
+  raise(2, 1);
   return 0;
 }
 
@@ -2426,6 +2515,7 @@ static void write_b_bus_error(u32 a, u8 x) {
   printf("Bus Error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
+  raise(2, 1);
 }
 
 SAME_READ_W(bus_error)
@@ -2645,7 +2735,70 @@ static int cputhread(void *arg) {
   return 0;
 }
 
+static void print_once(char *s) {
+  fputs(s, stderr);
+  *s = 0;
+}
+
+void check_insn(const struct check *data) {
+  char name[100];
+  int i;
+
+  snprintf(name, sizeof name, "Test: %s", data->name);
+
+  for (i = 0; i < 8; i++) {
+    dreg[i] = data->initial[i];
+    areg[i] = data->initial[i+8];
+  }
+  USP = data->initial[16];
+  SSP = data->initial[17];
+  SR = data->initial[18];
+  PC = data->initial[19]+4;
+  IR = data->prefetch[0];
+  IRC = data->prefetch[1];
+
+  if (setjmp(ex) == 0)
+    execute();
+  else
+    strcat(name, "  *EXCEPTION*");
+  strcat(name, "\n");
+
+  for (i = 0; i < 8; i++) {
+    if (dreg[i] != data->final[i]) {
+      print_once(name);
+      fprintf(stderr, "D%i is %08X, not %08X\n", i, dreg[i], data->final[i]);
+    }
+    if (i < 7 && areg[i] != data->final[i+8]) {
+      print_once(name);
+      fprintf(stderr, "A%i is %08X, not %08X\n", i, areg[i], data->final[i+8]);
+    }
+  }
+  if (FLAG_S)
+    SSP = areg[7];
+  else
+    USP = areg[7];
+  if (USP != data->final[16]) {
+    print_once(name);
+    fprintf(stderr, "USP is %08X, not %08X\n", USP, data->final[16]);
+  }
+  if (SSP != data->final[17]) {
+    print_once(name);
+    fprintf(stderr, "SSP is %08X, not %08X\n", SSP, data->final[17]);
+  }
+  if (SR != data->final[18]) {
+    print_once(name);
+    fprintf(stderr, "SR is %04X, not %04X\n", SR, data->final[18]);
+  }
+  if (PC-4 != data->final[19]) {
+    print_once(name);
+    fprintf(stderr, "PC is %06X, not %06X\n", PC-4, data->final[19]);
+  }
+}
+
 int main(void) {
+  extern void check(void);
+  check();
+
   sdl_init("VAXstation 100", 1, 0);
   //init_opengl();
 

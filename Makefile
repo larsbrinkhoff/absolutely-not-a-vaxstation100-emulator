@@ -9,7 +9,7 @@ COMMON=common/event.o common/sdl.o common/opengl.o
 
 all: vs100 font-to-pbm icon-to-pbm
 
-vs100: $(OBJS) $(COMMON)
+vs100: $(OBJS) $(COMMON) check.o check_data.o
 	$(CC) -o $@ $^ $(LDLIBS)
 
 font-to-pbm: font-to-pbm.c
@@ -29,5 +29,7 @@ status.o: status.c vs100.h
 socket.o: socket.c vs100.h
 tablet.o: tablet.c mc2661.c vs100.h
 video.o: video.c mc2661.c vs100.h
+check.o: check.c vs100.h check.h
+check_data.o: check_data.c vs100.h check.h
 common/event.o: common/event.c common/event.h
 common/sdl.o: common/sdl.c common/xsdl.h
