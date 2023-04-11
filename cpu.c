@@ -27,7 +27,7 @@
 #define SR_N      0x0008
 #define SR_X      0x0010
 #define SR_S      0x2000
-#define SR_T      0x4000
+#define SR_T      0x8000
 #define FLAG_C    (SR & SR_C)
 #define FLAG_V    (SR & SR_V)
 #define FLAG_Z    (SR & SR_Z)
@@ -38,6 +38,7 @@
 #define SET_Z(F)  if(F) SR |= SR_Z; else SR &= ~SR_Z
 #define SET_N(F)  if(F) SR |= SR_N; else SR &= ~SR_N
 #define SET_X(F)  if(F) SR |= SR_X; else SR &= ~SR_X
+#define UPDATE_X_FROM_C SET_X(FLAG_C)
 
 #define EXTB(X) ((((u32)(X & 0xFF)) ^ 0x80) - 0x80)
 #define EXTW(X) ((((u32)(X & 0xFFFF)) ^ 0x8000) - 0x8000)
@@ -108,6 +109,7 @@ static u32 PC;
 #define SP areg[7]
 static u16 IRC, IR, IRD;
 static u16 SR;
+static u32 USP, SSP;
 static u32 dreg[8];
 static u32 areg[8];
 static u32 mem_addr;
@@ -182,13 +184,10 @@ static int test_n;
 static void mem_read_w(void) {
   if (mem_addr & 1) {
     //printf("Address error: %06X\n", mem_addr);
-    u32 saved = mem_addr;
+    //exit(1);
     PC = mem_read_l(0x00000C);
-    mem_addr = saved;
-    mem_data = 0;
     areg[7] -= 14;
     longjmp(ex, 1);
-    //exit(1);
   }
   mem_addr &= 0xFFFFFF;
   mem_data = read_w[mem_addr >> 14](mem_addr);
@@ -197,8 +196,11 @@ static void mem_read_w(void) {
 
 static void mem_write_w(void) {
   if (mem_addr & 1) {
-    printf("Address error: %06X\n", mem_addr);
-    exit(1);
+    //printf("Address error: %06X\n", mem_addr);
+    //exit(1);
+    PC = mem_read_l(0x00000C);
+    areg[7] -= 14;
+    longjmp(ex, 1);
   }
   mem_addr &= 0xFFFFFF;
   write_w[mem_addr >> 14](mem_addr, mem_data);
@@ -325,8 +327,8 @@ static void compute_ea(int size) {
   case 3: fetch();
           mem_addr = PC - 4 + EXTB(IR);
 	  int r = (IR >> 12) & 7;
-	  u32 i = (IR & 0x8000) ? dreg[r] : areg[r];
-	  if (IR & 0x800) i = EXTW(i);
+	  u32 i = (IR & 0x8000) ? areg[r] : dreg[r];
+	  if ((IR & 0x800) == 0) i = EXTW(i);
 	  mem_addr += i;
           return;
   case 4: return;
@@ -542,26 +544,33 @@ static u32 alub(int op, u32 src, u32 dst) {
   switch (op) {
   case ADD:
     result = dst + src;
+    SET_V((!(src & 0x80) && !(dst & 0x80) && (result & 0x80)) ||
+	  ((src & 0x80) && (dst & 0x80) && !(result & 0x80)));
     break;
   case ADC:
     result = dst + src + !!FLAG_C;
+    SET_V((!(src & 0x80) && !(dst & 0x80) && (result & 0x80)) ||
+	  ((src & 0x80) && (dst & 0x80) && !(result & 0x80)));
     break;
   case SUB:
     result = dst - src;
+    SET_V((((src^dst) & (result^dst)) >> 7) & 1);
     break;
   case IOR:
     result = dst | src;
+    SET_V(0);
     break;
   case AND:
     result = dst & src;
+    SET_V(0);
     break;
   case EOR:
     result = dst ^ src;
+    SET_V(0);
     break;
   }
   SET_C(result & 0x100);
   result &= 0xFF;
-  //V
   SET_Z(result == 0);
   SET_N(result & 0x80);
   //X
@@ -580,6 +589,8 @@ static u32 aluw(int op, u32 src, u32 dst) {
     break;
   case ADC:
     result = dst + src + !!FLAG_C;
+    SET_V((!(src & 0x8000) && !(dst & 0x8000) && (result & 0x8000)) ||
+	  ((src & 0x8000) && (dst & 0x8000) && !(result & 0x8000)));
     break;
   case SUB:
     result = dst - src;
@@ -587,19 +598,21 @@ static u32 aluw(int op, u32 src, u32 dst) {
     break;
   case IOR:
     result = dst | src;
+    SET_V(0);
     break;
   case AND:
     result = dst & src;
+    SET_V(0);
     break;
   case EOR:
     result = dst ^ src;
+    SET_V(0);
     break;
   }
   SET_C(result & 0x10000);
   result &= 0xFFFF;
   SET_Z(result == 0);
   SET_N(result & 0x8000);
-  //X
   if (trace_p)
     fprintf (stderr, "ALU: %04X # %04X -> %04X\n", src, dst, result);
   return result;
@@ -615,6 +628,8 @@ static u32 alul(int op, u32 src, u32 dst) {
     sr = SR;
     result |= aluw(ADC, src >> 16, dst >> 16) << 16;
     SR &= sr | ~SR_Z;
+    SET_V((!(src & 0x80000000) && !(dst & 0x80000000) && (result & 0x80000000)) ||
+	  ((src & 0x80000000) && (dst & 0x80000000) && !(result & 0x80000000)));
     break;
   case SUB:
     result = alul(ADD, -src, dst);
@@ -860,6 +875,7 @@ static void insn_add_r(const struct s *size) {
   u32 dst = dreg[r];
   IRD = r;
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 static void insn_add_m(const struct s *size) {
@@ -867,6 +883,7 @@ static void insn_add_m(const struct s *size) {
   u32 src = dreg[r];
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(add_r)
@@ -900,20 +917,22 @@ static void insn_addi(const struct s *size) {
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(ADD, src, dst));
+  UPDATE_X_FROM_C;
 }
   
 DEFINSN_BWL(addi)
 
 static void insn_addq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst;
-  if ((IRD & 070) == 010)
-    dst = areg[EA_R_FIELD];
-  else
-    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size_l.alu(ADD, src, dst));
+  if ((IRD & 070) == 010) {
+    areg[EA_R_FIELD] += src;
+  } else {
+    u32 dst = size->read_ea();
+    size->modify_ea(size->alu(ADD, src, dst));
+    UPDATE_X_FROM_C;
+  }
 }
 
 DEFINSN_BWL(addq)
@@ -970,12 +989,19 @@ DEFINSN_BWL(and_m)
 
 static void insn_andi_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  fetch();
+  IR |= 0xFF00;
+  SR &= IR;
 }
 
 static void insn_andi_sr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  if ((SR & 0x2000) == 0)
+    ;
+  fetch();
+  SR &= IR;
+  if ((SR & 0x2000) == 0)
+    areg[7] = USP;
 }
 
 static void insn_andi(const struct s *size) {
@@ -1065,9 +1091,8 @@ static void insn_bchgi(void) {
   bchg(read_b_imm());
 }
 
-static void insn_bclr(void) {
-  TRACE();
-  u32 dst, src = DREG;
+static void bclr(u32 src) {
+  u32 dst;
   u32 x = 1;
   if (EA_M_FIELD == 0) {
     dst = dreg[EA_R_FIELD];
@@ -1077,35 +1102,22 @@ static void insn_bclr(void) {
       add_cycles(4);
     x <<= src % 32;
     dreg[EA_R_FIELD] = dst & ~x;
-    SET_Z((dst & x) == 0);
   } else {
     dst = read_b_ea();
     x <<= src % 8;
-    modify_b_ea(alub(AND, dst, ~x));
-    alub(AND, dst, x);
+    modify_b_ea(dst & ~x);
   }
+  SET_Z((dst & x) == 0);
+}
+
+static void insn_bclr(void) {
+  TRACE();
+  bclr(DREG);
 }
 
 static void insn_bclri(void) {
   TRACE();
-  u32 src = read_b_imm();
-  u32 dst;
-  u32 x = 1;
-  if ((IRD & 070) == 0) {
-    if (src < 16)
-      add_cycles(4);
-    else
-      add_cycles(6);
-    dst = dreg[EA_R_FIELD];
-    x <<= src % 32;
-    dreg[EA_R_FIELD] = dst & ~x;
-    SET_Z((dst & x) == 0);
-  } else {
-    dst = read_b_ea();
-    x <<= src % 8;
-    modify_b_ea(alub(AND, dst, ~x));
-    alub(AND, dst, x);
-  }
+  bclr(read_b_imm());
 }
 
 static void insn_bra(void) {
@@ -1122,30 +1134,7 @@ static void insn_bra(void) {
   fetch();
 }
 
-static void insn_bset(void) {
-  TRACE();
-  u32 dst, src = DREG;
-  u32 x = 1;
-  if (EA_M_FIELD == 0) {
-    dst = dreg[EA_R_FIELD];
-    if (src < 16)
-      add_cycles(2);
-    else
-      add_cycles(4);
-    x <<= src % 32;
-    dreg[EA_R_FIELD] = dst | x;
-    SET_Z((dst & x) == 0);
-  } else {
-    dst = read_b_ea();
-    x <<= src % 8;
-    modify_b_ea(alub(IOR, dst, x));
-    alub(AND, dst, x);
-  }
-}
-
-static void insn_bseti(void) {
-  TRACE();
-  u32 src = read_b_imm();
+static void bset(u32 src) {
   u32 dst;
   u32 x = 1;
   if (EA_M_FIELD == 0) {
@@ -1156,13 +1145,22 @@ static void insn_bseti(void) {
       add_cycles(4);
     x <<= src % 32;
     dreg[EA_R_FIELD] = dst | x;
-    SET_Z((dst & x) == 0);
   } else {
     dst = read_b_ea();
     x <<= src % 8;
-    modify_b_ea(alub(IOR, dst, x));
-    alub(AND, dst, x);
+    modify_b_ea(dst | x);
   }
+  SET_Z((dst & x) == 0);
+}
+
+static void insn_bset(void) {
+  TRACE();
+  bset(DREG);
+}
+
+static void insn_bseti(void) {
+  TRACE();
+  bset(read_b_imm());
 }
 
 static void insn_bsr(void) {
@@ -1266,9 +1264,45 @@ static void insn_cmpi(const struct s *size) {
 
 DEFINSN_BWL(cmpi)
 
-static void insn_cmpm(void) {
+static void insn_cmpmb(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = REG_FIELD;
+  mem_addr = areg[r];
+  mem_read_b();
+  u32 src = mem_data;
+  areg[r] += 1;
+  r = EA_R_FIELD;
+  mem_addr = areg[r];
+  mem_read_b();
+  u32 dst = mem_data;
+  areg[r] += 1;
+  alub(SUB, src, dst);
+}
+
+static void insn_cmpmw(void) {
+  TRACE();
+  int r = REG_FIELD;
+  mem_addr = areg[r];
+  mem_read_w();
+  u32 src = mem_data;
+  areg[r] += 2;
+  r = EA_R_FIELD;
+  mem_addr = areg[r];
+  mem_read_w();
+  u32 dst = mem_data;
+  areg[r] += 2;
+  aluw(SUB, src, dst);
+}
+
+static void insn_cmpml(void) {
+  TRACE();
+  int r = REG_FIELD;
+  u32 src = mem_read_l(areg[r]);
+  areg[r] += 4;
+  r = EA_R_FIELD;
+  u32 dst = mem_read_l(areg[r]);
+  areg[r] += 4;
+  alul(SUB, src, dst);
 }
 
 static void insn_eor(const struct s *size) {
@@ -1281,8 +1315,14 @@ DEFINSN_BWL(eor)
 
 static void insn_cmpm_or_eor(void) {
   switch (IRD & 0370) {
-  case 0010: case 0110: case 0210:
-    insn_cmpm();
+  case 0010:
+    insn_cmpmb();
+    return;
+  case 0110:
+    insn_cmpmw();
+    return;
+  case 0210:
+    insn_cmpml();
     return;
   }
   switch (IRD & 0300) {
@@ -1347,12 +1387,14 @@ static void insn_divu(void) {
 
 static void insn_eori_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  fetch();
+  SR ^= IR & 0x1F;
 }
 
 static void insn_eori_sr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  fetch();
+  SR ^= IR & 0xA71F;
 }
 
 static void insn_eori(const struct s *size) {
@@ -1752,12 +1794,13 @@ static void insn_moveq(void) {
 
 static void insn_move_to_ccr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  SR &= 0xFF00;
+  SR |= read_b_ea() & 0x1F;
 }
 
 static void insn_move_to_sr(void) {
   TRACE();
-  SR = read_w_ea();
+  SR = read_w_ea() & 0xA71F;
   add_cycles(4);
 }
 
@@ -1819,13 +1862,13 @@ DEFINSN_BWL(or_m)
 static void insn_ori_ccr(void) {
   TRACE();
   fetch();
-  SR |= IR & 0xFF;
+  SR |= IR & 0x1F;
 }
 
 static void insn_ori_sr(void) {
   TRACE();
   fetch();
-  SR |= IR;
+  SR |= IR & 0xA71F;
 }
 
 static void insn_shiftl_b(void) {
@@ -2662,6 +2705,7 @@ static int cputhread(void *arg) {
 }
 
 static void check_insn(int n) {
+  extern const char *name[];
   extern u32 initial[][18];
   extern u32 final[][18];
   extern u32 iram[][100];
@@ -2669,7 +2713,7 @@ static void check_insn(int n) {
   extern u16 prefetch[][2];
   int i;
 
-  fprintf(stderr, "Test %d\n", n);
+  fprintf(stderr, "Test %d: %s\n", n, name[n]);
 
   for (i = 0; i < 8; i++) {
     dreg[i] = initial[n][i];

@@ -4,7 +4,43 @@ import os
 import json
 import subprocess
 
-tests = ["ADDA.l", "ADDA.w"]
+# ABCD ADDA.l ADDA.w ADD.b ADD.l ADD.w ADDX.b ADDX.l ADDX.w AND.b ANDItoCCR ANDItoSR
+# AND.l AND.w ASL.b ASL.l ASL.w ASR.b ASR.l ASR.w Bcc BCHG BCLR BSET BSR BTST CHK
+# CLR.b CLR.l CLR.w CMPA.l CMPA.w CMP.b CMP.l CMP.w DBcc DIVS DIVU EOR.b EORItoCCR EORItoSR
+# EOR.l EOR.w EXG EXT.l EXT.w JMP JSR LEA LINK LSL.b LSL.l LSL.w LSR.b LSR.l LSR.w 
+# MOVEA.l MOVEA.w MOVE.b MOVEfromSR MOVEfromUSP MOVE.l MOVEM.l MOVEM.w MOVEP.l MOVEP.w
+# MOVE.q MOVEtoCCR MOVEtoSR MOVEtoUSP MOVE.w MULS MULU NBCD NEG.b NEG.l NEG.w 
+# NEGX.b NEGX.l NEGX.w NOP NOT.b NOT.l NOT.w OR.b ORItoCCR ORItoSR OR.l OR.w PEA RESET
+# ROL.b ROL.l ROL.w ROR.b ROR.l ROR.w ROXL.b ROXL.l ROXL.w ROXR.b ROXR.l ROXR.w
+# RTE RTR RTS SBCD Scc SUBA.l SUBA.w SUB.b SUB.l SUB.w SUBX.b SUBX.l SUBX.w SWAP
+# TAS TRAP TRAPV TST.b TST.l TST.w UNLINK
+
+#tests = ["ADDA.l", "ADDA.w", "ADD.b", "ADD.l", "ADD.w"]
+#tests = ["AND.b", "AND.l", "AND.w"]
+#tests = ["ANDItoCCR", "ANDItoSR", "EORItoCCR", "EORItoSR",
+#          "MOVEtoCCR", "MOVEtoSR", "ORItoCCR", "ORItoSR"]        nok
+#tests = ["ASL.b", "ASL.w", "ASL.l", "ASR.b", "ASR.w", "ASR.l"]   nok
+#tests = ["Bcc", "BSR"]
+#tests = ["BCHG", "BCLR", "BSET", "BTST"]
+#tests = ["CLR.b", "CLR.w", "CLR.l"]
+tests = ["CMPA.w", "CMPA.l", "CMP.b", "CMP.w", "CMP.l"]
+#DBcc Scc
+#DIVS DIVU
+#EOR OR
+#EXCG EXT
+#JMP JSR
+#LEA PEA
+#LSL LSR
+#MOVEA MOVE MOVEM MOVE.q
+#MULS MULU
+#NEG NOP NOT
+#ROL ROR
+#RTE RTR RTS
+#SUBA SUB
+#SWAP TRAP TRAPV
+#TST
+
+name = ""
 initial = ""
 final = ""
 prefetch = ""
@@ -19,9 +55,10 @@ def sp(data):
         return str(data['ssp'])
 
 def check(data):
-    global initial, final, prefetch, iram, fram, count
+    global name, initial, final, prefetch, iram, fram, count
     print("Test name " + data['name'])
     count += 1
+    name += "  \"%s\",\n" % data['name']
     x = "  {"
     for i in ["d0", "d1", "d2", "d3", "d4", "d5",  "d6",  "d7",
               "a0", "a1", "a2", "a3", "a4", "a5",  "a6",  "a7", "sr", "pc"]:
@@ -59,20 +96,30 @@ if __name__ == "__main__":
             check(j)
         f = open("check.c", "w")
         print("#include \"vs100.h\"", file=f)
+
+        print("const char *name[] = {", file=f)
+        print(name, file=f)
+        print("};", file=f)
+
         print("u32 initial[][18] = {", file=f)
         print(initial, file=f)
         print("};", file=f)
+
         print("u32 final[][18] = {", file=f)
         print(final, file=f)
         print("};", file=f)
+
         print("u16 prefetch[][2] = {", file=f)
         print(prefetch, file=f)
         print("};", file=f)
+
         print("u32 iram[][100] = {", file=f)
         print(iram, file=f)
         print("};", file=f)
+
         print("u32 fram[][100] = {", file=f)
         print(fram, file=f)
         print("};", file=f)
+
         print("int tests = %d;" % (count), file=f)
         f.close()
