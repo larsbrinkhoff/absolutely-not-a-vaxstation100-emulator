@@ -573,7 +573,6 @@ static u32 alub(int op, u32 src, u32 dst) {
   result &= 0xFF;
   SET_Z(result == 0);
   SET_N(result & 0x80);
-  //X
   return result;
 }
 
@@ -633,6 +632,7 @@ static u32 alul(int op, u32 src, u32 dst) {
     break;
   case SUB:
     result = alul(ADD, -src, dst);
+    SR ^= SR_C;
     break;
   case IOR:
     result = aluw(IOR, src, dst);
@@ -1266,27 +1266,31 @@ DEFINSN_BWL(cmpi)
 
 static void insn_cmpmb(void) {
   TRACE();
-  int r = REG_FIELD;
+  int r = EA_R_FIELD;
   mem_addr = areg[r];
   mem_read_b();
   u32 src = mem_data;
   areg[r] += 1;
-  r = EA_R_FIELD;
+  if (r == 7)
+    areg[r] += 1;
+  r = REG_FIELD;
   mem_addr = areg[r];
   mem_read_b();
   u32 dst = mem_data;
   areg[r] += 1;
+  if (r == 7)
+    areg[r] += 1;
   alub(SUB, src, dst);
 }
 
 static void insn_cmpmw(void) {
   TRACE();
-  int r = REG_FIELD;
+  int r = EA_R_FIELD;
   mem_addr = areg[r];
   mem_read_w();
   u32 src = mem_data;
   areg[r] += 2;
-  r = EA_R_FIELD;
+  r = REG_FIELD;
   mem_addr = areg[r];
   mem_read_w();
   u32 dst = mem_data;
@@ -1296,10 +1300,10 @@ static void insn_cmpmw(void) {
 
 static void insn_cmpml(void) {
   TRACE();
-  int r = REG_FIELD;
+  int r = EA_R_FIELD;
   u32 src = mem_read_l(areg[r]);
   areg[r] += 4;
-  r = EA_R_FIELD;
+  r = REG_FIELD;
   u32 dst = mem_read_l(areg[r]);
   areg[r] += 4;
   alul(SUB, src, dst);
@@ -2087,6 +2091,7 @@ static void insn_sub(const struct s *size) {
     IRD = r;
   }
   size->modify_ea(size->alu(SUB, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(sub)
@@ -2106,6 +2111,7 @@ static void insn_subi(const struct s *size) {
   u32 src = size->read_imm();
   u32 dst = size->read_ea();
   size->modify_ea(size->alu(SUB, src, dst));
+  UPDATE_X_FROM_C;
 }
   
 DEFINSN_BWL(subi)
@@ -2120,6 +2126,7 @@ static void insn_subq(const struct s *size) {
   if (src == 0)
     src = 8;
   size->modify_ea(size_l.alu(SUB, src, dst));
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(subq)
