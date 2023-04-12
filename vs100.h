@@ -7,6 +7,15 @@ typedef signed char s8;
 typedef signed short s16;
 typedef signed int s32;
 
+typedef u8 (*mem_read_b_fn)(u32);
+typedef void (*mem_write_b_fn)(u32, u8);
+typedef u16 (*mem_read_w_fn)(u32);
+typedef void (*mem_write_w_fn)(u32, u16);
+
+extern void mem_region(u32 address, u32 size,
+                       mem_read_b_fn rb, mem_write_b_fn wb,
+                       mem_read_w_fn rw, mem_write_w_fn ww);
+
 #define DEFDEV(NAME) \
   extern u8 read_b_##NAME(u32); \
   extern void write_b_##NAME(u32, u8); \

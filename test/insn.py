@@ -122,7 +122,29 @@ def generate(insn):
     for i in json.loads(p.stdout.decode("ascii")):
         check(i)
     f = open("check.c", "w")
-    print("#include \"vs100.h\"", file=f)
+    print("""
+#include "vs100.h"
+u8 test_ram[16*1024*1024];
+static u8 read_b_test(u32 a) {
+  return test_ram[a];
+}
+static void write_b_test(u32 a, u8 x) {
+  test_ram[a] = x;
+}
+DEFAULT_READ_W(test)
+DEFAULT_WRITE_W(test)
+void check(void) {
+  extern void check_insn(int n);
+  extern int tests;
+  int i;
+  mem_region(0, 16*1024*1024,
+	     read_b_test, write_b_test,
+	     read_w_test, write_w_test);
+  for (i = 0; i < tests; i++)
+    check_insn(i);
+  exit(0);
+}
+""", file=f)
 
     print("const char *name[] = {", file=f)
     print(name, file=f)

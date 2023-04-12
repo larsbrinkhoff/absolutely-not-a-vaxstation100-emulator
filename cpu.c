@@ -99,10 +99,6 @@ static int trace_p = 0;
   DEFINSN_WL(INSN)
 
 typedef void (*insn_fn)(void);
-typedef u8 (*mem_read_b_fn)(u32);
-typedef void (*mem_write_b_fn)(u32, u8);
-typedef u16 (*mem_read_w_fn)(u32);
-typedef void (*mem_write_w_fn)(u32, u16);
 
 static unsigned long long cycles = 0;
 
@@ -123,8 +119,7 @@ static mem_read_b_fn read_b[1024];
 static mem_write_b_fn write_b[1024];
 static mem_read_w_fn read_w[1024];
 static mem_write_w_fn write_w[1024];
-//static u8 ram[128*1024];
-static u8 ram[16*1024*1024];
+static u8 ram[128*1024];
 static u8 rom[16*1024];
 static u32 retry_finite_counter = 0;
 static u32 retry_infinite_counter = 0;
@@ -152,9 +147,9 @@ static void add_cycles(int n) {
   cycles += n;
 }
 
-static void mem_region(u32 address, u32 size,
-		       mem_read_b_fn rb, mem_write_b_fn wb,
-		       mem_read_w_fn rw, mem_write_w_fn ww) {
+void mem_region(u32 address, u32 size,
+		mem_read_b_fn rb, mem_write_b_fn wb,
+		mem_read_w_fn rw, mem_write_w_fn ww) {
   int i;
   address >>= 14;
   size += (1 << 14) - 1;
@@ -180,7 +175,6 @@ static void mem_write_b(void) {
 }
 
 static u32 mem_read_l(u32 a);
-static int test_n;
 
 static void mem_read_w(void) {
   if (mem_addr & 1) {
@@ -2695,13 +2689,14 @@ static int cputhread(void *arg) {
   return 0;
 }
 
-static void check_insn(int n) {
+void check_insn(int n) {
   extern const char *name[];
   extern u32 initial[][18];
   extern u32 final[][18];
   extern u32 iram[][200];
   extern u32 fram[][200];
   extern u16 prefetch[][2];
+  extern u8 test_ram[];
   int i;
 
   fprintf(stderr, "Test %d: %s  ", n, name[n]);
@@ -2717,7 +2712,7 @@ static void check_insn(int n) {
   for (i = 1; i < 1 + 2*iram[n][0];) {
     u32 a = iram[n][i++];
     u8 x = iram[n][i++];
-    ram[a] = x;
+    test_ram[a] = x;
   }
 
   if (setjmp(ex) == 0) {
@@ -2741,18 +2736,8 @@ static void check_insn(int n) {
     fprintf(stderr, "PC is %06X, not %06X\n", PC, final[n][17]);
 }
 
-static void check(void) {
-  extern int tests;
-  int i;
-  mem_region(0, 16*1024*1024,
-	     read_b_ram, write_b_ram,
-	     read_w_ram, write_w_ram);
-  for (i = 0; i < tests; i++)
-    check_insn(test_n = i);
-  exit(0);
-}
-
 int main(void) {
+  extern void check(void);
   check();
 
   sdl_init("VAXstation 100", 1, 0);
