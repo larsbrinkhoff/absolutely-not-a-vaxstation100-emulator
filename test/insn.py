@@ -15,30 +15,47 @@ import subprocess
 # RTE RTR RTS SBCD Scc SUBA.l SUBA.w SUB.b SUB.l SUB.w SUBX.b SUBX.l SUBX.w SWAP
 # TAS TRAP TRAPV TST.b TST.l TST.w UNLINK
 
-#tests = ["ADDA.l", "ADDA.w", "ADD.b", "ADD.l", "ADD.w"]
-#tests = ["AND.b", "AND.l", "AND.w"]
-#tests = ["ANDItoCCR", "ANDItoSR", "EORItoCCR", "EORItoSR",
-#          "MOVEtoCCR", "MOVEtoSR", "ORItoCCR", "ORItoSR"]        nok
-#tests = ["ASL.b", "ASL.w", "ASL.l", "ASR.b", "ASR.w", "ASR.l"]   nok
-#tests = ["Bcc", "BSR"]
-#tests = ["BCHG", "BCLR", "BSET", "BTST"]
-#tests = ["CLR.b", "CLR.w", "CLR.l"]
-tests = ["CMPA.w", "CMPA.l", "CMP.b", "CMP.w", "CMP.l"]
-#DBcc Scc
-#DIVS DIVU
-#EOR OR
-#EXCG EXT
-#JMP JSR
-#LEA PEA
+tests = []
+#ABCD SBCD NBCD
+tests += ["ADDA.w", "ADDA.l"]
+tests += ["ADD.b", "ADD.w", "ADD.l"]
+#ADDX
+tests += ["AND.b", "AND.w", "AND.l"]
+tests += ["ANDItoCCR", "ANDItoSR", "EORItoCCR", "EORItoSR"]
+tests += ["MOVEtoCCR", "MOVEtoSR", "ORItoCCR", "ORItoSR"]
+#tests += ["ASL.b", "ASL.w", "ASL.l"]   #nok
+#tests += ["ASR.b", "ASR.w", "ASR.l"]   #nok
+tests += ["Bcc", "BSR"]
+tests += ["BCHG", "BCLR", "BSET", "BTST"]
+tests += ["CLR.b", "CLR.w", "CLR.l"]
+tests += ["CMPA.w", "CMPA.l"]
+tests += ["CMPA.w", "CMPA.l"]
+tests += ["CMP.b", "CMP.w", "CMP.l"]
+tests += ["DBcc", "Scc"]
+#tests += ["DIVS", "DIVU"]  #nok
+tests += ["EOR.b", "EOR.w", "EOR.l"]
+tests += ["OR.b", "OR.w", "OR.l"]
+tests += ["EXG", "EXT.w", "EXT.l"]
+tests += ["JMP", "JSR"]
+tests += ["LEA", "PEA"]
 #LSL LSR
-#MOVEA MOVE MOVEM MOVE.q
-#MULS MULU
-#NEG NOP NOT
+tests += ["MOVEA.w", "MOVEA.l"]
+tests += ["MOVE.b", "MOVE.w", "MOVE.l"]
+tests += ["MOVEM.w", "MOVEM.l"]
+tests += ["MOVE.q"]
+#tests += ["MULS", "MULU"]  #nok
+tests += ["NEG.b", "NEG.w", "NEG.l"]
+tests += ["NOP"]
+tests += ["NOT.b", "NOT.w", "NOT.l"]
 #ROL ROR
-#RTE RTR RTS
-#SUBA SUB
-#SWAP TRAP TRAPV
-#TST
+tests += ["RTE", "RTS"]  #nok rte
+#RTR
+tests += ["SUBA.l", "SUBA.w"]
+tests += ["SUB.b", "SUB.l", "SUB.w"]  #nok
+tests += ["SWAP"]
+#TRAP TRAPV
+tests += ["TST.b", "TST.w", "TST.l"]
+#LINK UNLINK
 
 name = ""
 initial = ""
@@ -56,7 +73,7 @@ def sp(data):
 
 def check(data):
     global name, initial, final, prefetch, iram, fram, count
-    print("Test name " + data['name'])
+    #print("Test name " + data['name'])
     count += 1
     name += "  \"%s\",\n" % data['name']
     x = "  {"
@@ -88,38 +105,57 @@ def check(data):
         fram += ", %d, %d" % (i[0], i[1])
     fram += " },\n"
 
+def generate(insn):
+    global name, initial, final, prefetch, iram, fram, count
+
+    name = ""
+    initial = ""
+    final = ""
+    prefetch = ""
+    iram = ""
+    fram = ""
+    count = 0
+
+    print("Test: " + insn)
+    cmd = ("zcat", "./ProcessorTests/680x0/68000/v1/" + insn + ".json.gz")
+    p = subprocess.run(cmd, stdout=subprocess.PIPE)
+    for i in json.loads(p.stdout.decode("ascii")):
+        check(i)
+    f = open("check.c", "w")
+    print("#include \"vs100.h\"", file=f)
+
+    print("const char *name[] = {", file=f)
+    print(name, file=f)
+    print("};", file=f)
+
+    print("u32 initial[][18] = {", file=f)
+    print(initial, file=f)
+    print("};", file=f)
+
+    print("u32 final[][18] = {", file=f)
+    print(final, file=f)
+    print("};", file=f)
+
+    print("u16 prefetch[][2] = {", file=f)
+    print(prefetch, file=f)
+    print("};", file=f)
+
+    print("u32 iram[][200] = {", file=f)
+    print(iram, file=f)
+    print("};", file=f)
+
+    print("u32 fram[][200] = {", file=f)
+    print(fram, file=f)
+    print("};", file=f)
+
+    print("int tests = %d;" % (count), file=f)
+    f.close()
+
+def test():
+    p = subprocess.run("make")
+    p = subprocess.run("./vs100")
+
 if __name__ == "__main__":
     for i in tests:
-        r, w = os.pipe()
-        p = subprocess.run(("zcat", "./ProcessorTests/680x0/68000/v1/" + i + ".json.gz"), stdout=subprocess.PIPE)
-        for j in json.loads(p.stdout.decode("ascii")):
-            check(j)
-        f = open("check.c", "w")
-        print("#include \"vs100.h\"", file=f)
-
-        print("const char *name[] = {", file=f)
-        print(name, file=f)
-        print("};", file=f)
-
-        print("u32 initial[][18] = {", file=f)
-        print(initial, file=f)
-        print("};", file=f)
-
-        print("u32 final[][18] = {", file=f)
-        print(final, file=f)
-        print("};", file=f)
-
-        print("u16 prefetch[][2] = {", file=f)
-        print(prefetch, file=f)
-        print("};", file=f)
-
-        print("u32 iram[][100] = {", file=f)
-        print(iram, file=f)
-        print("};", file=f)
-
-        print("u32 fram[][100] = {", file=f)
-        print(fram, file=f)
-        print("};", file=f)
-
-        print("int tests = %d;" % (count), file=f)
-        f.close()
+        generate(i)
+        test()

@@ -20,6 +20,7 @@
 #define LSR 011
 #define ASR 012
 #define ROR 013
+#define EXT 014
 
 #define SR_C      0x0001
 #define SR_V      0x0002
@@ -167,14 +168,14 @@ static void mem_region(u32 address, u32 size,
 }
 
 static void mem_read_b(void) {
-  mem_addr &= 0xFFFFFF;
-  mem_data = read_b[mem_addr >> 14](mem_addr);
+  u32 a = mem_addr & 0xFFFFFF;
+  mem_data = read_b[a >> 14](a);
   add_cycles(4);
 }
 
 static void mem_write_b(void) {
-  mem_addr &= 0xFFFFFF;
-  write_b[mem_addr >> 14](mem_addr, mem_data);
+  u32 a = mem_addr & 0xFFFFFF;
+  write_b[a >> 14](a, mem_data);
   add_cycles(4);
 }
 
@@ -189,8 +190,8 @@ static void mem_read_w(void) {
     areg[7] -= 14;
     longjmp(ex, 1);
   }
-  mem_addr &= 0xFFFFFF;
-  mem_data = read_w[mem_addr >> 14](mem_addr);
+  u32 a = mem_addr & 0xFFFFFF;
+  mem_data = read_w[a >> 14](a);
   add_cycles(4);
 }
 
@@ -202,8 +203,8 @@ static void mem_write_w(void) {
     areg[7] -= 14;
     longjmp(ex, 1);
   }
-  mem_addr &= 0xFFFFFF;
-  write_w[mem_addr >> 14](mem_addr, mem_data);
+  u32 a = mem_addr & 0xFFFFFF;
+  write_w[a >> 14](a, mem_data);
   add_cycles(4);
 }
 
@@ -607,6 +608,10 @@ static u32 aluw(int op, u32 src, u32 dst) {
     result = dst ^ src;
     SET_V(0);
     break;
+  case EXT:
+    result = EXTB(dst) & 0xFFFF;
+    SET_V(0);
+    break;
   }
   SET_C(result & 0x10000);
   result &= 0xFFFF;
@@ -651,6 +656,13 @@ static u32 alul(int op, u32 src, u32 dst) {
     sr = SR;
     result |= aluw(EOR, src >> 16, dst >> 16) << 16;
     SR &= sr | ~SR_Z;
+    break;
+  case EXT:
+    result = EXTW(dst);
+    SET_C(0);
+    SET_V(0);
+    SET_Z(result == 0);
+    SET_N(result & 0x80000000);
     break;
   }
   return result;
@@ -1233,23 +1245,10 @@ static void insn_cmp(const struct s *size) {
 DEFINSN_BWL(cmp)
 
 static void insn_cmpa(const struct s *size) {
-  u32 src, dst;
-  switch(PC-4) {
-  default:
-    src = size->read_ea();
-    dst = AREG;
-    if (size == &size_w)
-      src = EXTW(src);
-    break;
-  case 0x004784:
-  case 0x0047d0:
-  case 0x00481e:
-  case 0x004882:
-  case 0x0048e4:
-    src = AREG;
-    dst = size->read_ea();
-    break;
-  }
+  u32 src = size->read_ea();
+  u32 dst = AREG;
+  if (size == &size_w)
+    src = EXTW(src);
   alul(SUB, src, dst);
 }
 
@@ -1438,18 +1437,17 @@ static void insn_movemw_rm(void) {
     mask = reverse(mask);
     for (i = 7; i >= 0; i--)
       if (mask & (1 << (i+8))) {
-	areg[EA_R_FIELD] -= 2;
-	mem_addr = areg[EA_R_FIELD];
+	mem_addr -= 2;
 	mem_data = areg[i];
 	mem_write_w();
       }
     for (i = 7; i >= 0; i--)
       if (mask & (1 << i)) {
-	areg[EA_R_FIELD] -= 2;
-	mem_addr = areg[EA_R_FIELD];
+	mem_addr -= 2;
 	mem_data = dreg[i];
 	mem_write_w();
       }
+    areg[EA_R_FIELD] = mem_addr;
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
@@ -1489,14 +1487,15 @@ static void insn_moveml_rm(void) {
     mask = reverse(mask);
     for (i = 7; i >= 0; i--)
       if (mask & (1 << (i+8))) {
-	areg[EA_R_FIELD] -= 4;
-	mem_write_l(areg[EA_R_FIELD], areg[i]);
+	mem_addr -= 4;
+	mem_write_l(mem_addr, areg[i]);
       }
     for (i = 7; i >= 0; i--)
       if (mask & (1 << i)) {
-	areg[EA_R_FIELD] -= 4;
-	mem_write_l(areg[EA_R_FIELD], dreg[i]);
+	mem_addr -= 4;
+	mem_write_l(mem_addr, dreg[i]);
       }
+    areg[EA_R_FIELD] = mem_addr;
   } else {
     for (i = 0; i < 8; i++)
       if (mask & (1 << i)) {
@@ -1521,35 +1520,20 @@ static void insn_movemw_mr(void) {
   fetch();
   u16 mask = IR;
   compute_ea(0);
-  if ((IRD & 070) == 030) {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	mem_addr = areg[EA_R_FIELD];
-	mem_read_w();
-	dreg[i] = mem_data;
-	areg[EA_R_FIELD] += 2;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	mem_addr = areg[EA_R_FIELD];
-	mem_read_w();
-	areg[i] = mem_data;
-	areg[EA_R_FIELD] += 2;
-      }
-  } else {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	mem_read_w();
-	dreg[i] = mem_data;
-	mem_addr += 2;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	mem_read_w();
-	areg[i] = mem_data;
-	mem_addr += 2;
-      }
-  }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << i)) {
+      mem_read_w();
+      dreg[i] = EXTW(mem_data);
+      mem_addr += 2;
+    }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << (i+8))) {
+      mem_read_w();
+      areg[i] = EXTW(mem_data);
+      mem_addr += 2;
+    }
+  if ((IRD & 070) == 030)
+    areg[EA_R_FIELD] = mem_addr;
 }
 
 static void insn_moveml_mr(void) {
@@ -1562,29 +1546,18 @@ static void insn_moveml_mr(void) {
   fetch();
   u16 mask = IR;
   compute_ea(0);
-  if ((IRD & 070) == 030) {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	dreg[i] = mem_read_l(areg[EA_R_FIELD]);
-	areg[EA_R_FIELD] += 4;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	areg[i] = mem_read_l(areg[EA_R_FIELD]);
-	areg[EA_R_FIELD] += 4;
-      }
-  } else {
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << i)) {
-	dreg[i] = mem_read_l(mem_addr);
-	mem_addr += 4;
-      }
-    for (i = 0; i < 8; i++)
-      if (mask & (1 << (i+8))) {
-	areg[i] = mem_read_l(mem_addr);
-	mem_addr += 4;
-      }
-  }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << i)) {
+      dreg[i] = mem_read_l(mem_addr);
+      mem_addr += 4;
+    }
+  for (i = 0; i < 8; i++)
+    if (mask & (1 << (i+8))) {
+      areg[i] = mem_read_l(mem_addr);
+      mem_addr += 4;
+    }
+  if ((IRD & 070) == 030)
+    areg[EA_R_FIELD] = mem_addr;
 }
 
 static void insn_extb(void) {
@@ -1592,9 +1565,8 @@ static void insn_extb(void) {
     insn_movemw_rm();
     return;
   }
-
   int r = EA_R_FIELD;
-  dreg[r] = (dreg[r] & 0xFFFF0000) | (EXTB(dreg[r]) & 0xFFFF);
+  dreg[r] = (dreg[r] & 0xFFFF0000) | aluw(EXT, 0, dreg[r]);
 }
 
 static void insn_extw(void) {
@@ -1602,9 +1574,8 @@ static void insn_extw(void) {
     insn_moveml_rm();
     return;
   }
-
   int r = EA_R_FIELD;
-  dreg[r] = EXTW(dreg[r]);
+  dreg[r] = alul(EXT, 0, dreg[r]);
 }
 
 static void insn_illegal(void) {
@@ -1660,10 +1631,8 @@ static void insn_jsr(void) {
 
 static void insn_lea(void) {
   TRACE();
-  UNIMPLEMENTED();
-  //Check ea.
-  //compute_ea(0);
-  //AREG = mem_addr;
+  compute_ea(0);
+  AREG = mem_addr;
 }
 
 static void insn_linea(void) {
@@ -1774,17 +1743,19 @@ static void insn_move(const struct s *size) {
     fprintf (stderr, "MOVE: %06X -> %06X : %X\n", old_addr, mem_addr, x);
   SET_C(0);
   SET_V(0);
-  SET_Z((mem_data & size->mask) == 0);
-  SET_N(mem_data & size->sign);
+  SET_Z((x & size->mask) == 0);
+  SET_N(x & size->sign);
 }
 
 DEFINSN_BWL(move)
 
-static void insn_movea(const struct s *size) {
-  AREG = size->read_ea();
+static void insn_moveaw(void) {
+  AREG = EXTW(size_w.read_ea());
 }
 
-DEFINSN_WL(movea)
+static void insn_moveal(void) {
+  AREG = size_l.read_ea();
+}
 
 static void insn_move_from_sr(void) {
   TRACE();
@@ -1794,6 +1765,10 @@ static void insn_move_from_sr(void) {
 static void insn_moveq(void) {
   TRACE();
   DREG = EXTB(IRD);
+  SET_C(0);
+  SET_V(0);
+  SET_Z(DREG == 0);
+  SET_N(DREG & 0x80000000);
 }
 
 static void insn_move_to_ccr(void) {
@@ -1828,8 +1803,13 @@ static void insn_nbcd(void) {
 
 static void insn_neg(const struct s *size) {
   u32 dst = size->read_ea();
-  u32 result = size->alu(SUB, dst, 0);
+  u32 result = -dst;
   size->modify_ea(result);
+  SET_V(dst == size->sign);
+  SET_Z((result & size->mask) == 0);
+  SET_N(result & size->sign);
+  SET_C(!FLAG_Z);
+  UPDATE_X_FROM_C;
 }
 
 DEFINSN_BWL(neg)
@@ -2137,12 +2117,14 @@ static void insn_swap() {
   SET_C(0);
   SET_V(0);
   SET_Z(dreg[r] == 0);
-  SET_Z(dreg[r] & 0x80000000);
+  SET_N(dreg[r] & 0x80000000);
 }
 
 static void insn_pea() {
   TRACE();
-  UNIMPLEMENTED();
+  compute_ea(0);
+  push(mem_addr);
+  push(mem_addr >> 16);
 }
 
 static void insn_swap_or_pea(void) {
@@ -2155,6 +2137,8 @@ static void insn_swap_or_pea(void) {
 static void insn_tst(const struct s *size) {
   u32 dst = size->read_ea();
   size->alu(SUB, 0, dst);
+  SET_C(0);
+  SET_V(0);
 }
 
 DEFINSN_BWL(tst)
@@ -2715,12 +2699,12 @@ static void check_insn(int n) {
   extern const char *name[];
   extern u32 initial[][18];
   extern u32 final[][18];
-  extern u32 iram[][100];
-  extern u32 fram[][100];
+  extern u32 iram[][200];
+  extern u32 fram[][200];
   extern u16 prefetch[][2];
   int i;
 
-  fprintf(stderr, "Test %d: %s\n", n, name[n]);
+  fprintf(stderr, "Test %d: %s  ", n, name[n]);
 
   for (i = 0; i < 8; i++) {
     dreg[i] = initial[n][i];
@@ -2740,7 +2724,10 @@ static void check_insn(int n) {
     PC += 4;
     execute();
     PC -= 4;
+  } else {
+    fprintf(stderr, "EXCEPTION");
   }
+  fprintf(stderr, "\n");
 
   for (i = 0; i < 8; i++) {
     if (dreg[i] != final[n][i])
@@ -2762,11 +2749,11 @@ static void check(void) {
 	     read_w_ram, write_w_ram);
   for (i = 0; i < tests; i++)
     check_insn(test_n = i);
+  exit(0);
 }
 
 int main(void) {
   check();
-  return 0;
 
   sdl_init("VAXstation 100", 1, 0);
   //init_opengl();
