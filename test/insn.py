@@ -57,12 +57,6 @@ tests += ["SWAP"]
 tests += ["TST.b", "TST.w", "TST.l"]
 #LINK UNLINK
 
-name = ""
-initial = ""
-final = ""
-prefetch = ""
-iram = ""
-fram = ""
 count = 0
 
 def sp(data):
@@ -71,113 +65,63 @@ def sp(data):
     else:
         return str(data['ssp'])
 
-def check(data):
-    global name, initial, final, prefetch, iram, fram, count
-    #print("Test name " + data['name'])
+def check(f, data):
+    global count
     count += 1
-    name += "  \"%s\",\n" % data['name']
-    x = "  {"
+    print("  { \"%s\"," % data['name'], file=f)
+    x = "    { "
     for i in ["d0", "d1", "d2", "d3", "d4", "d5",  "d6",  "d7",
-              "a0", "a1", "a2", "a3", "a4", "a5",  "a6",  "a7", "sr", "pc"]:
+              "a0", "a1", "a2", "a3", "a4", "a5",  "a6",  "a7",
+              "usp", "ssp", "sr", "pc"]:
         if i == "a7":
-            initial += x + sp(data['initial'])
+            print(x + sp(data['initial']), file=f, end="")
         else:
-            initial += x + str(data['initial'][i])
+            print(x + str(data['initial'][i]), file=f, end="")
         x = ", "
-    initial += " },\n"
-    x = "  {"
+    print(" },", file=f)
+    x = "    {"
     for i in ["d0", "d1", "d2", "d3", "d4", "d5",  "d6",  "d7",
-              "a0", "a1", "a2", "a3", "a4", "a5",  "a6",  "a7", "sr", "pc"]:
+              "a0", "a1", "a2", "a3", "a4", "a5",  "a6",  "a7",
+              "usp", "ssp", "sr", "pc"]:
         if i == "a7":
-            final += x + sp(data['final'])
+            print(x + sp(data['final']), file=f, end="")
         else:
-            final += x + str(data['final'][i])
+            print(x + str(data['final'][i]), file=f, end="")
         x = ", "
-    final += " },\n"
-    prefetch += "  { %d, %d },\n" % (data['initial']['prefetch'][0],
-                                     data['initial']['prefetch'][1])
-    iram += "  { %d" % len(data['initial']['ram'])
+    print(" },",file=f)
+    print("    { %d, %d }," % (data['initial']['prefetch'][0],
+                               data['initial']['prefetch'][1]), file=f)
+    print("    { %d" % len(data['initial']['ram']), file=f, end="")
     for i in data['initial']['ram']:
-        iram += ", %d, %d" % (i[0], i[1])
-    iram += " },\n"
-    fram += "  { %d" % len(data['final']['ram'])
+        print(", %d, %d" % (i[0], i[1]), file=f, end="")
+    print(" },", file=f)
+    print("    { %d" % len(data['final']['ram']), file=f, end="")
     for i in data['final']['ram']:
-        fram += ", %d, %d" % (i[0], i[1])
-    fram += " },\n"
+        print(", %d, %d" % (i[0], i[1]), file=f, end="")
+    print(" },", file=f)
+    print("  },", file=f)
 
 def generate(insn):
-    global name, initial, final, prefetch, iram, fram, count
-
-    name = ""
-    initial = ""
-    final = ""
-    prefetch = ""
-    iram = ""
-    fram = ""
+    global count
     count = 0
-
-    print("Test: " + insn)
     cmd = ("zcat", "./ProcessorTests/680x0/68000/v1/" + insn + ".json.gz")
     p = subprocess.run(cmd, stdout=subprocess.PIPE)
+    f = open("check_data.c", "w")
+    print("#include \"vs100.h\"\n", file=f)
+    print("#include \"check.h\"\n", file=f)
+    print("const struct check check_data[] = {", file=f)
     for i in json.loads(p.stdout.decode("ascii")):
-        check(i)
-    f = open("check.c", "w")
-    print("""
-#include "vs100.h"
-u8 test_ram[16*1024*1024];
-static u8 read_b_test(u32 a) {
-  return test_ram[a];
-}
-static void write_b_test(u32 a, u8 x) {
-  test_ram[a] = x;
-}
-DEFAULT_READ_W(test)
-DEFAULT_WRITE_W(test)
-void check(void) {
-  extern void check_insn(int n);
-  extern int tests;
-  int i;
-  mem_region(0, 16*1024*1024,
-	     read_b_test, write_b_test,
-	     read_w_test, write_w_test);
-  for (i = 0; i < tests; i++)
-    check_insn(i);
-  exit(0);
-}
-""", file=f)
-
-    print("const char *name[] = {", file=f)
-    print(name, file=f)
+        check(f, i)
     print("};", file=f)
-
-    print("u32 initial[][18] = {", file=f)
-    print(initial, file=f)
-    print("};", file=f)
-
-    print("u32 final[][18] = {", file=f)
-    print(final, file=f)
-    print("};", file=f)
-
-    print("u16 prefetch[][2] = {", file=f)
-    print(prefetch, file=f)
-    print("};", file=f)
-
-    print("u32 iram[][200] = {", file=f)
-    print(iram, file=f)
-    print("};", file=f)
-
-    print("u32 fram[][200] = {", file=f)
-    print(fram, file=f)
-    print("};", file=f)
-
     print("int tests = %d;" % (count), file=f)
     f.close()
 
 def test():
-    p = subprocess.run("make")
+    p = subprocess.run("make", stdout=subprocess.DEVNULL)
     p = subprocess.run("./vs100")
 
 if __name__ == "__main__":
     for i in tests:
+        print("Test: " + i)
         generate(i)
         test()

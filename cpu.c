@@ -6,6 +6,7 @@
 #include "common/xsdl.h"
 #include "common/opengl.h"
 #include "vs100.h"
+#include "check.h"
 
 #define ROM_ADDR 0x180000
 
@@ -29,6 +30,8 @@
 #define SR_X      0x0010
 #define SR_S      0x2000
 #define SR_T      0x8000
+#define CCR_FLAGS (SR_X | SR_N | SR_Z | SR_V | SR_C)
+#define SR_FLAGS  (SR_T | SR_S | 0x0700 | CCR_FLAGS)
 #define FLAG_C    (SR & SR_C)
 #define FLAG_V    (SR & SR_V)
 #define FLAG_Z    (SR & SR_Z)
@@ -113,6 +116,7 @@ static u32 mem_addr;
 static u16 mem_data;
 static int ipl;
 static int vec;
+static int FC = 5;
 static jmp_buf ex;
 
 static mem_read_b_fn read_b[1024];
@@ -175,28 +179,35 @@ static void mem_write_b(void) {
 }
 
 static u32 mem_read_l(u32 a);
+static void fetch(void);
+
+static void raise(int n) {
+  //printf("Address error: %06X\n", mem_addr);
+  //exit(1);
+  PC = mem_read_l(4*n);
+  fetch();
+  fetch();
+  if ((SR & SR_S) == 0) {
+    USP = areg[7];
+    areg[7] = SSP;
+  }
+  areg[7] -= 14;
+  SR |= SR_S;
+  SR &= ~SR_T;
+  longjmp(ex, 1);
+}
 
 static void mem_read_w(void) {
-  if (mem_addr & 1) {
-    //printf("Address error: %06X\n", mem_addr);
-    //exit(1);
-    PC = mem_read_l(0x00000C);
-    areg[7] -= 14;
-    longjmp(ex, 1);
-  }
+  if (mem_addr & 1)
+    raise(3);
   u32 a = mem_addr & 0xFFFFFF;
   mem_data = read_w[a >> 14](a);
   add_cycles(4);
 }
 
 static void mem_write_w(void) {
-  if (mem_addr & 1) {
-    //printf("Address error: %06X\n", mem_addr);
-    //exit(1);
-    PC = mem_read_l(0x00000C);
-    areg[7] -= 14;
-    longjmp(ex, 1);
-  }
+  if (mem_addr & 1)
+    raise(3);
   u32 a = mem_addr & 0xFFFFFF;
   write_w[a >> 14](a, mem_data);
   add_cycles(4);
@@ -239,9 +250,11 @@ static u16 pop(void) {
 }
 
 static void fetch(void) {
+  FC = 6;
   IR = IRC;
   mem_addr = PC;
   mem_read_w();
+  FC = 5;
   IRC = mem_data;
   PC += 2;
 }
@@ -1002,12 +1015,14 @@ static void insn_andi_ccr(void) {
 
 static void insn_andi_sr(void) {
   TRACE();
-  if ((SR & 0x2000) == 0)
-    ;
+  if ((SR & SR_S) == 0)
+    raise(4);
   fetch();
   SR &= IR;
-  if ((SR & 0x2000) == 0)
+  if ((SR & SR_S) == 0) {
+    SSP = areg[7];
     areg[7] = USP;
+  }
 }
 
 static void insn_andi(const struct s *size) {
@@ -1385,13 +1400,17 @@ static void insn_divu(void) {
 static void insn_eori_ccr(void) {
   TRACE();
   fetch();
-  SR ^= IR & 0x1F;
+  SR ^= IR & CCR_FLAGS;
 }
 
 static void insn_eori_sr(void) {
   TRACE();
   fetch();
-  SR ^= IR & 0xA71F;
+  SR ^= IR & SR_FLAGS;
+  if ((SR & SR_S) == 0) {
+    SSP = areg[7];
+    areg[7] = USP;
+  }
 }
 
 static void insn_eori(const struct s *size) {
@@ -1574,7 +1593,7 @@ static void insn_extw(void) {
 
 static void insn_illegal(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(4);
 }
 
 static void insn_illegal_or_tas(void) {
@@ -1631,17 +1650,17 @@ static void insn_lea(void) {
 
 static void insn_linea(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(10);
 }
 
 static void insn_linef(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(11);
 }
 
 static void insn_trap(void) {
   TRACE();
-  UNIMPLEMENTED();
+  raise(32 + (IR & 0xF));
 }
 
 static void insn_link(void) {
@@ -1678,9 +1697,13 @@ static void insn_stop(void) {
 
 static void insn_rte(void) {
   TRACE();
-  SR = pop();
+  SR = pop() & SR_FLAGS;
   PC = pop() << 16;
   PC |= pop();
+  if ((SR & SR_S) == 0) {
+    SSP = areg[7];
+    areg[7] = USP;
+  }
   fetch();
 }
 
@@ -1767,14 +1790,19 @@ static void insn_moveq(void) {
 
 static void insn_move_to_ccr(void) {
   TRACE();
+  u16 x = read_w_ea();
   SR &= 0xFF00;
-  SR |= read_b_ea() & 0x1F;
+  SR |= x & CCR_FLAGS;
 }
 
 static void insn_move_to_sr(void) {
   TRACE();
-  SR = read_w_ea() & 0xA71F;
+  SR = read_w_ea() & SR_FLAGS;
   add_cycles(4);
+  if ((SR & SR_S) == 0) {
+    SSP = areg[7];
+    areg[7] = USP;
+  }
 }
 
 static void insn_muls(void) {
@@ -1840,13 +1868,13 @@ DEFINSN_BWL(or_m)
 static void insn_ori_ccr(void) {
   TRACE();
   fetch();
-  SR |= IR & 0x1F;
+  SR |= IR & CCR_FLAGS;
 }
 
 static void insn_ori_sr(void) {
   TRACE();
   fetch();
-  SR |= IR & 0xA71F;
+  SR |= IR & SR_FLAGS;
 }
 
 static void insn_shiftl_b(void) {
@@ -2427,10 +2455,7 @@ void reset(void) {
 }
 
 void execute(void) {
-#if 0
-  if (PC-4 == 0x116c)
-    trace_p = 1;
-#endif
+  FC = 5;
   IRD = IR;
   dispatch[IRD >> 6]();
   fetch();
@@ -2438,6 +2463,7 @@ void execute(void) {
 
 static void step(void) {
   unsigned long long c0 = cycles;
+  //if (SR & SR_T) raise(9);
   execute();
   //fprintf(stderr, "Cycles: %llu (%llu)\n", cycles - c0, cycles);
   SDL_LockMutex(event_mutex);
@@ -2463,6 +2489,7 @@ static u8 read_b_bus_error(u32 a) {
   printf("Bus error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
+  raise(2);
   return 0;
 }
 
@@ -2470,6 +2497,7 @@ static void write_b_bus_error(u32 a, u8 x) {
   printf("Bus Error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
+  raise(2);
 }
 
 SAME_READ_W(bus_error)
@@ -2689,51 +2717,64 @@ static int cputhread(void *arg) {
   return 0;
 }
 
-void check_insn(int n) {
-  extern const char *name[];
-  extern u32 initial[][18];
-  extern u32 final[][18];
-  extern u32 iram[][200];
-  extern u32 fram[][200];
-  extern u16 prefetch[][2];
-  extern u8 test_ram[];
+static void print_once(char *s) {
+  fputs(s, stderr);
+  *s = 0;
+}
+
+void check_insn(const struct check *data) {
+  char name[100];
   int i;
 
-  fprintf(stderr, "Test %d: %s  ", n, name[n]);
+  snprintf(name, sizeof name, "Test: %s", data->name);
 
   for (i = 0; i < 8; i++) {
-    dreg[i] = initial[n][i];
-    areg[i] = initial[n][i+8];
+    dreg[i] = data->initial[i];
+    areg[i] = data->initial[i+8];
   }
-  SR = initial[n][16];
-  PC = initial[n][17];
-  IR = prefetch[n][0];
-  IRC = prefetch[n][1];
-  for (i = 1; i < 1 + 2*iram[n][0];) {
-    u32 a = iram[n][i++];
-    u8 x = iram[n][i++];
-    test_ram[a] = x;
-  }
+  USP = data->initial[16];
+  SSP = data->initial[17];
+  SR = data->initial[18];
+  PC = data->initial[19]+4;
+  IR = data->prefetch[0];
+  IRC = data->prefetch[1];
 
-  if (setjmp(ex) == 0) {
-    PC += 4;
+  if (setjmp(ex) == 0)
     execute();
-    PC -= 4;
-  } else {
-    fprintf(stderr, "EXCEPTION");
-  }
-  fprintf(stderr, "\n");
+  else
+    strcat(name, "  *EXCEPTION*");
+  strcat(name, "\n");
 
   for (i = 0; i < 8; i++) {
-    if (dreg[i] != final[n][i])
-      fprintf(stderr, "D%i is %08X, not %08X\n", i, dreg[i], final[n][i]);
-    if (areg[i] != final[n][i+8])
-      fprintf(stderr, "A%i is %08X, not %08X\n", i, areg[i], final[n][i+8]);
+    if (dreg[i] != data->final[i]) {
+      print_once(name);
+      fprintf(stderr, "D%i is %08X, not %08X\n", i, dreg[i], data->final[i]);
+    }
+    if (i < 7 && areg[i] != data->final[i+8]) {
+      print_once(name);
+      fprintf(stderr, "A%i is %08X, not %08X\n", i, areg[i], data->final[i+8]);
+    }
   }
-  if (SR != final[n][16])
-    fprintf(stderr, "SR is %04X, not %04X\n", SR, final[n][16]);
-  if (PC != final[n][17])
-    fprintf(stderr, "PC is %06X, not %06X\n", PC, final[n][17]);
+  if (SR & SR_S)
+    SSP = areg[7];
+  else
+    USP = areg[7];
+  if (USP != data->final[16]) {
+    print_once(name);
+    fprintf(stderr, "USP is %08X, not %08X\n", USP, data->final[16]);
+  }
+  if (SSP != data->final[17]) {
+    print_once(name);
+    fprintf(stderr, "SSP is %08X, not %08X\n", SSP, data->final[17]);
+  }
+  if (SR != data->final[18]) {
+    print_once(name);
+    fprintf(stderr, "SR is %04X, not %04X\n", SR, data->final[18]);
+  }
+  if (PC-4 != data->final[19]) {
+    print_once(name);
+    fprintf(stderr, "PC is %06X, not %06X\n", PC-4, data->final[19]);
+  }
 }
 
 int main(void) {
