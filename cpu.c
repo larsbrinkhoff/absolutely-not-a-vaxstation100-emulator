@@ -708,40 +708,57 @@ static u32 alul(int op, u32 src, u32 dst) {
   return result;
 }
 
-static u32 alue(int op, u32 op1, u32 op2) {
-  u32 mask = 0xFF; // or 0xFFFF or 0xFFFFFFFF;
-  //u32 sign = 0x80; // or 0x8000 or 0x80000000;
-  int n = 7; // or 15 or 31;
-  u32 result;
+static u32 alue(int n, u32 dst, int bits) {
   int i;
-  switch (op) {
-  case LSL:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result & mask) << 1;
+  u32 carry = 0;
+  u32 sign = 1 << bits;
+  u32 mask = 0xFFFFFFFF >> (31 - bits);
+  switch (IRD & 03400) {
+  case 00000: //asr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (dst & sign);
+      add_cycles(2);
+    }
     break;
-  case ROL:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = ((result & mask) << 1) | ((result >> n) & 1);
+  case 01000: //lsr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst >>= 1;
+      add_cycles(2);
+    }
     break;
-  case LSR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = result >> 1;
+  case 00400: //asl
+  case 01400: //lsl
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst <<= 1;
+      add_cycles(2);
+    }
     break;
-  case ASR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result >> 1) | (result & 0x80000000);
+  case 02000: //roxr
+  case 02400: //roxl
+    UNIMPLEMENTED();
+  case 03000: //ror
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (dst << bits);
+      add_cycles(2);
+    }
     break;
-  case ROR:
-    result = op1;
-    for (i = 0; i < op2; i++)
-      result = (result >> 1) | ((result & 1) << n);
+  case 03400: //rol
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst = (dst << 1) | (dst >> bits);
+      add_cycles(2);
+    }
     break;
   }
-  return result;
+  dst &= mask;
+  SET_C(carry);
+  SET_Z(dst == 0);
+  SET_N(dst & sign);
+  return dst;
 }
 
 static const struct s size_b = {
@@ -1904,206 +1921,104 @@ static void insn_ori_sr(void) {
   SR |= IR & SR_FLAGS;
 }
 
+static void insn_shiftl_m(void) {
+  TRACE();
+  u16 dst = size_w.read_ea();
+  size_w.modify_ea(alue(1, dst, 15));
+}
+
 static void insn_shiftl_b(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  int n = REG_FIELD;
+  if (IRD & 040)
+    n = dreg[n] % 64;
+  else if (n == 0)
+    n = 8;
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFFFF00;
+  dreg[r] |= alue(n, dst, 7);
 }
 
 static void insn_shiftl_w(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u16 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asl
-  case 010: //lsl
-    for (i = 0; i < n; i++) {
-      carry = x & 0x8000;
-      x <<= 1;
-    }
-    break;
-  case 020: //roxl
-    UNIMPLEMENTED();
-  case 030: //rol
-    for (i = 0; i < n; i++) {
-      carry = x & 0x8000;
-      x = (x << 1) | (x >> 15);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFF0000) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFF0000;
+  dreg[r] |= alue(n, dst, 15);
 }
 
 static void insn_shiftl_l(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u32 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asl
-  case 010: //lsl
-    for (i = 0; i < n; i++) {
-      carry = x & 0x80000000;
-      x <<= 1;
-    }
-    break;
-  case 020: //roxl
-    UNIMPLEMENTED();
-  case 030: //rol
-    for (i = 0; i < n; i++) {
-      carry = x & 0x80000000;
-      x = (x << 1) | (x >> 31);
-    }
-    break;
-  }
-  dreg[r] = x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(4);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] = alue(n, dst, 31);
 }
 
-static void insn_shiftl_m(void) {
+static void insn_shiftr_m(void) {
   TRACE();
-  UNIMPLEMENTED();
+  u16 dst = size_w.read_ea();
+  size_w.modify_ea(alue(1, dst, 15));
 }
 
 static void insn_shiftr_b(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
-  u8 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  x = dreg[r] & 0xFF;
-  add_cycles(2*n + 2);
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x80);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 7);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFFFF00) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x80);
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFFFF00;
+  dreg[r] |= alue(n, dst, 7);
 }
 
 static void insn_shiftr_w(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
-  u16 x, carry;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 2);
-  x = dreg[r] & 0xFFFF;
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x8000);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 15);
-    }
-    break;
-  }
-  dreg[r] = (dreg[r] & 0xFFFF0000) | x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x8000);
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] &= 0xFFFF0000;
+  dreg[r] |= alue(n, dst, 15);
 }
 
 static void insn_shiftr_l(void) {
   TRACE();
   int r = EA_R_FIELD;
   int n = REG_FIELD;
-  int i;
   if (IRD & 040)
     n = dreg[n] % 64;
   else if (n == 0)
     n = 8;
-  add_cycles(2*n + 4);
-  u32 x = dreg[r], carry;
-  switch (IRD & 030) {
-  case 000: //asr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x & 0x80000000);
-    }
-    break;
-  case 010: //lsr
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x >>= 1;
-    }
-    break;
-  case 020: //roxr
-    UNIMPLEMENTED();
-  case 030: //ror
-    for (i = 0; i < n; i++) {
-      carry = x & 1;
-      x = (x >> 1) | (x << 31);
-    }
-    break;
-  }
-  dreg[r] = x;
-  SET_C(carry);
-  SET_Z(x == 0);
-  SET_N(x & 0x80000000);
-}
-
-static void insn_shiftr_m(void) {
-  TRACE();
-  UNIMPLEMENTED();
+  add_cycles(2);
+  u32 dst = dreg[r];
+  IRD = (IRD & 0400) | ((IRD & 030) << 6);
+  dreg[r] = alue(n, dst, 31);
 }
 
 static void insn_sub(const struct s *size) {
