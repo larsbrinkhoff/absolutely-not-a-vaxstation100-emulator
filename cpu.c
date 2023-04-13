@@ -181,19 +181,52 @@ static void mem_write_b(void) {
 static u32 mem_read_l(u32 a);
 static void fetch(void);
 
-static void raise(int n) {
-  //printf("Address error: %06X\n", mem_addr);
-  //exit(1);
-  PC = mem_read_l(4*n);
-  fetch();
-  fetch();
+static void enter_super(void) {
+  SR &= ~SR_T;
   if ((SR & SR_S) == 0) {
     USP = areg[7];
     areg[7] = SSP;
+    SR |= SR_S;
   }
-  areg[7] -= 14;
-  SR |= SR_S;
-  SR &= ~SR_T;
+}
+
+static void enter_user(void) {
+  SSP = areg[7];
+  areg[7] = USP;
+}
+
+static void raise(int n);
+
+static void check_super(void) {
+  if ((SR & SR_S) == 0)
+    raise(4);
+}
+
+static void push(u16 x);
+static void mem_read_w(void);
+
+static void raise(int vector) {
+  u16 sr = SR;
+  u32 a = mem_addr;
+  enter_super();
+  PC -= 4;
+  push(PC & 0xFFFF);
+  push(PC >> 16);
+  push(sr);
+  if (1) {
+    push(IR);
+    push(a & 0xFFFF);
+    push(a >> 16);
+    push(0);
+  }
+  mem_addr = vector << 2;
+  mem_read_w();
+  PC = mem_data << 16;
+  mem_addr += 2;
+  mem_read_w();
+  PC |= mem_data;
+  fetch();
+  fetch();
   longjmp(ex, 1);
 }
 
@@ -260,10 +293,8 @@ static void fetch(void) {
 }
 
 static void exception(int vector, u16 sr) {
-  SR &= ~SR_T;
-  SR |= SR_S;
+  enter_super();
   PC -= 4;
-  //fprintf(stderr, "Exception %d, push %04X %08X\n", vector, sr, PC);
   push(PC & 0xFFFF);
   push(PC >> 16);
   push(sr);
@@ -562,7 +593,8 @@ static u32 alub(int op, u32 src, u32 dst) {
     break;
   case SUB:
     result = dst - src;
-    SET_V((((src^dst) & (result^dst)) >> 7) & 1);
+    SET_V((!(src & 0x80) && (dst & 0x80) && !(result & 0x80)) ||
+	  ((src & 0x80) && !(dst & 0x80) && (result & 0x80)));
     break;
   case IOR:
     result = dst | src;
@@ -601,7 +633,8 @@ static u32 aluw(int op, u32 src, u32 dst) {
     break;
   case SUB:
     result = dst - src;
-    SET_V((((src^dst) & (result^dst)) >> 15) & 1);
+    SET_V((!(src & 0x8000) && (dst & 0x8000) && !(result & 0x8000)) ||
+	  ((src & 0x8000) && !(dst & 0x8000) && (result & 0x8000)));
     break;
   case IOR:
     result = dst | src;
@@ -1015,14 +1048,11 @@ static void insn_andi_ccr(void) {
 
 static void insn_andi_sr(void) {
   TRACE();
-  if ((SR & SR_S) == 0)
-    raise(4);
+  check_super();
   fetch();
   SR &= IR;
-  if ((SR & SR_S) == 0) {
-    SSP = areg[7];
-    areg[7] = USP;
-  }
+  if ((SR & SR_S) == 0)
+    enter_user();
 }
 
 static void insn_andi(const struct s *size) {
@@ -1405,12 +1435,11 @@ static void insn_eori_ccr(void) {
 
 static void insn_eori_sr(void) {
   TRACE();
+  check_super();
   fetch();
   SR ^= IR & SR_FLAGS;
-  if ((SR & SR_S) == 0) {
-    SSP = areg[7];
-    areg[7] = USP;
-  }
+  if ((SR & SR_S) == 0)
+    enter_user();
 }
 
 static void insn_eori(const struct s *size) {
@@ -1697,13 +1726,12 @@ static void insn_stop(void) {
 
 static void insn_rte(void) {
   TRACE();
+  check_super();
   SR = pop() & SR_FLAGS;
   PC = pop() << 16;
   PC |= pop();
-  if ((SR & SR_S) == 0) {
-    SSP = areg[7];
-    areg[7] = USP;
-  }
+  if ((SR & SR_S) == 0)
+    enter_user();
   fetch();
 }
 
@@ -1797,12 +1825,11 @@ static void insn_move_to_ccr(void) {
 
 static void insn_move_to_sr(void) {
   TRACE();
+  check_super();
   SR = read_w_ea() & SR_FLAGS;
   add_cycles(4);
-  if ((SR & SR_S) == 0) {
-    SSP = areg[7];
-    areg[7] = USP;
-  }
+  if ((SR & SR_S) == 0)
+    enter_user();
 }
 
 static void insn_muls(void) {
@@ -2082,8 +2109,6 @@ static void insn_shiftr_m(void) {
 static void insn_sub(const struct s *size) {
   int r = REG_FIELD;
   u32 src, dst;
-  if (PC == 0x3bf8+4)
-    fprintf(stderr, "sub %x,%x\n", dreg[2], dreg[1]);
   if (IRD & 0400) {
     src = dreg[r];
     dst = size->read_ea();
@@ -2120,15 +2145,15 @@ DEFINSN_BWL(subi)
 
 static void insn_subq(const struct s *size) {
   u32 src = REG_FIELD;
-  u32 dst;
-  if ((IRD & 070) == 010)
-    dst = areg[EA_R_FIELD];
-  else
-    dst = size->read_ea();
   if (src == 0)
     src = 8;
-  size->modify_ea(size_l.alu(SUB, src, dst));
-  UPDATE_X_FROM_C;
+  if ((IRD & 070) == 010) {
+    areg[EA_R_FIELD] -= src;
+  } else {
+    u32 dst = size->read_ea();
+    size->modify_ea(size->alu(SUB, src, dst));
+    UPDATE_X_FROM_C;
+ }
 }
 
 DEFINSN_BWL(subq)
