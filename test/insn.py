@@ -12,8 +12,8 @@ tests += ["ADD.b", "ADD.w", "ADD.l"]
 tests += ["AND.b", "AND.w", "AND.l"]
 tests += ["ANDItoCCR", "ANDItoSR", "EORItoCCR", "EORItoSR"]
 tests += ["MOVEtoCCR", "MOVEtoSR", "ORItoCCR", "ORItoSR"]
-#tests += ["ASL.b", "ASL.w", "ASL.l"]   #nok
-#tests += ["ASR.b", "ASR.w", "ASR.l"]   #nok
+tests += ["ASL.b", "ASL.w", "ASL.l"]
+#tests += ["ASR.b", "ASR.w", "ASR.l"]
 tests += ["Bcc", "BSR"]
 tests += ["BCHG", "BCLR", "BSET", "BTST"]
 #CHK
@@ -26,7 +26,8 @@ tests += ["EOR.b", "EOR.w", "EOR.l"]
 tests += ["EXG", "EXT.w", "EXT.l"]
 tests += ["JMP", "JSR"]
 tests += ["LEA", "PEA"]
-#LSL LSR
+tests += ["LSL.b", "LSL.w", "LSL.l"]
+tests += ["LSR.b", "LSR.w", "LSR.l"]
 tests += ["MOVEA.w", "MOVEA.l"]
 tests += ["MOVE.b", "MOVE.w", "MOVE.l"]
 tests += ["MOVEM.w", "MOVEM.l"]
@@ -34,21 +35,25 @@ tests += ["MOVE.q"]
 #MOVEP
 #tests += ["MULS", "MULU"]  #nok
 tests += ["NEG.b", "NEG.w", "NEG.l"]
+#NEGX
 tests += ["NOP"]
 tests += ["NOT.b", "NOT.w", "NOT.l"]
 tests += ["OR.b", "OR.w", "OR.l"]
 #RESET
-#ROL ROR
-#ROXL ROXR
+tests += ["ROL.b", "ROL.w", "ROL.l"]
+tests += ["ROR.b", "ROR.w", "ROR.l"]
+tests += ["ROXL.b", "ROXL.w", "ROXL.l"]
+tests += ["ROXR.b", "ROXR.w", "ROXR.l"]
 tests += ["RTE", "RTS"]
-#RTR
+tests += ["RTR"]
 tests += ["SUBA.l", "SUBA.w"]
 tests += ["SUB.b", "SUB.w", "SUB.l"]
+#SUBX
 tests += ["SWAP"]
-#TAS
-#TRAP TRAPV
+tests += ["TAS"]
+tests += ["TRAP", "TRAPV"]
 tests += ["TST.b", "TST.w", "TST.l"]
-#LINK UNLINK
+tests += ["LINK", "UNLINK"]
 
 count = 0
 

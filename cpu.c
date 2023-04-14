@@ -37,11 +37,13 @@
 #define FLAG_Z    (SR & SR_Z)
 #define FLAG_N    (SR & SR_N)
 #define FLAG_X    (SR & SR_X)
-#define SET_C(F)  if(F) SR |= SR_C; else SR &= ~SR_C
-#define SET_V(F)  if(F) SR |= SR_V; else SR &= ~SR_V
-#define SET_Z(F)  if(F) SR |= SR_Z; else SR &= ~SR_Z
-#define SET_N(F)  if(F) SR |= SR_N; else SR &= ~SR_N
-#define SET_X(F)  if(F) SR |= SR_X; else SR &= ~SR_X
+#define FLAG_S    (SR & SR_S)
+#define FLAG_T    (SR & SR_T)
+#define SET_C(F)  do { if(F) SR |= SR_C; else SR &= ~SR_C; } while(0)
+#define SET_V(F)  do { if(F) SR |= SR_V; else SR &= ~SR_V; } while(0)
+#define SET_Z(F)  do { if(F) SR |= SR_Z; else SR &= ~SR_Z; } while(0)
+#define SET_N(F)  do { if(F) SR |= SR_N; else SR &= ~SR_N; } while(0)
+#define SET_X(F)  do { if(F) SR |= SR_X; else SR &= ~SR_X; } while(0)
 #define UPDATE_X_FROM_C SET_X(FLAG_C)
 
 #define EXTB(X) ((((u32)(X & 0xFF)) ^ 0x80) - 0x80)
@@ -183,7 +185,7 @@ static void fetch(void);
 
 static void enter_super(void) {
   SR &= ~SR_T;
-  if ((SR & SR_S) == 0) {
+  if (!FLAG_S) {
     USP = areg[7];
     areg[7] = SSP;
     SR |= SR_S;
@@ -195,17 +197,17 @@ static void enter_user(void) {
   areg[7] = USP;
 }
 
-static void raise(int n);
+static void raise(int n, int f);
 
 static void check_super(void) {
-  if ((SR & SR_S) == 0)
-    raise(4);
+  if (!FLAG_S)
+    raise(4, 0);
 }
 
 static void push(u16 x);
 static void mem_read_w(void);
 
-static void raise(int vector) {
+static void raise(int vector, int fault) {
   u16 sr = SR;
   u32 a = mem_addr;
   enter_super();
@@ -213,7 +215,7 @@ static void raise(int vector) {
   push(PC & 0xFFFF);
   push(PC >> 16);
   push(sr);
-  if (1) {
+  if (fault) {
     push(IR);
     push(a & 0xFFFF);
     push(a >> 16);
@@ -232,7 +234,7 @@ static void raise(int vector) {
 
 static void mem_read_w(void) {
   if (mem_addr & 1)
-    raise(3);
+    raise(3, 1);
   u32 a = mem_addr & 0xFFFFFF;
   mem_data = read_w[a >> 14](a);
   add_cycles(4);
@@ -240,7 +242,7 @@ static void mem_read_w(void) {
 
 static void mem_write_w(void) {
   if (mem_addr & 1)
-    raise(3);
+    raise(3, 1);
   u32 a = mem_addr & 0xFFFFFF;
   write_w[a >> 14](a, mem_data);
   add_cycles(4);
@@ -713,6 +715,8 @@ static u32 alue(int n, u32 dst, int bits) {
   u32 carry = 0;
   u32 sign = 1 << bits;
   u32 mask = 0xFFFFFFFF >> (31 - bits);
+  SET_V(0);
+  dst &= mask;
   switch (IRD & 03400) {
   case 00000: //asr
     for (i = 0; i < n; i++) {
@@ -720,6 +724,8 @@ static u32 alue(int n, u32 dst, int bits) {
       dst = (dst >> 1) | (dst & sign);
       add_cycles(2);
     }
+    if (n != 0)
+      SET_X(carry);
     break;
   case 01000: //lsr
     for (i = 0; i < n; i++) {
@@ -727,18 +733,49 @@ static u32 alue(int n, u32 dst, int bits) {
       dst >>= 1;
       add_cycles(2);
     }
+    if (n != 0)
+      SET_X(carry);
     break;
   case 00400: //asl
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst <<= 1;
+      if (((dst ^ carry) & sign) != 0)
+	SET_V(1);
+      add_cycles(2);
+    }
+    if (n != 0)
+      SET_X(carry);
+    break;
   case 01400: //lsl
     for (i = 0; i < n; i++) {
       carry = dst & sign;
       dst <<= 1;
       add_cycles(2);
     }
+    if (n != 0)
+      SET_X(carry);
     break;
   case 02000: //roxr
+    for (i = 0; i < n; i++) {
+      carry = dst & 1;
+      dst = (dst >> 1) | (FLAG_X ? sign : 0);
+      SET_X(carry);
+      add_cycles(2);
+    }
+    if (n == 0)
+      carry = FLAG_X;
+    break;
   case 02400: //roxl
-    UNIMPLEMENTED();
+    for (i = 0; i < n; i++) {
+      carry = dst & sign;
+      dst = (dst << 1) | (FLAG_X ? 1 : 0);
+      SET_X(carry);
+      add_cycles(2);
+    }
+    if (n == 0)
+      carry = FLAG_X;
+    break;
   case 03000: //ror
     for (i = 0; i < n; i++) {
       carry = dst & 1;
@@ -1068,7 +1105,7 @@ static void insn_andi_sr(void) {
   check_super();
   fetch();
   SR &= IR;
-  if ((SR & SR_S) == 0)
+  if (!FLAG_S)
     enter_user();
 }
 
@@ -1455,7 +1492,7 @@ static void insn_eori_sr(void) {
   check_super();
   fetch();
   SR ^= IR & SR_FLAGS;
-  if ((SR & SR_S) == 0)
+  if (!FLAG_S)
     enter_user();
 }
 
@@ -1639,12 +1676,38 @@ static void insn_extw(void) {
 
 static void insn_illegal(void) {
   TRACE();
-  raise(4);
+  raise(4, 0);
+}
+
+static void insn_tas(void) {
+  TRACE();
+  u32 dst = size_b.read_ea();
+  size_b.alu(SUB, 0, dst);
+  SET_C(0);
+  SET_V(0);
+  size_b.modify_ea(dst | 0x80);
 }
 
 static void insn_illegal_or_tas(void) {
-  TRACE();
-  UNIMPLEMENTED();
+  switch (EA_M_FIELD) {
+  case 1:
+    insn_illegal();
+    break;
+  case 7:
+    switch (EA_R_FIELD) {
+    case 0:
+    case 1:
+      insn_tas();
+      break;
+    default:
+      insn_illegal();
+      break;
+    }
+    break;
+  default:
+    insn_tas();
+    break;
+  }
 }
 
 static void insn_jmp(void) {
@@ -1696,27 +1759,37 @@ static void insn_lea(void) {
 
 static void insn_linea(void) {
   TRACE();
-  raise(10);
+  raise(10, 0);
 }
 
 static void insn_linef(void) {
   TRACE();
-  raise(11);
+  raise(11, 0);
 }
 
 static void insn_trap(void) {
   TRACE();
-  raise(32 + (IR & 0xF));
+  raise(32 + (IR & 0xF), 0);
 }
 
 static void insn_link(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  u32 x = areg[r];
+  push(x & 0xFFFF);
+  push(x >> 16);
+  areg[r] = areg[7];
+  fetch();
+  areg[7] += EXTW(IR);
 }
 
 static void insn_unlk(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = EA_R_FIELD;
+  areg[7] = areg[r];
+  u32 x = pop() << 16;
+  x |= pop();
+  areg[r] = x;
 }
 
 static void insn_move_usp(void) {
@@ -1747,7 +1820,7 @@ static void insn_rte(void) {
   SR = pop() & SR_FLAGS;
   PC = pop() << 16;
   PC |= pop();
-  if ((SR & SR_S) == 0)
+  if (!FLAG_S)
     enter_user();
   fetch();
 }
@@ -1761,12 +1834,17 @@ static void insn_rts(void) {
 
 static void insn_trapv(void) {
   TRACE();
-  UNIMPLEMENTED();
+  if (FLAG_V)
+    raise(7, 0);
 }
 
 static void insn_rtr(void) {
   TRACE();
-  UNIMPLEMENTED();
+  SR &= 0xFF00;
+  SR |= pop() & CCR_FLAGS;
+  PC = pop() << 16;
+  PC |= pop();
+  fetch();
 }
 
 static void insn_misc(void) {
@@ -1845,7 +1923,7 @@ static void insn_move_to_sr(void) {
   check_super();
   SR = read_w_ea() & SR_FLAGS;
   add_cycles(4);
-  if ((SR & SR_S) == 0)
+  if (!FLAG_S)
     enter_user();
 }
 
@@ -2403,7 +2481,7 @@ void execute(void) {
 
 static void step(void) {
   unsigned long long c0 = cycles;
-  //if (SR & SR_T) raise(9);
+  //if (FLAG_T) raise(9, 0);
   execute();
   //fprintf(stderr, "Cycles: %llu (%llu)\n", cycles - c0, cycles);
   SDL_LockMutex(event_mutex);
@@ -2429,7 +2507,7 @@ static u8 read_b_bus_error(u32 a) {
   printf("Bus error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
-  raise(2);
+  raise(2, 1);
   return 0;
 }
 
@@ -2437,7 +2515,7 @@ static void write_b_bus_error(u32 a, u8 x) {
   printf("Bus Error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
-  raise(2);
+  raise(2, 1);
 }
 
 SAME_READ_W(bus_error)
@@ -2695,7 +2773,7 @@ void check_insn(const struct check *data) {
       fprintf(stderr, "A%i is %08X, not %08X\n", i, areg[i], data->final[i+8]);
     }
   }
-  if (SR & SR_S)
+  if (FLAG_S)
     SSP = areg[7];
   else
     USP = areg[7];
