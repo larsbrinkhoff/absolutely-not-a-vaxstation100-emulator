@@ -33,15 +33,16 @@ void check(void) {
       test_ram[a] = x;
     }
     check_insn(data);
-#if 0
     n = 1 + 2*data->fram[0];
     for (j = 1; j < n;) {
       u32 a = data->fram[j++];
       u8 x = data->fram[j++];
+      if (a < 0x800)
+	continue;
       if (test_ram[a] != x)
-        fprintf(stderr, "Bad memory: %06X is %02X, not %02X\n", a, test_ram[a], x);
+        fprintf(stderr, "Bad memory: %06X is %02X, not %02X\n",
+		a, test_ram[a], x);
     }
-#endif
   }
 
   exit(0);
