@@ -102,7 +102,7 @@ def check(f, data):
 def generate(insn):
     global count
     count = 0
-    cmd = ("zcat", "./ProcessorTests/680x0/68000/v1/" + insn + ".json.gz")
+    cmd = ("zcat", "test/ProcessorTests/680x0/68000/v1/" + insn + ".json.gz")
     p = subprocess.run(cmd, stdout=subprocess.PIPE)
     f = open("check_data.c", "w")
     print("#include \"vs100.h\"\n", file=f)

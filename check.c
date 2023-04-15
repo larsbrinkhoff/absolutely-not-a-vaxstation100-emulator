@@ -1,7 +1,7 @@
 #include "vs100.h"
 #include "check.h"
 
-u8 test_ram[16*1024*1024];
+static u8 test_ram[16*1024*1024];
 
 static u8 read_b_test(u32 a) {
   return test_ram[a];
