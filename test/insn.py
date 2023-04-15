@@ -32,6 +32,7 @@ tests += ["MOVEA.w", "MOVEA.l"]
 tests += ["MOVE.b", "MOVE.w", "MOVE.l"]
 tests += ["MOVEM.w", "MOVEM.l"]
 tests += ["MOVE.q"]
+tests += ["MOVEtoUSP", "MOVEfromUSP"]
 #MOVEP
 #tests += ["MULS", "MULU"]  #nok
 tests += ["NEG.b", "NEG.w", "NEG.l"]

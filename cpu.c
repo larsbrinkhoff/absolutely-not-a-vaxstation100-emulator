@@ -56,8 +56,21 @@
 #define CC_FIELD   ((IRD >> 8) & 0xE)
 #define DREG       dreg[REG_FIELD]
 #define AREG       areg[REG_FIELD]
-// REG ((IR >> 12) & 7)
-// A/D (IR & 0x8000) ? areg[r] : dreg[r];
+
+#define VEC_RSP     0
+#define VEC_RPC     1
+#define VEC_BUS     2
+#define VEC_ADDR    3
+#define VEC_ILL     4
+#define VEC_DIV0    5
+#define VEC_CHK     6
+#define VEC_TRAPV   7
+#define VEC_PRIV    8
+#define VEC_TRACE   9
+#define VEC_LINEA  10
+#define VEC_LINEF  11
+#define VEC_AUTO   25
+#define VEC_TRAP   32
 
 
 static u32 trace_pc[10000];
@@ -111,11 +124,13 @@ static u32 PC;
 #define SP areg[7]
 static u16 IRC, IR, IRD;
 static u16 SR;
+static u16 previous_SR;
 static u32 USP, SSP;
 static u32 dreg[8];
 static u32 areg[8];
 static u32 mem_addr;
 static u16 mem_data;
+static u32 fault_addr;
 static int ipl;
 static int vec;
 static int FC = 5;
@@ -197,44 +212,27 @@ static void enter_user(void) {
   areg[7] = USP;
 }
 
-static void raise(int n, int f);
+static void abort_insn(int n);
 
 static void check_super(void) {
   if (!FLAG_S)
-    raise(4, 0);
+    abort_insn(VEC_PRIV);
 }
 
 static void push(u16 x);
 static void mem_read_w(void);
+static void exception(int vector);
 
-static void raise(int vector, int fault) {
-  u16 sr = SR;
-  u32 a = mem_addr;
-  enter_super();
-  PC -= 4;
-  push(PC & 0xFFFF);
-  push(PC >> 16);
-  push(sr);
-  if (fault) {
-    push(IR);
-    push(a & 0xFFFF);
-    push(a >> 16);
-    push(0);
-  }
-  mem_addr = vector << 2;
-  mem_read_w();
-  PC = mem_data << 16;
-  mem_addr += 2;
-  mem_read_w();
-  PC |= mem_data;
-  fetch();
-  fetch();
+static void abort_insn(int vector) {
+  fault_addr = mem_addr;
+  previous_SR = SR;
+  exception(vector);
   longjmp(ex, 1);
 }
 
 static void mem_read_w(void) {
   if (mem_addr & 1)
-    raise(3, 1);
+    abort_insn(VEC_ADDR);
   u32 a = mem_addr & 0xFFFFFF;
   mem_data = read_w[a >> 14](a);
   add_cycles(4);
@@ -242,7 +240,7 @@ static void mem_read_w(void) {
 
 static void mem_write_w(void) {
   if (mem_addr & 1)
-    raise(3, 1);
+    abort_insn(VEC_ADDR);
   u32 a = mem_addr & 0xFFFFFF;
   write_w[a >> 14](a, mem_data);
   add_cycles(4);
@@ -294,12 +292,18 @@ static void fetch(void) {
   PC += 2;
 }
 
-static void exception(int vector, u16 sr) {
+static void exception(int vector) {
   enter_super();
   PC -= 4;
   push(PC & 0xFFFF);
   push(PC >> 16);
-  push(sr);
+  push(previous_SR);
+  if (vector == 2 || vector == 3) {
+    push(IR);
+    push(fault_addr & 0xFFFF);
+    push(fault_addr >> 16);
+    push(0);
+  }
   mem_addr = vector << 2;
   mem_read_w();
   PC = mem_data << 16;
@@ -313,16 +317,15 @@ static void exception(int vector, u16 sr) {
 void mc68000_ipl(int level) {
   SDL_LockMutex(ipl_mutex);
   ipl = level;
-  vec = 24 + level;
+  vec = VEC_AUTO + level - 1;
   SDL_UnlockMutex(ipl_mutex);
 }
 
 static void interrupt(void) {
-  u16 sr = SR;
+  previous_SR = SR;
   SR &= ~0x0700;
   SR |= ipl << 8;
-  //fprintf(stderr, "Interrupt level %d taken\n", ipl);
-  exception(vec, sr);
+  exception(vec);
 }
 
 static void compute_ea(int size) {
@@ -1470,15 +1473,31 @@ static void insn_dbcc_or_scc(void) {
 static void insn_divs(void) {
   TRACE();
   int r = REG_FIELD;
-  u16 src = read_w_ea();
-  u32 dst = dreg[r];
+  s16 src = read_w_ea();
+  s32 dst = dreg[r];
+  if (src == 0)
+    abort_insn(VEC_DIV0);
   dreg[r] = (dst / src) & 0xFFFF;
   dreg[r] |= ((dst % src) & 0xFFFF) << 16;
+  //SET_C(0);
+  //SET_V(0);
+  SET_Z((dreg[r] & 0xFFFF) == 0);
+  SET_N(dreg[r] & 0x8000);
 }
 
 static void insn_divu(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = REG_FIELD;
+  u16 src = read_w_ea();
+  u32 dst = dreg[r];
+  if (src == 0)
+    abort_insn(VEC_DIV0);
+  dreg[r] = (dst / src) & 0xFFFF;
+  dreg[r] |= ((dst % src) & 0xFFFF) << 16;
+  //SET_C(0);
+  //SET_V(0);
+  SET_Z((dreg[r] & 0xFFFF) == 0);
+  SET_N(dreg[r] & 0x8000);
 }
 
 static void insn_eori_ccr(void) {
@@ -1676,7 +1695,7 @@ static void insn_extw(void) {
 
 static void insn_illegal(void) {
   TRACE();
-  raise(4, 0);
+  abort_insn(VEC_ILL);
 }
 
 static void insn_tas(void) {
@@ -1759,17 +1778,17 @@ static void insn_lea(void) {
 
 static void insn_linea(void) {
   TRACE();
-  raise(10, 0);
+  abort_insn(VEC_LINEA);
 }
 
 static void insn_linef(void) {
   TRACE();
-  raise(11, 0);
+  abort_insn(VEC_LINEF);
 }
 
 static void insn_trap(void) {
   TRACE();
-  raise(32 + (IR & 0xF), 0);
+  abort_insn(VEC_TRAP + (IR & 0xF));
 }
 
 static void insn_link(void) {
@@ -1792,17 +1811,21 @@ static void insn_unlk(void) {
   areg[r] = x;
 }
 
-static void insn_move_usp(void) {
+static void insn_move_to_usp(void) {
   TRACE();
-  UNIMPLEMENTED();
+  check_super();
+  USP = areg[EA_R_FIELD];
+}
+
+static void insn_move_from_usp(void) {
+  TRACE();
+  check_super();
+  areg[EA_R_FIELD] = USP;
 }
 
 static void insn_reset(void) {
   TRACE();
-  SR = 0x2700;
-  SP = mem_read_l(0);
-  PC = mem_read_l(4);
-  ipl = 0;
+  check_super();
 }  
 
 static void insn_nop(void) {
@@ -1811,7 +1834,13 @@ static void insn_nop(void) {
 
 static void insn_stop(void) {
   TRACE();
-  UNIMPLEMENTED();
+  check_super();
+  fetch();
+  SR = IR & SR_FLAGS;
+  if (!FLAG_S)
+    enter_user();
+  // if(!FLAG_T)
+  // TODO: Wait for interrupt.
 }
 
 static void insn_rte(void) {
@@ -1835,7 +1864,7 @@ static void insn_rts(void) {
 static void insn_trapv(void) {
   TRACE();
   if (FLAG_V)
-    raise(7, 0);
+    abort_insn(VEC_TRAPV);
 }
 
 static void insn_rtr(void) {
@@ -1862,7 +1891,10 @@ static void insn_misc(void) {
             insn_unlk(); break; 
   case 040: case 041: case 042: case 043:
   case 044: case 045: case 046: case 047:
-            insn_move_usp(); break;
+            insn_move_to_usp(); break;
+  case 050: case 051: case 052: case 053:
+  case 054: case 055: case 056: case 057:
+            insn_move_from_usp(); break;
   case 060: insn_reset(); break;
   case 061: insn_nop(); break;
   case 062: insn_stop(); break;
@@ -1933,11 +1965,22 @@ static void insn_muls(void) {
   s16 src = read_w_ea();
   s16 dst = dreg[r] & 0xFFFF;
   dreg[r] = (s32)src * (s32)dst;
+  //SET_C(0);
+  //SET_V(0);
+  SET_Z(dreg[r] == 0);
+  SET_N(dreg[r] & 0x80000000);
 }
 
 static void insn_mulu(void) {
   TRACE();
-  UNIMPLEMENTED();
+  int r = REG_FIELD;
+  u16 src = read_w_ea();
+  u16 dst = dreg[r] & 0xFFFF;
+  dreg[r] = (u32)src * (u32)dst;
+  //SET_C(0);
+  //SET_V(0);
+  SET_Z(dreg[r] == 0);
+  SET_N(dreg[r] & 0x80000000);
 }
 
 static void insn_nbcd(void) {
@@ -2467,21 +2510,29 @@ static insn_fn dispatch[1024] = {
 };
 
 void reset(void) {
-  insn_reset();
+  SR &= CCR_FLAGS;
+  SR |= SR_S | 0x0700;
+  SP = mem_read_l(VEC_RSP << 2);
+  PC = mem_read_l(VEC_RPC << 2);
+  ipl = 0;
   fetch();
   fetch();
 }
 
 void execute(void) {
+  int trace = FLAG_T;
   FC = 5;
   IRD = IR;
   dispatch[IRD >> 6]();
   fetch();
+  if (trace) {
+    previous_SR = SR;
+    exception(VEC_TRACE);
+  }
 }
 
 static void step(void) {
   unsigned long long c0 = cycles;
-  //if (FLAG_T) raise(9, 0);
   execute();
   //fprintf(stderr, "Cycles: %llu (%llu)\n", cycles - c0, cycles);
   SDL_LockMutex(event_mutex);
@@ -2507,7 +2558,7 @@ static u8 read_b_bus_error(u32 a) {
   printf("Bus error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
-  raise(2, 1);
+  abort_insn(VEC_BUS);
   return 0;
 }
 
@@ -2515,7 +2566,7 @@ static void write_b_bus_error(u32 a, u8 x) {
   printf("Bus Error: %06X\n", a);
   retry_finite_counter++;
   retry_infinite_counter++;
-  raise(2, 1);
+  abort_insn(VEC_BUS);
 }
 
 SAME_READ_W(bus_error)
@@ -2722,6 +2773,15 @@ static void vsync_callback(void) {
   SDL_UnlockMutex(event_mutex);
 }
 
+static void run(void) {
+  for (;;) {
+    if (setjmp(ex) == 0) {
+      for (;;)
+	step();
+    }
+  }
+}
+
 static int cputhread(void *arg) {
   init_regions();
   init_rom("rom/dpm/ROM");
@@ -2729,9 +2789,7 @@ static int cputhread(void *arg) {
   SDL_LockMutex(event_mutex);
   add_event (10000000/60, &vsync_event);
   SDL_UnlockMutex(event_mutex);
-  for (;;) {
-    step();
-  }
+  run();
   return 0;
 }
 
