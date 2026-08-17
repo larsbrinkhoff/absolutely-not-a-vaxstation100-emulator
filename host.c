@@ -117,7 +117,7 @@ u8 read_b_unibus(u32 a) {
 }
 
 void write_b_unibus(u32 a, u8 data) {
-  fibre_write_b(a = 0x080000, data);
+  fibre_write_b(a - 0x080000, data);
 }
 
 u16 read_w_unibus(u32 a) {
