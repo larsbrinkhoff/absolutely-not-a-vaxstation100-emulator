@@ -920,8 +920,10 @@ USP
 1011rrrs11mmmrrr CMPA
 1100rrr011mmmrrr MULU
 1100rrr10000xrrr ABCD
+1100rrr101000rrr EXG
+1100rrr101001rrr EXG
+1100rrr110001rrr EXG
 1100rrr111mmmrrr MULS
-1100rrr1xx00xrrr EXG
 1100rrrdssmmmrrr AND
 1101rrr1ss00xrrr ADDX
 1101rrrdssmmmrrr ADD
@@ -1075,9 +1077,25 @@ static void insn_exg_da(int r1, int r2) {
   areg[r2] = tmp;
 }
 
+static void insn_abcd_d(int r1, int r2) {
+  TRACE();
+  UNIMPLEMENTED();
+}
+
+static void insn_abcd_m(int a1, int a2) {
+  TRACE();
+  UNIMPLEMENTED();
+}
+
 static void insn_and_m(const struct s *size) {
   int r = REG_FIELD;
   switch (IRD & 0370) {
+  case 0000:
+    insn_abcd_d(r, EA_R_FIELD);
+    return;
+  case 0010:
+    insn_abcd_m(r, EA_R_FIELD);
+    return;
   case 0100:
     insn_exg_dd(r, EA_R_FIELD);
     return;
